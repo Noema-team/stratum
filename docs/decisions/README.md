@@ -1,0 +1,24 @@
+# Decisions
+
+Architectural Decision Records — why we chose X over Y.
+
+| Doc | Description |
+|-----|-------------|
+| [ddr-001-package-location.md](ddr-001-package-location.md) | sle/ directory placement |
+| [ddr-002-rule-files-seven.md](ddr-002-rule-files-seven.md) | 7 rule files including agents.yaml |
+| [ddr-003-llm-provider.md](ddr-003-llm-provider.md) | Agnostic LLM provider with two implementations |
+| [ddr-004-platform-layers.md](ddr-004-platform-layers.md) | SLE at Layer 3, delegates to Layer 2 |
+| [ddr-005-cognee-integration.md](ddr-005-cognee-integration.md) | Optional Layer 3 REST API container |
+| [ddr-006-security-deferred.md](ddr-006-security-deferred.md) | Security validation post-MVP |
+| [ddr-007-tester-agent.md](ddr-007-tester-agent.md) | Separate Tester agent, hybrid TDD |
+| [ddr-008-isolated-container.md](ddr-008-isolated-container.md) | Fresh Docker container per validation cycle |
+| [ddr-009-static-analysis.md](ddr-009-static-analysis.md) | Lint, typecheck, complexity as validation sub-phases |
+| [ddr-010-hybrid-tdd.md](ddr-010-hybrid-tdd.md) | Tests designed before build, verified after |
+| [ddr-011-plan-modification.md](ddr-011-plan-modification.md) | User can modify plan at CONFIRM gate |
+| [ddr-012-lifecycle-layers.md](ddr-012-lifecycle-layers.md) | Baseline 8 layers + custom extensions |
+| [ddr-013-document-node-split.md](ddr-013-document-node-split.md) | Nodes have group scope, documents have project scope |
+| [ddr-014-modular-dashboard.md](ddr-014-modular-dashboard.md) | System proposes widgets, user controls layout |
+| [ddr-015-computed-backlinks.md](ddr-015-computed-backlinks.md) | Computed backlinks, not injected frontmatter |
+| [ddr-016-resolver-mode.md](ddr-016-resolver-mode.md) | Resolver mode for declared tasks |
+| [ddr-017-pre-execution-pipeline.md](ddr-017-pre-execution-pipeline.md) | Coherence gate + sharding as prerequisite |
+| [ddr-018-link-index-agent-memory.md](ddr-018-link-index-agent-memory.md) | Link index as shared agent working memory |
