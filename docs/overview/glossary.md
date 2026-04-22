@@ -152,9 +152,7 @@ or a lifecycle content band.
 | Infrastructure stack (0–4) | tier | platform tier |
 | Content categories in a group | layer | lifecycle layer |
 
-**Status: awaiting human sign-off.** If the human prefers an alternative
-(e.g. renaming lifecycle layers to "phases" or "domains" instead), this
-glossary and `architecture.md` will be updated accordingly.
+**Status:** Accepted (2026-04-17). Platform layers → tiers, lifecycle layers → layers.
 
 ### DDR-012 — Baseline lifecycle layers
 
