@@ -30,3 +30,4 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-024-beads-required-or-optional.md](ddr-024-beads-required-or-optional.md) | Local task fallback when Beads unavailable |
 | [ddr-025-artifact-slice-references.md](ddr-025-artifact-slice-references.md) | Typed prefix: doc:{key} and node:{group}:{key} |
 | [ddr-026-sharding-approval-ui.md](ddr-026-sharding-approval-ui.md) | Sharding approval as separate step before CONFIRM |
+| [ddr-027-product-naming.md](ddr-027-product-naming.md) | Product renamed from SLE/sdk-orchestrator to **Stratum** |
