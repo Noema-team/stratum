@@ -417,7 +417,6 @@ DAG enters EXEC node
     ▼
 7. Finalize run directory
    Write manifest.json
-   Write context-pack.md (code-generated, not LLM)
    Write tests/summary.json
     │
     ▼

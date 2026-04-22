@@ -718,16 +718,24 @@ phase1_tasks, discovery_status: 'complete' }`.
 
 ### Error responses
 
-All endpoints use standard error shapes:
+All endpoints use the standard `APIError` envelope (see [daemon-api.md](daemon-api.md) §Error propagation):
 
 ```typescript
-interface ApiError {
-  error: string
-  message: string
+interface APIError {
+  ok: false
+  error: {
+    code: string
+    message: string
+    details?: unknown
+  }
+  meta: {
+    request_id: string
+    timestamp: string
+  }
 }
 ```
 
-| HTTP | `error` value | When |
+| HTTP | `error.code` | When |
 |---|---|---|
 | 409 | `already_initialised` | `.sle/` exists |
 | 404 | `no_init_state` | No `init-state.json` to resume |

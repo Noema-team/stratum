@@ -404,6 +404,266 @@ interface ErrorPayload {
 
 ---
 
+## 9. Init / Discovery
+
+Events emitted during `sle init` and `sle discover`. Init events may fire before
+the daemon is fully accepting connections — they are written to the event stream
+as soon as the WebSocket server binds.
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 9.1 | `init.step_completed` | S→C | `InitStepCompletedPayload` | An init step finishes |
+| 9.2 | `init.complete` | S→C | `InitCompletePayload` | All init steps succeed |
+
+```typescript
+interface InitStepCompletedPayload {
+  step: number
+  name: string
+  status: 'success' | 'failed'
+  message: string
+}
+```
+
+```typescript
+interface InitCompletePayload {
+  files_created: string[]
+  task_store: 'beads' | 'local'
+  daemon_port: number
+}
+```
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 9.3 | `discovery.round_started` | S→C | `DiscoveryRoundStartedPayload` | A discovery round begins |
+| 9.4 | `discovery.draft_ready` | S→C | `DiscoveryDraftReadyPayload` | Facilitator produces a draft for user review |
+| 9.5 | `discovery.round_approved` | S→C | `DiscoveryRoundApprovedPayload` | User approves a round |
+| 9.6 | `discovery.complete` | S→C | `DiscoveryCompletePayload` | All discovery rounds and planning finish |
+
+```typescript
+interface DiscoveryRoundStartedPayload {
+  session_id: string
+  round: number
+  opening_question: string
+}
+```
+
+```typescript
+interface DiscoveryDraftReadyPayload {
+  session_id: string
+  round: number
+  artifact_path: string
+}
+```
+
+```typescript
+interface DiscoveryRoundApprovedPayload {
+  session_id: string
+  round: number
+  artifact_path: string
+  next_round: number | null
+}
+```
+
+```typescript
+interface DiscoveryCompletePayload {
+  session_id: string
+  artifacts: string[]
+  total_phases: number
+}
+```
+
+---
+
+## 10. Intake / sharding
+
+Events from the document intake and task sharding pipeline (SLE-019). Emitted
+when the pipeline runs inline (inside PLAN node) or standalone (`sle intake`).
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 10.1 | `intake.coherence_checked` | S→C | `IntakeCoherenceCheckedPayload` | Coherence gate completes |
+| 10.2 | `intake.sharding_proposed` | S→C | `IntakeShardingProposedPayload` | Planner produces a sharding proposal |
+| 10.3 | `intake.sharding_approved` | S→C | `IntakeShardingApprovedPayload` | User approves sharding proposal |
+| 10.4 | `intake.sharding_rejected` | S→C | `IntakeShardingRejectedPayload` | User rejects sharding proposal |
+| 10.5 | `intake.document_promoted` | S→C | `IntakeDocumentPromotedPayload` | An ungraphed document is promoted to a node |
+| 10.6 | `intake.task_stale` | S→C | `IntakeTaskStalePayload` | A task's source document changes after creation |
+
+```typescript
+interface IntakeCoherenceCheckedPayload {
+  status: 'clean' | 'flagged' | 'blocked'
+  finding_count: number
+  blocking_count: number
+}
+```
+
+```typescript
+interface IntakeShardingProposedPayload {
+  task_count: number
+  total_estimated_tokens: number
+}
+```
+
+```typescript
+interface IntakeShardingApprovedPayload {
+  tasks_created: number
+}
+```
+
+```typescript
+interface IntakeShardingRejectedPayload {}
+```
+
+```typescript
+interface IntakeDocumentPromotedPayload {
+  document_id: string
+  node_id: string
+}
+```
+
+```typescript
+interface IntakeTaskStalePayload {
+  task_id: string
+  document_id: string
+  section_id: string | null
+}
+```
+
+---
+
+## 11. Job dispatch
+
+Events from the execution plane's job dispatcher (L4). Emitted during the EXEC
+node when Docker containers are spawned for validation runs.
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 11.1 | `dispatch.started` | S→C | `DispatchStartedPayload` | Dispatch begins for a cycle |
+| 11.2 | `dispatch.job_status_changed` | S→C | `DispatchJobStatusChangedPayload` | A job transitions between statuses |
+| 11.3 | `dispatch.static_gate_passed` | S→C | `DispatchStaticGatePassedPayload` | Static check passes, releasing category jobs |
+| 11.4 | `dispatch.static_gate_failed` | S→C | `DispatchStaticGateFailedPayload` | Static check fails, cancelling remaining jobs |
+| 11.5 | `dispatch.category_completed` | S→C | `DispatchCategoryCompletedPayload` | All sub-phases finish for a category |
+| 11.6 | `dispatch.completed` | S→C | `DispatchCompletedPayload` | All jobs in the dispatch finish |
+| 11.7 | `dispatch.worker_status_changed` | S→C | `DispatchWorkerStatusChangedPayload` | A worker pool member changes status |
+
+```typescript
+interface DispatchStartedPayload {
+  cycle_id: string
+  dispatch_id: string
+  total_jobs: number
+  mode: 'cycle_validation' | 'task_execution'
+}
+```
+
+```typescript
+interface DispatchJobStatusChangedPayload {
+  cycle_id: string
+  dispatch_id: string
+  job_id: string
+  previous: string
+  current: string
+}
+```
+
+```typescript
+interface DispatchStaticGatePassedPayload {
+  cycle_id: string
+  dispatch_id: string
+  released_jobs: string[]
+}
+```
+
+```typescript
+interface DispatchStaticGateFailedPayload {
+  cycle_id: string
+  dispatch_id: string
+  cancelled_jobs: string[]
+}
+```
+
+```typescript
+interface DispatchCategoryCompletedPayload {
+  cycle_id: string
+  category: string
+  passed: boolean
+  duration_ms: number
+}
+```
+
+```typescript
+interface DispatchCompletedPayload {
+  cycle_id: string
+  dispatch_id: string
+  total_jobs: number
+  completed: number
+  failed: number
+  duration_ms: number
+}
+```
+
+```typescript
+interface DispatchWorkerStatusChangedPayload {
+  worker_id: string
+  previous: string
+  current: string
+}
+```
+
+---
+
+## 12. Task / store
+
+Events from the TaskStore provider layer (BeadsTaskStore or LocalTaskStore).
+These cover task lifecycle operations triggered by DAG integration points and
+the resolveExit flow.
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 12.1 | `task.claimed` | S→C | `TaskClaimedPayload` | A task is claimed (status → in_progress) |
+| 12.2 | `task.resolved` | S→C | `TaskResolvedPayload` | resolveExit completes for a task |
+| 12.3 | `task.comment_added` | S→C | `TaskCommentAddedPayload` | A comment is appended to a task |
+| 12.4 | `task.stale_detected` | S→C | `TaskStaleDetectedPayload` | A task is flagged as stale |
+| 12.5 | `task_store.sync` | S→C | `TaskStoreSyncPayload` | Beads push/pull completes |
+
+```typescript
+interface TaskClaimedPayload {
+  task_id: string
+  claimed_by: string
+}
+```
+
+```typescript
+interface TaskResolvedPayload {
+  task_id: string
+  outcome: 'completed' | 'halted' | 'user_halt' | 'error' | 'crash'
+  new_status: string
+}
+```
+
+```typescript
+interface TaskCommentAddedPayload {
+  task_id: string
+  body: string
+  source: 'historian' | 'user' | 'system'
+}
+```
+
+```typescript
+interface TaskStaleDetectedPayload {
+  task_id: string
+  stale_for_ms: number
+}
+```
+
+```typescript
+interface TaskStoreSyncPayload {
+  direction: 'push' | 'pull'
+  success: boolean
+  error: string | null
+}
+```
+
+---
+
 ## Summary table
 
 All events at a glance. The "Source" column indicates where the event was
@@ -411,13 +671,13 @@ originally defined.
 
 | # | Event | Dir | Source | Group |
 |---|-------|-----|--------|-------|
-| 1.1 | `system.state_changed` | S→C | **G5a (new)** | System lifecycle |
-| 1.2 | `system.ready` | S→C | **G5a (new)** | System lifecycle |
-| 1.3 | `system.shutdown` | S→C | **G5a (new)** | System lifecycle |
+| 1.1 | `system.state_changed` | S→C | G5a (new) | System lifecycle |
+| 1.2 | `system.ready` | S→C | G5a (new) | System lifecycle |
+| 1.3 | `system.shutdown` | S→C | G5a (new) | System lifecycle |
 | 2.1 | `cycle.started` | S→C | SLE-005 | DAG execution |
 | 2.2 | `cycle.completed` | S→C | SLE-005 | DAG execution |
 | 2.3 | `cycle.halted` | S→C | SLE-005 | DAG execution |
-| 2.4 | `cycle.iteration_started` | S→C | **G5a (new)** | DAG execution |
+| 2.4 | `cycle.iteration_started` | S→C | G5a (new) | DAG execution |
 | 2.5 | `node.started` | S→C | SLE-005 | DAG execution |
 | 2.6 | `node.completed` | S→C | SLE-005 | DAG execution |
 | 3.1 | `validation.category.started` | S→C | SLE-005 | Validation |
@@ -426,7 +686,7 @@ originally defined.
 | 4.1 | `approval.required` | S→C | SLE-005 | Gates & actions |
 | 4.2 | `approval.respond` | C→S | SLE-005 | Gates & actions |
 | 4.3 | `categories.confirm` | C→S | SLE-005 | Gates & actions |
-| 4.4 | `action.required` | S→C | **G36 (new)** | Gates & actions |
+| 4.4 | `action.required` | S→C | G36 (new) | Gates & actions |
 | 5.1 | `chat.message` | S→C | SLE-012 | Chat |
 | 5.2 | `chat.decision_captured` | S→C | SLE-012 | Chat |
 | 6.1 | `run.artifact_written` | S→C | SLE-022 | Run artifacts |
@@ -434,13 +694,36 @@ originally defined.
 | 6.3 | `run.context_pack_ready` | S→C | SLE-022 | Run artifacts |
 | 7.1 | `artifact.updated` | S→C | SLE-005 | Artifacts |
 | 8.1 | `error` | S→C | SLE-005 | Errors |
+| 9.1 | `init.step_completed` | S→C | SLE-009 | Init / Discovery |
+| 9.2 | `init.complete` | S→C | SLE-009 | Init / Discovery |
+| 9.3 | `discovery.round_started` | S→C | SLE-011 | Init / Discovery |
+| 9.4 | `discovery.draft_ready` | S→C | SLE-011 | Init / Discovery |
+| 9.5 | `discovery.round_approved` | S→C | SLE-011 | Init / Discovery |
+| 9.6 | `discovery.complete` | S→C | SLE-011 | Init / Discovery |
+| 10.1 | `intake.coherence_checked` | S→C | SLE-019 | Intake / sharding |
+| 10.2 | `intake.sharding_proposed` | S→C | SLE-019 | Intake / sharding |
+| 10.3 | `intake.sharding_approved` | S→C | SLE-019 | Intake / sharding |
+| 10.4 | `intake.sharding_rejected` | S→C | SLE-019 | Intake / sharding |
+| 10.5 | `intake.document_promoted` | S→C | SLE-019 | Intake / sharding |
+| 10.6 | `intake.task_stale` | S→C | SLE-019 | Intake / sharding |
+| 11.1 | `dispatch.started` | S→C | SLE-020 | Job dispatch |
+| 11.2 | `dispatch.job_status_changed` | S→C | SLE-020 | Job dispatch |
+| 11.3 | `dispatch.static_gate_passed` | S→C | SLE-020 | Job dispatch |
+| 11.4 | `dispatch.static_gate_failed` | S→C | SLE-020 | Job dispatch |
+| 11.5 | `dispatch.category_completed` | S→C | SLE-020 | Job dispatch |
+| 11.6 | `dispatch.completed` | S→C | SLE-020 | Job dispatch |
+| 11.7 | `dispatch.worker_status_changed` | S→C | SLE-020 | Job dispatch |
+| 12.1 | `task.claimed` | S→C | SLE-006 | Task / store |
+| 12.2 | `task.resolved` | S→C | SLE-006 | Task / store |
+| 12.3 | `task.comment_added` | S→C | SLE-006 | Task / store |
+| 12.4 | `task.stale_detected` | S→C | SLE-006 | Task / store |
+| 12.5 | `task_store.sync` | S→C | SLE-006 | Task / store |
 
-**Totals:** 23 events (18 server→client, 3 client→server, 2 additional server→client alongside existing gate events).
+**Totals:** 47 events (42 server→client, 3 client→server, 2 additional server→client alongside existing gate events).
 
-**New events (G5a + G36):** `system.state_changed`, `system.ready`,
-`system.shutdown`, `cycle.iteration_started`, `action.required`.
+**New events (Phase 4):** 24 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), and task/store (§12).
 
-**Existing events:** All others sourced from SLE-005, SLE-012, SLE-022.
+**Prior events:** 23 events from Phases 1–3 (§1–§8).
 
 ---
 

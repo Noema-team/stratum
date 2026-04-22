@@ -36,7 +36,10 @@ Critic, Historian, Facilitator.
 | E050–E069 | Agents — role-specific | 18 |
 | E080–E089 | Intake / sharding | 10 |
 | E090–E099 | Beads integration | 10 |
-| | **Total** | **80** |
+| E100–E109 | Init | 10 |
+| E110–E119 | Discovery | 10 |
+| E120–E129 | Job dispatch / Docker | 10 |
+| | **Total** | **110** |
 
 ---
 
@@ -272,6 +275,82 @@ are the bridge between SLE cycles and Beads issues.
 
 ---
 
+## E100–E109 — Init
+
+Errors from `sle init` and the init API endpoints. These cover the one-time
+project setup sequence from prerequisite checks through daemon start.
+
+### Init sequence (E100–E109)
+
+| Code | Name | Condition | Severity | Recovery |
+|---|---|---|---|---|
+| E100 | init_already_initialised | `.sle/` exists and `--reset` not set | critical | `sle init --reset` to reinitialise |
+| E101 | init_no_git_repo | Not inside a git working tree | critical | `git init` or clone a repository |
+| E102 | init_no_origin | No git remote named `origin` | critical | `git remote add origin <url>` |
+| E103 | init_beads_failure | `bd init` returns non-zero exit | error | Check `.beads/` doesn't exist, permissions. Then: `sle init --resume` |
+| E104 | init_docs_clone_failure | `git clone` for docs remote fails | error | Remote may not exist. Create it or skip: `sle init --resume` |
+| E105 | init_commit_failure | `git commit` or `git add` fails | error | Check git status, permissions. Local state preserved: `sle init --resume` |
+| E106 | init_push_failure | `git push origin` fails | warning | Local state is valid. Push manually: `git push origin main` |
+| E107 | init_daemon_start_failure | Daemon process fails to start | error | Check port availability: `sle daemon start`. Init succeeds without daemon |
+| E108 | init_state_corrupted | `.sle/init-state.json` exists but is invalid JSON | error | Delete file and re-run: `sle init` |
+| E109 | init_task_store_unsupported | `--task-store` value is not `beads` or `local` | critical | Use `--task-store beads` or `--task-store local` |
+
+---
+
+## E110–E119 — Discovery
+
+Errors from `sle discover` and the discovery API endpoints. These cover the
+guided discovery flow (rounds, synthesis, planning).
+
+### Discovery session (E110–E119)
+
+| Code | Name | Condition | Severity | Recovery |
+|---|---|---|---|---|
+| E110 | discovery_already_complete | `sle discover` when `discovery.status` is `complete` | error | `sle discover --revisit` to revise |
+| E111 | discovery_not_initialised | `sle discover` when `sle init` has not been run | critical | Run `sle init` first |
+| E112 | discovery_not_idle | `sle discover` when `meta.status` is not `idle` | critical | Complete or halt current session first |
+| E113 | discovery_session_timeout | No user interaction for 30 minutes | warning | State preserved. Resume: `sle discover` (session auto-resumes) |
+| E114 | discovery_synthesis_conflict | User modifies artifact externally during synthesis | warning | Auto re-read and re-synthesise |
+| E115 | discovery_round_invalid | Request for round N when current round is M ≠ N | error | Check current round: `GET /api/v2/discovery/status` |
+| E116 | discovery_plan_no_phases | Plan generation produces zero phases | error | Revisit discovery — insufficient scope or constraints |
+| E117 | discovery_task_create_failed | TaskStore fails to create Phase 1 tasks | warning | Plan approved but no tasks. Create manually or re-run finalization |
+| E118 | discovery_from_file_not_found | `--from brief.md` references non-existent file | critical | Provide valid file path |
+| E119 | discovery_mode_conflict | `--solo` and `--revisit` without `--solo` on previously solo project | warning | Mode upgrade proceeds — existing docs used as starting points |
+
+---
+
+## E120–E129 — Job dispatch / Docker
+
+Errors from the job dispatcher (L4 execution plane). These cover Docker
+container lifecycle, worker pool management, and dispatch orchestration.
+
+### Container errors (E120–E124)
+
+| Code | Name | Condition | Severity | Recovery |
+|---|---|---|---|---|
+| E120 | docker_unavailable | Docker daemon not running or unreachable | critical | Halt cycle (unrecoverable). Start Docker: `systemctl start docker` |
+| E121 | container_start_failed | Container creation or install command failed | error | Mark job failed. Retry once. If retry fails, halt cycle |
+| E122 | container_oom_killed | Container exceeded memory limit | error | Mark job failed with `container_oom_killed`. Not retried — indicates resource issue. Increase `memory_mb` in `validation.yaml` |
+| E123 | container_timeout | Job exceeded `timeout_ms` | error | SIGKILL container. Mark job `timed_out`. Not retried. Increase `timeout_ms` in `validation.yaml` |
+| E124 | image_pull_failed | Base image cannot be pulled from registry | critical | Halt cycle (unrecoverable). Check image name and network |
+
+### Worker pool errors (E125–E127)
+
+| Code | Name | Condition | Severity | Recovery |
+|---|---|---|---|---|
+| E125 | worker_dead | Worker missed 3 consecutive heartbeats | error | Mark current job failed. Requeue job (if retry budget allows). Spawn replacement worker |
+| E126 | worker_spawn_failed | Cannot create new worker (Docker error) | error | Continue with remaining workers. If all workers dead, halt cycle |
+| E127 | pool_exhausted | All workers dead and cannot spawn replacements | critical | Halt cycle (unrecoverable). Check Docker resources |
+
+### Dispatch errors (E128–E129)
+
+| Code | Name | Condition | Severity | Recovery |
+|---|---|---|---|---|
+| E128 | dispatch_plan_empty | Cannot generate dispatch plan (no active categories) | error | Halt cycle (no work to do). Check `validation.yaml` category configuration |
+| E129 | orphaned_containers | Containers from previous daemon run detected at startup | warning | Log warning. Destroy all orphaned containers. Proceed |
+
+---
+
 ## Error event shape
 
 All errors are emitted as WebSocket events (SLE-005 event types). Every interface
@@ -427,6 +506,36 @@ codes map to outcomes as follows:
 | E097 | beads_unclaim_exit_failed | Beads integration | warning |
 | E098 | beads_sharding_create_failed | Beads integration | error |
 | E099 | beads_dep_wiring_failed | Beads integration | warning |
+| E100 | init_already_initialised | Init | critical |
+| E101 | init_no_git_repo | Init | critical |
+| E102 | init_no_origin | Init | critical |
+| E103 | init_beads_failure | Init | error |
+| E104 | init_docs_clone_failure | Init | error |
+| E105 | init_commit_failure | Init | error |
+| E106 | init_push_failure | Init | warning |
+| E107 | init_daemon_start_failure | Init | error |
+| E108 | init_state_corrupted | Init | error |
+| E109 | init_task_store_unsupported | Init | critical |
+| E110 | discovery_already_complete | Discovery | error |
+| E111 | discovery_not_initialised | Discovery | critical |
+| E112 | discovery_not_idle | Discovery | critical |
+| E113 | discovery_session_timeout | Discovery | warning |
+| E114 | discovery_synthesis_conflict | Discovery | warning |
+| E115 | discovery_round_invalid | Discovery | error |
+| E116 | discovery_plan_no_phases | Discovery | error |
+| E117 | discovery_task_create_failed | Discovery | warning |
+| E118 | discovery_from_file_not_found | Discovery | critical |
+| E119 | discovery_mode_conflict | Discovery | warning |
+| E120 | docker_unavailable | Job dispatch / Docker | critical |
+| E121 | container_start_failed | Job dispatch / Docker | error |
+| E122 | container_oom_killed | Job dispatch / Docker | error |
+| E123 | container_timeout | Job dispatch / Docker | error |
+| E124 | image_pull_failed | Job dispatch / Docker | critical |
+| E125 | worker_dead | Job dispatch / Docker | error |
+| E126 | worker_spawn_failed | Job dispatch / Docker | error |
+| E127 | pool_exhausted | Job dispatch / Docker | critical |
+| E128 | dispatch_plan_empty | Job dispatch / Docker | error |
+| E129 | orphaned_containers | Job dispatch / Docker | warning |
 
 ---
 

@@ -1053,7 +1053,7 @@ path for approval flows.
 
 #### Server-to-client events (summary)
 
-All 18 server-to-client events are fully specified in
+All 42 server-to-client events are fully specified in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 The groups are:
 
@@ -1067,6 +1067,10 @@ The groups are:
 | Run artifacts | `run.artifact_written`, `run.manifest_ready`, `run.context_pack_ready` | 3 |
 | Artifacts | `artifact.updated` | 1 |
 | Errors | `error` | 1 |
+| Init / Discovery | `init.step_completed`, `init.complete`, `discovery.round_started`, `discovery.draft_ready`, `discovery.round_approved`, `discovery.complete` | 6 |
+| Intake / sharding | `intake.coherence_checked`, `intake.sharding_proposed`, `intake.sharding_approved`, `intake.sharding_rejected`, `intake.document_promoted`, `intake.task_stale` | 6 |
+| Job dispatch | `dispatch.started`, `dispatch.job_status_changed`, `dispatch.static_gate_passed`, `dispatch.static_gate_failed`, `dispatch.category_completed`, `dispatch.completed`, `dispatch.worker_status_changed` | 7 |
+| Task / store | `task.claimed`, `task.resolved`, `task.comment_added`, `task.stale_detected`, `task_store.sync` | 5 |
 
 ---
 
@@ -1100,6 +1104,12 @@ canonical error catalogue in [../reference/error-codes.md](../reference/error-co
 | 409 | `discovery_already_complete` | Start discovery when already complete |
 | 500 | `internal_error` | Unhandled daemon error |
 | 503 | `daemon_shutting_down` | Request during graceful shutdown |
+| 400 | `init_already_initialised` | `.sle/` exists (E100) |
+| 404 | `no_init_state` | No `init-state.json` to resume (E108) |
+| 403 | `name_mismatch` | Reset confirmation name wrong (E100) |
+| 409 | `discovery_already_complete` | Discovery run without `--revisit` (E110) |
+| 409 | `not_idle` | System not in `idle` state (E112) |
+| 400 | `invalid_round` | Round N ≠ current round (E115) |
 
 ### WebSocket errors
 
