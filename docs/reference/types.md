@@ -636,6 +636,8 @@ Discovery session state tracked in `map.yaml`.
 
 ## 10 — map.yaml (RuntimeMap)
 
+The annotated YAML schema with field descriptions is in [reference/map-yaml-schema.md](map-yaml-schema.md). Below are the supplementary types used by `RuntimeMap` but not covered elsewhere in this file.
+
 ```typescript
 export interface GitRemote {
   type: 'git'
@@ -658,81 +660,8 @@ export interface AgentMdMapRef {
   map: string
 }
 ```
+
 Reference to map.yaml from agent.md.
-
-```typescript
-export interface RuntimeMap {
-  meta: {
-    sle_version: string
-    generated_at: string
-    project_type: ProjectType
-    cycle: number
-    version_id: string
-    status: SystemStatus
-  }
-
-  project: {
-    name: string
-    description: string
-    root: string
-    language: string
-    runtime: string
-  }
-
-  remotes: {
-    code: GitRemote
-    issues: DoltRemote
-    docs: GitRemote & { local_dir: string; mount: string }
-  }
-
-  artifacts: {
-    root: string
-    files: Record<string, ArtifactEntry>
-    generated_outputs: Record<string, GeneratedOutput>
-  }
-
-  rules: {
-    root: string
-    files: Record<string, string>
-    overrides?: Record<string, string>
-  }
-
-  validation: {
-    categories: ValidationCategory[]
-    gate: ValidationGate
-  }
-
-  context: {
-    slice_size_tokens: number
-    summary_max_tokens: number
-    agent_slices: Record<string, string[]>
-  }
-
-  interfaces: {
-    daemon: { port: number; protocol: string; pid_file: string }
-    cli?: { package: string; version: string }
-    web?: { package: string; version: string; mobile_ready: boolean }
-    obsidian?: { package: string; version: string; vault_path: string }
-  }
-
-  cycle: CycleState
-
-  chat: ChatState
-
-  repo: {
-    src: string
-    tests: string
-    scripts: string
-    docs: string
-    config: string
-    entry_points: string[]
-    key_files: Array<{ path: string; role: string }>
-  }
-
-  discovery: DiscoveryState
-}
-```
-⚡ **DDR-020.** Added `chat` section. Cycle uses updated `CycleState` with flag-based pause points.
 
 ---
 
@@ -982,18 +911,4 @@ export const RuntimeConfigSchema = z.object({
 })
 ```
 
----
-
-## DDR Change Summary
-
-| ADR | Type changed | Was | Is |
-|-----|-------------|-----|----|
-| DDR-019 | `AgentRole` | 6 roles | 10 roles (added designer, explorer, tester, debugger) |
-| DDR-019 | Artifact ownership | Planner owns `requirements.md` | Designer owns `requirements.md` + `architecture.md`; Planner owns `plan.md` + `test-plan.md` |
-| DDR-020 | `SystemStatus` | `'idle' \| 'running' \| 'awaiting_approval' \| 'halted'` | `'idle' \| 'discovering' \| 'cycling' \| 'halted' \| 'complete'` |
-| DDR-020 | `ChatState` | Embedded in `meta.status` | Separate `chat` section in map.yaml |
-| DDR-021 | `CycleOutcome` | `'completed' \| 'halted' \| 'awaiting_approval' \| 'running'` | `'running' \| 'completed' \| 'halted'` |
-| DDR-021 | Confirming | Top-level state | `cycle.awaiting_confirmation: boolean` flag |
-| DDR-024 | `TaskStore` | Not present | Provider interface with `BeadsTaskStore` + `LocalTaskStore` |
-| DDR-025 | `ArtifactRef` | Unprefixed key strings | Typed prefix: `doc:{key}` and `node:{group}:{key}` |
-| DDR-026 | Sharding approval | Not present | `cycle.awaiting_sharding_approval: boolean` flag |
+**DDR change tracking:** See `sle-v2-docs-plan.md` Phase 0 decisions summary for the full list of type changes from DDR-019 through DDR-026.
