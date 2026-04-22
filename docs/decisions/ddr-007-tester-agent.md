@@ -2,6 +2,7 @@
 
 **Date:** 2026-04-13 · **Status:** accepted
 **Resolves:** —
+**Superseded in part:** Agent role table updated by DDR-019 (Designer/Planner split). The "Planner → produces plan, architecture, category list" row is now split into Designer (architecture, requirements) and Planner (plan, test-plan).
 
 ## Context
 The original DAG had PLAN → BUILD → VALIDATE. A decision was needed on who writes tests — the Builder or a dedicated agent.

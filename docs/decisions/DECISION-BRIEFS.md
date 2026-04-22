@@ -1,5 +1,7 @@
 # Decision Briefs — DDR-019 through DDR-026
 
+**Status:** ARCHIVAL — pre-session preparation material, superseded by the actual ADR files (ddr-019 through ddr-026). Do not use as authoritative reference.
+
 **Purpose:** Prepare for a human decision session on 8 blocking architectural decisions.
 
 **Source material:** `gaps/open-questions.md`, SLE-024, SLE-002, SLE-001, SLE-019, SLE-005, SLE-007
