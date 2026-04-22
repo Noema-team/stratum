@@ -204,6 +204,7 @@ interface TaskStore {
   updateStatus(id: string, status: SLETask['status']): Promise<void>
   closeTask(id: string): Promise<void>
   getStale(): Promise<SLETask[]>
+  addDependency(taskId: string, dependencyTaskId: string): Promise<void>
 }
 ```
 
@@ -436,6 +437,14 @@ record. `meta.status` stays `cycling`.
 ```
 ... → PLAN → TEST → SHARDING_APPROVAL → CONFIRM → BUILD → ...
 ```
+
+> **Design tradeoff (DDR-026):** Sharding approval is placed after TEST, meaning
+> tests are written against the full plan before sharding is reviewed. If the
+> user rejects the sharding proposal, the Planner re-plans as a single task and
+> tests must be regenerated. This was accepted as preferable to the alternative
+> (sharding between PLAN and TEST), which would require writing tests twice for
+> the sharded case — once during initial TEST and again after sharding modifies
+> task boundaries.
 
 The `SHARDING_APPROVAL` DAG node only activates when the Planner produced a
 sharding proposal. When the cycle runs without intake (bypassed mode), this

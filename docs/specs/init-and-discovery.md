@@ -412,7 +412,7 @@ project-root/
 
 - `sle init` completed (daemon running, remotes configured)
 - `map.yaml → discovery.status` is `not_started` (or use `--revisit`)
-- `meta.status` is `idle`
+- `map.yaml → meta.status` is `idle`
 
 #### Commands
 
@@ -627,39 +627,15 @@ reads it, produces draft `product-brief.md`, then asks follow-ups to fill gaps.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/v2/init/start` | Start init with all configuration |
-| `POST` | `/api/v2/init/resume` | Resume from saved init state |
-| `POST` | `/api/v2/init/reset` | Reset and remove all SLE state |
+| `POST` | `/api/v2/init` | Run init sequence |
+| `GET` | `/api/v2/init/status` | Check init progress |
+| `POST` | `/api/v2/init/reset` | Reset and re-run init |
 
-**`POST /api/v2/init/start`**
-
-```typescript
-interface InitRequest {
-  name: string
-  description: string
-  description_long?: string
-  type: ProjectType
-  code_remote: string
-  issues_remote?: string
-  docs_remote?: string
-  prefix: string
-  task_store: 'beads' | 'local'
-  no_editor: boolean
-  no_daemon: boolean
-}
-
-interface InitResponse {
-  status: 'complete' | 'partial'
-  step: number
-  message: string
-  files_created: string[]
-}
-```
-
-`POST /api/v2/init/reset` requires `{ confirm_name: string }` matching the
-project name. Returns `{ removed: string[] }`.
+Full request/response shapes are in [daemon-api.md](daemon-api.md) §Init endpoints.
 
 ### Discovery
+
+All discovery endpoints are defined in [daemon-api.md](daemon-api.md) §Discovery endpoints. The full list:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -674,47 +650,6 @@ project name. Returns `{ removed: string[] }`.
 | `POST` | `/api/v2/discovery/plan/split/{phase}` | Split a phase |
 | `POST` | `/api/v2/discovery/plan/merge` | Merge phases |
 | `GET` | `/api/v2/discovery/status` | Get discovery state |
-
-**`POST /api/v2/discovery/start`**
-
-```typescript
-interface DiscoveryStartRequest {
-  mode: 'full' | 'solo'
-  from_file: string | null
-}
-
-interface DiscoveryStartResponse {
-  session_id: string
-  mode: 'full' | 'solo'
-  current_round: 1
-  total_rounds: 4 | 2
-  opening_question: string
-}
-```
-
-**`POST /api/v2/discovery/round/{n}/response`**
-
-```typescript
-interface RoundResponseRequest {
-  content: string
-}
-
-interface RoundResponse {
-  round: number
-  status: 'collecting' | 'drafting' | 'reviewing'
-  follow_up_question: string | null
-  draft_available: boolean
-}
-```
-
-**`POST /api/v2/discovery/round/{n}/approve`** returns `{ round, artifact_path,
-next_round, next_step: 'round' | 'synthesis' | 'planning' | 'complete' }`.
-
-**`POST /api/v2/discovery/plan/approve`** returns `{ plan_path, total_phases,
-phase1_tasks, discovery_status: 'complete' }`.
-
-**`GET /api/v2/discovery/status`** returns the full `DiscoveryState` plus
-`completed_rounds` and `artifacts` arrays.
 
 ### Error responses
 

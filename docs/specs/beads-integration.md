@@ -332,7 +332,7 @@ class BeadsTaskStore implements TaskStore {
 
   async getStale(): Promise<SLETask[]> {
     return (await this.run(['list', '--status', 'in_progress']))
-      .filter(t => isStale(t))
+      .filter(t => t.notes?.startsWith('STALE:'))
       .map(normalizeBeadsTask)
   }
 
@@ -509,135 +509,19 @@ Direct `bd` usage always works alongside `BeadsTaskStore`.
 
 ## API contract
 
-### Get ready tasks
+All task-related REST endpoints are defined in [daemon-api.md](daemon-api.md) §Task endpoints. The full list:
 
-```
-GET /api/v2/tasks/ready
-
-Response 200:
-{
-  "tasks":              SLETask[],
-  "store_type":         "beads" | "local",
-  "synced_at":          string | null
-}
-
-Response 503:
-{
-  "error":              "task_store_unavailable",
-  "store_type":         "beads",
-  "reason":             "bd subprocess failed or Dolt remote unreachable"
-}
-```
-
-### Claim task
-
-```
-POST /api/v2/tasks/{task_id}/claim
-
-Response 200:
-{
-  "task_id":            string,
-  "status":             "in_progress",
-  "claimed_at":         string
-}
-
-Response 409:
-{
-  "error":              "task_already_claimed",
-  "task_id":            string,
-  "current_status":     string
-}
-```
-
-### Resolve exit
-
-```
-POST /api/v2/tasks/{task_id}/resolve-exit
-
-Request:
-{
-  "outcome":            ResolveExitOutcome,
-  "context": {
-    "version_id":       string | null,
-    "reason":           string | null,
-    "report_path":      string | null,
-    "cycle":            number,
-    "iteration":        number
-  }
-}
-
-Response 200:
-{
-  "task_id":            string,
-  "outcome":            ResolveExitOutcome,
-  "new_status":         string,
-  "comment_posted":     boolean
-}
-
-Response 500:
-{
-  "error":              "resolve_exit_failed",
-  "task_id":            string,
-  "outcome":            ResolveExitOutcome,
-  "reason":             "Task store unreachable. Session state preserved for next-start recovery."
-}
-```
-
-When resolve-exit fails (E097), session state is preserved. Next daemon start
-resolves the stale claim via E091.
-
-### Comment on task
-
-```
-POST /api/v2/tasks/{task_id}/comments
-
-Request:
-{
-  "body":               string
-}
-
-Response 200:
-{
-  "task_id":            string,
-  "comment_posted":     boolean
-}
-```
-
-### Get task store status
-
-```
-GET /api/v2/tasks/store
-
-Response 200:
-{
-  "type":               "beads" | "local",
-  "available":          boolean,
-  "last_sync":          string | null,
-  "total_tasks":        number,
-  "open_tasks":         number,
-  "stale_tasks":        number
-}
-```
-
-### Create task
-
-```
-POST /api/v2/tasks
-
-Request:
-{
-  "title":              string,
-  "description":        string | null,
-  "priority":           number,
-  "dependencies":       string[] | null,
-  "context_declarations": TaskContextDeclaration[] | null
-}
-
-Response 201:
-{
-  "task":               SLETask
-}
-```
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v2/tasks` | List tasks (with filters) |
+| `GET` | `/api/v2/tasks/ready` | Get ready (unblocked) tasks |
+| `GET` | `/api/v2/tasks/{task_id}` | Get single task |
+| `POST` | `/api/v2/tasks` | Create task |
+| `POST` | `/api/v2/tasks/{task_id}/claim` | Claim task |
+| `POST` | `/api/v2/tasks/{task_id}/close` | Close task |
+| `POST` | `/api/v2/tasks/{task_id}/resolve-exit` | Resolve cycle exit |
+| `POST` | `/api/v2/tasks/{task_id}/comments` | Comment on task |
+| `GET` | `/api/v2/tasks/store` | Get task store status |
 
 ### WebSocket events
 

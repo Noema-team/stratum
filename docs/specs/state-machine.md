@@ -33,7 +33,7 @@ type SystemState =
   | "complete"
 ```
 
-Stored in `map.yaml → system.state`. Updated atomically on every transition.
+Stored in `map.yaml → meta.status`. Updated atomically on every transition.
 
 ### Cycle record flags
 

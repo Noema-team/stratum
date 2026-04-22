@@ -287,6 +287,103 @@ Valid transitions are defined in [state-machine.md](state-machine.md) §Transiti
 
 ---
 
+### Run init
+
+```
+POST /api/v2/init
+
+Request:
+{
+  "project_name": string,
+  "project_type": "api" | "web" | "cli" | "library" | "monorepo",
+  "task_store": "beads" | "local",
+  "daemon_port": number,
+  "docs_remote": string | null,
+  "non_interactive": boolean
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "status": "complete" | "partial",
+    "step": number,
+    "message": string,
+    "files_created": string[]
+  }
+}
+
+Response 409:
+{
+  "ok": false,
+  "error": {
+    "code": "already_initialised",
+    "message": ".sle/ directory already exists."
+  }
+}
+```
+
+### Get init status
+
+```
+GET /api/v2/init/status
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "initialised": boolean,
+    "current_step": number | null,
+    "total_steps": number,
+    "last_file_created": string | null
+  }
+}
+
+Response 404:
+{
+  "ok": false,
+  "error": {
+    "code": "no_init_state",
+    "message": "No init-state.json found. Run POST /api/v2/init first."
+  }
+}
+```
+
+### Reset init
+
+```
+POST /api/v2/init/reset
+
+Request:
+{
+  "confirm_name": string
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "removed": string[]
+  }
+}
+
+Response 403:
+{
+  "ok": false,
+  "error": {
+    "code": "name_mismatch",
+    "message": "confirm_name does not match project name."
+  }
+}
+```
+
+`confirm_name` must match the project name set during init. This is a safety
+guard against accidental resets.
+
+Full init sequence and step details: [init-and-discovery.md](init-and-discovery.md) §Init sequence.
+
+---
+
 ### Start discovery
 
 ```
@@ -294,7 +391,9 @@ POST /api/v2/discovery/start
 
 Request:
 {
-  "resume": boolean
+  "resume": boolean,
+  "mode": "full" | "solo",
+  "from_file": string | null
 }
 
 Response 200:
@@ -303,7 +402,11 @@ Response 200:
   "data": {
     "session_id": string,
     "status": "in_progress",
-    "phases_total": number
+    "mode": "full" | "solo",
+    "current_round": 1,
+    "total_rounds": 4 | 2,
+    "phases_total": number,
+    "opening_question": string
   }
 }
 
@@ -329,6 +432,176 @@ Response 409:
 }
 ```
 
+### Discovery round response
+
+```
+POST /api/v2/discovery/round/{n}/response
+
+Request:
+{
+  "content": string
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "round": number,
+    "status": "collecting" | "drafting" | "reviewing",
+    "follow_up_question": string | null,
+    "draft_available": boolean
+  }
+}
+
+Response 400: invalid_round
+```
+
+### Get discovery round draft
+
+```
+GET /api/v2/discovery/round/{n}/draft
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "round": number,
+    "artifact_path": string,
+    "content": string,
+    "status": "draft" | "approved" | "revising"
+  }
+}
+
+Response 404: draft_not_ready
+```
+
+### Approve discovery round
+
+```
+POST /api/v2/discovery/round/{n}/approve
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "round": number,
+    "artifact_path": string,
+    "next_round": number | null,
+    "next_step": "round" | "synthesis" | "planning" | "complete"
+  }
+}
+```
+
+### Revise discovery round
+
+```
+POST /api/v2/discovery/round/{n}/revise
+
+Request:
+{
+  "feedback": string
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "round": number,
+    "status": "revising"
+  }
+}
+```
+
+### Approve discovery synthesis
+
+```
+POST /api/v2/discovery/synthesis/approve
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "artifacts": string[],
+    "next_step": "planning"
+  }
+}
+```
+
+### Approve discovery plan
+
+```
+POST /api/v2/discovery/plan/approve
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "plan_path": string,
+    "total_phases": number,
+    "phase1_tasks": number,
+    "discovery_status": "complete"
+  }
+}
+```
+
+### Reorder discovery plan phases
+
+```
+POST /api/v2/discovery/plan/reorder
+
+Request:
+{
+  "phase_order": number[]
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "phase_order": number[]
+  }
+}
+```
+
+### Split discovery plan phase
+
+```
+POST /api/v2/discovery/plan/split/{phase}
+
+Request:
+{
+  "split_after_task": number
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "original_phase": number,
+    "new_phases": number[]
+  }
+}
+```
+
+### Merge discovery plan phases
+
+```
+POST /api/v2/discovery/plan/merge
+
+Request:
+{
+  "phases": number[]
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "merged_phase": number
+  }
+}
+```
+
 ### Discovery status
 
 ```
@@ -340,10 +613,12 @@ Response 200:
   "data": {
     "status": "none" | "in_progress" | "complete",
     "session_id": string | null,
+    "mode": "full" | "solo" | null,
     "current_phase": number,
     "total_phases": number,
-    "completed_at": string | null,
+    "completed_rounds": number[],
     "artifacts": string[],
+    "completed_at": string | null,
     "open_questions_count": number,
     "blocking_questions_count": number
   }
@@ -679,6 +954,66 @@ Response 409: not_awaiting_sharding_approval
 
 ---
 
+### Dispatch status
+
+```
+GET /api/v2/cycles/{cycle_id}/dispatch
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "active": boolean,
+    "mode": "cycle_validation" | "task_execution" | null,
+    "total_jobs": number,
+    "completed_jobs": number,
+    "failed_jobs": number,
+    "workers": {
+      "total": number,
+      "idle": number,
+      "busy": number
+    },
+    "current_sub_phase": "static_check" | "llm_check" | "exec_check" | null,
+    "category_progress": Record<string, {
+      "llm_check": "pending" | "running" | "completed" | "failed" | "skipped",
+      "exec_check": "pending" | "running" | "completed" | "failed" | "skipped"
+    }>
+  }
+}
+
+Response 404: cycle_not_found
+```
+
+### Dispatch job detail
+
+```
+GET /api/v2/cycles/{cycle_id}/dispatch/jobs/{job_id}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "job_id": string,
+    "type": "static_check" | "llm_check" | "exec_check" | "task_execution",
+    "status": "queued" | "running" | "completed" | "failed" | "timed_out",
+    "category": string | null,
+    "sub_phase": "static_check" | "llm_check" | "exec_check" | null,
+    "created_at": string,
+    "started_at": string | null,
+    "completed_at": string | null,
+    "duration_ms": number | null,
+    "result": object | null,
+    "error": object | null
+  }
+}
+
+Response 404: job_not_found
+```
+
+Full dispatch internals (internal API, worker pool, context injection): [job-dispatch.md](job-dispatch.md).
+
+---
+
 ### List artifacts
 
 ```
@@ -979,7 +1314,8 @@ Response 200:
   "ok": true,
   "data": {
     "task_id": string,
-    "status": "in_progress"
+    "status": "in_progress",
+    "claimed_at": string
   }
 }
 
@@ -1021,12 +1357,130 @@ Response 200:
 Response 404: task_not_found
 ```
 
+### Get ready tasks
+
+```
+GET /api/v2/tasks/ready
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "tasks": SLETask[],
+    "store_type": "beads" | "local",
+    "synced_at": string | null
+  }
+}
+
+Response 503: task_store_unavailable
+```
+
+### Resolve exit
+
+```
+POST /api/v2/tasks/{task_id}/resolve-exit
+
+Request:
+{
+  "outcome": "completed" | "halted" | "user_halt" | "error" | "crash",
+  "context": {
+    "version_id": string | null,
+    "reason": string | null,
+    "report_path": string | null,
+    "cycle": number,
+    "iteration": number
+  }
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "task_id": string,
+    "outcome": string,
+    "new_status": string,
+    "comment_posted": boolean
+  }
+}
+
+Response 500: resolve_exit_failed
+```
+
+When resolve-exit fails (E097), session state is preserved. Next daemon start
+resolves the stale claim via E091.
+
+### Comment on task
+
+```
+POST /api/v2/tasks/{task_id}/comments
+
+Request:
+{
+  "body": string
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "task_id": string,
+    "comment_posted": boolean
+  }
+}
+
+Response 404: task_not_found
+```
+
+### Get task store status
+
+```
+GET /api/v2/tasks/store
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "type": "beads" | "local",
+    "available": boolean,
+    "last_sync": string | null,
+    "total_tasks": number,
+    "open_tasks": number,
+    "stale_tasks": number
+  }
+}
+```
+
+### Create task
+
+```
+POST /api/v2/tasks
+
+Request:
+{
+  "title": string,
+  "description": string | null,
+  "priority": number,
+  "dependencies": string[] | null,
+  "context_declarations": object[] | null
+}
+
+Response 201:
+{
+  "ok": true,
+  "data": {
+    "task": SLETask
+  }
+}
+```
+
+Full task store internals (BeadsTaskStore, LocalTaskStore, stale claim recovery): [beads-integration.md](beads-integration.md).
+
 ---
 
 ### WebSocket events
 
 The daemon emits events over `ws://localhost:7700/events`. The full event
-catalogue (23 events across 8 groups) is defined in
+catalogue (42 server-to-client events across 12 groups) is defined in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 
 #### Client-to-daemon commands (WebSocket)
