@@ -599,39 +599,37 @@ results are malformed, the node errors and the cycle halts (unrecoverable).
 | **Agent role** | Debugger |
 | **Conditional** | Yes — only when VALIDATION_GATE fails |
 | **Inputs** | Run artifacts (manifest + context-pack) + failed category slices |
-| **Outputs** | `FailureReport` with root causes |
+| **Outputs** | Diagnosis injected into Planner context (uses FailureReport from gate) |
 
 The Debugger is the first role to read run artifacts after a gate failure. It
 diagnoses — it does not plan or build. Its output feeds the next PLAN node.
 
 ```
 interface FailureReport {
-  cycle:             number
-  iteration:         number
-  failed_categories: FailedCategoryDetail[]
-}
-
-interface FailedCategoryDetail {
-  name:         string
-  phase:        'llm' | 'executable' | 'both'
-  llm_issues?:  string[]
-  failed_tests?: string[]
-  errors?:      string[]
-  metrics?:     Record<string, number>
+  cycle:              number
+  iteration:          number
+  run_dir:            string
+  run_id:             string
+  quick_summary:      string
+  failed_categories:  string[]
+  passed_categories:  string[]
 }
 ```
+
+See types.md §6.2 for the canonical definition. The Debugger reads run artifacts
+from `run_dir` to produce its diagnosis.
 
 Artifact references:
 - Reads: run artifacts from `.sle/runs/{id}/`
 - Writes: None (output is injected into Planner context, not written to disk)
 
-**Success criteria:** `FailureReport` produced with at least one root cause
-per failed category.
+**Success criteria:** Diagnosis produced for each failed category in the
+FailureReport, with root causes derived from run artifacts.
 
-**Failure handling:** If the Debugger cannot produce a diagnosis, it generates
-a minimal FailureReport containing the raw category results. The cycle still
-proceeds to PLAN — the Planner works with whatever diagnostic information is
-available.
+**Failure handling:** If the Debugger cannot produce a diagnosis, the
+FailureReport from the gate is passed to the Planner as-is. The cycle still
+proceeds to PLAN — the Planner works with whatever diagnostic information
+is available.
 
 ---
 

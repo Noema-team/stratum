@@ -413,25 +413,19 @@ export interface GateResult {
 Aggregated result from the VALIDATION gate.
 
 ```typescript
-export interface FailedCategoryDetail {
-  name: string
-  phase: 'llm' | 'executable' | 'both'
-  llm_issues?: string[]
-  failed_tests?: string[]
-  errors?: string[]
-  metrics?: Record<string, number>
-}
-```
-Detail on one failed category within a failure report.
-
-```typescript
 export interface FailureReport {
   cycle: number
   iteration: number
-  failed_categories: FailedCategoryDetail[]
+  run_dir: string
+  run_id: string
+  quick_summary: string
+  failed_categories: string[]
+  passed_categories: string[]
 }
 ```
 Structured report injected into the next Planner iteration on gate failure.
+Carries `run_dir` pointing to the run artifact directory (not inline content).
+The context manager reads the run directory directly for Component 5.
 
 ### 6.3 — map.yaml tracked state
 
@@ -467,11 +461,14 @@ export interface AssembledContext {
   state_summary: string
   task: string
   failure_context?: string
+  knowledge_context?: string
   token_count: number
   truncated: string[]
 }
 ```
-The assembled context window for one agent invocation.
+The assembled context window for one agent invocation. `knowledge_context` is
+present only when the knowledge engine is enabled, healthy, and returns relevant
+results within token budget. See knowledge-engine.md §Context enhancement.
 
 ---
 

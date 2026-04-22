@@ -87,7 +87,7 @@ Events emitted as the DAG runner progresses through nodes within a cycle.
 ```typescript
 interface CycleStartedPayload {
   goal: string
-  depth: 'standard' | 'deep' | 'research'
+  depth: 'minimal' | 'standard' | 'deep' | 'research'
   categories_pending: string[]
   max_iterations: number
   session_id: string
@@ -290,6 +290,7 @@ envelope.
 |---|-----------|-----|-------------|---------|
 | 5.1 | `chat.message` | S→C | `ChatMessagePayload` | A message is sent in the conversation (user or facilitator) |
 | 5.2 | `chat.decision_captured` | S→C | `DecisionCapturedPayload` | A detected decision is persisted to decisions.md |
+| 5.3 | `chat.session_changed` | S→C | `ChatSessionChangedPayload` | Chat session opened or closed |
 
 ```typescript
 interface ChatMessagePayload {
@@ -310,6 +311,13 @@ interface DecisionCapturedPayload {
   decision_id: string
   path: string
   summary: string
+}
+```
+
+```typescript
+interface ChatSessionChangedPayload {
+  session_open: boolean
+  timestamp: string
 }
 ```
 
@@ -689,6 +697,7 @@ originally defined.
 | 4.4 | `action.required` | S→C | G36 (new) | Gates & actions |
 | 5.1 | `chat.message` | S→C | SLE-012 | Chat |
 | 5.2 | `chat.decision_captured` | S→C | SLE-012 | Chat |
+| 5.3 | `chat.session_changed` | S→C | SLE-012 | Chat |
 | 6.1 | `run.artifact_written` | S→C | SLE-022 | Run artifacts |
 | 6.2 | `run.manifest_ready` | S→C | SLE-022 | Run artifacts |
 | 6.3 | `run.context_pack_ready` | S→C | SLE-022 | Run artifacts |

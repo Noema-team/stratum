@@ -1507,7 +1507,7 @@ path for approval flows.
 
 #### Server-to-client events (summary)
 
-All 42 server-to-client events are fully specified in
+All 43 server-to-client events are fully specified in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 The groups are:
 
@@ -1517,7 +1517,7 @@ The groups are:
 | DAG execution | `cycle.started`, `cycle.completed`, `cycle.halted`, `cycle.iteration_started`, `node.started`, `node.completed` | 6 |
 | Validation | `validation.category.started`, `validation.category.completed`, `gate.result` | 3 |
 | Gates & actions | `approval.required`, `action.required` | 2 |
-| Chat | `chat.message`, `chat.decision_captured` | 2 |
+| Chat | `chat.message`, `chat.decision_captured`, `chat.session_changed` | 3 |
 | Run artifacts | `run.artifact_written`, `run.manifest_ready`, `run.context_pack_ready` | 3 |
 | Artifacts | `artifact.updated` | 1 |
 | Errors | `error` | 1 |
