@@ -22,3 +22,11 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-016-resolver-mode.md](ddr-016-resolver-mode.md) | Resolver mode for declared tasks |
 | [ddr-017-pre-execution-pipeline.md](ddr-017-pre-execution-pipeline.md) | Coherence gate + sharding as prerequisite |
 | [ddr-018-link-index-agent-memory.md](ddr-018-link-index-agent-memory.md) | Link index as shared agent working memory |
+| [ddr-019-designer-planner-ownership.md](ddr-019-designer-planner-ownership.md) | Designer owns requirements.md |
+| [ddr-020-state-machine-chat.md](ddr-020-state-machine-chat.md) | Chat orthogonal to system state, Facilitator with two modes |
+| [ddr-021-confirming-substate.md](ddr-021-confirming-substate.md) | Confirming is a flag on cycle record, not a state |
+| [ddr-022-critic-timing.md](ddr-022-critic-timing.md) | Critic reviews at DESIGN node |
+| [ddr-023-explore-trigger.md](ddr-023-explore-trigger.md) | User-initiated EXPLORE separate from automatic gap detection |
+| [ddr-024-beads-required-or-optional.md](ddr-024-beads-required-or-optional.md) | Local task fallback when Beads unavailable |
+| [ddr-025-artifact-slice-references.md](ddr-025-artifact-slice-references.md) | Typed prefix: doc:{key} and node:{group}:{key} |
+| [ddr-026-sharding-approval-ui.md](ddr-026-sharding-approval-ui.md) | Sharding approval as separate step before CONFIRM |
