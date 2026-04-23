@@ -8,6 +8,7 @@ Research and analysis documents for patterns worth considering in Stratum.
 | [browser-harness-architecture.md](browser-harness-architecture.md) | Architecture of browser-harness (~592 lines, CDP-based browser control) |
 | [stratum-comparative-analysis.md](stratum-comparative-analysis.md) | Hermes vs Stratum comparison, gaps identified, skills layer proposal, browser integration plan |
 | [hermes-stratum-integration.md](hermes-stratum-integration.md) | Naming discussion, 3-level Hermes integration analysis (borrow concepts, custom skill, deep runtime integration) |
+| [platform-flexibility-vision.md](platform-flexibility-vision.md) | Open-source roadmap: opinionated dev tool → configurable workflow platform |
 
 ## Key takeaways
 
