@@ -234,7 +234,7 @@ Response 200:
     "state": "idle" | "discovering" | "cycling" | "halted" | "complete",
     "active_session_id": string | null,
     "active_cycle_id": string | null,
-    "discovery_status": "none" | "in_progress" | "complete",
+    "discovery_status": "not_started" | "in_progress" | "complete",
     "iteration": number,
     "revision": number,
     "awaiting_confirmation": boolean,
@@ -262,8 +262,8 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "previous": SystemState,
-    "current": SystemState,
+    "previous": SystemStatus,
+    "current": SystemStatus,
     "cycle_id": string | null
   }
 }
@@ -275,9 +275,9 @@ Response 409:
     "code": "invalid_transition",
     "message": "Transition from {from} to {to} is not valid.",
     "details": {
-      "from": SystemState,
-      "to": SystemState,
-      "allowed": SystemState[]
+      "from": SystemStatus,
+      "to": SystemStatus,
+      "allowed": SystemStatus[]
     }
   }
 }
@@ -295,7 +295,7 @@ POST /api/v2/init
 Request:
 {
   "project_name": string,
-  "project_type": "api" | "web" | "cli" | "library" | "monorepo",
+  "project_type": "api" | "ui" | "library" | "research" | "custom",
   "task_store": "beads" | "local",
   "daemon_port": number,
   "docs_remote": string | null,
@@ -417,7 +417,7 @@ Response 409:
     "code": "session_conflict",
     "message": "System is {state}. Discovery requires idle.",
     "details": {
-      "state": SystemState
+      "state": SystemStatus
     }
   }
 }
@@ -611,7 +611,7 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "status": "none" | "in_progress" | "complete",
+    "status": "not_started" | "in_progress" | "complete",
     "session_id": string | null,
     "mode": "full" | "solo" | null,
     "current_phase": number,
@@ -648,7 +648,7 @@ Response 409:
     "code": "halt_not_discovering",
     "message": "Can only halt an active discovery session.",
     "details": {
-      "state": SystemState
+      "state": SystemStatus
     }
   }
 }
@@ -687,7 +687,7 @@ Response 409:
     "code": "session_conflict",
     "message": "A session is already active. Halt or complete before starting.",
     "details": {
-      "state": SystemState
+      "state": SystemStatus
     }
   }
 }
@@ -847,7 +847,7 @@ Response 409:
     "code": "halt_not_cycling",
     "message": "Can only halt a cycling session.",
     "details": {
-      "state": SystemState
+      "state": SystemStatus
     }
   }
 }
@@ -964,7 +964,7 @@ Response 200:
   "ok": true,
   "data": {
     "active": boolean,
-    "mode": "cycle_validation" | "task_execution" | null,
+    "mode": "cycle_validation" | "task-execution" | null,
     "total_jobs": number,
     "completed_jobs": number,
     "failed_jobs": number,
@@ -973,10 +973,10 @@ Response 200:
       "idle": number,
       "busy": number
     },
-    "current_sub_phase": "static_check" | "llm_check" | "exec_check" | null,
+    "current_sub_phase": "static-check" | "llm-check" | "exec-check" | null,
     "category_progress": Record<string, {
-      "llm_check": "pending" | "running" | "completed" | "failed" | "skipped",
-      "exec_check": "pending" | "running" | "completed" | "failed" | "skipped"
+      "llm-check": "pending" | "running" | "completed" | "failed" | "skipped",
+      "exec-check": "pending" | "running" | "completed" | "failed" | "skipped"
     }>
   }
 }
@@ -994,10 +994,10 @@ Response 200:
   "ok": true,
   "data": {
     "job_id": string,
-    "type": "static_check" | "llm_check" | "exec_check" | "task_execution",
+    "type": "static-check" | "llm-check" | "exec-check" | "task-execution",
     "status": "queued" | "running" | "completed" | "failed" | "timed_out",
     "category": string | null,
-    "sub_phase": "static_check" | "llm_check" | "exec_check" | null,
+    "sub_phase": "static-check" | "llm-check" | "exec-check" | null,
     "created_at": string,
     "started_at": string | null,
     "completed_at": string | null,
@@ -1480,7 +1480,7 @@ Full task store internals (BeadsTaskStore, LocalTaskStore, stale claim recovery)
 ### WebSocket events
 
 The daemon emits events over `ws://localhost:7700/events`. The full event
-catalogue (42 server-to-client events across 12 groups) is defined in
+catalogue (57 server-to-client events across 14 groups) is defined in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 
 #### Client-to-daemon commands (WebSocket)
@@ -1507,7 +1507,7 @@ path for approval flows.
 
 #### Server-to-client events (summary)
 
-All 43 server-to-client events are fully specified in
+All 57 server-to-client events are fully specified in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 The groups are:
 

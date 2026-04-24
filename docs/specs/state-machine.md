@@ -25,7 +25,7 @@ session type can begin.
 ### System state
 
 ```
-type SystemState =
+type SystemStatus =
   | "idle"
   | "discovering"
   | "cycling"
@@ -74,10 +74,10 @@ mode does not replace decision mode.
 
 ```
 type StateContext = {
-  state:                SystemState
+  state:                SystemStatus
   active_session_id:    string | null
   active_cycle_id:      string | null
-  discovery_status:     "none" | "in_progress" | "complete"
+  discovery_status:     "not_started" | "in_progress" | "complete"
   iteration:            number
   revision:             number
 }
@@ -98,19 +98,19 @@ Populated from `map.yaml` on every daemon tick. Exposed via the status API.
                  │           │           │                        │
                  ▼           ▼           ▼                        │
           ┌────────────┐          ┌────────────┐                  │
-          │discovering │          │  cycling   │                  │
-          └─────┬──────┘          └──┬─┬─┬─────┘                  │
-                │                    │ │ │                        │
+          │discovering │          │  cycling   │◄─┐               │
+          └─────┬──────┘          └──┬─┬─┬─────┘  │ T12 (resume)  │
+                │                    │ │ │        │               │
                 │           ┌────────┘ │ └──────────┐             │
                 │           │          │            │             │
                 │           ▼          ▼            ▼             │
                 │    ┌──────────┐ ┌────────┐ ┌──────────┐        │
                 │    │ halted   │ │complete│ │(remains   │        │
                 │    └────┬─────┘ └───┬────┘ │ cycling)  │        │
-                │         │           │      │ via flag   │        │
-                │         │           │      └───────────┘        │
-                │         │           │                           │
-                └─────────┴───────────┴───────────────────────────┘
+                │         │  T12        │      │ via flag   │      │
+                │         └──► cycling  │      └───────────┘       │
+                │              (see ↑)  │                          │
+                └─────────┴────────────┴──────────────────────────┘
 
    Flag-based pauses (state stays "cycling"):
    ┌────────────────────────────┬──────────────────────────────────┐
@@ -142,6 +142,7 @@ Populated from `map.yaml` on every daemon tick. Exposed via the status API.
 | T9 | `complete` | `idle` | Snapshot acknowledgement (automatic after lock) | Snapshot is locked | Clear `active_cycle_id`, persist versioned artifacts |
 | T10 | `halted` | `idle` | User acknowledges halt report | Halt report has been read | Clear `active_cycle_id` |
 | T11 | `idle` | `cycling` | `sle start "intent"` with `--force` | None (skips discovery check) | Same as T3 but no discovery guard |
+| T12 | `halted` | `cycling` | `sle resume` | Halted state, user confirmation | Resume keeps cycle context. Iteration count preserved. |
 
 ### Intra-cycle transitions (flag-based, state stays `cycling`)
 
@@ -189,10 +190,10 @@ GET /api/v2/system/state
 
 Response 200:
 {
-  "state":               SystemState,
+  "state":               SystemStatus,
   "active_session_id":   string | null,
   "active_cycle_id":     string | null,
-  "discovery_status":    "none" | "in_progress" | "complete",
+  "discovery_status":    "not_started" | "in_progress" | "complete",
   "iteration":           number,
   "revision":            number,
   "awaiting_confirmation":      boolean,
@@ -210,23 +211,23 @@ POST /api/v2/system/state/transition
 
 Request:
 {
-  "target":     SystemState,
+  "target":     SystemStatus,
   "trigger":    string,
   "payload":    object | null
 }
 
 Response 200:
 {
-  "previous":  SystemState,
-  "current":   SystemState,
+  "previous":  SystemStatus,
+  "current":   SystemStatus,
   "cycle_id":  string | null
 }
 
 Response 409:
 {
   "error":     "invalid_transition",
-  "from":      SystemState,
-  "to":        SystemState,
+  "from":      SystemStatus,
+  "to":        SystemStatus,
   "reason":    string
 }
 ```
@@ -269,8 +270,8 @@ Response 200:
 ```
 event: state.changed
 {
-  "previous":      SystemState,
-  "current":       SystemState,
+  "previous":      SystemStatus,
+  "current":       SystemStatus,
   "trigger":       string,
   "timestamp":     string
 }
@@ -311,16 +312,16 @@ event: chat.session_changed
    at all times. There is no "between states" condition. Every transition is
    atomic — `map.yaml` is updated in a single write.
 
-2. **Idle gateway.** Only `idle` can transition to `discovering` or `cycling`.
-   A session or cycle must fully resolve (reach `complete`, `halted`, or
-   `idle`) before a new one can start.
+2. **Idle gateway.** Only `idle` can transition to `discovering`. Only `idle`
+   or `halted` can transition to `cycling`. A session or cycle must fully
+   resolve (reach `complete`, `halted`, or `idle`) before a new one can start.
 
 3. **Discovery guard.** Transition T3 (`idle` → `cycling`) requires
    `discovery_status = complete` unless `--force` is set. Transition T11
    bypasses this guard.
 
 4. **Chat independence.** `chat.session_open` may be `true` in any state.
-   Transitions T1–T11 proceed regardless of chat state. Chat never blocks,
+   Transitions T1–T12 proceed regardless of chat state. Chat never blocks,
    delays, or cancels a state transition.
 
 5. **Flag exclusivity.** At most one of `awaiting_confirmation` and
@@ -345,9 +346,9 @@ event: chat.session_changed
    singular, not arrays.
 
 10. **Terminal state liveness.** `halted` and `complete` are terminal only for
-    the active cycle — they must transition to `idle` (T9, T10) before new
-    work can begin. The daemon does not stay in `halted` or `complete`
-    indefinitely.
+    the active cycle — they must transition to `idle` (T9, T10) or resume to
+    `cycling` (T12) before new work can begin. The daemon does not stay in
+    `halted` or `complete` indefinitely.
 
 11. **Deterministic validation gate.** The VALIDATION gate is a pure function
     of category results. It does not consult LLM, user input, or external
