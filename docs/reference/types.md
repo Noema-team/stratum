@@ -31,12 +31,12 @@ export type SystemStatus = 'idle' | 'discovering' | 'cycling' | 'halted' | 'comp
 ⚡ **DDR-020, DDR-021.** `chatting` removed (orthogonal session layer); `confirming` removed (flag on cycle record). Was `'idle' | 'running' | 'awaiting_approval' | 'halted'` in init-specs.
 
 ```typescript
-export type CycleOutcome = 'running' | 'completed' | 'halted'
+export type CycleOutcome = 'cycling' | 'completed' | 'halted'
 ```
 ⚡ **DDR-020, DDR-021.** `awaiting_approval` removed; approval waiting is expressed via `cycle.awaiting_confirmation` flag. Aligns with SLE-024 §5 naming (G18).
 
 ```typescript
-export type DiscoveryStatus = 'not_started' | 'complete'
+export type DiscoveryStatus = 'not_started' | 'in_progress' | 'complete'
 ```
 Whether a discovery session has been run for this project.
 
@@ -123,6 +123,11 @@ export type ContextAssemblyMode = 'declared' | 'inferred'
 How the context manager assembles slices. `declared` uses Beads task declarations; `inferred` uses role-based defaults.
 
 ```typescript
+export type SubPhase = 'static-check' | 'llm-check' | 'exec-check'
+```
+Validation sub-phase identifiers. Execution order is fixed: `static-check` → `llm-check` → `exec-check`.
+
+```typescript
 export type OpenQuestionBlocking = `phase:${number}` | 'not_blocking'
 ```
 Whether an open question blocks a specific discovery phase.
@@ -166,16 +171,34 @@ LLM provider settings for a single agent role.
 
 ```typescript
 export interface AgentRoleConfig {
-  role: AgentRole
-  system_prompt: string
+  active: boolean
+  node: string | null
   llm: AgentLLMConfig
+  temperature: number
+  max_tokens: number
+  system_prompt: string
+  artifact_slice: string[]
+  outputs: string[]
+  conditional: boolean
+  condition?: string
+  constraints?: string[]
+  append_only?: boolean
+  session_types?: string[]
+  trigger_node?: string
 }
 ```
 Configuration for one agent role in `agents.yaml`.
 
 ```typescript
 export interface AgentsConfig {
-  agents: AgentRoleConfig[]
+  defaults: {
+    llm: AgentLLMConfig
+    temperature: number
+    max_tokens: number
+    system_prompt_root: string
+  }
+  providers: Record<string, AgentLLMConfig>
+  agents: Record<string, AgentRoleConfig>
 }
 ```
 Top-level agents configuration. No duplicate roles; `planner` is required.
@@ -207,14 +230,14 @@ Output from a single agent invocation.
 |------|-------|--------|
 | Designer | Discovery docs + intent + prior architecture + decisions | `architecture.md`, `requirements.md` |
 | Explorer | Intent + discovery docs + prior evaluation | Research findings, spike results |
-| Planner | `architecture.md` + `requirements.md` + decisions (last 3) + evaluation | `test-plan.md`, `plan.md` |
+| Planner | `architecture.md` + `requirements.md` + decisions (last 3) + evaluation | `test-plan.md`, `plan.md`, `build-plan.md` (deep/research only) |
 | Tester | `requirements.md` + `test-plan.md` | Executable test scripts |
-| Builder | `requirements.md` + `architecture.md` + `test-plan.md` | Implementation + instrumented test scripts |
+| Builder | `requirements.md` + `architecture.md` + `test-plan.md` + `plan.md` (deep+) + `build-plan.md` (deep+) | Implementation + instrumented test scripts |
 | Debugger | Run artifacts + failed category slices | Root-cause diagnosis |
 | Evaluator | `requirements.md` + `evaluation.md` + `test-plan.md` + run artifacts | Structured verdict |
 | Critic | `architecture.md` + `evaluation.md` | Blocking issues / warnings |
 | Historian | `decisions.md` (full, append target) | Audit entry |
-| Facilitator | Project context + cycle context (mode-dependent) | Decisions captured to `decisions.md` |
+| Facilitator | Project context + cycle context (mode-dependent) | Triggers: Decision captures (written by Historian) |
 
 ---
 
@@ -225,9 +248,11 @@ export enum DAGNode {
   INTENT = 'INTENT',
   CONTEXT_ASSEMBLY = 'CONTEXT_ASSEMBLY',
   EXPLORE = 'EXPLORE',
+  CRITIQUE = 'CRITIQUE',
   DESIGN = 'DESIGN',
   PLAN = 'PLAN',
   TEST = 'TEST',
+  SHARDING_APPROVAL = 'SHARDING_APPROVAL',
   CONFIRM = 'CONFIRM',
   BUILD = 'BUILD',
   HISTORY = 'HISTORY',
@@ -255,7 +280,7 @@ Current position and history of the DAG runner.
 ```typescript
 export interface DAGEvent {
   node: DAGNode
-  type: 'enter' | 'exit' | 'error'
+  type: 'enter' | 'exit' | 'error' | 'skip'
   timestamp: string
   data?: unknown
 }
@@ -372,7 +397,54 @@ export interface ValidationRuleCategory {
 A single validation category definition in `validation.yaml`.
 
 ```typescript
+export interface StaticAnalysisCheck {
+  command: string
+  enabled: boolean
+  pass_criteria: Record<string, number>
+}
+
+export interface StaticAnalysisConfig {
+  lint: StaticAnalysisCheck
+  typecheck: StaticAnalysisCheck
+  complexity: StaticAnalysisCheck
+}
+```
+
+```typescript
+export interface StaticAnalysisResult {
+  lint: {
+    errors: number
+    warnings: number
+    output: string
+  }
+  typecheck: {
+    errors: number
+    output: string
+  }
+  complexity: {
+    files_over_threshold: Array<{
+      file: string
+      complexity: number
+      threshold: number
+    }>
+    max: number
+  }
+  passed: boolean
+}
+```
+
+```typescript
+export interface ContainerConfig {
+  base_image: string
+  install_command: string
+  timeout_ms: number
+}
+```
+
+```typescript
 export interface ValidationConfig {
+  static_analysis: StaticAnalysisConfig
+  container: ContainerConfig
   categories: ValidationRuleCategory[]
 }
 ```
@@ -405,7 +477,8 @@ Result from running one validation category.
 ```typescript
 export interface GateResult {
   passed: boolean
-  categories: CategoryResult[]
+  category_results: CategoryResult[]
+  static_analysis: StaticAnalysisResult
   failed_categories: string[]
   failure_report?: FailureReport
 }
@@ -696,6 +769,7 @@ export interface TaskStore {
   updateStatus(id: string, status: SLETask['status']): Promise<void>
   closeTask(id: string): Promise<void>
   getStale(): Promise<SLETask[]>
+  addDependency(taskId: string, dependencyTaskId: string): Promise<void>
 }
 ```
 ⚡ **DDR-024.** Provider interface for task persistence. Two implementations: `BeadsTaskStore` (delegates to `bd` CLI) and `LocalTaskStore` (reads/writes `.sle/tasks.yaml`).
@@ -792,7 +866,27 @@ const ValidationCategorySchema = z.object({
   { message: 'llm config required when method includes llm' },
 )
 
+const StaticAnalysisCheckSchema = z.object({
+  command: z.string().min(1),
+  enabled: z.boolean(),
+  pass_criteria: z.record(z.string(), z.number()),
+})
+
+const StaticAnalysisConfigSchema = z.object({
+  lint: StaticAnalysisCheckSchema,
+  typecheck: StaticAnalysisCheckSchema,
+  complexity: StaticAnalysisCheckSchema,
+})
+
+const ContainerConfigSchema = z.object({
+  base_image: z.string().min(1),
+  install_command: z.string().min(1),
+  timeout_ms: z.number().int().min(1000),
+})
+
 export const ValidationSchema = z.object({
+  static_analysis: StaticAnalysisConfigSchema,
+  container: ContainerConfigSchema,
   categories: z.array(ValidationCategorySchema).min(1),
 })
 ```
@@ -877,21 +971,33 @@ const AgentLLMConfigSchema = z.object({
 })
 
 const AgentRoleConfigSchema = z.object({
-  role: AgentRoleEnum,
-  system_prompt: z.string().min(1),
+  active: z.boolean(),
+  node: z.string().nullable(),
   llm: AgentLLMConfigSchema,
+  temperature: z.number(),
+  max_tokens: z.number().int(),
+  system_prompt: z.string().min(1),
+  artifact_slice: z.array(z.string().min(1)),
+  outputs: z.array(z.string().min(1)),
+  conditional: z.boolean(),
+  condition: z.string().optional(),
+  constraints: z.array(z.string().min(1)).optional(),
+  append_only: z.boolean().optional(),
+  session_types: z.array(z.string().min(1)).optional(),
+  trigger_node: z.string().optional(),
 })
 
 export const AgentsSchema = z.object({
-  agents: z.array(AgentRoleConfigSchema).min(1),
+  defaults: z.object({
+    llm: AgentLLMConfigSchema,
+    temperature: z.number(),
+    max_tokens: z.number().int(),
+    system_prompt_root: z.string().min(1),
+  }),
+  providers: z.record(z.string(), AgentLLMConfigSchema),
+  agents: z.record(AgentRoleEnum, AgentRoleConfigSchema),
 }).refine(
-  (data) => {
-    const roles = data.agents.map(a => a.role)
-    return new Set(roles).size === roles.length
-  },
-  { message: 'duplicate agent roles not allowed' },
-).refine(
-  (data) => data.agents.some(a => a.role === 'planner'),
+  (data) => 'planner' in data.agents,
   { message: 'planner agent role is required' },
 )
 ```
