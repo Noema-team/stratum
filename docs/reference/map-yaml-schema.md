@@ -23,6 +23,8 @@ never merged.
 | `cycle.current_node` | G31 | G31 |
 | `cycle.roles_completed` | G31 | G31 |
 | `artifacts.files[*].scope` | DDR-025 | G30 |
+| `chat` | DDR-020 | 4.4.1 |
+| `cycle.last_run` | DDR-022 | 4.4.2 |
 
 ---
 
@@ -191,7 +193,7 @@ artifacts:
       last_updated: "2026-04-17T09:55:00Z"
       dirty: false
 
-    build_plan:
+    build-plan:
       path: "docs/build-plan.md"
       generator: planner
       scope: project
@@ -339,6 +341,12 @@ interfaces:
     vault_path: "~/notes/my-project"
 
 
+chat:
+  session_open: false
+  session_id: null
+  mode: freeform
+
+
 cycle:
   number: 4
   iteration: 1
@@ -392,6 +400,13 @@ cycle:
   last_summary:
     path: "reports/summary-v0.4.0.md"
     generated_at: "2026-04-17T09:58:00Z"
+
+  last_run:
+    run_id: "run-20260417-001"
+    started_at: "2026-04-17T09:00:00Z"
+    completed_at: "2026-04-17T09:58:00Z"
+    iteration_count: 1
+    outcome: completed
 
 
 graph:
@@ -668,6 +683,24 @@ All interfaces except `daemon` are optional.
 
 ---
 
+### `chat`
+
+Orthogonal chat session state (DDR-020). Chat is not a system state — it
+operates independently of the cycle DAG. Multiple chat sessions may occur
+within a single cycle, or outside of any cycle entirely.
+
+| Field | Type | Description |
+|---|---|---|
+| `session_open` | boolean | Whether a chat session is currently active |
+| `session_id` | string \| null | Unique session identifier (null when no session) |
+| `mode` | enum | `freeform` · `decision` |
+
+In `freeform` mode the user chats with the Facilitator without constraint.
+In `decision` mode the Facilitator presents options and records a structured
+choice (used by approval gates).
+
+---
+
 ### `cycle`
 
 The core cycle state section. Updated after every node completion for crash
@@ -727,6 +760,16 @@ resumes at `current_node`.
 |---|---|---|
 | `last_summary.path` | string | Path to the cycle summary document |
 | `last_summary.generated_at` | ISO 8601 | When the summary was generated |
+
+**Last run record:**
+
+| Field | Type | Description |
+|---|---|---|
+| `last_run.run_id` | string | Unique identifier for the most recent run |
+| `last_run.started_at` | ISO 8601 | When the run started |
+| `last_run.completed_at` | ISO 8601 | When the run completed |
+| `last_run.iteration_count` | integer | Number of iterations in this run |
+| `last_run.outcome` | CycleOutcome | Final outcome of the run |
 
 ---
 
@@ -828,6 +871,9 @@ previous version. Fields that update automatically:
 - `validation.gate.last_outcome`
 - `validation.gate.failed_categories`
 - `cycle.*`
+- `chat.session_open`
+- `chat.session_id`
+- `chat.mode`
 - `graph.groups[*].completed`
 - `graph.link_count`
 - `graph.last_rebuilt_at`
@@ -866,6 +912,14 @@ At `sle init`, the following sections start empty or at zero:
 | `cycle.nodes_completed` | `[]` |
 | `cycle.current_node` | `null` |
 | `cycle.roles_completed` | `[]` |
+| `cycle.last_run.run_id` | `null` |
+| `cycle.last_run.started_at` | `null` |
+| `cycle.last_run.completed_at` | `null` |
+| `cycle.last_run.iteration_count` | `0` |
+| `cycle.last_run.outcome` | `null` |
+| `chat.session_open` | `false` |
+| `chat.session_id` | `null` |
+| `chat.mode` | `freeform` |
 | `graph.groups` | `[]` |
 | `graph.layers` | `[]` |
 | `history` | `[]` |

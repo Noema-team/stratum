@@ -837,7 +837,7 @@ const PassCriteriaSchema = z.object({
     z.string().regex(/^threshold:\d+$/),
     z.record(z.string(), z.number()),
   ]).optional(),
-  llm: z.enum(['verdict_pass']).optional(),
+  llm: z.string().optional(),
 })
 
 const OnFailSchema = z.object({

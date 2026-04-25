@@ -271,7 +271,7 @@ artifacts:
     append_only: false
     format: markdown
 
-  - id: build_plan
+  - id: build-plan
     path: docs/build-plan.md
     generator: planner
     required: false

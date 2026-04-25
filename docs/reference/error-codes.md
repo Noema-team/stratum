@@ -569,10 +569,12 @@ Which errors can fire at each node in the cycle DAG.
 | INTENT | E014, E008 |
 | CONTEXT ASSEMBLY | E030, E031, E032, E033, E034 |
 | EXPLORE | E053, E054, E055, E068, E040, E044 |
-| DESIGN | E050, E051, E052, E061, E040, E044, E047 |
+| DESIGN | E050, E051, E052, E040, E044, E047 |
+| CRITIQUE | E061, E040, E044 |
 | PLAN | E062, E040, E044, E047 |
 | TEST | E056, E057, E040, E044, E046 |
 | CONFIRM GATE | E028, E029, E019 |
+| SHARDING_APPROVAL | E028, E029 |
 | BUILD | E063, E067, E040, E044, E046 |
 | HISTORY | E064, E013 |
 | EXEC | E020, E021, E022, E023, E025, E026 |
@@ -591,8 +593,8 @@ nodes that produce them are depth-conditional.
 
 | Depth | Active roles | Additional error codes |
 |---|---|---|
-| `minimal` | Planner, Tester, Builder, Historian, Evaluator | — |
-| `standard` | + Designer | E050, E051, E052 |
+| `minimal` | Designer, Planner, Tester, Builder, Historian, Evaluator | — |
+| `standard` | — | E050, E051, E052 |
 | `deep` | + Critic, + Explorer (conditional) | E053–E055, E061, E068 |
 | `research` | + Critic (multi-pass), + Explorer | Same as `deep`, with additional Critic and Explorer retry paths |
 
@@ -665,7 +667,7 @@ the FailureReport as follows:
 | E023 | `fail_reason: "invalid_output"`, raw stdout included |
 | E024 | Category omitted from report (not a failure, a configuration error) |
 | E025 | `fail_reason: "container_failure"`, Docker error included |
-| E026 | `fail_reason: "static_check"`, specific violations listed |
+| E026 | `fail_reason: "static-check"`, specific violations listed |
 | E041 | `fail_reason: "invalid_response"`, confidence: 0.0 |
 | E042 | `fail_reason: "confidence_below_threshold"`, actual confidence included |
 

@@ -83,6 +83,10 @@ Events emitted as the DAG runner progresses through nodes within a cycle.
 | 2.4 | `cycle.iteration_started` | S→C | `IterationStartedPayload` | New iteration begins within a cycle |
 | 2.5 | `node.started` | S→C | `NodeStartedPayload` | A DAG node begins execution |
 | 2.6 | `node.completed` | S→C | `NodeCompletedPayload` | A DAG node finishes execution |
+| 2.7 | `cycle.flag_changed` | S→C | `CycleFlagChangedPayload` | A cycle-level flag is toggled |
+| 2.8 | `dag.confirm_requested` | S→C | `DagConfirmRequestedPayload` | DAG requests user confirmation |
+| 2.9 | `dag.sharding_requested` | S→C | `DagShardingRequestedPayload` | DAG requests sharding approval |
+| 2.10 | `dag.snapshot_locked` | S→C | `DagSnapshotLockedPayload` | Version snapshot locked after cycle |
 
 ```typescript
 interface CycleStartedPayload {
@@ -124,6 +128,32 @@ interface NodeCompletedPayload {
   duration_ms: number
   artifact_ids_written?: string[]
   error?: string
+}
+
+interface CycleFlagChangedPayload {
+  cycle_id: string
+  flag: string
+  value: boolean
+  timestamp: string
+}
+
+interface DagConfirmRequestedPayload {
+  cycle_id: string
+  revision: number
+  plan_summary: { step_count: number; test_count: number; coverage_pct: number }
+  timestamp: string
+}
+
+interface DagShardingRequestedPayload {
+  cycle_id: string
+  task_count: number
+  timestamp: string
+}
+
+interface DagSnapshotLockedPayload {
+  cycle_id: string
+  version_id: string
+  timestamp: string
 }
 ```
 
@@ -558,7 +588,7 @@ interface DispatchStartedPayload {
   cycle_id: string
   dispatch_id: string
   total_jobs: number
-  mode: 'cycle_validation' | 'task_execution'
+  mode: 'cycle_validation' | 'task-execution'
 }
 ```
 
@@ -672,6 +702,110 @@ interface TaskStoreSyncPayload {
 
 ---
 
+## 13. Document linking
+
+Events from the document linking subsystem. Emitted when links between documents
+are created, deleted, or when the link index is rebuilt.
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 13.1 | `link.created` | S→C | `LinkCreatedPayload` | A new link is established |
+| 13.2 | `link.deleted` | S→C | `LinkDeletedPayload` | An existing link is removed |
+| 13.3 | `link.index_rebuilt` | S→C | `LinkIndexRebuiltPayload` | Full link index is rebuilt |
+| 13.4 | `link.index_updated` | S→C | `LinkIndexUpdatedPayload` | Incremental link index update |
+| 13.5 | `link.file_updated` | S→C | `LinkFileUpdatedPayload` | A file's links are re-extracted |
+
+```typescript
+interface LinkCreatedPayload {
+  link_id: string
+  source: { doc: string; heading?: string }
+  target: { doc: string; heading?: string }
+  link_type: string
+  timestamp: string
+}
+
+interface LinkDeletedPayload {
+  link_id: string
+  source: { doc: string; heading?: string }
+  target: { doc: string; heading?: string }
+  timestamp: string
+}
+
+interface LinkIndexRebuiltPayload {
+  link_count: number
+  file_count: number
+  duration_ms: number
+  timestamp: string
+}
+
+interface LinkIndexUpdatedPayload {
+  added: number
+  removed: number
+  timestamp: string
+}
+
+interface LinkFileUpdatedPayload {
+  path: string
+  affected_backlinks: number
+  timestamp: string
+}
+```
+
+---
+
+## 14. Content & modules
+
+Events from the content storage and module execution subsystems.
+
+| # | Event name | Dir | Payload type | Trigger |
+|---|-----------|-----|-------------|---------|
+| 14.1 | `content.written` | S→C | `ContentWrittenPayload` | Content written to a graph node |
+| 14.2 | `content.deleted` | S→C | `ContentDeletedPayload` | Content removed from a node |
+| 14.3 | `module.triggered` | S→C | `ModuleTriggeredPayload` | Processing module begins execution |
+| 14.4 | `module.completed` | S→C | `ModuleCompletedPayload` | Processing module finishes successfully |
+| 14.5 | `module.failed` | S→C | `ModuleFailedPayload` | Processing module fails |
+| 14.6 | `module.registered` | S→C | `ModuleRegisteredPayload` | New module registered with daemon |
+
+```typescript
+interface ContentWrittenPayload {
+  node_id: string
+  format: string
+  size_bytes: number
+  checksum: string
+}
+
+interface ContentDeletedPayload {
+  node_id: string
+}
+
+interface ModuleTriggeredPayload {
+  module_id: string
+  trigger_type: string
+  node_count: number
+}
+
+interface ModuleCompletedPayload {
+  module_id: string
+  annotations: number
+  derived_nodes: number
+  duration_ms: number
+}
+
+interface ModuleFailedPayload {
+  module_id: string
+  error_code: string
+  message: string
+}
+
+interface ModuleRegisteredPayload {
+  module_id: string
+  layer: string
+  enabled: boolean
+}
+```
+
+---
+
 ## Summary table
 
 All events at a glance. The "Source" column indicates where the event was
@@ -727,10 +861,25 @@ originally defined.
 | 12.3 | `task.comment_added` | S→C | SLE-006 | Task / store |
 | 12.4 | `task.stale_detected` | S→C | SLE-006 | Task / store |
 | 12.5 | `task_store.sync` | S→C | SLE-006 | Task / store |
+| 2.7 | `cycle.flag_changed` | S→C | SLE-005 | DAG execution |
+| 2.8 | `dag.confirm_requested` | S→C | SLE-005 | DAG execution |
+| 2.9 | `dag.sharding_requested` | S→C | SLE-019 | DAG execution |
+| 2.10 | `dag.snapshot_locked` | S→C | SLE-005 | DAG execution |
+| 13.1 | `link.created` | S→C | SLE-025 | Document linking |
+| 13.2 | `link.deleted` | S→C | SLE-025 | Document linking |
+| 13.3 | `link.index_rebuilt` | S→C | SLE-025 | Document linking |
+| 13.4 | `link.index_updated` | S→C | SLE-025 | Document linking |
+| 13.5 | `link.file_updated` | S→C | SLE-025 | Document linking |
+| 14.1 | `content.written` | S→C | SLE-024 | Content & modules |
+| 14.2 | `content.deleted` | S→C | SLE-024 | Content & modules |
+| 14.3 | `module.triggered` | S→C | SLE-024 | Content & modules |
+| 14.4 | `module.completed` | S→C | SLE-024 | Content & modules |
+| 14.5 | `module.failed` | S→C | SLE-024 | Content & modules |
+| 14.6 | `module.registered` | S→C | SLE-024 | Content & modules |
 
-**Totals:** 47 events (42 server→client, 3 client→server, 2 additional server→client alongside existing gate events).
+**Totals:** 62 events (57 server→client, 3 client→server, 2 additional server→client alongside existing gate events).
 
-**New events (Phase 4):** 24 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), and task/store (§12).
+**New events (Phase 4):** 39 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), task/store (§12), DAG control (§2), document linking (§13), and content/modules (§14).
 
 **Prior events:** 23 events from Phases 1–3 (§1–§8).
 
