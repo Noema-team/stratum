@@ -127,7 +127,7 @@ agents:
     system_prompt: ".sle/prompts/tester.md"
     artifact_slice:
       - doc:requirements
-      - doc:test_plan
+      - doc:test-plan
     outputs:
       - scripts/test_{category}.ts
     conditional: false
@@ -145,7 +145,7 @@ agents:
     artifact_slice:
       - doc:requirements
       - doc:architecture
-      - doc:test_plan
+      - doc:test-plan
     outputs:
       - src/**
       - scripts/test_{category}.ts
@@ -161,7 +161,7 @@ agents:
     system_prompt: ".sle/prompts/debugger.md"
     artifact_slice:
       - doc:requirements
-      - doc:test_plan
+      - doc:test-plan
     outputs:
       - debug:diagnosis
       - debug:fix_recommendation
@@ -179,7 +179,7 @@ agents:
     artifact_slice:
       - doc:requirements
       - doc:evaluation
-      - doc:test_plan
+      - doc:test-plan
     outputs:
       - doc:evaluation
     conditional: false
@@ -233,7 +233,7 @@ agents:
     artifact_slice:
       - doc:requirements
       - doc:architecture
-      - doc:test_plan
+      - doc:test-plan
       - doc:decisions
     outputs:
       - discovery:product_brief
@@ -329,13 +329,13 @@ Per-role configuration. Each key is one of the 10 agent roles.
 | **Designer** | `design` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | requirements, architecture | Owns architecture + requirements (DDR-019). Critic reviews output (DDR-022). |
 | **Explorer** | `explore` | 0.5 | 8000 | requirements, evaluation, decisions | research_findings | User-initiated only (DDR-023). Disabled by default. |
 | **Planner** | `plan` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | test-plan, plan, build-plan (deep/research) | Consumes Designer output (DDR-019). |
-| **Tester** | `test` | 0.1 | 8000 | requirements, test_plan | test scripts | TDD separation: never sees Builder output. |
-| **Builder** | `build` | 0.2 | 16000 | requirements, architecture, test_plan | implementation, test scripts | Highest token budget. Test scripts as contract. |
-| **Debugger** | `debug` | 0.2 | 8000 | requirements, test_plan | diagnosis, fix_recommendation | Only on gate failure. Diagnoses only — never plans or builds. |
-| **Evaluator** | `evaluate` | 0.1 | 4000 | requirements, evaluation, test_plan | evaluation | Structured verdict post-execution. |
+| **Tester** | `test` | 0.1 | 8000 | requirements, test-plan | test scripts | TDD separation: never sees Builder output. |
+| **Builder** | `build` | 0.2 | 16000 | requirements, architecture, test-plan | implementation, test scripts | Highest token budget. Test scripts as contract. |
+| **Debugger** | `debug` | 0.2 | 8000 | requirements, test-plan | diagnosis, fix_recommendation | Only on gate failure. Diagnoses only — never plans or builds. |
+| **Evaluator** | `evaluate` | 0.1 | 4000 | requirements, evaluation, test-plan | evaluation | Structured verdict post-execution. |
 | **Critic** | `critique` | 0.5 | 4000 | architecture, requirements, evaluation | verdict, issues, suggestions | At DESIGN node (DDR-022). Only at deep/research depth. |
 | **Historian** | `history` | 0.1 | 2000 | decisions | decisions | Append-only. Runs after every agent turn. |
-| **Facilitator** | null | 0.4 | 4000 | requirements, architecture, test_plan, decisions | 8 discovery docs | Discovery + chat only. Never builds. |
+| **Facilitator** | null | 0.4 | 4000 | requirements, architecture, test-plan, decisions | 8 discovery docs | Discovery + chat only. Never builds. |
 
 ---
 

@@ -146,7 +146,7 @@ artifacts:
   files:
     requirements:
       path: "docs/requirements.md"
-      generator: planner
+      generator: designer
       scope: project
       required: true
       last_updated: "2026-04-17T09:50:00Z"
@@ -168,7 +168,7 @@ artifacts:
       last_updated: null
       dirty: false
 
-    test_plan:
+    test-plan:
       path: "docs/test-plan.md"
       generator: planner
       scope: project
@@ -290,16 +290,16 @@ context:
 
     tester:
       - "doc:requirements"
-      - "doc:test_plan"
+      - "doc:test-plan"
 
     builder:
       - "doc:requirements"
       - "doc:architecture"
-      - "doc:test_plan"
+      - "doc:test-plan"
 
     debugger:
       - "doc:requirements"
-      - "doc:test_plan"
+      - "doc:test-plan"
 
     historian:
       - "doc:decisions"
@@ -307,7 +307,7 @@ context:
     evaluator:
       - "doc:requirements"
       - "doc:evaluation"
-      - "doc:test_plan"
+      - "doc:test-plan"
 
     critic:
       - "doc:architecture"
@@ -316,7 +316,7 @@ context:
     facilitator:
       - "doc:requirements"
       - "doc:architecture"
-      - "doc:test_plan"
+      - "doc:test-plan"
       - "doc:decisions"
 
 

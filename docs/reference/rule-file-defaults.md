@@ -238,19 +238,19 @@ Identical across all project types. Variance comes from `validation.yaml` contro
 artifacts:
   - id: requirements              # string
     path: docs/requirements.md    # string (relative path)
-    generator: planner            # planner | builder | historian | evaluator | critic | facilitator | discovery
+    generator: designer           # designer | explorer | planner | tester | builder | debugger | historian | evaluator | critic | facilitator | discovery
     required: true                # boolean
     append_only: false            # boolean
     format: markdown              # markdown | json | yaml
 
   - id: architecture
     path: docs/architecture.md
-    generator: planner
+    generator: designer
     required: true
     append_only: false
     format: markdown
 
-  - id: test_plan
+  - id: test-plan
     path: docs/test-plan.md
     generator: planner
     required: true
