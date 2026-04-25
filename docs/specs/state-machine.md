@@ -268,7 +268,7 @@ Response 200:
 ### WebSocket events
 
 ```
-event: state.changed
+event: system.state_changed
 {
   "previous":      SystemStatus,
   "current":       SystemStatus,

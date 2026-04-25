@@ -784,7 +784,7 @@ from the previous run are preserved (category caching applies).
 | `run.category_completed` | `cycle_id, run_id, category, passed, timestamp` | Each category finishes |
 | `run.manifest_ready` | `cycle_id, run_id, manifest` | Manifest written |
 | `run.context_pack_ready` | `cycle_id, run_id` | Context pack written |
-| `dag.gate_result` | `cycle_id, passed, failed_categories, iteration, timestamp` | Gate evaluates |
+| `gate.result` | `cycle_id, passed, failed_categories, iteration, timestamp` | Gate evaluates |
 
 Full event catalogue: [../reference/websocket-events.md](../reference/websocket-events.md).
 

@@ -614,7 +614,7 @@ Response 200:
 ### WebSocket events
 
 ```
-event: dag.node_entered
+event: node.started
 {
   "cycle_id":  string,
   "node":      DAGNode,
@@ -623,7 +623,7 @@ event: dag.node_entered
   "timestamp": string
 }
 
-event: dag.node_exited
+event: node.completed
 {
   "cycle_id":  string,
   "node":      DAGNode,
@@ -632,7 +632,7 @@ event: dag.node_exited
   "timestamp": string
 }
 
-event: dag.gate_result
+event: gate.result
 {
   "cycle_id":    string,
   "gate":        "VALIDATION_GATE",
