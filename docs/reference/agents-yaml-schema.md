@@ -15,7 +15,7 @@ pipeline (defaults → `.sle/rules/agents.yaml` → `.sle/overrides/agents.yaml`
 | Decision | What it sets |
 |---|---|
 | DDR-003 | LLM provider config: `provider`, `base_url`, `model`, `api_key_env` |
-| DDR-019 | Designer owns `requirements.md` + `architecture.md`; Planner owns `test-plan.md` + `build_plan` |
+| DDR-019 | Designer owns `requirements.md` + `architecture.md`; Planner owns `test-plan.md` + `plan.md` + `build-plan` (deep/research) |
 | DDR-022 | Critic runs at DESIGN node, reviews architecture + requirements |
 | DDR-023 | Explorer is user-initiated only; not auto-triggered by `planning.depth` |
 
@@ -112,8 +112,9 @@ agents:
       - doc:decisions
       - doc:evaluation
     outputs:
-      - doc:test_plan
-      - doc:build_plan
+      - doc:test-plan
+      - doc:plan
+      - doc:build-plan
     conditional: false
 
   tester:
@@ -327,7 +328,7 @@ Per-role configuration. Each key is one of the 10 agent roles.
 |---|---|---|---|---|---|---|
 | **Designer** | `design` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | requirements, architecture | Owns architecture + requirements (DDR-019). Critic reviews output (DDR-022). |
 | **Explorer** | `explore` | 0.5 | 8000 | requirements, evaluation, decisions | research_findings | User-initiated only (DDR-023). Disabled by default. |
-| **Planner** | `plan` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | test_plan, build_plan | Consumes Designer output (DDR-019). |
+| **Planner** | `plan` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | test-plan, plan, build-plan (deep/research) | Consumes Designer output (DDR-019). |
 | **Tester** | `test` | 0.1 | 8000 | requirements, test_plan | test scripts | TDD separation: never sees Builder output. |
 | **Builder** | `build` | 0.2 | 16000 | requirements, architecture, test_plan | implementation, test scripts | Highest token budget. Test scripts as contract. |
 | **Debugger** | `debug` | 0.2 | 8000 | requirements, test_plan | diagnosis, fix_recommendation | Only on gate failure. Diagnoses only — never plans or builds. |

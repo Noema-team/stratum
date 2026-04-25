@@ -42,7 +42,7 @@ order:
 │ 4. Task                 ~200 tokens │  specific instruction this turn
 │ 5. Failure context      ~400 tokens │  FailureReport — only on retry
 └─────────────────────────────────────┘
-                    total target: ~3400 tokens
+                    total target: ~3,400 tokens (components sum; hard ceiling is 3,500)
                     hard ceiling: 4000 tokens
 ```
 
@@ -242,8 +242,9 @@ Default loading modes per artifact key:
 | `doc:test-plan` | `full` | Never truncated for Tester; truncated for other roles if budget exceeded |
 | `doc:decisions` | `last_n_entries: 3` | Historian gets `full` — it is the append target |
 | `doc:evaluation` | `last_cycle` | Only the most recent evaluation entry |
-| `doc:plan` | `full` | Only loaded at `deep`+ depth |
-| `doc:research-findings` | `full` | Only present when EXPLORE node ran |
+| `doc:plan`                  | `full`              | Only loaded at `deep`+ depth |
+| `doc:build-plan`           | `full`              | Only present at `deep`/`research` depth after PLAN node |
+| `doc:research-findings`     | `full`              | Only present when EXPLORE node ran |
 | `doc:debug-diagnosis` | `full` | Ephemeral — only present on retry, only for Planner/Debugger |
 | `doc:critique-report` | `full` | Only present at `deep`/`research` depth after CRITIQUE node |
 
@@ -260,8 +261,9 @@ Truncation priority (lowest priority truncated first):
 |----------|----------|-------|
 | 1 (truncate first) | `doc:evaluation` | Historical, can be summarized |
 | 2 | `doc:decisions` | Only the loaded entries at risk, not the full file |
-| 3 | `doc:plan` | Step-level detail is secondary |
-| 4 | `doc:test-plan` | Test coverage detail is secondary (except for Tester) |
+| 3                   | `doc:plan`             | Step-level detail is secondary |
+| 3.5                 | `doc:build-plan`       | Implementation expansion — secondary to plan steps |
+| 4                   | `doc:test-plan`        | Test coverage detail is secondary (except for Tester) |
 | 5 (truncate last) | `doc:research-findings` | Recent research is directly relevant |
 | — | `doc:requirements` | Never truncated |
 | — | `doc:architecture` | Never truncated |
@@ -572,9 +574,11 @@ internal reasoning.
 |-------|------|--------|-------|
 | `doc:requirements` | `full` | 400 | Never truncated |
 | `doc:architecture` | `full` | 400 | Never truncated |
-| `doc:test-plan` | `full` | 300 | Test coverage specification |
+| `doc:test-plan`              | `full` | 300 | Test coverage specification |
+| `doc:plan`                   | `full` | 200 | Step-level plan (deep+ only) |
+| `doc:build-plan`             | `full` | 400 | Implementation expansion (deep+ only) |
 | `doc:test-script:{category}` | `full` | 300 | Test contracts — one per active category |
-| `source_files` | `full` | 800 | Implementation files from `repo.key_files` |
+| `source_files`               | `full` | 600 | Implementation files from `repo.key_files` (reduced from 800 to fit deep+ artifacts) |
 
 **Total budget:** ~2,200 tokens
 
@@ -625,7 +629,8 @@ satisfied the intent.
 | `doc:test-plan` | `full` | 300 | What coverage was planned |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for continuity |
 | `.sle/runs/{id}/ai/context-pack.md` | `full` | 400 | Current run results narrative |
-| `.sle/runs/{id}/manifest.json` | `full` | 100 | Run metadata |
+| `.sle/runs/{id}/manifest.json`              | `full`        | 100 | Run metadata |
+| `doc:build-plan`                            | `summary_only`| 100 | Implementation expansion (deep+ only, summary only) |
 
 **Total budget:** ~1,350 tokens
 
@@ -645,6 +650,7 @@ Planner runs. It identifies blocking issues, warnings, and suggestions.
 | `doc:constraints` | `full` | 200 | Compliance checks against stated constraints |
 | `doc:system-description` | `full` | 200 | System shape for structural consistency checks |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions for context |
+| `doc:critique-report` | write | — | Critic writes the critique report to run artifacts |
 
 **Total budget:** ~1,550 tokens
 
@@ -716,6 +722,8 @@ to review. Context is narrowly focused on the decision at hand.
 
 **Total budget:** ~1,000 tokens
 
+**Excluded:** `doc:build-plan` — Facilitator never shows implementation expansion at CONFIRM.
+
 **Additional context when `awaiting_sharding_approval = true`:**
 
 | Slice | Mode | Budget | Notes |
@@ -754,7 +762,7 @@ budget. Overrides are applied automatically based on role:
 | Role | Override | Reason |
 |------|----------|--------|
 | Designer | 2,500 | Broadest input context (discovery docs + architecture) |
-| Builder | 2,200 | Source file injection requires extra room |
+| Builder | 2,800 (deep+) | Source files + plan + build-plan injection. ~2,200 at standard/minimal. |
 | Tester | 1,000 | Most constrained — only requirements + test-plan |
 | Historian | 1,000 | Only reads decisions log |
 | Facilitator (chat) | 1,350 | Moderate context for Q&A |

@@ -211,7 +211,7 @@ Total budget: ~1,350 tokens.
 | Component | Source |
 |---|---|
 | System prompt | `facilitator-decision.md` template |
-| Artifact slices | `doc:plan`, `doc:test-plan`, `doc:test-script:{category}` (summaries), `.sle/chat-history.jsonl` (last 5). Plus `.sle/sharding-proposal.yaml` and `.sle/coherence-report.json` when `awaiting_sharding_approval` |
+| Artifact slices | `doc:plan`, `doc:test-plan`, `doc:test-script:{category}` (summaries), `.sle/chat-history.jsonl` (last 5). Plus `.sle/sharding-proposal.yaml` and `.sle/coherence-report.json` when `awaiting_sharding_approval`. Excluded: `doc:build-plan` — never presented at CONFIRM. |
 | State summary | Cycle state with iteration, revision, and gate context |
 | Task | "Present the pending decision to the user" |
 | Failure context | Absent |
@@ -303,7 +303,7 @@ what is available:
 | `idle` | Full project context from discovery docs | None |
 | `discovering` | Partial discovery docs (rounds completed so far) | No cycle artifacts |
 | `cycling` (no flags) | Project context + read-only cycle state | Cannot modify cycle artifacts |
-| `cycling` (`awaiting_confirmation`) | Project context + cycle artifacts + plan/test-plan for review | Can approve/revise/halt |
+| `cycling` (`awaiting_confirmation`) | Project context + cycle artifacts + plan/test-plan for review (`doc:build-plan` excluded) | Can approve/revise/halt |
 | `cycling` (`awaiting_sharding_approval`) | Project context + sharding proposal + coherence report | Can approve/reject split |
 | `halted` | Full project context + halt report | None |
 | `complete` | Full project context + cycle summary | None |

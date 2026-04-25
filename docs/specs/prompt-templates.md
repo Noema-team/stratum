@@ -301,6 +301,7 @@ instructions and a test plan. You do NOT produce architecture or requirements
 | doc:critique-report | read | Critic output if Critic ran (DDR-022) |
 | doc:debug-diagnosis | read | FailureReport, only on retry |
 | doc:plan | write | Step-level implementation plan |
+| doc:build-plan | write | Implementation expansion (deep/research only) |
 | doc:test-plan | write | Test strategy per category |
 
 ## Output format
@@ -314,6 +315,10 @@ test-plan.md: per-category test strategy with coverage mapping. Categories
 block listing recommended validation categories. Each test case references a
 requirement ID with clear pass/fail acceptance criteria. No cross-test
 dependencies.
+
+build-plan.md (deep/research only): implementation expansion of each plan step.
+Target files, interfaces, patterns, integration points. Derives from plan.md
+1:1. MUST NOT introduce steps absent from plan.md.
 
 ## Reasoning approach
 Read requirements and architecture fully before planning. Identify the critical
@@ -407,7 +412,7 @@ produce implementation code and instrumented test scripts.
 
 ## Behavioral constraints
 - MUST produce implementation code and one executable test script per category
-- MUST NOT write or modify requirements.md, architecture.md, or plan.md
+- MUST NOT write or modify requirements.md, architecture.md, plan.md, or build-plan.md
 - MUST satisfy the test scripts provided — they are your contract
 - MUST NOT modify pass criteria in test scripts — preserve all assertions
 - MUST NOT skip or stub out failing test cases
@@ -422,6 +427,8 @@ produce implementation code and instrumented test scripts.
 | doc:requirements | read | What to implement |
 | doc:architecture | read | How to structure the implementation |
 | doc:test-plan | read | Test coverage specification |
+| doc:plan | read | Step-level plan (deep+ depth only) |
+| doc:build-plan | read | Implementation expansion (deep+ depth only) |
 | doc:test-script:{category} | read | Test contracts per category |
 | source_files | read_write | Implementation files |
 
@@ -592,6 +599,7 @@ work downstream. You do not produce architecture, plans, or implementation.
 | doc:constraints | read | Compliance checks |
 | doc:system-description | read | Structural consistency |
 | doc:decisions | read | Full history |
+| doc:critique-report | write | Critic writes the critique report to run artifacts |
 
 Excluded: doc:plan, doc:test-plan (DDR-022), run artifacts (not yet created).
 
@@ -755,6 +763,8 @@ mapping, per-category criteria, sharding status.
 
 SHARDING_APPROVAL gate includes: task boundaries with context declarations,
 inter-task dependencies, coherence status.
+
+**Excluded:** `doc:build-plan` — never presented at CONFIRM. Implementation detail is not a user decision.
 
 User action payloads: see dag-node-reference.md Nodes 8 and 9.
 

@@ -164,6 +164,7 @@ DESIGN
     ▼
 PLAN
     │  Planner produces plan.md + test-plan.md (DDR-019)
+    │  At deep/research: also produces build-plan.md
     │  May also produce sharding proposal (intake sub-phase)
     │
     ▼
@@ -217,7 +218,7 @@ VALIDATION GATE ─ deterministic, no LLM
     │   SNAPSHOT
     │       │  Lock version. Commit artifacts.
     │       ▼
-    │   CYCLE COMPLETE → meta.status → idle
+    │   CYCLE COMPLETE → meta.status → idle (two-step: SNAPSHOT sets status→complete, then T9 automatically transitions complete→idle)
     │
     └─── FAIL
             │
@@ -715,8 +716,8 @@ interface ExitConfig {
   on_cap_hit: CapBehavior
   on_error: {
     behavior:      ErrorBehavior
-    write_report:  boolean
-    block_snapshot: boolean
+    write_error_report:  boolean
+    block_version_snapshot: boolean
   }
   halt_behavior: {
     write_partial_report:    boolean
@@ -739,7 +740,7 @@ Full type: `ExitConfig` in [../reference/types.md](../reference/types.md) §8.2.
 
 3. **Designer ownership.** Only the Designer writes `architecture.md` and `requirements.md`. All other roles read these files (DDR-019).
 
-4. **Planner ownership.** Only the Planner writes `plan.md` and `test-plan.md` (DDR-019).
+4. **Planner ownership.** Only the Planner writes `plan.md`, `test-plan.md`, and `build-plan.md` (deep/research only) (DDR-019).
 
 5. **TDD separation.** The Tester never sees the Builder's implementation or the architecture. It writes tests from requirements only.
 

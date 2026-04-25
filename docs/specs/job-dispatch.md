@@ -77,18 +77,18 @@ interface Job {
 
 ```typescript
 type JobType =
-  | 'static_check'
-  | 'llm_check'
-  | 'exec_check'
-  | 'task_execution'
+  | 'static-check'
+  | 'llm-check'
+  | 'exec-check'
+  | 'task-execution'
 ```
 
 | Type | Source | Container | LLM |
 |---|---|---|---|
-| `static_check` | EXEC node (validation) | Yes | No |
-| `llm_check` | EXEC node (validation) | Yes | Yes (inside container) |
-| `exec_check` | EXEC node (validation) | Yes | No |
-| `task_execution` | Beads task dispatch | Yes | Varies by task |
+| `static-check` | EXEC node (validation) | Yes | No |
+| `llm-check` | EXEC node (validation) | Yes | Yes (inside container) |
+| `exec-check` | EXEC node (validation) | Yes | No |
+| `task-execution` | Beads task dispatch | Yes | Varies by task |
 
 ### JobStatus
 
@@ -125,9 +125,9 @@ type JobPriority = 0 | 1 | 2 | 3
 
 | Priority | Value | Used for |
 |---|---|---|
-| Critical | 0 | `static_check` (must pass before others run) |
-| High | 1 | `exec_check`, `task_execution` |
-| Normal | 2 | `llm_check` |
+| Critical | 0 | `static-check` (must pass before others run) |
+| High | 1 | `exec-check`, `task-execution` |
+| Normal | 2 | `llm-check` |
 | Low | 3 | Deferred re-runs, optional checks |
 
 ### SubPhase
@@ -137,8 +137,8 @@ type SubPhase = 'static-check' | 'llm-check' | 'exec-check'
 ```
 
 From [validation.md](validation.md). Execution order is fixed:
-`static-check` → `llm-check` → `exec-check`. A `static_check` job must
-complete before any `llm_check` or `exec_check` jobs for the same iteration
+`static-check` → `llm-check` → `exec-check`. A `static-check` job must
+complete before any `llm-check` or `exec-check` jobs for the same iteration
 are released from the queue.
 
 ### JobResult
@@ -391,13 +391,13 @@ DAG enters EXEC node
    Write manifest stub
     │
     ▼
-3. Enqueue static_check job
+3. Enqueue static-check job
    Priority 0 (critical)
     │
     ▼
-4. Await static_check result
+4. Await static-check result
    │
-   ├── PASS → release llm_check + exec_check jobs to queue
+   ├── PASS → release llm-check + exec-check jobs to queue
    │          all categories fan out in parallel
    │
    └── FAIL → skip remaining jobs
@@ -508,11 +508,11 @@ Dead workers are replaced by spawning new workers up to `min_workers`.
 
 ### Category fan-out
 
-After `static_check` passes, the dispatcher releases all category jobs to the
+After `static-check` passes, the dispatcher releases all category jobs to the
 queue. The fan-out structure per iteration:
 
 ```
-static_check (priority 0, single job)
+static-check (priority 0, single job)
     │
     ├── PASS
     │       │
@@ -521,8 +521,8 @@ static_check (priority 0, single job)
     │   │  Category fan-out (all active, in parallel)  │
     │   │                                               │
     │   │  correctness      performance     security   │
-    │   │    ├── llm_check    ├── llm_check   ├── ...  │
-    │   │    └── exec_check   └── exec_check  └── ...  │
+    │   │    ├── llm-check    ├── llm-check   ├── ...  │
+    │   │    └── exec-check   └── exec-check  └── ...  │
     │   └─────────────────────────────────────────────┘
     │
     └── FAIL
@@ -532,17 +532,17 @@ static_check (priority 0, single job)
         VALIDATION_GATE receives static failure only
 ```
 
-Within each category, `llm_check` and `exec_check` run in parallel (no
-interdependency). Both depend on `static_check` passing, but not on each other.
+Within each category, `llm-check` and `exec-check` run in parallel (no
+interdependency). Both depend on `static-check` passing, but not on each other.
 
 Per-category job creation:
 
 ```
 for category in active_categories:
   if category.method in ['both', 'llm']:
-    create job(type: 'llm_check', category: category.name, priority: 2)
+    create job(type: 'llm-check', category: category.name, priority: 2)
   if category.method in ['both', 'executable']:
-    create job(type: 'exec_check', category: category.name, priority: 1)
+    create job(type: 'exec-check', category: category.name, priority: 1)
 ```
 
 Job IDs are deterministic within a run:
@@ -614,9 +614,9 @@ After a container exits, the dispatcher captures results in this order:
    Read $RUN_DIR/tests/{category}/result.json from container
    Parse as JSON
    Validate against expected schema per sub_phase:
-     - static_check: StaticAnalysisResult
-     - llm_check: LLMCheckResult
-     - exec_check: ExecCheckResult
+     - static-check: StaticAnalysisResult
+     - llm-check: LLMCheckResult
+     - exec-check: ExecCheckResult
    If parse fails → mark job as failed (result_parse_failed)
 
 4. Capture additional artifacts
@@ -653,7 +653,7 @@ Dispatcher reads task's TaskContextDeclaration from Beads issue notes
 Resolve declared artifact refs → context pack
     │
     ▼
-Create job(type: 'task_execution', task_id: beads_issue_id)
+Create job(type: 'task-execution', task_id: beads_issue_id)
     │
     ▼
 Execute in container with declared context
@@ -730,8 +730,8 @@ compare(a, b):
 Jobs are dequeued when a worker becomes available. The dispatcher does not
 pre-assign jobs — workers pull from the queue.
 
-Blocked jobs (waiting on `static_check`) are held in a pending set, not in the
-main queue. When `static_check` completes:
+Blocked jobs (waiting on `static-check`) are held in a pending set, not in the
+main queue. When `static-check` completes:
 
 ```
 releaseBlockedJobs(static_result, pending_set, queue):
@@ -753,7 +753,7 @@ generateDispatchPlan(cycle, iteration, categories, run_id):
   plan = { run_id, cycle_id, iteration, jobs: [], static_gate: null }
 
   static_job = {
-    job_type: 'static_check',
+    job_type: 'static-check',
     category: null,
     sub_phase: 'static-check',
     depends_on: [],
@@ -768,7 +768,7 @@ generateDispatchPlan(cycle, iteration, categories, run_id):
 
     if category.method in ['both', 'llm']:
       llm_job = {
-        job_type: 'llm_check',
+        job_type: 'llm-check',
         category: category.name,
         sub_phase: 'llm-check',
         depends_on: [static_job.id],
@@ -779,7 +779,7 @@ generateDispatchPlan(cycle, iteration, categories, run_id):
 
     if category.method in ['both', 'executable']:
       exec_job = {
-        job_type: 'exec_check',
+        job_type: 'exec-check',
         category: category.name,
         sub_phase: 'exec-check',
         depends_on: [static_job.id],
@@ -849,7 +849,7 @@ Request:
   "iteration":      number,
   "categories":     ValidationRuleCategory[],
   "run_id":         string,
-  "mode":           "cycle_validation" | "task_execution"
+  "mode":           "cycle_validation" | "task-execution"
 }
 
 Response 200:
@@ -982,7 +982,7 @@ GET /api/v2/cycles/{cycle_id}/dispatch
 Response 200:
 {
   "active":             boolean,
-  "mode":               "cycle_validation" | "task_execution" | null,
+  "mode":               "cycle_validation" | "task-execution" | null,
   "total_jobs":         number,
   "completed_jobs":     number,
   "failed_jobs":        number,
@@ -993,8 +993,8 @@ Response 200:
   },
   "current_sub_phase":  SubPhase | null,
   "category_progress":  Record<string, {
-    "llm_check":        "pending" | "running" | "completed" | "failed" | "skipped",
-    "exec_check":       "pending" | "running" | "completed" | "failed" | "skipped"
+    "llm-check":        "pending" | "running" | "completed" | "failed" | "skipped",
+    "exec-check":       "pending" | "running" | "completed" | "failed" | "skipped"
   }>
 }
 
@@ -1038,7 +1038,7 @@ event: dispatch.started
   "cycle_id":      string,
   "dispatch_id":   string,
   "total_jobs":    number,
-  "mode":          "cycle_validation" | "task_execution",
+  "mode":          "cycle_validation" | "task-execution",
   "timestamp":     string
 }
 
@@ -1172,7 +1172,7 @@ attempt.
    between categories and between iterations.
 
 3. **No LLM calls.** The dispatcher does not call LLMs. It runs scripts in
-   containers and reports outcomes. LLM calls for `llm_check` happen inside
+   containers and reports outcomes. LLM calls for `llm-check` happen inside
    the container (the test script makes the LLM call), not in the dispatcher.
 
 4. **No artifact modification.** The dispatcher reads artifacts (context packs,
@@ -1183,15 +1183,15 @@ attempt.
    cycle flags, or iteration counters. State transitions are the DAG runner's
    responsibility.
 
-6. **Static gate is absolute.** `static_check` must pass before any other
+6. **Static gate is absolute.** `static-check` must pass before any other
    sub-phase runs. No override, no skip, no parallel release. The static gate
    is the first and only synchronization point in the dispatch plan.
 
 7. **Category fan-out is parallel.** After the static gate passes, all
-   category jobs (`llm_check` and `exec_check`) run in parallel. There is no
+   category jobs (`llm-check` and `exec-check`) run in parallel. There is no
    ordering between categories.
 
-8. **Within-category sub-phase parallelism.** `llm_check` and `exec_check` for
+8. **Within-category sub-phase parallelism.** `llm-check` and `exec-check` for
    the same category run in parallel. No ordering between them.
 
 9. **Category caching respected.** Categories with `status: passed` from a
@@ -1199,7 +1199,7 @@ attempt.
    not re-run passing categories.
 
 10. **Container isolation.** Containers run with `network_mode: none` for
-    `exec_check` jobs (no network access). `llm_check` and `static_check` jobs
+    `exec-check` jobs (no network access). `llm-check` and `static-check` jobs
     may use `network_mode: bridge` if the LLM endpoint requires network access.
 
 11. **Resource limits enforced.** Every container is created with memory, CPU,
@@ -1240,12 +1240,12 @@ attempt.
 |---|---|---|---|
 | JD-001 | Should the dispatcher support container image building from a Dockerfile (for projects that need custom build tools), or is mounting + install command sufficient? | Container flexibility, startup time | Open |
 | JD-002 | What is the maximum wall-clock timeout for the entire dispatch (all jobs combined) before forcing a halt, independent of per-job timeouts? | Resource bounding, UX responsiveness | Open |
-| JD-003 | Should `llm_check` containers share a persistent LLM connection pool, or does each container open its own connection? | LLM API rate limits, connection efficiency | Open |
+| JD-003 | Should `llm-check` containers share a persistent LLM connection pool, or does each container open its own connection? | LLM API rate limits, connection efficiency | Open |
 | JD-004 | Should the dispatcher persist job results to disk incrementally (as each job completes) or batch-write at the end? | Crash recovery granularity, I/O pattern | Open |
 | JD-005 | Can users configure per-category resource limits (e.g., performance tests get more memory), or is one size fits all? | Resource fairness, cost | Open |
 | JD-006 | Should the dispatcher support GPU passthrough for categories that require GPU execution (e.g., ML model testing)? | Hardware support, scheduling complexity | Open |
 | JD-007 | What happens when the Docker disk fills up mid-dispatch? Should the dispatcher pre-check available disk space? | Reliability, resource exhaustion handling | Open |
 | JD-008 | Should task dispatch support concurrent tasks (multiple workers executing different Beads tasks simultaneously), or is it strictly one task at a time? | Throughput, pool management complexity | Open |
 | JD-009 | Should the dispatcher expose a streaming API for container stdout/stderr (real-time log tailing), or is post-completion capture sufficient? | Debugging UX, observability | Open |
-| JD-010 | Should `static_check` be parallelized internally (lint, typecheck, complexity in parallel), or run sequentially as a single job? | Static check latency, simplicity | Open |
-| JD-011 | `ContainerSpec` has a single `network_mode` field, but constraint 10 says `llm_check` may use `network_mode: bridge` while `exec_check` uses `none`. Since all jobs share the same ContainerSpec, this is contradictory. Resolve: (a) mandate `bridge` for all jobs, (b) add per-sub-phase network_mode override, or (c) use separate ContainerSpecs. | Container isolation, LLM access, security model | Open |
+| JD-010 | Should `static-check` be parallelized internally (lint, typecheck, complexity in parallel), or run sequentially as a single job? | Static check latency, simplicity | Open |
+| JD-011 | `ContainerSpec` has a single `network_mode` field, but constraint 10 says `llm-check` may use `network_mode: bridge` while `exec-check` uses `none`. Since all jobs share the same ContainerSpec, this is contradictory. Resolve: (a) mandate `bridge` for all jobs, (b) add per-sub-phase network_mode override, or (c) use separate ContainerSpecs. | Container isolation, LLM access, security model | Open |

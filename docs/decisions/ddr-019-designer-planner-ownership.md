@@ -24,7 +24,7 @@ The Designer produces `requirements.md`. The Planner reads it as input and produ
 ## Consequences
 
 - Designer outputs: `architecture.md`, `requirements.md`
-- Planner outputs: `test-plan.md`, `plan.md` (step-level)
+- Planner outputs: `test-plan.md`, `plan.md` (step-level), `build-plan.md` (deep/research only — implementation expansion)
 - Planner's context slice: reads `architecture.md` + `requirements.md`, does not write either
 - Designer's context slice: reads discovery docs + intent + prior architecture + decisions
 - The DAG flow is: EXPLORE (conditional) → DESIGN (Designer writes architecture + requirements) → PLAN (Planner writes test-plan + plan)

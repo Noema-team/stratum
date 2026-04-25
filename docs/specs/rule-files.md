@@ -228,7 +228,7 @@ export interface ContainerConfig {
 export interface ArtifactRule {
   id: string
   path: string
-  generator: 'planner' | 'builder' | 'historian' | 'evaluator' | 'critic' | 'facilitator' | 'discovery'
+  generator: 'designer' | 'explorer' | 'planner' | 'builder' | 'historian' | 'evaluator' | 'critic' | 'facilitator' | 'discovery'
   required: boolean
   append_only: boolean
   format: 'markdown' | 'json' | 'yaml'
@@ -522,9 +522,10 @@ BUILD starts.
 | `requirements` | `docs/requirements.md` | designer | Yes | No |
 | `architecture` | `docs/architecture.md` | designer | Yes | No |
 | `test_plan` | `docs/test-plan.md` | planner | Yes | No |
+| `plan` | `docs/plan.md` | planner | Yes | No |
 | `decisions` | `docs/decisions.md` | historian | Yes | Yes |
 | `evaluation` | `docs/evaluation.md` | evaluator | Yes | No |
-| `build_plan` | `docs/build-plan.md` | planner | No | No |
+| `build-plan` | `docs/build-plan.md` | planner | No | No |
 
 Identical across all project types. Variance comes from `validation.yaml`
 controlling which categories run.
@@ -551,7 +552,7 @@ entries. `decisions.md` uses this to maintain a chronological log.
 | `cycle_end` | After cycle completes (pass or fail) |
 | `always` | After every iteration |
 
-`build_plan` is optional and only generated at `deep` or `research` depth.
+`build-plan` is optional and only generated at `deep` or `research` depth. `plan` is always produced at all depths.
 
 ### exit.yaml — behavioral rules
 
@@ -681,7 +682,7 @@ Full schema: [reference/agents-yaml-schema.md](../reference/agents-yaml-schema.m
 - **Designer** owns `requirements.md` + `architecture.md` (DDR-019)
 - **Explorer** is user-initiated only; not auto-triggered by `planning.depth`
   (DDR-023)
-- **Planner** owns `test-plan.md` + `build_plan` (DDR-019)
+- **Planner** owns `test-plan.md` + `plan.md` + `build-plan.md` (deep/research only) (DDR-019)
 - **Tester** has constraint `never_sees_builder_output` — TDD separation
 - **Builder** has the highest token budget (16000) and receives test scripts as
   a contract

@@ -101,6 +101,7 @@ present (SLE-019).
 |-----|------|-------|-----------|-------------|
 | `doc:plan` | markdown | project | Planner | Step-level implementation plan. Specific file, module, and endpoint targets with ordering and dependency declarations. |
 | `doc:test-plan` | markdown | project | Planner | Test coverage plan per validation category. Maps requirements to test scenarios. Consumed by Tester (contract) and Evaluator (coverage check). |
+| `doc:build-plan` | markdown | project | Planner | Implementation expansion: target files, interfaces, patterns, integration points. Derives from `doc:plan` 1:1. Only produced at `deep` or `research` depth. |
 
 ### Intake sub-phase artifacts (SLE-019)
 
@@ -306,6 +307,7 @@ maps each of the 10 agent roles to the artifacts they produce.
 |--------|-------|-------|
 | `doc:plan` | project | Step-level implementation plan. DDR-019. |
 | `doc:test-plan` | project | Per-category test coverage. DDR-019. |
+| `doc:build-plan` | project | Implementation expansion. Deep/research only. Derives from `doc:plan` 1:1. DDR-019. |
 
 ### Tester (TEST node)
 
@@ -355,7 +357,7 @@ token budget.
 | **Critic** | `doc:architecture`, `doc:requirements`, prior `doc:evaluation`, `doc:constraints` |
 | **Planner** | `doc:requirements`, `doc:architecture`, `doc:decisions` (last 3), prior `doc:evaluation`, `FailureReport` (on retry), `doc:debug-diagnosis` (on retry) |
 | **Tester** | `doc:requirements`, `doc:test-plan` only. Explicitly excluded: `doc:architecture`, implementation source, Builder output. |
-| **Builder** | `doc:requirements`, `doc:architecture`, `doc:test-plan`, `doc:test-script:{category}` (as contract) |
+| **Builder** | `doc:requirements`, `doc:architecture`, `doc:test-plan`, `doc:plan` (deep+), `doc:build-plan` (deep+), `doc:test-script:{category}` (as contract) |
 | **Debugger** | `.sle/runs/{id}/manifest.json`, `.sle/runs/{id}/ai/context-pack.md`, failed category result/metrics/traces/logs |
 | **Evaluator** | `doc:requirements`, `doc:test-plan`, `doc:evaluation` (prior), run artifacts (current) |
 | **Historian** | `doc:decisions` (full — append target) |

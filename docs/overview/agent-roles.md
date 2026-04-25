@@ -554,7 +554,7 @@ User intent
 |----------|-----------|---------|
 | `docs/architecture.md` | Designer | Planner, Builder, Critic, Evaluator |
 | `docs/requirements.md` | Designer | Planner, Tester, Builder, Evaluator |
-| `docs/plan.md` | Planner | Builder, Evaluator |
+| `docs/plan.md` | Planner | Builder (deep+ only) |
 | `docs/test-plan.md` | Planner | Tester, Builder, Evaluator |
 | Test scripts (`test_{cat}.ts`) | Tester | Builder (as contract), EXEC (L4) |
 | Implementation code | Builder | EXEC (L4), Debugger (via run artifacts) |

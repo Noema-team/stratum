@@ -74,6 +74,7 @@ interface AssembledContext {
   state_summary:    string
   task:             string
   failure_context?: string
+  knowledge_context?: string
   token_count:      number
   truncated:        string[]
 }
@@ -165,7 +166,7 @@ structurally invalid), the node errors. The cycle retries once if
 | **Agent role** | Critic |
 | **Conditional** | Yes — `planning.depth` is `deep` or `research` only |
 | **Inputs** | `architecture.md` + `requirements.md` + project context + decisions |
-| **Outputs** | Structured critique fed back to Designer |
+| **Outputs** | Structured critique fed back to Designer + writes `doc:critique-report` to run artifacts |
 
 The Critic reviews the Designer's output at the DESIGN node — **not** at the
 PLAN node (DDR-022). It does not modify artifacts directly. It produces a
@@ -220,7 +221,7 @@ blocking, at the system level.
 | **Agent role** | Planner |
 | **Conditional** | No |
 | **Inputs** | `architecture.md` + `requirements.md` + decisions (last 3 entries) + evaluation (last cycle) + FailureReport (iteration > 1) |
-| **Outputs** | `plan.md`, `test-plan.md`, sharding proposal (conditional) |
+| **Outputs** | `plan.md`, `test-plan.md`, `build-plan.md` (deep/research only), sharding proposal (conditional) |
 
 The Planner reads the Designer's output and produces step-level implementation
 instructions and a test-plan (DDR-019). It does not write `requirements.md` or
@@ -228,7 +229,7 @@ instructions and a test-plan (DDR-019). It does not write `requirements.md` or
 
 Artifact references:
 - Reads: `doc:architecture`, `doc:requirements`, `doc:decisions`, `doc:evaluation`
-- Writes: `doc:plan`, `doc:test-plan`
+- Writes: `doc:plan`, `doc:test-plan`, `doc:build-plan` (deep/research only)
 
 **Intake sub-phase (conditional):**
 
@@ -267,6 +268,9 @@ coverage mapping with requirement references.
 **Failure handling:** If the Planner cannot produce a plan (e.g., requirements
 are incoherent), the node errors. On retry, the Debugger's FailureReport
 provides context for the Planner to adjust.
+
+**Depth note:** At `deep`/`research` depth, the Planner additionally produces
+`doc:build-plan` — implementation expansion deriving 1:1 from `doc:plan`.
 
 ---
 
@@ -363,6 +367,8 @@ a confirmation request to all connected interfaces. `meta.status` remains
 
 **What the user sees:**
 
+Note: User sees `doc:plan` steps only. `doc:build-plan` is never presented at CONFIRM.
+
 1. Proposed plan steps with descriptions and constraints
 2. Test suite with requirement coverage mapping
 3. Per-category test criteria
@@ -432,7 +438,7 @@ and `on_timeout` action. Halt action triggers transition to `halted`.
 | **Layer** | L3 (Agent Runtime) |
 | **Agent role** | Builder |
 | **Conditional** | No |
-| **Inputs** | `requirements.md` + `architecture.md` + confirmed plan + test-plan |
+| **Inputs** | `requirements.md` + `architecture.md` + confirmed plan + test-plan + `build-plan` (deep/research only) |
 | **Outputs** | Implementation code + one executable test script per active category |
 
 The Builder reads the confirmed plan, architecture, and test-plan. It produces
@@ -440,7 +446,7 @@ implementation code and instrumented test scripts for each active validation
 category.
 
 Artifact references:
-- Reads: `doc:requirements`, `doc:architecture`, `doc:plan`, `doc:test-plan`
+- Reads: `doc:requirements`, `doc:architecture`, `doc:plan`, `doc:test-plan`, `doc:build-plan` (deep/research only)
 - Writes: Implementation files, `scripts/test_{category}.ts`
 
 The Builder does not run the tests. It produces them for the EXEC node. Test
