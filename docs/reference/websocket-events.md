@@ -134,26 +134,22 @@ interface CycleFlagChangedPayload {
   cycle_id: string
   flag: string
   value: boolean
-  timestamp: string
 }
 
 interface DagConfirmRequestedPayload {
   cycle_id: string
   revision: number
   plan_summary: { step_count: number; test_count: number; coverage_pct: number }
-  timestamp: string
 }
 
 interface DagShardingRequestedPayload {
   cycle_id: string
   task_count: number
-  timestamp: string
 }
 
 interface DagSnapshotLockedPayload {
   cycle_id: string
   version_id: string
-  timestamp: string
 }
 ```
 
@@ -721,33 +717,28 @@ interface LinkCreatedPayload {
   source: { doc: string; heading?: string }
   target: { doc: string; heading?: string }
   link_type: string
-  timestamp: string
 }
 
 interface LinkDeletedPayload {
   link_id: string
   source: { doc: string; heading?: string }
   target: { doc: string; heading?: string }
-  timestamp: string
 }
 
 interface LinkIndexRebuiltPayload {
   link_count: number
   file_count: number
   duration_ms: number
-  timestamp: string
 }
 
 interface LinkIndexUpdatedPayload {
   added: number
   removed: number
-  timestamp: string
 }
 
 interface LinkFileUpdatedPayload {
   path: string
   affected_backlinks: number
-  timestamp: string
 }
 ```
 
@@ -877,11 +868,11 @@ originally defined.
 | 14.5 | `module.failed` | S→C | SLE-024 | Content & modules |
 | 14.6 | `module.registered` | S→C | SLE-024 | Content & modules |
 
-**Totals:** 62 events (57 server→client, 3 client→server, 2 additional server→client alongside existing gate events).
+**Totals:** 63 events (61 server→client, 2 client→server).
 
 **New events (Phase 4):** 39 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), task/store (§12), DAG control (§2), document linking (§13), and content/modules (§14).
 
-**Prior events:** 23 events from Phases 1–3 (§1–§8).
+**Prior events:** 24 events from Phases 1–3 (§1–§8).
 
 ---
 
