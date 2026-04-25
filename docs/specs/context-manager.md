@@ -220,6 +220,7 @@ reference to a file path:
 |--------|------------|
 | `doc:{key}` | `.sle/project-docs/{key}.md` (or appropriate extension per artifact format) |
 | `node:{group}:{key}` | `.sle/project-graph/layers/{group}/{key}.md` |
+| `doc:{key}` (scope: ephemeral) | Resolved from in-memory daemon state — no disk access |
 
 Wildcard form `node:*:{key}` loads the named artifact from every group.
 Use sparingly — it consumes token budget proportional to group count.
@@ -417,7 +418,9 @@ receives no information about categories that already passed — this keeps the
 retry focused on what actually needs to change.
 
 When the Debugger has produced a `doc:debug-diagnosis`, it is included as an
-additional section after the failure context:
+additional section after the failure context. Both `doc:debug-diagnosis` and
+`FailureReport` are ephemeral artifacts — they are resolved from daemon state,
+not read from disk. The daemon injects them directly into the assembled context.
 
 ```
 ### Debug diagnosis
@@ -514,7 +517,7 @@ write requirements — the Designer owns those (DDR-019).
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
 | `doc:critique-report` | `full` | 200 | Only present at `deep`/`research` depth after CRITIQUE |
-| `doc:debug-diagnosis` | `full` | 200 | Only present on retry — Debugger's root-cause analysis |
+| `doc:debug-diagnosis` | `full` | 200 | Only present on retry — Debugger's root-cause analysis. Ephemeral — bypasses standard disk resolution, injected by daemon directly into assembled context. |
 
 **Total budget:** ~1,450 tokens (base) + ~400 (failure context on retry)
 

@@ -664,7 +664,7 @@ from `run_dir` to produce its diagnosis.
 
 Artifact references:
 - Reads: run artifacts from `.sle/runs/{id}/`
-- Writes: None (output is injected into Planner context, not written to disk)
+- Writes: `doc:debug-diagnosis` (ephemeral — resolved from daemon state, not disk) and `FailureReport` (ephemeral)
 
 **Success criteria:** Diagnosis produced for each failed category in the
 FailureReport, with root causes derived from run artifacts.

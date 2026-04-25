@@ -478,6 +478,8 @@ plan, build, or fix. Your output feeds the next PLAN node.
 | .sle/runs/{id}/metrics/{category}.json | read | Metrics for failed categories |
 | .sle/runs/{id}/traces/{category}.jsonl | read | Trace spans for hot-path |
 | doc:architecture | read | Architecture context for understanding failure |
+| doc:debug-diagnosis | write | Ephemeral — injected into Planner context on retry |
+| FailureReport | write | Ephemeral — root cause diagnosis |
 
 Excluded: doc:requirements, doc:test-plan, passing category artifacts.
 

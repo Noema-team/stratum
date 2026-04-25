@@ -26,12 +26,13 @@ Wildcard form `node:*:architecture` loads the named artifact from every group
 
 The `scope` column in every table below is one of:
 
-| Scope | Meaning |
-|-------|---------|
-| `project` | Single instance per project. Lives under `docs/` or `.sle/`. |
-| `group` | One instance per feature group. Lives under the group's project-graph node. |
-| `run` | One instance per validation run. Lives under `.sle/runs/{id}/`. |
-| `system` | Daemon-maintained. Not produced by an agent role. |
+| Scope | Meaning | Resolution |
+|-------|---------|------------|
+| `project` | Single instance per project | `.sle/project-docs/{key}.md` or `docs/{key}.md` |
+| `group` | One instance per feature group | `.sle/project-graph/layers/{group}/{key}.md` |
+| `run` | One instance per validation run | `.sle/runs/{id}/{key}` |
+| `ephemeral` | In-memory, never persisted | Resolved from daemon state by scope |
+| `system` | Daemon-maintained. Not produced by an agent role. | — |
 
 ---
 
@@ -174,7 +175,8 @@ verdicts.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
-| `doc:debug-diagnosis` | markdown | project | Debugger | Root-cause diagnosis from run artifacts. References `manifest.json` and failed-category `context-pack.md` sections. Ephemeral — feeds next PLAN iteration, not persisted across cycles. Only produced on gate failure. |
+| `doc:debug-diagnosis` | markdown | ephemeral | Debugger | Ephemeral — feeds next PLAN iteration, only on gate failure. Resolved from daemon state, not persisted across cycles. |
+| `FailureReport` | json | ephemeral | Debugger | In-memory root-cause diagnosis injected into Planner context on retry. Never written to disk. |
 | `doc:evaluation` | markdown | project | Evaluator | Structured verdict: did implementation satisfy intent? Reads requirements, test-plan, and run artifacts. Consumed by Planner (next cycle) and Critic. Persists across cycles. |
 | `reports/validation-latest.html` | html | project | Daemon (gate pass) | Human-readable validation report. Links to previous versions. Overwritten each cycle. |
 | `reports/changelog-{version}.md` | markdown | project | Daemon (gate pass) | Cycle changelog. Versioned snapshot of what changed. |
@@ -327,7 +329,8 @@ maps each of the 10 agent roles to the artifacts they produce.
 
 | Output | Scope | Notes |
 |--------|-------|-------|
-| `doc:debug-diagnosis` | project | Ephemeral. Only on VALIDATION gate failure. Feeds next PLAN iteration. |
+| `doc:debug-diagnosis` | ephemeral | Ephemeral. Only on VALIDATION gate failure. Feeds next PLAN iteration. |
+| `FailureReport` | ephemeral | In-memory root-cause diagnosis injected into Planner context on retry. |
 
 ### Evaluator (EVALUATE node)
 
