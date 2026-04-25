@@ -108,9 +108,9 @@ export type LLMProvider = 'openai_compatible' | 'anthropic'
 Supported LLM provider backends.
 
 ```typescript
-export type ArtifactScope = 'project' | 'group'
+export type ArtifactScope = 'project' | 'group' | 'run' | 'ephemeral'
 ```
-⚡ **DDR-025.** Whether an artifact is project-level or group-level.
+⚡ **DDR-025.** Artifact resolution scope. `run` artifacts live under `.sle/runs/{id}/`; `ephemeral` artifacts are in-memory daemon state, never persisted to disk.
 
 ```typescript
 export type ArtifactRef = `doc:${string}` | `node:${string}:${string}`
@@ -248,8 +248,8 @@ export enum DAGNode {
   INTENT = 'INTENT',
   CONTEXT_ASSEMBLY = 'CONTEXT_ASSEMBLY',
   EXPLORE = 'EXPLORE',
-  CRITIQUE = 'CRITIQUE',
   DESIGN = 'DESIGN',
+  CRITIQUE = 'CRITIQUE',
   PLAN = 'PLAN',
   TEST = 'TEST',
   SHARDING_APPROVAL = 'SHARDING_APPROVAL',
@@ -314,14 +314,14 @@ export interface CycleState {
 ```typescript
 export interface ArtifactRule {
   id: string
-  path: string
+  path?: string
   generator: GeneratorRole
   required: boolean
   append_only: boolean
   format: ArtifactFormat
 }
 ```
-Artifact declaration in `artifacts.yaml`.
+Artifact declaration in `artifacts.yaml`. Ephemeral artifacts omit `path` — resolved from in-memory daemon state, not disk.
 
 ```typescript
 export interface GeneratedOutputRule {
@@ -894,7 +894,7 @@ export const ValidationSchema = z.object({
 ```typescript
 const ArtifactRuleSchema = z.object({
   id: z.string().min(1),
-  path: z.string().min(1),
+  path: z.string().min(1).optional(),
   generator: z.enum([
     'designer', 'explorer', 'planner', 'tester', 'builder',
     'debugger', 'evaluator', 'critic', 'historian', 'facilitator', 'discovery',

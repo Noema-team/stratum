@@ -227,25 +227,24 @@ export interface ContainerConfig {
 ```typescript
 export interface ArtifactRule {
   id: string
-  path: string
-  generator: 'designer' | 'explorer' | 'planner' | 'builder' | 'historian' | 'evaluator' | 'critic' | 'facilitator' | 'discovery'
+  path?: string
+  generator: 'designer' | 'explorer' | 'planner' | 'tester' | 'builder' | 'debugger' | 'historian' | 'evaluator' | 'critic' | 'facilitator' | 'discovery'
   required: boolean
   append_only: boolean
   format: 'markdown' | 'json' | 'yaml'
 }
-
-export interface GeneratedOutputRule {
-  id: string
-  path: string
-  type: 'executable' | 'html' | 'markdown'
-  generated_at: 'gate_pass' | 'cycle_end' | 'always'
-}
-
-export interface ArtifactsConfig {
-  artifacts: ArtifactRule[]
-  generated_outputs: GeneratedOutputRule[]
-}
 ```
+
+Ephemeral artifacts omit `path` — resolved from in-memory daemon state, not disk.
+
+**Artifact scope resolution:**
+
+| Scope | Resolution strategy |
+|-------|---------------------|
+| `project` | `.sle/project-docs/{key}.md` or `docs/{key}.md` |
+| `group` | `.sle/project-graph/layers/{group}/{key}.md` |
+| `run` | `.sle/runs/{id}/{key}` |
+| `ephemeral` | In-memory daemon state (no disk path) |
 
 ### ExitConfig
 
@@ -521,7 +520,7 @@ BUILD starts.
 |---|---|---|---|---|
 | `requirements` | `docs/requirements.md` | designer | Yes | No |
 | `architecture` | `docs/architecture.md` | designer | Yes | No |
-| `test_plan` | `docs/test-plan.md` | planner | Yes | No |
+| `test-plan` | `docs/test-plan.md` | planner | Yes | No |
 | `plan` | `docs/plan.md` | planner | Yes | No |
 | `decisions` | `docs/decisions.md` | historian | Yes | Yes |
 | `evaluation` | `docs/evaluation.md` | evaluator | Yes | No |
