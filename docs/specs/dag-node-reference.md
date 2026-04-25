@@ -2,9 +2,46 @@
 
 **Type:** spec · **Status:** draft · **Updated:** 2026-04-17
 **Parent:** [dag-execution.md](dag-execution.md)
+**Depends on:** [types.md](types.md), [dag-execution.md](dag-execution.md)
+**Source material:** SLE-002 (split from dag-execution.md)
 
-Detailed definitions for all 17 DAG nodes. For flow diagrams, iteration rules,
-and API contracts, see the parent spec.
+## Overview
+
+This spec is the per-node reference for all 17 DAG nodes that make up one cycle
+iteration. Nodes span four layers — L1 (Interface), L2 (Daemon), L3 (Agent
+Runtime), and L4 (Execution Plane) — and are executed in strict sequence by the
+daemon's DAG runner. Each node definition specifies its layer, agent role,
+conditional activation rules, inputs, outputs, success criteria, and failure
+handling. For flow diagrams, iteration rules, retry semantics, and the overall
+API contracts, see the parent spec [dag-execution.md](dag-execution.md).
+
+## Data model
+
+The canonical `DAGNode` enum is defined in [types.md](types.md) §5. All 17
+values, in execution order:
+
+| # | Node | Conditional? | Activation condition |
+|---|------|-------------|----------------------|
+| 1 | `INTENT` | No | — |
+| 2 | `CONTEXT_ASSEMBLY` | No | — |
+| 3 | `EXPLORE` | Yes | `intent.explore === true` (DDR-023) |
+| 4 | `DESIGN` | No | — |
+| 5 | `CRITIQUE` | Yes | `planning.depth` is `deep` or `research` |
+| 6 | `PLAN` | No | — |
+| 7 | `TEST` | No | — |
+| 8 | `SHARDING_APPROVAL` | Yes | Planner produced a sharding proposal (DDR-026) |
+| 9 | `CONFIRM` | Yes | `user_validation.yaml → approval_required` is true |
+| 10 | `BUILD` | No | — |
+| 11 | `HISTORY` | No | — |
+| 12 | `EXEC` | No | — |
+| 13 | `VALIDATION_GATE` | No | — |
+| 14 | `DEBUG` | Yes | VALIDATION_GATE outcome is fail |
+| 15 | `EVALUATE` | No | — |
+| 16 | `SUMMARISE` | No | — |
+| 17 | `SNAPSHOT` | No | — |
+
+Six nodes are conditional. When a conditional node is skipped, the daemon
+advances to the next node without incrementing the iteration counter.
 
 ## Node definitions
 
@@ -749,4 +786,42 @@ to `complete`.
 written locally and the commit is retried. The cycle is still considered
 complete — the snapshot exists in `map.yaml`. A background process handles
 the push.
+
+## Constraints
+
+These constraints apply across multiple nodes and are stated here as a
+consolidated reference to avoid repetition in individual node definitions.
+
+1. **Single active cycle.** Only one cycle is active at a time. INTENT rejects
+   with 409 `session_conflict` if `meta.status ≠ idle`. The daemon enforces
+   this at L2.
+2. **TDD separation (Tester vs Builder).** The Tester never sees architecture
+   or implementation. The Builder never sees Tester reasoning. They share only
+   `requirements.md` and `test-plan.md`. This separation is enforced by the
+   context manager's artifact slicing.
+3. **Designer ownership.** The Designer is the sole writer of `architecture.md`
+   and `requirements.md` (DDR-019). No other role modifies these artifacts.
+4. **Critic is advisory, not blocking.** If the Critic cannot resolve all
+   blocking issues within the pass limit, the cycle proceeds with warnings.
+   The Critic never halts the DAG at the system level.
+5. **Revision ≠ iteration.** Plan modifications at the CONFIRM gate increment
+   the `revision` counter, not the `iteration` counter. The iteration counter
+   increments only on VALIDATION_GATE failure.
+6. **EXPLORE is user-initiated only.** The EXPLORE node is never auto-triggered
+   by daemon heuristics or planning depth (DDR-023). It activates only when
+   `intent.explore === true`.
+7. **VALIDATION_GATE is deterministic.** No LLM involvement. Pure boolean
+   logic: all active categories must pass. The daemon applies this at L2.
+8. **History is non-blocking.** If the Historian cannot append to `decisions.md`,
+   the cycle continues. The entry is reconstructed from DAG history.
+9. **Context budget cap.** Every agent call receives at most 3,500 tokens in its
+   assembled context. The context manager truncates slices as needed and records
+   what was truncated.
+
+## Open questions
+
+No open questions specific to individual node definitions. See
+[dag-execution.md](dag-execution.md) for DAG-level open questions including
+iteration cap defaults, Critic pass-limit tuning, and the Historian's long-term
+role (structured logging vs append-only markdown).
 

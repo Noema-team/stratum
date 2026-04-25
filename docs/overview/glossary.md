@@ -3,14 +3,57 @@
 **Type:** overview · **Status:** draft · **Updated:** 2026-04-22
 **Related:** [what-is-sle.md](what-is-sle.md)
 
-## What this is
+## Why it exists
 
 A single source of truth for every term used across the SLE v2 documentation.
 When two documents use the same word differently, this document is the
 tiebreaker. If a term is not listed here, it has not been formally defined.
 
-Terms are listed alphabetically. Each entry has a one-line definition and a
-pointer to the spec or decision record that covers it in detail.
+The glossary resolves terminology drift across 22 spec files and 7 reference
+docs. Terms like "tier" vs "layer", "cycle" vs "session", "depth" vs "planning
+mode", and "artifact" vs "document" have been used inconsistently in earlier
+drafts; this file anchors canonical forms. Each entry has a one-line definition
+and a pointer to the spec or decision record that covers it in detail.
+
+## Key ideas
+
+The most contested and frequently confused terms in the documentation set:
+
+**Tier vs Layer.** Two unrelated concepts that shared the word "layer" until
+DDR-004 resolved the collision. **Tier** now refers exclusively to the
+platform-architecture stack (Tiers 0–4: Host, Interface, Daemon, Agent Runtime,
+Execution Plane). **Layer** refers exclusively to lifecycle content categories
+within a knowledge-graph group (Research, Spikes, Design, Plans, Implementation,
+Code, Notes, Hosting). See [Contested terms → G03](#g03--layer-naming-collision)
+and [architecture.md](architecture.md).
+
+**Cycle vs Session.** A **cycle** is one complete pass from user intent through
+the DAG to a validated, versioned artifact snapshot (or clean halt). A
+**session** is one unit of interaction with the system — of which there are
+three types: discovery, chat, and cycle. A session may contain zero or more
+cycles. See [cycle-model.md](cycle-model.md), SLE-002.
+
+**Depth vs Planning mode.** **Planning depth** is the canonical term for the
+configuration controlling reasoning passes, Critic activation, and artifact
+slice size. Four levels: `minimal | standard | deep | research`. Do not use
+"planning mode" — it is deprecated. See SLE-004.
+
+**Artifact vs Document.** An **artifact** is a versioned file produced by a
+role or the daemon, tracked by the artifact store with a known location and
+schema. A **document** is a project-scoped entity in the knowledge graph living
+in `.sle/project-docs/`. All artifacts are documents, but not all documents are
+artifacts. See DDR-013.
+
+## How it fits
+
+This glossary supports the broader overview documentation set:
+
+- [agent-roles.md](agent-roles.md) — canonical definitions for all agent roles
+  and their responsibilities
+- [architecture-overview.md](architecture-overview.md) — the five-tier platform
+  architecture and data-flow model
+- [what-is-sle.md](what-is-sle.md) — high-level product description and
+  motivation
 
 ---
 
@@ -218,3 +261,12 @@ the tier/layer split:
 | Rename lifecycle layers to "bands" | Unconventional term; adds a novel concept where an existing one ("layer") already fits naturally |
 | Keep both as "layer" with mandatory qualifiers | Prone to dropped qualifiers over time; readers will skim past the adjective and land on the noun |
 | Rename platform layers to "stack levels" | Verbose; "stack level" is not a widely used term in architecture literature. "Tier" is more conventional |
+
+## See also
+
+- [types.md](../specs/types.md) — canonical type definitions for all enums,
+  interfaces, and data structures referenced in this glossary
+- [state-machine.md](../specs/state-machine.md) — state terminology and
+  transition definitions (`SystemStatus`, cycle states, gate outcomes)
+- [context-manager.md](../specs/context-manager.md) — loading mode
+  terminology (declared mode vs inferred mode, artifact slicing)
