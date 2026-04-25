@@ -1,6 +1,6 @@
 # Daemon API — Endpoints
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-25
+**Type:** spec · **Status:** draft · **Updated:** 2026-04-25 · **Depends on:** DDR-005, DDR-013, DDR-020, DDR-024, DDR-025, DDR-026
 
 > This document contains all REST endpoint definitions for the SDK daemon API.
 > For architecture overview, data model, authentication, error handling,
@@ -1923,6 +1923,7 @@ Request:
   "trigger_type": "on_demand" | null,
   "filter": {
     "nodeTypes": string[] | null,
+    "states": NodeState[] | null,
     "group_id": string | null
   } | null
 }
@@ -2150,6 +2151,15 @@ Response 202:
   "data": {
     "status": "reindexing",
     "started_at": string
+  }
+}
+
+Response 409:
+{
+  "ok": false,
+  "error": {
+    "code": "reindex_in_progress",
+    "message": "A reindex is already in progress."
   }
 }
 ```
