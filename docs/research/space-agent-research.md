@@ -332,8 +332,8 @@ This creates a **project-specific institutional memory** that improves with ever
 
 | Document | Relationship |
 |---|---|
-| [hermes-stratum-integration.md](hermes-stratum-integration.md) | Hermes integration levels, including self-improving prompts concept |
-| [stratum-comparative-analysis.md](stratum-comparative-analysis.md) | Hermes vs Stratum comparison, gaps, skills layer proposal |
+| [hermes-stratum-integration.md](../ideas/hermes-stratum-integration.md) | Hermes integration levels, including self-improving prompts concept |
+| [stratum-comparative-analysis.md](../ideas/stratum-comparative-analysis.md) | Hermes vs Stratum comparison, gaps, skills layer proposal |
 | [hermes-agent-architecture.md](hermes-agent-architecture.md) | Hermes skill system (alternative approach to prompt includes) |
 | [../overview/what-is-sle.md](../overview/what-is-sle.md) | SLE core concepts |
 | [../overview/agent-roles.md](../overview/agent-roles.md) | All 10 agent roles with artifact ownership |

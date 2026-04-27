@@ -1,15 +1,14 @@
 # Ideas Index
 
-Research and analysis documents for patterns worth considering in Stratum.
+Proposals and analysis for Stratum's architecture and features.
+
+See [../research/](../research/) for external system research (Hermes, browser-harness, Space Agent).
 
 | Doc | Description |
 |-----|-------------|
-| [hermes-agent-architecture.md](hermes-agent-architecture.md) | Full architecture deep-dive of Hermes agent (agent loop, skills, memory, tools) |
-| [browser-harness-architecture.md](browser-harness-architecture.md) | Architecture of browser-harness (~592 lines, CDP-based browser control) |
 | [stratum-comparative-analysis.md](stratum-comparative-analysis.md) | Hermes vs Stratum comparison, gaps identified, skills layer proposal, browser integration plan |
 | [hermes-stratum-integration.md](hermes-stratum-integration.md) | Naming discussion, 3-level Hermes integration analysis (borrow concepts, custom skill, deep runtime integration) |
 | [platform-flexibility-vision.md](platform-flexibility-vision.md) | Open-source roadmap: opinionated dev tool → configurable workflow platform |
-| [space-agent-research.md](space-agent-research.md) | Space Agent (agent0ai) research — browser-first agent runtime, prompt includes, L0/L1/L2 layers, borrowing analysis |
 | [ideal-state-and-validation-vision.md](ideal-state-and-validation-vision.md) | Full system vision, validation model assessment, dynamic category selection, optimization/telemetry system proposal |
 
 ## Key takeaways

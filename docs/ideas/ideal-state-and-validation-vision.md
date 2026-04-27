@@ -522,4 +522,4 @@ This gets loaded into every future Planner and Builder call. The validation syst
 | [overview/agent-roles.md](../overview/agent-roles.md) | All 10 agent roles |
 | [overview/cycle-model.md](../overview/cycle-model.md) | DAG execution model |
 | [hermes-stratum-integration.md](hermes-stratum-integration.md) | Hermes integration levels |
-| [space-agent-research.md](space-agent-research.md) | Prompt includes, self-writing memory |
+| [space-agent-research.md](../research/space-agent-research.md) | Prompt includes, self-writing memory |

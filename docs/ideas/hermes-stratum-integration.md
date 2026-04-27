@@ -240,7 +240,7 @@ Selected at daemon start via config. Both produce the same `AgentOutput` type. T
 | Document | Relationship |
 |---|---|
 | [stratum-comparative-analysis.md](stratum-comparative-analysis.md) | Earlier Hermes vs Stratum comparison, gaps, skills layer proposal |
-| [hermes-agent-architecture.md](hermes-agent-architecture.md) | Hermes architecture deep dive |
+| [hermes-agent-architecture.md](../research/hermes-agent-architecture.md) | Hermes architecture deep dive |
 | [../developmentPlan/hermes-agent.md](../developmentPlan/hermes-agent.md) | Hermes as the autonomous builder for Stratum |
 | [../developmentPlan/hermes-skills-and-tools-research.md](../developmentPlan/hermes-skills-and-tools-research.md) | Hermes built-in dev skills, tools runtime, 53 tools reference |
 | [../developmentPlan/hermes-official-docs-research.md](../developmentPlan/hermes-official-docs-research.md) | Hermes agent loop, prompt assembly, context engine, MCP, cron |
