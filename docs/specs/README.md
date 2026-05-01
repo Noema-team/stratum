@@ -22,8 +22,8 @@ Primary build reference — what to implement.
 | [run-artifacts.md](run-artifacts.md) | Run directory, manifest.json, context-pack |
 | [prompt-templates.md](prompt-templates.md) | System prompts per role (all 10) |
 | [conversation.md](conversation.md) | Chat mode, Facilitator, decision capture |
-| [ui-shell.md](ui-shell.md) | Navigation, pages, component model |
-| [tasks-dashboard.md](tasks-dashboard.md) | Modular widgets, AI assistant, scratchpad |
-| [project-overview.md](project-overview.md) | Knowledge graph, lifecycle layers, groups |
-| [backlog-system.md](backlog-system.md) | Backlog extraction, auto-grouping, promotion |
-| [user-flow.md](user-flow.md) | First-open states, entry points, session flow |
+| [ui-shell.md](ui-shell.md) | Three-page navigation shell, gate overlays, component model |
+| [tasks-dashboard.md](tasks-dashboard.md) | Widget-based dashboard, 3-level task system, Kanban, quick-write |
+| [project-overview.md](project-overview.md) | Project graph with 8 lifecycle layers, groups, hosting planner |
+| [backlog-system.md](backlog-system.md) | Markdown-first backlog system with Beads promotion (post-MVP) |
+| [user-flow.md](user-flow.md) | End-to-end user flows, gate interactions, resolves G2/G3 |
