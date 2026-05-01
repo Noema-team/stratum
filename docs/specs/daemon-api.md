@@ -194,7 +194,7 @@ are emitted as `error` events (event §8.1 in websocket-events.md).
 All REST endpoint definitions (request/response schemas, status codes, error
 codes) are documented in [daemon-api-endpoints.md](daemon-api-endpoints.md).
 
-The daemon exposes 85 endpoints across 19 groups covering health checks, system
+The daemon exposes 85 endpoints across 18 groups covering health checks, system
 state, init, discovery, cycles, sharding, dispatch, artifacts, map/rules,
 reports, chat, context, tasks, intake, knowledge engine, content store,
 modules, and document linking.
