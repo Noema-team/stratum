@@ -7,8 +7,13 @@
 
 ## Overview
 
-The tasks dashboard is the primary project-level view in the SLE web UI. It
-combines two capabilities on a single screen:
+The tasks dashboard is the content layer of the Overview page (see
+ui-shell.md). It provides the extensible widget system that renders alongside
+the fixed panels (Actions Required, Active Jobs, Tasks, Sharding Review, Recent
+Activity, Documents). The page chrome, navigation, and fixed-panel layout are
+defined in ui-shell.md; this spec covers only the dashboard content area.
+
+The dashboard combines two capabilities:
 
 1. **Multi-level task system** — tasks scoped to nodes, groups, or the whole
    project, with lifecycle tracking, Beads sync, and AI-suggested task flows.
@@ -17,9 +22,9 @@ combines two capabilities on a single screen:
    drag-and-drop.
 
 The dashboard consumes the daemon API exclusively (daemon-api-endpoints.md) and
-receives real-time updates over the daemon's WebSocket connection. It does not
-implement business logic — all mutations are dispatched to the daemon and
-reflected via events.
+receives real-time updates over the daemon's single WebSocket connection
+(`ws://localhost:7700/events`). It does not implement business logic — all
+mutations are dispatched to the daemon and reflected via events.
 
 The layout is persisted to `.sle/dashboard/` as JSON files, enabling
 version-controlled dashboard configurations per user per project. The widget
@@ -36,6 +41,12 @@ The dashboard's task model extends the daemon's `SLETask` (beads-integration.md)
 with level scoping, priority ranking, pinning, and source attribution.
 
 ```typescript
+interface TaskLink {
+  target_type: 'artifact' | 'document' | 'task' | 'cycle'
+  target_id: string
+  relationship: 'blocks' | 'blocked_by' | 'related_to' | 'produces' | 'consumes'
+}
+
 interface Task {
   id: string
   title: string
@@ -45,11 +56,14 @@ interface Task {
   priority: 'low' | 'medium' | 'high' | 'critical'
   pinned: boolean
   source: 'user' | 'cycle' | 'ai_suggestion'
+  assignee: string | null
   parent_group_id?: string
   parent_node_id?: string
   suggested?: boolean
+  links: TaskLink[]
   created_at: string
   updated_at: string
+  completed_at: string | null
 }
 ```
 
@@ -526,7 +540,9 @@ The AI assistant widget provides project-aware chat:
 2. Dashboard calls `POST /api/v2/chat/session/open`
 3. User types query or selects a suggested action
 4. Dashboard calls `POST /api/v2/chat/message`
-5. Response streams via SSE (Server-Sent Events)
+5. Response streams via WebSocket `chat.message` events on the shared
+   connection (`ws://localhost:7700/events`), with streaming tokens delivered
+   incrementally
 6. Action buttons in the response (e.g., "Create task", "Start cycle") dispatch
    to the appropriate API endpoint
 
@@ -860,22 +876,25 @@ event: link.index_updated
 }
 ```
 
-### SSE for AI assistant
+### WebSocket chat streaming
 
-The AI assistant panel uses Server-Sent Events for streaming responses:
+The AI assistant panel uses the shared WebSocket connection
+(`ws://localhost:7700/events`) for streaming chat responses:
 
 ```
-GET /api/v2/chat/stream (SSE)
-
-event: token
-data: { "content": string }
-
-event: action
-data: { "type": "create_task" | "start_cycle" | "pin_task", "params": object }
-
-event: done
-data: { "message_id": string }
+event: chat.message
+{
+  "session_id": string,
+  "message_id": string,
+  "delta": { "content": string },
+  "actions": Array<{ "type": "create_task" | "start_cycle" | "pin_task", "params": object }>,
+  "done": boolean
+}
 ```
+
+The `delta.content` field carries incremental tokens. When `done` is `true`, the
+message is complete and `message_id` is final. Action buttons are extracted from
+the `actions` array and rendered for user confirmation.
 
 ---
 

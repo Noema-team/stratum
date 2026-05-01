@@ -199,7 +199,7 @@ Document/node files
   → Item parser (splits into items, extracts inline tags)
   → Context enricher (resolves sourceId → group/layer via link index)
   → Backlog index (in-memory, rebuilt on startup or file change events)
-  → WebSocket push (overview panel subscribes to backlog updates)
+  → WebSocket push (Overview page subscribes to backlog updates — see ui-shell.md)
 ```
 
 **Section scanner:**
@@ -312,9 +312,9 @@ section and sort naturally by priority.
 
 ### UI components
 
-**Overview panel:**
+**Backlog widget (Overview page — see ui-shell.md §Overview page behavior):**
 
-A summary view showing top N items by priority, scoped to the current context.
+A summary view showing top N items by priority, scoped to the current context. The backlog widget is an extensible panel on the Overview page (the dashboard), alongside Active Work, Jobs Processing, Actions Required, and Sharding Review.
 
 - **Count line:** `"3 items in this group · 7 project-wide"`
 - **[by source ▾] dropdown:** switches grouping modes
@@ -606,7 +606,7 @@ event: backlog.item_appended
 
 | ID | Question | Impact | Status |
 |---|---|---|---|
-| BL-001 | Should the overview panel be a dedicated page or a mode within the Graph page? | UI architecture, navigation | Open |
+| BL-001 | Should the backlog be a dedicated panel on the Overview page (see ui-shell.md) or a mode within the Graph page? | UI architecture, navigation | Open |
 | BL-002 | Should promoted items be auto-removed from the default view (hidden unless "show promoted" is toggled)? | Default view clutter vs. completeness | Open |
 | BL-003 | Should backlog items support cross-linking to other items (e.g., "related to item in doc:architecture")? | Item connectivity, deduplication | Open |
 | BL-004 | Should the Planner agent be allowed to auto-promote items when it detects alignment with active work, or always require human confirmation? | Agent autonomy vs. control | Open |

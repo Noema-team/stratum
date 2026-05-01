@@ -8,6 +8,9 @@
 **Source material:** vision/SLE-016-project-overview.md
 **Resolves:** —
 
+> This spec defines the data model, interactions, and behavior of the Graph page.
+> The page chrome (navigation, overlays, status indicator) is defined in ui-shell.md.
+
 ## Overview
 
 The project overview is the central hub for understanding the system being built.
@@ -55,12 +58,12 @@ type LayerName =
 type LayerState = 'filled' | 'partial' | 'empty' | 'not_applicable'
 
 type NodeType =
-  | 'spike' | 'finding' | 'trade_off' | 'poc' | 'benchmark'
-  | 'requirement' | 'architecture' | 'design_decision'
+  | 'spike' | 'finding' | 'trade_off' | 'exploration' | 'poc' | 'benchmark'
+  | 'requirement' | 'architecture' | 'design_decision' | 'constraint'
   | 'plan' | 'task' | 'step'
   | 'module' | 'component' | 'service' | 'dependency'
   | 'source_file' | 'test_file' | 'config_file'
-  | 'note' | 'todo' | 'observation'
+  | 'note' | 'todo' | 'observation' | 'experiment'
   | 'docker_config' | 'env_config' | 'health_check' | 'deployment'
 
 type EdgeType = 'depends_on' | 'informed_by' | 'shares_code' | 'blocks' | 'related'
@@ -466,12 +469,12 @@ WebSocket events from the daemon.
 
 ## API contract
 
-daemon-api.md is the single source of truth for all REST endpoints. The
-endpoints below are specified here and will be added to daemon-api.md.
+daemon-api-endpoints.md is the single source of truth for all REST endpoint definitions. The
+endpoints below are specified here and will be added to daemon-api-endpoints.md.
 
 ### Cross-reference table
 
-| Endpoint | Method | Purpose | daemon-api.md section |
+| Endpoint | Method | Purpose | daemon-api-endpoints.md section |
 |----------|--------|---------|----------------------|
 | `/api/v2/graph/groups` | GET | List all groups with health summaries | Project graph |
 | `/api/v2/graph/groups/{id}` | GET | Single group with full layer data | Project graph |
@@ -490,6 +493,8 @@ endpoints below are specified here and will be added to daemon-api.md.
 | `/api/v2/graph/statistics/refresh` | POST | Force statistics recomputation | Project graph |
 | `/api/v2/graph/refresh` | POST | Force full graph re-read from store | Project graph |
 | `/api/v2/graph/hosting/{group_id}/plan` | POST | Send a message to the hosting planner conversation | Project graph |
+| `/api/v2/cycles/{cycle_id}/lock-snapshot` | POST | Lock cycle snapshot (gate pass) — triggers graph refresh on completion | Cycles (user-flow.md) |
+| `/api/v2/cycles/{cycle_id}/run-tests-locally` | POST | Run tests locally (gate pass) — cycle completion triggers graph update | Cycles (user-flow.md) |
 
 ### List groups
 
@@ -767,6 +772,42 @@ event: graph.refreshed
   "timestamp": string
 }
 ```
+
+### Gate pass endpoints (from user-flow.md)
+
+Cycle completion triggers graph updates (incremental refresh of affected
+groups). The Graph page listens for these gate pass endpoints defined in
+user-flow.md:
+
+```
+POST /api/v2/cycles/{cycle_id}/lock-snapshot
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "snapshot_id": string,
+    "locked_at": string
+  }
+}
+```
+
+```
+POST /api/v2/cycles/{cycle_id}/run-tests-locally
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "test_run_id": string,
+    "status": "running",
+    "started_at": string
+  }
+}
+```
+
+On cycle completion, the daemon emits a `graph.refreshed` WebSocket event
+and the Graph page performs an incremental refresh of affected groups.
 
 ## Error cases
 

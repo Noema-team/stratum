@@ -126,7 +126,7 @@ Rendered as `[● live]` in the UI shell when `connected = true` and
 
 | Entry point | Default surface | Primary content |
 |---|---|---|
-| App open | Overview | Active Jobs, Tasks, Documents, Recent Activity |
+| App open | Overview | Actions Required, Active Jobs, Tasks, Sharding Review, Recent Activity, Documents |
 | Gate interrupt | Any surface (modal overlay) | Gate panel overlays active tab |
 | Standalone exploration | Chat | Free exchange with Facilitator |
 | Structure navigation | Graph | Nodes by group/layer → click to open or "ask about this" → Chat scoped |
@@ -140,9 +140,12 @@ follow this exact path — surfaces are freely switchable at any time.
 ```
 1. Open app
    │  Overview surface loads (default landing)
+   │  Actions Required panel shows pending gates (if any)
    │  Active Jobs panel shows running cycles
    │  Tasks panel shows available tasks
+   │  Sharding Review visible if sharding proposal pending
    │  Recent Activity shows latest changes
+   │  Documents panel shows recent changes
    │
 2. Cycle reaches CONFIRM gate
    │  Gate panel appears as modal overlay on active surface
@@ -153,6 +156,7 @@ follow this exact path — surfaces are freely switchable at any time.
    │  Explore ideas, make decisions
    │  No cycle needed — Facilitator reads discovery docs + knowledge base
    │  Decision detection may surface capture prompts
+   │  (captured to decisions.md; see decisions/DECISION-BRIEFS.md for format)
    │
 4. Gate pass panel appears (mid-chat, if cycle completes validation)
    │  Modal overlay on Chat surface
@@ -177,10 +181,17 @@ The default landing surface. Shows:
 
 | Panel | Content | Update mechanism |
 |---|---|---|
+| Actions Required | Gates, approvals, blocked issues | WebSocket `cycle.flag_changed`, gate events |
 | Active Jobs | Running cycles, current node, iteration count | WebSocket `node.started`, `node.completed` |
 | Tasks | Available tasks from Beads integration | WebSocket `cycle_complete` triggers auto-creation |
-| Documents | Recent document changes | WebSocket artifact events |
+| Sharding Review | Sharding proposals (conditional, visible only when pending) | WebSocket `cycle.awaiting_sharding_approval` |
 | Recent Activity | Timeline of cycle completions, decisions, snapshots | WebSocket events, aggregated on surface load |
+| Documents | Recent document changes | WebSocket artifact events |
+
+Below these fixed panels, the Overview page hosts the extensible widget
+dashboard defined in [tasks-dashboard.md](tasks-dashboard.md). The fixed panels
+and the widget dashboard together constitute the Overview page's content — there
+is no separate dashboard page.
 
 The Overview surface observes running cycles. It does not control them — cycle
 control actions (approve, halt, resume) are routed through the REST API, not
@@ -306,6 +317,7 @@ Chat with no cycle running:
    │  User asks questions, explores ideas
    │  Decision detection runs on user messages
    │  Capture suggestions surfaced for high-confidence decisions
+   │  (captured to decisions.md; see decisions/DECISION-BRIEFS.md for format)
    │
 3. User may initiate cycle from chat
    │  Natural language: "start a cycle for X"
@@ -517,7 +529,7 @@ independently.
    both meanings.
 
 7. **Approval actions via API only.** Cycle approval actions (approve, halt,
-   revise) are routed through the REST API from the Overview Actions panel or
+   revise) are routed through the REST API from the Actions Required panel on the Overview surface or
    gate panel overlays. The Facilitator cannot execute approval actions.
 
 8. **Single gate panel at a time.** At most one gate panel is visible. The

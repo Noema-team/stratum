@@ -5,7 +5,8 @@
 | Spec | Draft | 2026-05-01 |
 
 **Depends on:** daemon-api-endpoints.md, conversation.md, document-linking.md, run-artifacts.md, state-machine.md
-**Source material:** vision/SLE-020-ui-shell-navigation.md, decisions/DDR-026-ui-shell-architecture.md
+**Companion specs:** tasks-dashboard.md expands the Overview page; project-overview.md defines the Graph page data model and interactions; conversation.md defines Chat behavior; user-flow.md defines end-to-end navigation flows; backlog-system.md defines the backlog panel (post-MVP).
+**Source material:** vision/SLE-020-ui-shell-navigation.md, decisions/ddr-026-sharding-approval-ui.md
 **Resolves:** A4 (Web UI spec from Round 1)
 
 ## Overview
@@ -16,13 +17,15 @@ and consumes the daemon's REST API and WebSocket event stream to render live
 project state. The shell does not host business logic; it is a thin rendering
 layer over the daemon API defined in daemon-api-endpoints.md.
 
-Overview is the landing page and the only page where mutation happens. It
-surfaces four panels: active work (Beads tasks), jobs processing (live cycle
-progress), actions required (human gates that block the daemon), and sharding
-review. The Chat page is a persistent Facilitator conversation independent of
-cycle state — it can discuss a CONFIRM plan but cannot approve or halt one. The
-Graph page renders the committed project artifact graph as a force-directed
-layout, reflecting stable state only.
+The Overview page is the project dashboard and the only page where mutation
+happens. It combines fixed panels (Actions Required, Active Jobs, Tasks,
+Sharding Review, Recent Activity, Documents) with the extensible widget system
+defined in tasks-dashboard.md. Fixed panels always appear; widgets are
+user-configurable. The Chat page is a persistent Facilitator conversation
+independent of cycle state — it can discuss a CONFIRM plan but cannot approve or
+halt one. The Graph page renders the committed project artifact graph as a
+force-directed layout, reflecting stable state only. The Graph page data model
+is defined in project-overview.md.
 
 Gate panels are modal overlays, not page navigations. When the daemon emits
 `gate.awaiting_confirmation` or `cycle.awaiting_sharding_approval`, an overlay
@@ -53,6 +56,7 @@ interface ShellState {
 
 type OverlayKind =
   | 'confirm_gate'
+  | 'gate_pass'
   | 'sharding_approval'
   | 'artifact_detail'
 
@@ -68,10 +72,10 @@ type SystemStatus =
 is open. `active_overlay` is `null` unless a gate event arrives or the user
 selects a graph node that opens the detail panel.
 
-### Active-work panel data
+### Tasks panel data
 
 ```typescript
-interface ActiveWorkPanel {
+interface TasksPanel {
   tasks: Array<{
     id: string
     title: string
@@ -85,10 +89,10 @@ interface ActiveWorkPanel {
 Sourced from `GET /api/v2/tasks` and `GET /api/v2/tasks/ready`. Polled on page
 load and refreshed on `task.claimed` / `task.resolved` WebSocket events.
 
-### Jobs-processing panel data
+### Active Jobs panel data
 
 ```typescript
-interface JobsProcessingPanel {
+interface ActiveJobsPanel {
   cycles: Array<{
     cycle_id: string
     current_node: DAGNode
@@ -120,7 +124,7 @@ Populated initially from `GET /api/v2/cycles/{cycle_id}` and
 ```typescript
 interface ActionsRequiredPanel {
   gates: Array<{
-    kind: 'confirm' | 'sharding_approval'
+    kind: 'confirm' | 'gate_pass' | 'sharding_approval'
     cycle_id: string
     iteration: number
     revision: number
@@ -140,6 +144,42 @@ interface ActionsRequiredPanel {
 are derived from `GET /api/v2/system/state` (`awaiting_confirmation`,
 `awaiting_sharding_approval` fields) and WebSocket events
 `gate.awaiting_confirmation`, `cycle.awaiting_sharding_approval`.
+
+### Recent Activity panel data
+
+```typescript
+interface RecentActivityPanel {
+  events: Array<{
+    id: string
+    kind: 'cycle_completed' | 'artifact_updated' | 'task_created' | 'task_resolved'
+    summary: string
+    timestamp: string
+    cycle_id?: string
+    task_id?: string
+  }>
+}
+```
+
+Shows a reverse-chronological feed of cycle completions, artifact updates, and
+new/resolved tasks. Populated from WebSocket events and capped at the last 50
+entries.
+
+### Documents panel data
+
+```typescript
+interface DocumentsPanel {
+  recent_artifacts: Array<{
+    id: string
+    path: string
+    category: string
+    updated_at: string
+  }>
+}
+```
+
+Quick-access browser for recent artifacts. Sourced from
+`GET /api/v2/links` (artifact nodes sorted by recency). Clicking an artifact
+opens the `artifact_detail` overlay.
 
 ### Chat panel data
 
@@ -168,21 +208,13 @@ Facilitator response's `sources` field and current cycle state).
 
 ### Graph panel data
 
+The Graph page data model is defined in project-overview.md. The shell renders
+`ProjectGroup` nodes with their lifecycle layers, `LayerNode` items, and
+`ProjectEdge` connections. This interface provides only the shell-level
+rendering state.
+
 ```typescript
 interface GraphPanelState {
-  nodes: Array<{
-    id: string
-    label: string
-    type: 'document' | 'group' | 'artifact'
-    group: string | null
-    links_in: number
-    links_out: number
-  }>
-  edges: Array<{
-    source: string
-    target: string
-    kind: 'structural' | 'contextual' | 'manual'
-  }>
   layout: 'group' | 'layer' | 'radial'
   selected_node: string | null
 }
@@ -190,14 +222,14 @@ interface GraphPanelState {
 interface GraphDetailPanel {
   node_id: string
   label: string
-  type: 'document' | 'group' | 'artifact'
+  type: import('project-overview').NodeType
   scope: 'project' | 'group'
   artifact_path: string | null
   links: Array<{
     direction: 'inbound' | 'outbound'
     target_id: string
     target_label: string
-    kind: string
+    kind: import('project-overview').ProjectEdge['type']
   }>
   content_preview: string | null
 }
@@ -259,6 +291,26 @@ interface ShardingApprovalOverlay {
 Populated from `cycle.awaiting_sharding_approval` WebSocket event plus
 `GET /api/v2/cycles/{cycle_id}` for the full sharding proposal.
 
+### Gate pass overlay data
+
+```typescript
+interface GatePassOverlay {
+  cycle_id: string
+  iteration: number
+  validation_summary: {
+    categories_total: number
+    categories_passed: number
+    warnings: number
+  }
+  snapshot_ready: boolean
+}
+```
+
+Shown after all validation passes. The user reviews the summary and locks a
+snapshot. Populated from `gate.result` WebSocket event plus
+`GET /api/v2/cycles/{cycle_id}` for validation detail. Referenced by
+user-flow.md.
+
 ### DAGNode reference
 
 ```typescript
@@ -300,11 +352,11 @@ See dag-node-reference.md for full node definitions.
    ▼
 3. Initial data fetch (parallel)
    │  GET /api/v2/system/state    → ShellState.system_state
-   │  GET /api/v2/tasks           → ActiveWorkPanel.tasks
-   │  GET /api/v2/tasks/ready     → ActiveWorkPanel.tasks (merged)
+   │  GET /api/v2/tasks           → TasksPanel.tasks
+   │  GET /api/v2/tasks/ready     → TasksPanel.tasks (merged)
    │  GET /api/v2/links           → GraphPanelState.nodes, edges
    │  If session_open: GET /api/v2/chat/messages → ChatPanelState.messages
-   │  If cycling: GET /api/v2/cycles/{id}/dispatch → JobsProcessingPanel
+   │  If cycling: GET /api/v2/cycles/{id}/dispatch → ActiveJobsPanel
    │
    ▼
 4. Render Overview page (default landing page)
@@ -312,19 +364,19 @@ See dag-node-reference.md for full node definitions.
    ▼
 5. Event loop — WebSocket messages drive re-renders
    │  system.state_changed        → ShellState.system_state
-   │  cycle.started               → JobsProcessingPanel (add cycle)
-   │  cycle.completed             → JobsProcessingPanel (remove cycle)
-   │  cycle.halted                → JobsProcessingPanel (update)
-   │  dispatch.progress           → JobsProcessingPanel (agent progress)
-   │  node.started / node.completed → JobsProcessingPanel (DAG progress)
+   │  cycle.started               → ActiveJobsPanel (add cycle)
+   │  cycle.completed             → ActiveJobsPanel (remove cycle)
+   │  cycle.halted                → ActiveJobsPanel (update)
+   │  dispatch.progress           → ActiveJobsPanel (agent progress)
+   │  node.started / node.completed → ActiveJobsPanel (DAG progress)
    │  gate.awaiting_confirmation  → ActionsRequiredPanel + overlay
    │  cycle.awaiting_sharding_approval → ActionsRequiredPanel + overlay
-   │  validation.progress         → JobsProcessingPanel (validation)
+   │  validation.progress         → ActiveJobsPanel (validation)
    │  chat.message                → ChatPanelState.messages (append)
    │  chat.session_changed        → ChatPanelState.session_open
    │  link.index_updated          → GraphPanelState (re-fetch links)
-   │  run.artifact_written        → JobsProcessingPanel (progress)
-   │  task.claimed / task.resolved → ActiveWorkPanel (re-fetch tasks)
+   │  run.artifact_written        → ActiveJobsPanel (progress)
+   │  task.claimed / task.resolved → TasksPanel (re-fetch tasks)
    │
    ▼
 6. User navigates between pages via nav bar
@@ -345,15 +397,15 @@ See dag-node-reference.md for full node definitions.
 └────────────────────────────────────────────────────────────────────┘
       │                  │          │
       ▼                  ▼          ▼
- Overview page      Chat page    Graph page
- ┌────────────┐    ┌──────────┐  ┌──────────────┐
- │ Active Work │    │ History  │  │ Force-directed│
- │ Jobs Proc.  │    │ Context  │  │ graph canvas  │
- │ Actions Req │    │ Input    │  │ Layout toggle │
- │ Sharding    │    │          │  │               │
- └────────────┘    └──────────┘  └──────┬────────┘
-                                         │ node click
-                                         ▼
+  Overview page      Chat page    Graph page
+  ┌────────────┐    ┌──────────┐  ┌──────────────┐
+  │ Actions Req│    │ History  │  │ Force-directed│
+  │ Active Jobs│    │ Context  │  │ graph canvas  │
+  │ Tasks      │    │ Input    │  │ Layout toggle │
+  │ Sharding   │    │          │  │               │
+  │ Recent Act │    └──────────┘  └──────┬────────┘
+  │ Documents  │                        │
+  └────────────┘                        ▼
                                    Detail panel
                                    (replaces canvas)
 
@@ -382,25 +434,36 @@ task detail, and acknowledging state changes.
 │ │   [Review & Approve] [Modify] [Halt]        │ │
 │ └─────────────────────────────────────────────┘ │
 │                                                  │
-│ ┌─ Jobs Processing ──────────────────────────┐  │
-│ │ Cycle 4 · BUILD · iter 2 · rev 0           │  │
-│ │ Builder: ████████░░ 80% · 45s elapsed      │  │
-│ │ Validation:                                  │  │
-│ │   correctness: ✓ passed                     │  │
-│ │   performance: ● running                    │  │
-│ │   security: ○ pending                       │  │
-│ └─────────────────────────────────────────────┘  │
+│ ┌─ Active Jobs ──────────────────────────────┐   │
+│ │ Cycle 4 · BUILD · iter 2 · rev 0           │   │
+│ │ Builder: ████████░░ 80% · 45s elapsed      │   │
+│ │ Validation:                                  │   │
+│ │   correctness: ✓ passed                     │   │
+│ │   performance: ● running                    │   │
+│ │   security: ○ pending                       │   │
+│ └─────────────────────────────────────────────┘   │
 │                                                  │
-│ ┌─ Active Work ──────────────────────────────┐   │
+│ ┌─ Tasks ────────────────────────────────────┐   │
 │ │ #T-31 Rate limiter refactor · in_progress  │   │
 │ │   assigned: Builder · age: 2h              │   │
 │ │ #T-32 Auth middleware · open · ready       │   │
 │ │ #T-33 Logging cleanup · blocked → #T-31   │   │
-│ └─────────────────────────────────────────────┘  │
+│ └─────────────────────────────────────────────┘   │
 │                                                  │
 │ ┌─ Sharding Review ──────────────────────────┐   │
 │ │ (empty when no sharding proposal pending)  │   │
-│ └─────────────────────────────────────────────┘  │
+│ └─────────────────────────────────────────────┘   │
+│                                                  │
+│ ┌─ Recent Activity ──────────────────────────┐   │
+│ │ Cycle 3 completed · 12m ago                │   │
+│ │ Artifact: auth-middleware.md · 34m ago     │   │
+│ │ Task #T-29 resolved · 1h ago              │   │
+│ └─────────────────────────────────────────────┘   │
+│                                                  │
+│ ┌─ Documents ────────────────────────────────┐   │
+│ │ architecture.md · updated 34m ago          │   │
+│ │ rate-limiting.md · updated 1h ago          │   │
+│ └─────────────────────────────────────────────┘   │
 │                                                  │
 └──────────────────────────────────────────────────┘
 ```
@@ -409,11 +472,22 @@ Panel priority order (top to bottom):
 
 1. **Actions Required** — always first, highest priority. Shows gates, blocked
    issues, and human decisions. Empty panel is hidden (not shown as blank).
-2. **Jobs Processing** — live cycle progress. Empty when no cycle is active.
-3. **Active Work** — Beads tasks. Always shown, even when empty ("No active
-   tasks").
+2. **Active Jobs** — live cycle progress. Empty when no cycle is active.
+   Renamed from "Jobs Processing" to align with user-flow.md terminology.
+3. **Tasks** — Beads tasks. Always shown, even when empty ("No active tasks").
+   Renamed from "Active Work" to align with user-flow.md terminology.
 4. **Sharding Review** — only visible when `awaiting_sharding_approval` is true
    or a sharding proposal exists from the current cycle.
+5. **Recent Activity** — reverse-chronological feed of cycle completions,
+   artifact updates, and task changes. Always visible, capped at last 50
+   entries. Added per user-flow.md reference.
+6. **Documents** — quick-access browser for recent artifacts. Always visible.
+   Clicking an artifact opens the `artifact_detail` overlay. Added per
+   user-flow.md reference.
+
+The Overview page combines these fixed panels with the extensible widget system
+defined in tasks-dashboard.md. Fixed panels always appear; widgets are
+user-configurable.
 
 ### Actions-required panel flow
 
@@ -563,8 +637,9 @@ User closes browser or session timeout
 ```
 
 **Graph data source:** `GET /api/v2/links` returns the full link index from
-document-linking.md. Nodes are documents and group-scoped artifacts. Edges are
-structural, contextual, and manual links.
+document-linking.md. Node and edge types are defined in project-overview.md
+(`NodeType` union and `ProjectEdge.type`). The shell renders `ProjectGroup`
+nodes with their lifecycle layers as a force-directed layout.
 
 **Committed state only.** The graph reflects artifacts that have been committed
 to the project (via SNAPSHOT node completing). In-progress cycle work does not
@@ -665,7 +740,7 @@ Sharding Review panel becomes visible on Overview page
   ├── [Approve]
   │     POST /api/v2/cycles/{cycle_id}/sharding/approve
   │     On 200: overlay closes, Beads tasks created, cycle proceeds
-  │     Active Work panel updates with new tasks
+  │     Active Jobs panel updates with new tasks
   │
   ├── [Reject]
   │     POST /api/v2/cycles/{cycle_id}/sharding/reject
@@ -714,26 +789,26 @@ Browser opens WebSocket to ws://localhost:7700/events
 | Event | Target panel | Effect |
 |---|---|---|
 | `system.state_changed` | Nav bar status indicator | Update `system_state`, re-render status |
-| `cycle.started` | Jobs Processing | Add cycle entry, render DAG progress |
-| `cycle.completed` | Jobs Processing | Remove cycle entry, clear gate if present |
-| `cycle.halted` | Jobs Processing | Update cycle status to halted |
-| `node.started` | Jobs Processing | Update current DAG node, reset progress |
-| `node.completed` | Jobs Processing | Update node outcome, advance node |
-| `dispatch.progress` | Jobs Processing | Update agent progress bar and elapsed time |
-| `validation.progress` | Jobs Processing | Update per-category validation status |
-| `run.artifact_written` | Jobs Processing | Increment artifact count in progress |
+| `cycle.started` | Active Jobs | Add cycle entry, render DAG progress |
+| `cycle.completed` | Active Jobs | Remove cycle entry, clear gate if present |
+| `cycle.halted` | Active Jobs | Update cycle status to halted |
+| `node.started` | Active Jobs | Update current DAG node, reset progress |
+| `node.completed` | Active Jobs | Update node outcome, advance node |
+| `dispatch.progress` | Active Jobs | Update agent progress bar and elapsed time |
+| `validation.progress` | Active Jobs | Update per-category validation status |
+| `run.artifact_written` | Active Jobs | Increment artifact count in progress |
 | `gate.awaiting_confirmation` | Actions Required + Overlay | Add CONFIRM gate, auto-open overlay |
 | `cycle.awaiting_sharding_approval` | Actions Required + Overlay + Sharding | Add sharding gate, show panels |
 | `chat.message` | Chat | Append message to history |
 | `chat.session_changed` | Chat | Update session_open state |
 | `chat.decision_captured` | Chat | Mark decision as captured in history |
 | `link.index_updated` | Graph | Re-fetch links, re-render graph |
-| `task.claimed` | Active Work | Re-fetch tasks |
-| `task.resolved` | Active Work | Re-fetch tasks |
+| `task.claimed` | Tasks | Re-fetch tasks |
+| `task.resolved` | Tasks | Re-fetch tasks |
 | `dag.confirm_requested` | Overlay | Populate confirm overlay data |
 | `dag.sharding_requested` | Overlay | Populate sharding overlay data |
-| `dag.snapshot_locked` | Jobs Processing | Cycle complete, clear from panel |
-| `gate.result` | Jobs Processing | Show pass/fail result |
+| `dag.snapshot_locked` | Active Jobs | Cycle complete, clear from panel |
+| `gate.result` | Active Jobs | Show pass/fail result |
 
 ## API contract
 
@@ -744,10 +819,10 @@ The UI shell consumes existing daemon endpoints. It does not define new ones.
 | Endpoint | Method | Page / Panel | Purpose |
 |---|---|---|---|
 | `/api/v2/system/state` | `GET` | Nav bar, Overview | System status, flags, chat state |
-| `/api/v2/tasks` | `GET` | Active Work | All tasks |
-| `/api/v2/tasks/ready` | `GET` | Active Work | Tasks ready to claim (merged) |
-| `/api/v2/cycles/{cycle_id}` | `GET` | Jobs Processing, Overlay | Cycle state, flags, DAG state |
-| `/api/v2/cycles/{cycle_id}/dispatch` | `GET` | Jobs Processing | Agent progress, validation status |
+| `/api/v2/tasks` | `GET` | Tasks | All tasks |
+| `/api/v2/tasks/ready` | `GET` | Tasks | Tasks ready to claim (merged) |
+| `/api/v2/cycles/{cycle_id}` | `GET` | Active Jobs, Overlay | Cycle state, flags, DAG state |
+| `/api/v2/cycles/{cycle_id}/dispatch` | `GET` | Active Jobs | Agent progress, validation status |
 | `/api/v2/cycles/{cycle_id}/approve` | `POST` | Confirm Overlay | Approve CONFIRM gate |
 | `/api/v2/cycles/{cycle_id}/revise` | `POST` | Confirm Overlay | Modify plan at CONFIRM |
 | `/api/v2/cycles/{cycle_id}/halt` | `POST` | Confirm Overlay | Halt cycle |
@@ -770,26 +845,26 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 | Event | Consumed by | Used fields |
 |---|---|---|
 | `system.state_changed` | Nav bar | `current`, `previous` |
-| `cycle.started` | Jobs Processing | `cycle_id` |
-| `cycle.completed` | Jobs Processing | `cycle_id`, `outcome` |
-| `cycle.halted` | Jobs Processing | `cycle_id` |
-| `node.started` | Jobs Processing | `node`, `iteration`, `revision` |
-| `node.completed` | Jobs Processing | `node`, `outcome`, `duration_ms` |
-| `dispatch.progress` | Jobs Processing | `agent_name`, `progress`, `elapsed_ms` |
+| `cycle.started` | Active Jobs | `cycle_id` |
+| `cycle.completed` | Active Jobs | `cycle_id`, `outcome` |
+| `cycle.halted` | Active Jobs | `cycle_id` |
+| `node.started` | Active Jobs | `node`, `iteration`, `revision` |
+| `node.completed` | Active Jobs | `node`, `outcome`, `duration_ms` |
+| `dispatch.progress` | Active Jobs | `agent_name`, `progress`, `elapsed_ms` |
 | `gate.awaiting_confirmation` | Actions Required | `cycle_id`, `plan_summary` |
 | `cycle.awaiting_sharding_approval` | Actions Required, Sharding | `cycle_id`, `task_count` |
-| `validation.progress` | Jobs Processing | `category`, `phase`, `status` |
+| `validation.progress` | Active Jobs | `category`, `phase`, `status` |
 | `chat.message` | Chat | `role`, `content`, `sources`, `decision_detected` |
 | `chat.session_changed` | Chat | `session_open` |
 | `chat.decision_captured` | Chat | `decision_id`, `summary` |
 | `link.index_updated` | Graph | (triggers full re-fetch) |
-| `run.artifact_written` | Jobs Processing | `run_id`, `path`, `category` |
-| `task.claimed` | Active Work | `task_id` (triggers re-fetch) |
-| `task.resolved` | Active Work | `task_id` (triggers re-fetch) |
-| `gate.result` | Jobs Processing | `passed`, `failed_categories`, `iteration` |
+| `run.artifact_written` | Active Jobs | `run_id`, `path`, `category` |
+| `task.claimed` | Tasks | `task_id` (triggers re-fetch) |
+| `task.resolved` | Tasks | `task_id` (triggers re-fetch) |
+| `gate.result` | Active Jobs | `passed`, `failed_categories`, `iteration` |
 | `dag.confirm_requested` | Overlay | `cycle_id`, `revision`, `plan_summary` |
 | `dag.sharding_requested` | Overlay | `cycle_id`, `task_count` |
-| `dag.snapshot_locked` | Jobs Processing | `cycle_id`, `version_id` |
+| `dag.snapshot_locked` | Active Jobs | `cycle_id`, `version_id` |
 | `cycle.flag_changed` | Actions Required | `flag`, `value` |
 
 ### Data freshness guarantees
