@@ -631,11 +631,11 @@ reads it, produces draft `product-brief.md`, then asks follow-ups to fill gaps.
 | `GET` | `/api/v2/init/status` | Check init progress |
 | `POST` | `/api/v2/init/reset` | Reset and re-run init |
 
-Full request/response shapes are in [daemon-api.md](daemon-api.md) §Init endpoints.
+Full request/response shapes are in [daemon-api-endpoints.md](daemon-api-endpoints.md) §Init.
 
 ### Discovery
 
-All discovery endpoints are defined in [daemon-api.md](daemon-api.md) §Discovery endpoints. The full list:
+All discovery endpoints are defined in [daemon-api-endpoints.md](daemon-api-endpoints.md) §Discovery. The full list:
 
 | Method | Path | Purpose |
 |---|---|---|

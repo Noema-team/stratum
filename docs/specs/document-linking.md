@@ -346,8 +346,8 @@ inputs. Each input→output relationship becomes a structural link.
 |---|---|---|
 | DESIGN consumes requirements | `node:{group}:requirements` or `doc:requirements` | `node:{group}:architecture` or `doc:architecture` |
 | PLAN consumes architecture | Architecture artifact | Plan artifact |
-| BUILD consumes plan + test_plan | Plan + test plan artifacts | Implementation outputs |
-| TEST consumes requirements + test_plan | Requirements + test plan artifacts | Test results |
+| BUILD consumes plan + test-plan | Plan + test plan artifacts | Implementation outputs |
+| TEST consumes requirements + test-plan | Requirements + test plan artifacts | Test results |
 | EVALUATE consumes evaluation + requirements | Evaluation + requirements | Verdict |
 
 Links are created after the downstream node completes successfully. The DAG
@@ -527,7 +527,7 @@ node:{group}:{key} → map.yaml.artifacts.files[{key}] where scope == 'group' an
 ```
 
 The existing `GET /api/v2/context/resolve?ref={ArtifactRef}` endpoint handles
-this. See daemon-api.md §Resolve artifact reference.
+this. See daemon-api-endpoints.md §Resolve artifact reference.
 
 ### Link rendering pipeline
 

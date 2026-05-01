@@ -474,11 +474,11 @@ related endpoints defined there are:
 
 | Endpoint | Method | Purpose | daemon-api.md reference |
 |---|---|---|---|
-| `/api/v2/chat/session/open` | `POST` | Open or resume chat session | daemon-api.md §Open chat session |
-| `/api/v2/chat/session` | `DELETE` | Close chat session | daemon-api.md §Close chat session |
-| `/api/v2/chat/message` | `POST` | Send user message to Facilitator | daemon-api.md §Send chat message |
-| `/api/v2/context/assemble` | `POST` | Assemble context (includes `facilitator_mode` param) | daemon-api.md §Assemble context |
-| `/api/v2/cycles` | `POST` | Start cycle (carries ChatContext when chat is open) | daemon-api.md §Start cycle |
+| `/api/v2/chat/session/open` | `POST` | Open or resume chat session | daemon-api-endpoints.md §Open chat session |
+| `/api/v2/chat/session` | `DELETE` | Close chat session | daemon-api-endpoints.md §Close chat session |
+| `/api/v2/chat/message` | `POST` | Send user message to Facilitator | daemon-api-endpoints.md §Send chat message |
+| `/api/v2/context/assemble` | `POST` | Assemble context (includes `facilitator_mode` param) | daemon-api-endpoints.md §Assemble context |
+| `/api/v2/cycles` | `POST` | Start cycle (carries ChatContext when chat is open) | daemon-api-endpoints.md §Start cycle |
 
 ### WebSocket events
 

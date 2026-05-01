@@ -509,7 +509,7 @@ Direct `bd` usage always works alongside `BeadsTaskStore`.
 
 ## API contract
 
-All task-related REST endpoints are defined in [daemon-api.md](daemon-api.md) §Task endpoints. The full list:
+All task-related REST endpoints are defined in [daemon-api-endpoints.md](daemon-api-endpoints.md) §Tasks. The full list:
 
 | Method | Path | Purpose |
 |---|---|---|

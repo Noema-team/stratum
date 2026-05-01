@@ -492,11 +492,11 @@ knowledge engine adds the following endpoints to the daemon API.
 
 | Endpoint | Method | Purpose | Defined in |
 |----------|--------|---------|------------|
-| `/api/v2/knowledge/health` | GET | Check knowledge engine connectivity | daemon-api.md §Knowledge endpoints |
-| `/api/v2/knowledge/status` | GET | Engine status, circuit breaker state, dataset info | daemon-api.md §Knowledge endpoints |
-| `/api/v2/knowledge/search` | POST | Direct knowledge search (debugging, UI) | daemon-api.md §Knowledge endpoints |
-| `/api/v2/knowledge/ingest` | POST | Manual ingestion trigger (debugging) | daemon-api.md §Knowledge endpoints |
-| `/api/v2/knowledge/cognify` | POST | Manual cognify trigger (debugging) | daemon-api.md §Knowledge endpoints |
+| `/api/v2/knowledge/health` | GET | Check knowledge engine connectivity | daemon-api-endpoints.md §Knowledge engine |
+| `/api/v2/knowledge/status` | GET | Engine status, circuit breaker state, dataset info | daemon-api-endpoints.md §Knowledge engine |
+| `/api/v2/knowledge/search` | POST | Direct knowledge search (debugging, UI) | daemon-api-endpoints.md §Knowledge engine |
+| `/api/v2/knowledge/ingest` | POST | Manual ingestion trigger (debugging) | daemon-api-endpoints.md §Knowledge engine |
+| `/api/v2/knowledge/cognify` | POST | Manual cognify trigger (debugging) | daemon-api-endpoints.md §Knowledge engine |
 
 These endpoints expose the knowledge engine's state for observability and
 debugging. They do not change the automated ingestion or enhancement behaviour.
