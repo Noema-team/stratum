@@ -27,3 +27,4 @@ Primary build reference — what to implement.
 | [project-overview.md](project-overview.md) | Project graph with 8 lifecycle layers, groups, hosting planner |
 | [backlog-system.md](backlog-system.md) | Markdown-first backlog system with Beads promotion (post-MVP) |
 | [user-flow.md](user-flow.md) | End-to-end user flows, gate interactions, resolves G2/G3 |
+| [validation-prompts.md](validation-prompts.md) | Validation prompt templates for llm-check sub-phase — 3 core, 8 stubs, meta-template, project-local overrides |
