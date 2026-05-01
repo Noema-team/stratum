@@ -74,7 +74,8 @@ reviews both at the DESIGN node when `planning.depth` is `deep` or `research`
 | `doc:research-findings` | markdown | project | Explorer | Research findings, spike results, benchmarks, tradeoff analysis. Tagged `explore:user-guided` (DDR-023). Injected into Designer context when EXPLORE runs. |
 | `doc:requirements` | markdown | project | Designer | Functional and non-functional requirements — what to build. Owned by Designer per DDR-019. Consumed by Planner (reads), Tester (reads), Builder (reads), Evaluator (reads). |
 | `doc:architecture` | markdown | project | Designer | Architecture decisions, system shape, component boundaries, data models, API contracts. Owned by Designer per DDR-019. Consumed by Planner (reads), Builder (reads), Critic (reads), Evaluator (reads). Tester does NOT see this — TDD separation (G22). |
-| `doc:critique-report` | markdown | project | Critic | Architecture review: blocking issues, warnings, suggestions. Fed back to Designer for revision. Only produced at `deep` or `research` planning depth (DDR-022). |
+| `doc:critique-report` | markdown | project | Critic | Persistent architecture review: blocking issues, warnings, suggestions. Only produced at `deep` or `research` planning depth (DDR-022). Persists across cycles. |
+| `doc:cycle-critique` | json | run | Critic | Structured per-cycle critique output fed back to Designer during CRITIQUE→DESIGN iteration. Ephemeral — not persisted across cycles. |
 
 ### Explorer trigger and output
 
@@ -301,7 +302,8 @@ maps each of the 10 agent roles to the artifacts they produce.
 
 | Output | Scope | Notes |
 |--------|-------|-------|
-| `doc:critique-report` | project | Only at `deep`/`research` depth. Reviews Designer output (DDR-022). |
+| `doc:cycle-critique` | run | Per-cycle structured critique fed back to Designer during CRITIQUE→DESIGN iteration. Ephemeral. |
+| `doc:critique-report` | project | Only at `deep`/`research` depth. Persistent design review (DDR-022). |
 
 ### Planner (PLAN node)
 

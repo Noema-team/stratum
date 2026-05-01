@@ -601,7 +601,8 @@ work downstream. You do not produce architecture, plans, or implementation.
 | doc:constraints | read | Compliance checks |
 | doc:system-description | read | Structural consistency |
 | doc:decisions | read | Full history |
-| doc:critique-report | write | Critic writes the critique report to run artifacts |
+| doc:cycle-critique | write | Per-cycle structured critique fed back to Designer |
+| doc:critique-report | write | Persistent design review (project-scoped, only at deep/research depth) |
 
 Excluded: doc:plan, doc:test-plan (DDR-022), run artifacts (not yet created).
 

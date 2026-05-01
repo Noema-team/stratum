@@ -203,7 +203,7 @@ structurally invalid), the node errors. The cycle retries once if
 | **Agent role** | Critic |
 | **Conditional** | Yes — `planning.depth` is `deep` or `research` only |
 | **Inputs** | `architecture.md` + `requirements.md` + project context + decisions |
-| **Outputs** | Structured critique fed back to Designer + writes `doc:critique-report` to run artifacts |
+| **Outputs** | Structured critique fed back to Designer as `doc:cycle-critique` (run-scoped). At `deep`/`research` depth, also writes `doc:critique-report` (project-scoped) for persistent design review. |
 
 The Critic reviews the Designer's output at the DESIGN node — **not** at the
 PLAN node (DDR-022). It does not modify artifacts directly. It produces a

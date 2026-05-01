@@ -247,7 +247,8 @@ Default loading modes per artifact key:
 | `doc:build-plan`           | `full`              | Only present at `deep`/`research` depth after PLAN node |
 | `doc:research-findings`     | `full`              | Only present when EXPLORE node ran |
 | `doc:debug-diagnosis` | `full` | Ephemeral — only present on retry, only for Planner/Debugger |
-| `doc:critique-report` | `full` | Only present at `deep`/`research` depth after CRITIQUE node |
+| `doc:critique-report` | `full` | Only present at `deep`/`research` depth after CRITIQUE node. Project-scoped persistent design review. |
+| `doc:cycle-critique` | `full` | Per-cycle structured critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE node ran. |
 
 **3. Token budget enforcement:**
 
@@ -516,7 +517,8 @@ write requirements — the Designer owns those (DDR-019).
 | `doc:architecture` | `full` | 400 | Never truncated |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
-| `doc:critique-report` | `full` | 200 | Only present at `deep`/`research` depth after CRITIQUE |
+| `doc:critique-report` | `full` | 200 | Only present at `deep`/`research` depth after CRITIQUE. Project-scoped persistent design review. |
+| `doc:cycle-critique` | `full` | 200 | Per-cycle critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE ran. |
 | `doc:debug-diagnosis` | `full` | 200 | Only present on retry — Debugger's root-cause analysis. Ephemeral — bypasses standard disk resolution, injected by daemon directly into assembled context. |
 
 **Total budget:** ~1,450 tokens (base) + ~400 (failure context on retry)
@@ -653,7 +655,8 @@ Planner runs. It identifies blocking issues, warnings, and suggestions.
 | `doc:constraints` | `full` | 200 | Compliance checks against stated constraints |
 | `doc:system-description` | `full` | 200 | System shape for structural consistency checks |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions for context |
-| `doc:critique-report` | write | — | Critic writes the critique report to run artifacts |
+| `doc:cycle-critique` | write | — | Per-cycle critique fed back to Designer |
+| `doc:critique-report` | write | — | Persistent design review (deep/research only) |
 
 **Total budget:** ~1,550 tokens
 
