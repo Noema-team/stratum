@@ -32,7 +32,7 @@ to `ArtifactEntry`. Every artifact in `map.yaml → artifacts.files` carries
 exactly one scope:
 
 ```typescript
-type ArtifactScope = 'project' | 'group'
+type ArtifactScope = 'project' | 'group' | 'run' | 'ephemeral'
 ```
 
 | Scope | Term | Ownership | Examples |
@@ -362,12 +362,12 @@ links exist in the `declared` context assembly mode.
 
 ```
 Task "implement-rate-limiting" declares:
-  slices: ["doc:requirements", "node:rate-limiting:architecture", "doc:test_plan"]
+  slices: ["doc:requirements", "node:rate-limiting:architecture", "doc:test-plan"]
 
 Produces:
   task:implement-rate-limiting → doc:requirements (structural_declaration)
   task:implement-rate-limiting → node:rate-limiting:architecture (structural_declaration)
-  task:implement-rate-limiting → doc:test_plan (structural_declaration)
+  task:implement-rate-limiting → doc:test-plan (structural_declaration)
 ```
 
 Task-to-artifact links are created when the task is claimed and removed when

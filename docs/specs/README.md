@@ -5,11 +5,13 @@ Primary build reference — what to implement.
 | Doc | Description |
 |-----|-------------|
 | [state-machine.md](state-machine.md) | System states, transitions, orthogonal chat |
-| [dag-execution.md](dag-execution.md) | All 15+ DAG nodes, flow, iteration rules |
+| [dag-execution.md](dag-execution.md) | DAG flow, iteration rules, scheduling |
+| [dag-node-reference.md](dag-node-reference.md) | Per-node definitions for all 17 DAG nodes (split from dag-execution.md) |
 | [validation.md](validation.md) | static-check, llm-check, exec-check, gates |
 | [context-manager.md](context-manager.md) | Assembly algorithm, slices per role, budgets |
 | [rule-files.md](rule-files.md) | All 7 YAML schemas (including agents.yaml) |
-| [daemon-api.md](daemon-api.md) | REST endpoints + WebSocket events |
+| [daemon-api.md](daemon-api.md) | Overview — architecture, constraints, auth, WebSocket events; see [daemon-api-endpoints.md](daemon-api-endpoints.md) for endpoints |
+| [daemon-api-endpoints.md](daemon-api-endpoints.md) | All 85 REST endpoint definitions (split from daemon-api.md) |
 | [init-and-discovery.md](init-and-discovery.md) | sle init + sle discover |
 | [intake-and-sharding.md](intake-and-sharding.md) | Document intake, coherence gate, task sharding |
 | [job-dispatch.md](job-dispatch.md) | Worker pool, lifecycle, context passing |
