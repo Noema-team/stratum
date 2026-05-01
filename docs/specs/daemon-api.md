@@ -204,7 +204,7 @@ modules, and document linking.
 ## WebSocket events
 
 The daemon emits events over `ws://localhost:7700/events`. The full event
-catalogue (62 server-to-client events across 14 groups) is defined in
+catalogue (61 server-to-client events across 14 groups) is defined in
 [../reference/websocket-events.md](../reference/websocket-events.md).
 
 ### Client-to-daemon commands (WebSocket)

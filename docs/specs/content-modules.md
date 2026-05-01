@@ -329,7 +329,7 @@ export type NodeState = 'pending' | 'running' | 'completed' | 'failed' | 'skippe
 export type NodeType =
   | 'spike' | 'finding' | 'benchmark' | 'exploration'
   | 'chat_session' | 'decision' | 'trade_off' | 'discovery_round' | 'synthesis'
-  | 'requirements' | 'architecture' | 'test_plan' | 'design_decision'
+  | 'requirements' | 'architecture' | 'test-plan' | 'design_decision'
   | 'code_change' | 'test_script' | 'generated_artifact' | 'changelog'
   | 'validation_llm' | 'validation_exec' | 'gate' | 'version_snapshot' | 'cycle_complete'
 
