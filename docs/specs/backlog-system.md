@@ -314,7 +314,7 @@ section and sort naturally by priority.
 
 **Backlog widget (Overview page — see ui-shell.md §Overview page behavior):**
 
-A summary view showing top N items by priority, scoped to the current context. The backlog widget is an extensible panel on the Overview page (the dashboard), alongside Active Work, Jobs Processing, Actions Required, and Sharding Review.
+A summary view showing top N items by priority, scoped to the current context. The backlog widget is an extensible panel on the Overview page (the dashboard), alongside Actions Required, Active Jobs, Tasks, Sharding Review, Recent Activity, and Documents.
 
 - **Count line:** `"3 items in this group · 7 project-wide"`
 - **[by source ▾] dropdown:** switches grouping modes
