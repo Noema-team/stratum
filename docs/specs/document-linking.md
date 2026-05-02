@@ -729,6 +729,121 @@ event: link.file_updated
 }
 ```
 
+### LinkIndex query methods
+
+The Facilitator and context manager use four query methods on the in-memory
+link index to answer provenance and impact questions. These operate on the
+forward-link and backlink maps — no additional data structures are required.
+
+**queryByTopic — find entities related to a topic:**
+
+```typescript
+function queryByTopic(topic: string, options?: {
+  entity_kinds?: LinkEntityKind[]
+  limit?: number
+}): LinkTarget[]
+```
+
+Performs a substring match of `topic` (case-insensitive) against:
+1. `DocumentEntry.tags` in the document index
+2. `DocumentEntry.title` and `DocumentEntry.description`
+3. `FileEntry.path` in the file index (matches path segments)
+4. `Backlink.resolved_label` for all entities
+
+Returns matching `LinkTarget` values, ordered by:
+- Exact tag match (highest)
+- Title/description substring match
+- Path segment match
+- Backlink label match (lowest)
+
+Within each tier, results are ordered alphabetically. Default `limit` is 50.
+
+The context manager calls this when assembling context in `inferred` mode to
+discover related artifacts beyond the declared slices.
+
+**getAncestors — trace what a node was derived from:**
+
+```typescript
+function getAncestors(source: LinkSource, depth?: number): AncestorResult[]
+```
+
+Walks backward through forward links where the given `source` appears as
+`target`. For each discovered link, recursively walks that source's forward
+links up to `depth` hops (default 5, max 10).
+
+```typescript
+interface AncestorResult {
+  target: LinkTarget
+  link_type: AutoLinkType | 'manual'
+  context: string
+  depth: number
+}
+```
+
+Returns a flat list (BFS order, deduplicated). Used by the Planner to
+understand what inputs a node depends on — a node that traces back to
+`doc:requirements` through `structural_dag` links has a strong provenance
+chain. The Planner weights `structural_dag` ancestors higher than
+`contextual_execution` ancestors.
+
+**getDescendants — trace what was built from a document:**
+
+```typescript
+function getDescendants(target: LinkTarget, options?: {
+  depth?: number
+  link_types?: (AutoLinkType | 'manual')[]
+}): DescendantResult[]
+```
+
+Walks forward through backlinks for the given `target`, then recursively walks
+each backlink's source up to `depth` hops (default 5, max 10).
+
+```typescript
+interface DescendantResult {
+  source: LinkSource
+  link_type: AutoLinkType | 'manual'
+  context: string
+  depth: number
+}
+```
+
+When `link_types` is provided, only follows links of those types. Returns a
+flat list (BFS order, deduplicated). Used by the Facilitator in decision mode
+to assess the blast radius of a proposed change — "if we change this
+architecture doc, which nodes downstream will be affected?"
+
+**getReferencingNodes — find all nodes that reference a file:**
+
+```typescript
+function getReferencingNodes(path: string): FileReferenceResult
+```
+
+Looks up `path` in the file index, then scans the backlink map for all links
+where `target.kind` is `'source_file'` or `'test_file'` and `target.path`
+matches.
+
+```typescript
+interface FileReferenceResult {
+  file: FileEntry
+  referencing_nodes: Array<{
+    source: LinkSource
+    link_type: AutoLinkType | 'manual'
+    context: string
+  }>
+}
+```
+
+Returns the file's metadata plus every node that links to it. Used by the
+Evaluator to determine which test files exercise a given source file, and by
+the Facilitator to explain file coverage.
+
+**Performance guarantees:**
+
+All four methods operate on the in-memory link index and must return in under
+50ms for any entity (per Constraint 7). The BFS traversal in `getAncestors`
+and `getDescendants` is bounded by `depth` (max 10) and the forward-link count
+(typically under 5,000).
+
 ## Error cases
 
 | Error code | Condition | Response | Recovery |
