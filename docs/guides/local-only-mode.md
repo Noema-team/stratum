@@ -157,7 +157,7 @@ with Beads enabled.
 
 ### Configuring hooks
 
-Add hooks to `.sle/config.yaml` under `beads.hooks`:
+Add hooks to `map.yaml` under `beads.hooks`:
 
 ```yaml
 beads:
@@ -311,10 +311,10 @@ features, remote sync, or semantic compaction.
 - Ensure `.sle/tasks.yaml` has no tasks with status `in_progress` (complete or
   halt any active cycles first)
 
-### Migration with `sle beads init`
+### Migration to Beads
 
 ```bash
-sle beads init \
+sle init --reset --task-store beads \
   --remote dolthub://org/my-project-issues \
   --prefix mp
 ```
@@ -347,7 +347,7 @@ remotes:
 Restart the daemon to activate `BeadsTaskStore`:
 
 ```bash
-sle daemon restart
+sle daemon start
 ```
 
 ### What migrates and what does not
@@ -376,7 +376,7 @@ delete it manually once you have verified the Beads issues are correct.
 ### Beads connection refused in local-only mode
 
 If you see errors referencing `bd` or Beads connectivity in local-only mode, the
-daemon is likely configured for the wrong provider. Check `.sle/config.yaml`:
+daemon is likely configured for the wrong provider. Check `map.yaml`:
 
 ```yaml
 task_store:
@@ -384,7 +384,7 @@ task_store:
   path: ".sle/tasks.yaml"
 ```
 
-If `type` is `beads`, change it to `local` and run `sle daemon restart`. If the
+If `type` is `beads`, change it to `local` and run `sle init --reset --task-store local`. If the
 error occurs at init (E103), re-run: `sle init --resume --task-store local`.
 
 ### Hooks not firing
@@ -424,5 +424,5 @@ missing, create an empty task file:
 tasks: []
 ```
 
-If `task_store.type` is `beads` but `.beads/` is missing, run `sle beads init`
+If `task_store.type` is `beads` but `.beads/` is missing, run `sle init --reset --task-store beads`
 before starting the daemon.

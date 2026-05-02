@@ -276,7 +276,7 @@ mode.
 
 At the CONFIRM gate you can:
 
-- **Approve** — `sle approve` or `POST /api/v2/cycles/{cycle_id}/approve`.
+- **Approve** — `POST /api/v2/cycles/{cycle_id}/approve`.
   Clears the flag and proceeds to BUILD.
 - **Modify plan steps** — `POST /api/v2/cycles/{cycle_id}/revise` with a
   `PlanModification` payload. Increments the revision counter and re-runs the
@@ -494,7 +494,7 @@ with a cap-exceeded notice. The cap behavior is configured in
 If progress seems stuck, check both counters:
 
 - **Iteration** — Increments on VALIDATION_GATE failure only. Resets per cycle.
-  The loop is: PLAN → TEST → CONFIRM → BUILD → EXEC → VALIDATION_GATE → (fail)
+  The loop is: PLAN → TEST → CONFIRM → BUILD → HISTORY → EXEC → VALIDATION_GATE → (fail)
   → DEBUG → PLAN.
 - **Revision** — Increments on CONFIRM gate modification only. Resets per
   iteration. Multiple revisions are allowed within one iteration without
