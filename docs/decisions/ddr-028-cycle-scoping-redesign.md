@@ -1,7 +1,7 @@
 # DDR-028 — Cycle scoping redesign: pre-cycle discussion + guided Phase 1
 
 **Date:** 2026-05-02 · **Status:** proposed
-**Affects:** dag-execution.md, conversation.md, project-overview.md, ui-shell.md, tasks-dashboard.md, user-flow.md, context-manager.md, prompt-templates.md, daemon-api-endpoints.md, types.md
+**Affects:** dag-execution.md, conversation.md, project-overview.md, ui-shell.md, tasks-dashboard.md, user-flow.md, context-manager.md, prompt-templates.md, daemon-api-endpoints.md, types.md, state-machine.md
 
 ## Context
 
@@ -52,6 +52,7 @@ Introduce a **tag system** on nodes and layers:
 
 - Tags are key-value pairs: `@next-cycle`, `@scope:{draft-id}`, `@area:security`, etc.
 - Tags can be applied at the **node level** (entire node is relevant) or **layer level** (specific layer within a node)
+- Tags can be applied at any time — during pre-cycle discussion, at node/layer creation time, or independently. Marking is not limited to the pre-cycle discussion phase.
 - Tags are set/removed through: chat (Facilitator proposes, user confirms), graph right-click context menu, or direct API
 - When a cycle starts, all `@next-cycle` tagged nodes/layers are pulled in
 - After cycle completion, `@next-cycle` tags are cleared on affected nodes/layers
@@ -59,9 +60,7 @@ Introduce a **tag system** on nodes and layers:
 
 ### Scope realism
 
-- The Facilitator should have heuristics for realistic cycle scope (e.g., "one feature group", "3-5 requirements", "single module")
-- Exact mechanism TBD — could be token budget limits, node count limits, or experience-based heuristics from the Planner
-- This needs further discussion — captured as open question below
+The Facilitator assesses scope realism primarily through thorough, objective reasoning about the scope, goals, and requirements — evaluating completeness, internal consistency, feasibility, and potential risks. Quantitative metrics (node count, token count, feature group limits) serve as secondary signals only, since a narrow scope can have extensive detail and an out-of-scope idea can be a single sentence. The assessment must be flexible, consistent, and reliable — avoiding rigid limits that don't account for context.
 
 ### Revised cycle phases
 
@@ -136,15 +135,24 @@ The current 17-node DAG is not discarded. Elements carried forward:
 - Tag system scope creep — need to keep it focused initially
 - Phase 1 guided discussion needs careful UX design — too rigid = frustrating, too loose = useless
 
+## Explicitly deferred
+
+**Node locking during cycles.** The concept of locking nodes/layers that are being modified by a running cycle was discussed. Decision: defer until the two-stage scoping model is implemented and real-world usage reveals whether conflicts actually occur. The current committed-state-only principle (cycles write to staging, graph shows committed state) may be sufficient.
+
 ## Open questions
 
 | ID | Question | Impact | Status |
 |----|----------|--------|--------|
-| SC-001 | What are realistic scope heuristics? (token count, node count, feature group limits) | Facilitator guidance quality | Open — needs dedicated discussion |
-| SC-002 | Should `sle start "goal"` still work as a quick-start bypass? | Backward compatibility, simplicity | Open — proposed yes, with minimal scope draft auto-generated |
-| SC-003 | Can tags be applied to groups (not just nodes/layers)? | Tag system scope | Open |
+| SC-001 | What are realistic scope heuristics? (token count, node count, feature group limits) | Facilitator guidance quality | Resolved: qualitative assessment primary, quantitative secondary — see Scope realism section |
+| SC-002 | Should `sle start "goal"` still work as a quick-start bypass? — Resolved: yes, auto-generates minimal scope draft from goal string, skips informal pre-cycle chat, still goes through guided Phase 1. | Backward compatibility, simplicity | Resolved: yes |
+| SC-003 | Can tags be applied to groups (not just nodes/layers)? — Resolved: yes, groups are taggable. Tagging a group implies all its layers. | Tag system scope | Resolved: yes |
 | SC-004 | Should the scope draft be editable in the Graph tab or only in Chat? | UI surface for scoping | Open — proposed Chat for creation, Graph for node marking |
 | SC-005 | How does the Planner weight user-created nodes vs cycle-produced nodes in its context? | Planner behavior | Open — needs context-manager update |
 | SC-006 | What happens to `@next-cycle` tags if the user starts a cycle but doesn't include all tagged nodes? | Tag cleanup semantics | Open |
 | SC-007 | Should the guided Phase 1 discussion have a maximum number of rounds? | Cycle latency | Open |
 | SC-008 | How does this interact with the existing depth_override mechanism? | Planner configuration | Open — proposed: scope draft replaces goal string, depth still configurable |
+| SC-009 | How does the revised flow handle the DESIGN node? Currently the Designer produces architecture.md and requirements.md which the Planner reads. If DESIGN is removed from the cycle, how are these artifacts produced or updated? | DAG structure, Critic dependency | Open |
+| SC-010 | The Facilitator currently cannot write cycle artifacts (conversation.md constraint 2). Producing doc:cycle-charter during Phase 1 violates this. Should cycle-charter be classified as a pre-cycle artifact, or should constraint 2 be revised? | Facilitator permissions | Open |
+| SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Open |
+| SC-012 | Should a `FacilitatorMode = 'scoping'` be added for the guided Phase 1 discussion? Currently only 'chat' and 'decision' modes exist. | conversation.md, prompt-templates.md | Open |
+| SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Open |
