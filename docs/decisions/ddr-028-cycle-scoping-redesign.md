@@ -48,14 +48,15 @@ The user wants:
 
 ### Node/layer tagging system
 
-Introduce a **tag system** on nodes and layers:
+Introduce a **tag system** on nodes, layers, and groups:
 
-- Tags are key-value pairs: `@next-cycle`, `@scope:{draft-id}`, `@area:security`, etc.
-- Tags can be applied at the **node level** (entire node is relevant) or **layer level** (specific layer within a node)
+- Tags use `#` prefix: `#next-cycle`, `#scope:{draft-id}`, `#area:security`, etc.
+- Tags can be applied at the **node level** (entire node is relevant), **layer level** (specific layer within a node), or **group level** (all layers in a group)
 - Tags can be applied at any time — during pre-cycle discussion, at node/layer creation time, or independently. Marking is not limited to the pre-cycle discussion phase.
 - Tags are set/removed through: chat (Facilitator proposes, user confirms), graph right-click context menu, or direct API
-- When a cycle starts, all `@next-cycle` tagged nodes/layers are pulled in
-- After cycle completion, `@next-cycle` tags are cleared on affected nodes/layers
+- `#next-cycle` means **priority, not exclusion**: tagged nodes/layers are loaded first and truncated last. The Planner still has access to the full graph via linking and reasoning. Untagged nodes are available but lower priority.
+- When a cycle starts, all `#next-cycle` tagged nodes/layers are primary inputs
+- After cycle completion, `#next-cycle` tags are cleared only on nodes/layers the cycle actually modified. Untouched tags persist for the next cycle.
 - Tag system is extensible — can be used for backlog, categorization, filtering beyond cycles
 
 ### Scope realism
@@ -71,6 +72,8 @@ Pre-cycle (outside DAG):
 Phase 1: SCOPING (new DAG node, Facilitator-led)
   - Pull in tagged nodes/layers + scope draft
   - Guided discussion to finalize scope, purpose, requirements
+  - Facilitator in 'scoping' mode (MVP: explicit toggle; post-MVP: seamless auto-detection)
+  - Max rounds: configurable (default 5, hard cap 10) via planning.yaml → scoping.max_rounds
   - Output: doc:cycle-charter
 
 Phase 2: PLANNING (revised)
@@ -88,6 +91,26 @@ Phase 4: EXECUTION (current pipeline)
   - Borrowed from current BUILD + VALIDATION + SNAPSHOT nodes
   - Iteration loop on validation failure (unchanged)
 ```
+
+### Source weighting in context assembly
+
+User-tagged nodes/layers get higher priority in the context manager's truncation
+order. The `source_weight` field on `SliceRule` controls this:
+
+```
+'user_defined' > 'cycle_produced' > 'inferred'
+```
+
+All relevant sources are always loaded — weighting only affects truncation order
+when the token budget is exceeded. No source is silently excluded unless
+physically impossible to fit (logged in `truncated[]`).
+
+### Facilitator scoping permissions
+
+The Facilitator gains a scoped exception to conversation.md constraint 2:
+- **Can produce:** `doc:cycle-charter` (run scope), `doc:cycle-scope-draft` (project scope)
+- **Cannot produce:** build artifacts, test artifacts, validation artifacts, or graph nodes
+- Full node creation by the Facilitator is deferred to post-MVP
 
 ### Borrowed from current DAG
 
@@ -139,6 +162,10 @@ The current 17-node DAG is not discarded. Elements carried forward:
 
 **Node locking during cycles.** The concept of locking nodes/layers that are being modified by a running cycle was discussed. Decision: defer until the two-stage scoping model is implemented and real-world usage reveals whether conflicts actually occur. The current committed-state-only principle (cycles write to staging, graph shows committed state) may be sufficient.
 
+**Split Chat + Graph view.** The concept of showing Chat and Graph simultaneously so the user can discuss scope while seeing/interacting with the graph. Decision: defer to post-MVP. The UI shell design should not prevent this layout, but building it is not in scope for the scoping redesign.
+
+**Facilitator node creation.** Allowing the Facilitator to create graph nodes (not just scoping artifacts). Decision: deferred to post-MVP. The Facilitator produces `doc:cycle-scope-draft` and `doc:cycle-charter` only. Nodes are created by the user (graph right-click) or the DAG runner.
+
 ## Open questions
 
 | ID | Question | Impact | Status |
@@ -146,13 +173,14 @@ The current 17-node DAG is not discarded. Elements carried forward:
 | SC-001 | What are realistic scope heuristics? (token count, node count, feature group limits) | Facilitator guidance quality | Resolved: qualitative assessment primary, quantitative secondary — see Scope realism section |
 | SC-002 | Should `sle start "goal"` still work as a quick-start bypass? — Resolved: yes, auto-generates minimal scope draft from goal string, skips informal pre-cycle chat, still goes through guided Phase 1. | Backward compatibility, simplicity | Resolved: yes |
 | SC-003 | Can tags be applied to groups (not just nodes/layers)? — Resolved: yes, groups are taggable. Tagging a group implies all its layers. | Tag system scope | Resolved: yes |
-| SC-004 | Should the scope draft be editable in the Graph tab or only in Chat? | UI surface for scoping | Open — proposed Chat for creation, Graph for node marking |
-| SC-005 | How does the Planner weight user-created nodes vs cycle-produced nodes in its context? | Planner behavior | Open — needs context-manager update |
-| SC-006 | What happens to `@next-cycle` tags if the user starts a cycle but doesn't include all tagged nodes? | Tag cleanup semantics | Open |
-| SC-007 | Should the guided Phase 1 discussion have a maximum number of rounds? | Cycle latency | Open |
-| SC-008 | How does this interact with the existing depth_override mechanism? | Planner configuration | Open — proposed: scope draft replaces goal string, depth still configurable |
+| SC-004 | Should the scope draft be editable in the Graph tab or only in Chat? | UI surface for scoping | Resolved: Chat-only for creation/editing. Node tagging via Chat (Facilitator proposes) or Graph (right-click). Split Chat+Graph view deferred to post-MVP. |
+| SC-005 | How does the Planner weight user-created nodes vs cycle-produced nodes in its context? | Planner behavior | Resolved: `source_weight` on SliceRule controls truncation order (`user_defined > cycle_produced > inferred`). All sources always loaded — weighting never excludes. |
+| SC-006 | What happens to `#next-cycle` tags if the user starts a cycle but doesn't include all tagged nodes? | Tag cleanup semantics | Resolved: `#next-cycle` means priority, not exclusion. Tags cleared only on nodes/layers the cycle actually modifies. Untouched tags persist. Planner reasons over full graph via linking. |
+| SC-007 | Should the guided Phase 1 discussion have a maximum number of rounds? | Cycle latency | Resolved: configurable via `planning.yaml → scoping.max_rounds` (default 5, hard cap 10). |
+| SC-008 | How does this interact with the existing depth_override mechanism? | Planner configuration | Resolved: orthogonal. Charter is the *what* (scope), depth is the *how deep* (planner output detail). No change needed. |
 | SC-009 | How does the revised flow handle the DESIGN node? Currently the Designer produces architecture.md and requirements.md which the Planner reads. If DESIGN is removed from the cycle, how are these artifacts produced or updated? | DAG structure, Critic dependency | Open |
-| SC-010 | The Facilitator currently cannot write cycle artifacts (conversation.md constraint 2). Producing doc:cycle-charter during Phase 1 violates this. Should cycle-charter be classified as a pre-cycle artifact, or should constraint 2 be revised? | Facilitator permissions | Open |
-| SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Open |
-| SC-012 | Should a `FacilitatorMode = 'scoping'` be added for the guided Phase 1 discussion? Currently only 'chat' and 'decision' modes exist. | conversation.md, prompt-templates.md | Open |
-| SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Open |
+| SC-010 | The Facilitator currently cannot write cycle artifacts (conversation.md constraint 2). Producing doc:cycle-charter during Phase 1 violates this. Should cycle-charter be classified as a pre-cycle artifact, or should constraint 2 be revised? | Facilitator permissions | Resolved: scoped exception — Facilitator can produce scoping artifacts (charter, scope-draft) only. Cannot produce execution artifacts. Full node creation deferred. |
+| SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Open — depends on SC-009 (DESIGN placement determines CONTEXT_ASSEMBLY fate) |
+| SC-012 | Should a `FacilitatorMode = 'scoping'` be added for the guided Phase 1 discussion? Currently only 'chat' and 'decision' modes exist. | conversation.md, prompt-templates.md | Resolved: yes. MVP: explicit toggle in mode switcher. Post-MVP: seamless auto-detection. |
+| SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Open — depends on SC-009 (DAG structure must be finalised before adding flags) |
+| SC-014 | Should the project have a semver-like versioning system where each cycle bumps a version (major/minor/hotfix)? Would make graph navigation easier and provide context for node relevance. | Graph navigation, artifact lifecycle | Open — captured for future DDR. Complex: touches entire artifact lifecycle, not just scoping. |
