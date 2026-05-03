@@ -1,6 +1,6 @@
 # DDR-028 — Cycle scoping redesign: pre-cycle discussion + guided Phase 1
 
-**Date:** 2026-05-02 · **Status:** proposed
+**Date:** 2026-05-02 · **Status:** accepted
 **Affects:** dag-execution.md, conversation.md, project-overview.md, ui-shell.md, tasks-dashboard.md, user-flow.md, context-manager.md, prompt-templates.md, daemon-api-endpoints.md, types.md, state-machine.md
 
 ## Context
