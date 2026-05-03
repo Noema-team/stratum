@@ -147,30 +147,34 @@ follow this exact path — surfaces are freely switchable at any time.
    │  Recent Activity shows latest changes
    │  Documents panel shows recent changes
    │
-2. Cycle reaches CONFIRM gate
+2. Explore project (Graph/Overview)
+   │  Navigate structure, review artifacts
+   │  Open Chat → discuss what to build with Facilitator
+   │
+3. Pre-cycle scoping (DDR-028)
+   │  Together with Facilitator, tag nodes and create scope draft
+   │  Nodes tagged #next-cycle, scope draft approved
+   │
+4. Trigger cycle
+   │  "New cycle" button → selects scope draft or quick-start goal
+   │  SCOPING node runs (guided discussion in Chat if not quick-start)
+   │
+5. Charter produced → DAG continues
+   │  DESIGN → CRITIQUE → PLAN → TEST → ...
+   │
+6. CONFIRM gate
    │  Gate panel appears as modal overlay on active surface
    │  User reviews plan, optionally modifies, approves
    │  Badge: gate_pending on all tabs
    │
-3. Switch to Chat tab
-   │  Explore ideas, make decisions
-   │  No cycle needed — Facilitator reads discovery docs + knowledge base
-   │  Decision detection may surface capture prompts
-   │  (captured to decisions.md; see decisions/DECISION-BRIEFS.md for format)
+7. Build, Validation, Gate pass
+   │  User monitors via Active Jobs
+   │  Gate pass panel → lock snapshot → version locked, cycle complete
    │
-4. Gate pass panel appears (mid-chat, if cycle completes validation)
-   │  Modal overlay on Chat surface
-   │  User locks snapshot → version locked, cycle complete
-   │
-5. Return to Overview
+8. Return to Overview
    │  Cycle complete, version locked
    │  New tasks auto-created
    │  Recent Activity updated
-   │
-6. Open Graph tab
-   │  Navigate structure by group/layer
-   │  Scope a new cycle to a specific node
-   │  "Start cycle" on node → cycle initiation
 ```
 
 ### Surface behaviors
@@ -233,6 +237,20 @@ receives the node's artifact slices as additional context.
 The system presents gate panels at human checkpoints. Gate panels are modal
 overlays — they do not navigate the user away from the active surface.
 
+#### SCOPING (DDR-028)
+
+Presented when `cycle.awaiting_scoping = true`.
+
+| User action | Effect |
+|---|---|
+| Approve charter | Cycle-charter accepted. Cycle proceeds to DESIGN. |
+| Refine scope | User provides additional guidance. SCOPING continues. |
+| Halt cycle | Clean stop. Cycle transitions to `halted`. |
+
+The SCOPING decision point replaces the former INTENT/CONTEXT_ASSEMBLY/EXPLORE
+nodes. It is the first human checkpoint in the cycle flow, where the user
+reviews and approves the cycle-charter before the DAG continues to DESIGN.
+
 #### CONFIRM gate (post-planning, post-testing)
 
 Presented when `cycle.awaiting_confirmation = true`.
@@ -289,7 +307,7 @@ without intervening:
    │
 2. DAG progresses through nodes
    │  WebSocket events update Active Jobs in real time
-   │  Node transitions: EXPLORE → DESIGN → PLAN → TEST → CONFIRM → ...
+    │  Node transitions: SCOPING → DESIGN → PLAN → TEST → CONFIRM → ...
    │
 3. Auto-retry on validation failure
    │  Status update in Active Jobs: "Iteration 2 — PLAN"
@@ -323,6 +341,11 @@ Chat with no cycle running:
    │  Natural language: "start a cycle for X"
    │  Daemon detects intent, constructs cycle start request
    │  ChatContext injected into Planner
+   │
+4. Pre-cycle actions available (DDR-028)
+   │  Tag nodes/layers for next cycle (#next-cycle)
+   │  Create/edit scope drafts
+   │  These actions are available in chat mode, not just scoping mode
 ```
 
 ### Flow: Graph-initiated cycle
@@ -331,17 +354,38 @@ Chat with no cycle running:
 1. User navigates to Graph tab
    │  Nodes organized by group and lifecycle layer
    │
-2. User selects a node
+2. User selects node(s)
    │  Node detail panel shows artifacts, status, history
+   │  Nodes get tagged #next-cycle automatically
    │
 3. User clicks "Start cycle"
-   │  Cycle initiation scoped to that node
-   │  Planner receives node artifacts as additional context
-   │  User switches to Overview (or stays on Graph)
+   │  Cycle starts with scope_draft_id or quick_start_goal
+   │  SCOPING node runs (may be quick-start bypass)
+   │  Charter produced
    │
-4. Cycle runs
+4. Cycle continues through DESIGN → CRITIQUE → PLAN → ...
    │  Active Jobs panel shows progress
    │  Gate panels overlay active surface when needed
+```
+
+### Flow: Pre-cycle scoping
+
+```
+1. User opens Chat (idle state)
+   │
+2. User discusses intent with Facilitator: "I want to add rate limiting"
+   │
+3. Facilitator identifies relevant nodes/layers, proposes tagging
+   │
+4. User confirms tags: #next-cycle on rate-limiting group nodes
+   │
+5. Facilitator proposes scope draft
+   │
+6. User reviews and approves scope draft
+   │
+7. User clicks "Start cycle" → selects scope draft
+   │
+8. Cycle starts → SCOPING node → charter produced
 ```
 
 ### Flow: Gate rejection / halt
@@ -557,7 +601,7 @@ independently.
 | UF-004 | Are there mobile-specific flows that differ from the three-surface desktop model? The vision doc does not differentiate. | Responsive design, touch interactions | Open |
 | UF-005 | Are notification badges persisted across sessions? If the user closes and reopens the app, do unread badges persist? | Session continuity, state persistence | Open |
 | UF-006 | How does "Run tests locally" at gate pass work? Does the daemon orchestrate a local test run, or does the user run tests manually outside the system? | Gate pass flow completeness | Open |
-| UF-007 | Should the Graph surface support multi-node selection for scoped cycles, or is single-node scoping sufficient? | Graph interaction model | Open |
+| UF-007 | ~~Should the Graph surface support multi-node selection for scoped cycles, or is single-node scoping sufficient?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-cycle`, replacing the need for ad-hoc multi-node selection. | — | Resolved (DDR-028) |
 | UF-008 | What is the expected behavior when a gate panel appears while the user is mid-conversation in Chat? Does the conversation pause, or can the user continue chatting while the gate panel is open? | Modal behavior, chat interruption policy | Open |
 | UF-009 | Should the live status indicator show which DAG node is currently executing, or only that a cycle is running? | Information density, surface clutter | Open |
 | UF-010 | Can the user dismiss a gate panel without acting on it (e.g., "remind me later")? If so, how does the system re-present the gate? | Gate panel lifecycle, cycle blocking | Open |

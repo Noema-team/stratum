@@ -1,7 +1,7 @@
 # Context Manager
 
 **Type:** spec · **Status:** draft · **Updated:** 2026-04-22
-**Depends on:** DDR-019, DDR-020, DDR-022, DDR-023, DDR-025
+**Depends on:** DDR-019, DDR-020, DDR-022, DDR-023, DDR-025, DDR-028
 **Source material:** SLE-007
 
 ## Overview
@@ -68,12 +68,15 @@ Full definition: `AssembledContext` in [../reference/types.md](../reference/type
 ### SliceRule
 
 ```typescript
+type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred'
+
 interface SliceRule {
   artifact_id: string
   mode: 'full' | 'last_n_entries' | 'last_cycle' | 'summary_only'
   max_entries?: number
   max_tokens?: number
   never_truncate?: boolean
+  source_weight?: SourceWeight
 }
 ```
 
@@ -84,6 +87,7 @@ interface SliceRule {
 | `max_entries` | Cap on entry count when mode is `last_n_entries` |
 | `max_tokens` | Hard token cap for this artifact regardless of mode |
 | `never_truncate` | If `true`, this artifact is exempt from budget truncation |
+| `source_weight` | Truncation priority: `inferred` truncated first, then `cycle_produced`, then `user_defined` last. User-tagged nodes always have `user_defined` weight. — DDR-028 |
 
 ### ContextManagerConfig
 
@@ -145,11 +149,20 @@ assemble(role, state, config, map, failureReport?) → AssembledContext
    - Budget: config.system_prompt_max_tokens (~500)
 
 3. Artifact slices (Component 2)
-   - If declared mode: load declared refs from TaskContextDeclaration
-   - If inferred mode: load role default slices from §Context slices
-   - Apply per-artifact SliceRule (mode, max_entries, max_tokens)
-   - Enforce total token budget: config.artifact_slice_size (~2000)
-   - Record truncated artifact IDs
+    - If declared mode: load declared refs from TaskContextDeclaration
+    - If inferred mode: load role default slices from §Context slices
+    - Apply per-artifact SliceRule (mode, max_entries, max_tokens)
+    - DDR-028 tagged node loading:
+      - When assembling for SCOPING node: load all #next-cycle tagged
+        nodes/layers as `user_defined` weight slices
+      - When assembling for DESIGN/PLAN: charter is `cycle_produced`,
+        tagged nodes are `user_defined`
+      - Tagged nodes are always loaded — they are never excluded, only
+        reordered for truncation via source_weight
+    - Enforce total token budget: config.artifact_slice_size (~2000)
+    - When budget exceeded, truncate in source_weight order:
+      `inferred` first, then `cycle_produced`, then `user_defined` last
+    - Record truncated artifact IDs
 
 4. State summary (Component 3)
    - buildStateSummary(state, map)
@@ -468,9 +481,10 @@ ensures architecture decisions are grounded in project context.
 | `doc:requirements` | `full` | 300 | Prior requirements — present on revision |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions |
+| `doc:cycle-charter` | `full` | 200 | Cycle scope and purpose — DDR-028 |
 | `agent.md` | `full` | 200 | Project conventions and constraints |
 
-**Total budget:** ~2,500 tokens (uses elevated budget — Designer's context is
+**Total budget:** ~2,700 tokens (uses elevated budget — Designer's context is
 the broadest of any role)
 
 **On first design (no prior artifacts):** `doc:architecture`, `doc:requirements`,
@@ -483,11 +497,12 @@ component.
 
 ### Explorer
 
-**DAG node:** EXPLORE (conditional, user-initiated only)
-**DDR reference:** DDR-023 (user-initiated, tagged `explore:user-guided`)
+**DAG node:** SCOPING (conditional — invoked when SCOPING requests additional research)
+**DDR reference:** DDR-023 (research agent), DDR-028 (triggered by SCOPING, not standalone)
 
-The Explorer investigates unknowns flagged by the user. It reads the system
-description, open questions, and constraints to focus its research.
+The Explorer investigates unknowns flagged during the SCOPING node's guided
+discussion. It is no longer a standalone DAG node — it runs at SCOPING's request
+when additional research is needed to resolve open questions.
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
@@ -495,13 +510,14 @@ description, open questions, and constraints to focus its research.
 | `doc:open-questions` | `full` | 150 | Questions to investigate |
 | `doc:constraints` | `full` | 200 | Technical constraints to respect |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
-| Intent | `full` | 100 | Current goal — provides focus for research |
+| `doc:cycle-charter` | `full` | 200 | Charter scope — provides focus for research (DDR-028) |
 | `agent.md` | `full` | 200 | Project conventions |
 
-**Total budget:** ~1,100 tokens
+**Total budget:** ~1,200 tokens
 
-The Explorer's output (`doc:research-findings`) is tagged `explore:user-guided`.
-It is injected into the Designer's context when EXPLORE completes before DESIGN.
+The Explorer's output (`doc:research-findings`) is fed back into the SCOPING
+node's context. It is injected into the Designer's context when SCOPING
+completes before DESIGN.
 
 ### Planner
 
@@ -519,6 +535,7 @@ write requirements — the Designer owns those (DDR-019).
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
 | `doc:critique-report` | `full` | 200 | Only present at `deep`/`research` depth after CRITIQUE. Project-scoped persistent design review. |
 | `doc:cycle-critique` | `full` | 200 | Per-cycle critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE ran. |
+| `doc:cycle-charter` | `full` | 200 | Cycle scope and requirements — DDR-028 |
 | `doc:debug-diagnosis` | `full` | 200 | Only present on retry — Debugger's root-cause analysis. Ephemeral — bypasses standard disk resolution, injected by daemon directly into assembled context. |
 
 **Total budget:** ~1,450 tokens (base) + ~400 (failure context on retry)
@@ -730,6 +747,22 @@ to review. Context is narrowly focused on the decision at hand.
 
 **Excluded:** `doc:build-plan` — Facilitator never shows implementation expansion at CONFIRM.
 
+#### Scoping mode
+
+**When:** `awaiting_scoping = true` — DDR-028
+
+The Facilitator runs the SCOPING node's guided discussion to produce the
+cycle charter from user input and tagged project content.
+
+| Slice | Mode | Budget | Notes |
+|-------|------|--------|-------|
+| `doc:cycle-scope-draft` | `full` | 300 | Pre-cycle scope draft |
+| `doc:cycle-charter` | `full` | 200 | Charter being developed (scoping mode) |
+| Tagged node content | `full` | varies | All #next-cycle tagged nodes/layers |
+
+**Tagged nodes** are loaded as `user_defined` weight and are always included —
+they represent the user's explicit selection of what this cycle should address.
+
 **Additional context when `awaiting_sharding_approval = true`:**
 
 | Slice | Mode | Budget | Notes |
@@ -737,12 +770,13 @@ to review. Context is narrowly focused on the decision at hand.
 | `.sle/sharding-proposal.yaml` | `full` | 300 | Proposed task boundaries |
 | `.sle/coherence-report.json` | `summary_only` | 100 | Coherence gate status |
 
-**Modes can coexist.** When `chat.session_open = true` AND an `awaiting_*`
-flag is set, the Facilitator operates in both modes simultaneously. Chat-mode
-context is used for freeform Q&A; decision-mode context is used when the user
-engages with the pending action. The context manager produces two separate
-assemblies — one per mode — and the Facilitator switches between them based
-on the user's input.
+**Modes can coexist.** When `chat.session_open = true` AND one or more
+`awaiting_*` flags are set, the Facilitator operates in multiple modes
+simultaneously. Chat-mode context is used for freeform Q&A; decision-mode
+context is used when the user engages with the pending action; scoping-mode
+context is used during the SCOPING guided discussion. The context manager
+produces separate assemblies — one per mode — and the Facilitator switches
+between them based on the user's input.
 
 ---
 
@@ -773,6 +807,7 @@ budget. Overrides are applied automatically based on role:
 | Historian | 1,000 | Only reads decisions log |
 | Facilitator (chat) | 1,350 | Moderate context for Q&A |
 | Facilitator (decision) | 1,000 | Narrow focus on pending action |
+| Facilitator (scoping) | 1,500 | Scope draft + charter + tagged nodes (DDR-028) |
 
 All other roles use the default 2,000-token budget.
 
@@ -824,6 +859,9 @@ SDK's token counter on the final assembled prompt — but not in the hot path.
 
 Full artifact slices per role. No failure context. State summary shows
 iteration 1. Total window is typically 2,800–3,400 tokens.
+
+Note: iteration starts at PLAN. INTENT and EXPLORE nodes are removed (DDR-028).
+SCOPING runs once before the iteration loop begins and is not repeated on retry.
 
 ### Iteration 2+ (retry)
 
@@ -907,10 +945,10 @@ tasks may use declared mode for some agent calls and inferred mode for others.
 
 ---
 
-## Facilitator dual-mode assembly
+## Facilitator tri-mode assembly
 
 The Facilitator's context assembly is more complex than other roles because it
-operates in two modes that can coexist (DDR-020).
+operates in three modes that can coexist (DDR-020, DDR-028).
 
 ### Mode determination
 
@@ -921,23 +959,41 @@ resolveFacilitatorMode(chatState, cycleFlags):
     modes.push('chat')
   if cycleFlags.awaiting_confirmation OR cycleFlags.awaiting_sharding_approval:
     modes.push('decision')
+  if cycleFlags.awaiting_scoping:
+    modes.push('scoping')
   return modes
 ```
 
-### Assembly when both modes are active
+### Assembly when multiple modes are active
 
-When both modes are active, the context manager produces two separate
-`AssembledContext` instances:
+When multiple modes are active, the context manager produces separate
+`AssembledContext` instances — one per active mode:
 
 1. **Chat context** — uses chat-mode slices (project context + chat history).
 2. **Decision context** — uses decision-mode slices (pending action + relevant artifacts).
+3. **Scoping context** — uses scoping-mode slices (scope draft + charter + tagged nodes) — DDR-028.
 
 The Facilitator agent receives the chat context by default. When the user's
 input matches a decision action (approve, reject, modify, halt), the
 Facilitator switches to the decision context for that turn.
 
-This dual-assembly is unique to the Facilitator. All other roles produce a
+This multi-assembly is unique to the Facilitator. All other roles produce a
 single `AssembledContext` per invocation.
+
+### Scoping mode assembly
+
+When the Facilitator is in scoping mode (DDR-028):
+
+1. System prompt: `facilitator-scoping.md`
+2. Artifact slices:
+   - doc:cycle-scope-draft (full, if exists)
+   - doc:architecture (summary_only)
+   - doc:requirements (summary_only)
+   - doc:decisions (last_n_entries: 5)
+   - All #next-cycle tagged node content (full)
+3. State summary: current map.yaml overview
+4. Task: scoping discussion (produces charter)
+5. Failure context: N/A (scoping is first node)
 
 ### Chat history management
 
@@ -960,7 +1016,7 @@ Request:
   "role":               AgentRole,
   "cycle_state":        CycleState,
   "task_id":            string | null,
-  "facilitator_mode":   "chat" | "decision" | null
+  "facilitator_mode":   "chat" | "decision" | "scoping" | null
 }
 
 Response 200:
@@ -1098,12 +1154,12 @@ Response 400:
     at DESIGN, not PLAN.
 
 13. **Explorer trigger respected.** Explorer context is only assembled when
-    the user explicitly flags exploration. `planning.depth` does not trigger
-    Explorer context assembly (DDR-023).
+     the SCOPING node requests additional research. `planning.depth` does not
+     trigger Explorer context assembly (DDR-023, DDR-028).
 
 14. **Facilitator mode exclusivity.** Each Facilitator assembly produces
-    exactly one `AssembledContext` per mode. If both modes are active, two
-    separate assemblies are produced — they are never merged.
+     exactly one `AssembledContext` per mode. If multiple modes are active,
+     separate assemblies are produced — they are never merged.
 
 ---
 

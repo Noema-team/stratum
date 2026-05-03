@@ -185,6 +185,8 @@ type WidgetType =
   | 'ai_assistant'
   | 'pinned_groups'
   | 'document_browser'
+  | 'scope_draft_list'
+  | 'next_cycle_targets'
 ```
 
 `position` uses a grid coordinate system where `x` and `y` are column/row
@@ -221,6 +223,8 @@ User widgets are explicitly added from the widget palette. They are stored in
 | `ai_assistant` | Project-aware chat with action buttons | `{ session_id: string }` |
 | `pinned_groups` | Expanded view of specific groups | `{ group_ids: string[] }` |
 | `document_browser` | Searchable document tree | `{ root_scope: string }` |
+| `scope_draft_list` | Active scope drafts with node counts and tag counts (DDR-028) | `{ }` |
+| `next_cycle_targets` | Nodes tagged `#next-cycle`, grouped by group (DDR-028) | `{ }` |
 
 ### QuickWriteEntry
 
@@ -378,6 +382,13 @@ status columns.
 Cancelled tasks are hidden by default. A "Show cancelled" toggle reveals them
 in a fourth column.
 
+**Tag filtering (DDR-028):**
+
+The filter bar includes a "Tagged #next-cycle" filter option. When active:
+- Only tasks linked to nodes tagged `#next-cycle` are shown
+- Task cards linked to tagged nodes show a tag indicator (orange dot)
+- Tagged tasks are visually prioritized at the top of their column
+
 **Card rendering:**
 
 | Element | Indicator |
@@ -492,9 +503,17 @@ This integrates with the daemon's cycle start endpoint:
 POST /api/v2/cycles
 {
   "goal": string,
-  "task_id": string
+  "task_id": string,
+  "scope_draft_id"?: string
 }
 ```
+
+**Scope draft integration (DDR-028):**
+
+- A task can be linked to a scope draft via `scope_draft_id`
+- "Start cycle" button on task cards now opens the scope draft selector
+  (if scope drafts exist) or falls back to quick-start goal entry
+- `POST /api/v2/cycles` with `scope_draft_id` instead of just `goal`
 
 ### Beads sync for tasks
 
@@ -1026,3 +1045,4 @@ the `actions` array and rendered for user confirmation.
 | TD-013 | Should the dashboard expose a CLI equivalent for all dashboard actions (e.g., `sle dashboard pin task-042`)? | CLI/UI feature parity, automation | Open |
 | TD-014 | Should node-level tasks that are promoted to Beads retain their node-level scoping metadata, or does it become a standard Beads task? | Data model consistency, round-trip fidelity | Open |
 | TD-015 | What is the retry strategy for failed widget data loads? | UX resilience, network error handling | Open |
+| TD-016 | ~~How should cycle scoping work from the tasks dashboard?~~ Resolved by DDR-028: scope draft selector on "Start cycle" button, `scope_draft_id` parameter on `POST /api/v2/cycles`. | — | Resolved (DDR-028) |

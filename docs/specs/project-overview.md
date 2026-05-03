@@ -81,6 +81,7 @@ interface ProjectGroup {
   pinned: boolean
   health: GroupHealth
   layers: Map<LayerName, LayerNode[]>
+  tags: NodeTag[]
   created_at: string
   last_modified: string
 }
@@ -126,6 +127,7 @@ interface LayerNode {
   label: string
   artifact_path?: string
   source: 'planner' | 'tester' | 'builder' | 'historian' | 'user' | 'system'
+  tags: NodeTag[]
   created_at: string
   modified_at: string
 }
@@ -333,6 +335,16 @@ identifying hub groups.
 
 Layout mode is a user preference persisted in `GraphLayout.mode`.
 
+**Tag visual indicators:**
+
+Tagged nodes display colored badges or borders:
+
+| Tag | Visual |
+|-----|--------|
+| `#next-cycle` | Highlighted border (orange) |
+| `#scope:{id}` | Subtle badge linking to scope draft |
+| `#area:{name}` | Categorical badge |
+
 ### Graph interactions
 
 The graph responds to standard input patterns:
@@ -343,7 +355,7 @@ The graph responds to standard input patterns:
 | Double-click | Group stack | Focus: zoom to group, dim all other groups, highlight connected edges |
 | Click | Layer node | Open node detail panel: label, artifact content, backlinks, metadata |
 | Drag | Group stack | Reposition. Position persisted to `layout.json` on drag end. |
-| Right-click | Any | Context menu with actions: add note, create spike, start cycle, pin/unpin |
+| Right-click | Any | Context menu with actions: add note, create spike, start cycle, pin/unpin, **"Tag for next cycle"** (adds `#next-cycle`), **"Tag for scope..."** (opens scope draft selector → adds `#scope:{draft-id}`), **"Remove tag..."** (shows current tags, allows removal) |
 | Hover | Edge | Show tooltip with edge type and dependency description |
 | Scroll | Canvas | Zoom in/out. Zoom level persisted in `GraphLayout.viewport`. |
 | Pan | Canvas background | Move viewport. Position persisted in `GraphLayout.viewport`. |
@@ -378,6 +390,10 @@ priority chain. The first matching level wins:
 | 3 | File path matching | Output directory belongs to an existing group | `src/rate-limiting/middleware.ts` → `rate-limiting` group |
 | 4 | Requirement matching | Requirement section matches a group's Design layer | Requirement "Rate limiting on API endpoints" matches `rate-limiting` design docs |
 | 5 | Unmatched | Auto-derived group with user review prompt | New group `rate-limiter` created, flagged `auto_derived`, user prompted to confirm or merge |
+
+**Tag-aware context loading:** Nodes tagged `#next-cycle` are included in the
+mapping priority chain. Tagged nodes are loaded first into the Planner's context,
+ensuring the cycle targets the user's indicated priorities.
 
 Auto-derived groups (priority 5) appear in the graph with a dashed border and a
 review badge. They transition to `populated` only after user acceptance. If the
@@ -495,6 +511,10 @@ endpoints below are specified here and will be added to daemon-api-endpoints.md.
 | `/api/v2/graph/hosting/{group_id}/plan` | POST | Send a message to the hosting planner conversation | Project graph |
 | `/api/v2/cycles/{cycle_id}/lock-snapshot` | POST | Lock cycle snapshot (gate pass) — triggers graph refresh on completion | Cycles (user-flow.md) |
 | `/api/v2/cycles/{cycle_id}/run-tests-locally` | POST | Run tests locally (gate pass) — cycle completion triggers graph update | Cycles (user-flow.md) |
+| `/api/v2/graph/nodes/{id}/tags` | GET | List tags on a node | Project graph — tags (DDR-028) |
+| `/api/v2/graph/nodes/{id}/tags` | POST | Add tag to a node | Project graph — tags (DDR-028) |
+| `/api/v2/graph/nodes/{id}/tags/{tag_id}` | DELETE | Remove tag from a node | Project graph — tags (DDR-028) |
+| `/api/v2/graph/tags?type={prefix}` | GET | Find all nodes with a specific tag type | Project graph — tags (DDR-028) |
 
 ### List groups
 
@@ -771,6 +791,20 @@ event: graph.refreshed
   "duration_ms": number,
   "timestamp": string
 }
+
+event: graph.node_tagged
+{
+  "node_id": string,
+  "tag": NodeTag,
+  "timestamp": string
+}
+
+event: graph.node_untagged
+{
+  "node_id": string,
+  "tag_id": string,
+  "timestamp": string
+}
 ```
 
 ### Gate pass endpoints (from user-flow.md)
@@ -914,3 +948,5 @@ and the Graph page performs an incremental refresh of affected groups.
 | PO-008 | Should the conversational hosting planner maintain conversation history across sessions, or is it truly ephemeral (discarded on panel close)? | Hosting planner UX, storage requirements | Open |
 | PO-009 | Should the graph support export to standard formats (Graphviz DOT, Mermaid, SVG) for documentation and sharing outside the SLE environment? | Interoperability, documentation workflows | Open |
 | PO-010 | What is the expected behavior when a group's status is `frozen` but a cycle produces artifacts that would auto-map to it? Reject the mapping, queue for review after unfreeze, or create a new group? | Frozen group semantics, cycle reliability | Open |
+| PO-011 | ~~How should cycle scoping work before a cycle starts?~~ Resolved by DDR-028: tag system + pre-cycle scoping UI with scope drafts. | — | Resolved (DDR-028) |
+| PO-012 | ~~Should the graph support multi-node selection for scoped cycles?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-cycle`, replacing the need for ad-hoc multi-node selection (UF-007 in user-flow.md). | — | Resolved (DDR-028) |

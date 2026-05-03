@@ -34,9 +34,7 @@ serve the DAG's progression from node to node.
 
 ```
 enum DAGNode {
-  INTENT            = 'INTENT',
-  CONTEXT_ASSEMBLY  = 'CONTEXT_ASSEMBLY',
-  EXPLORE           = 'EXPLORE',
+  SCOPING           = 'SCOPING',
   DESIGN            = 'DESIGN',
   CRITIQUE          = 'CRITIQUE',
   PLAN              = 'PLAN',
@@ -53,6 +51,8 @@ enum DAGNode {
   SNAPSHOT          = 'SNAPSHOT',
 }
 ```
+
+14 nodes total. DDR-028: INTENT, CONTEXT_ASSEMBLY, EXPLORE replaced by SCOPING.
 
 Full type definition: `DAGNode` in [../reference/types.md](../reference/types.md) §4.
 
@@ -99,10 +99,11 @@ EXEC → VALIDATION_GATE arc. See §Iteration rules for detail.
 
 | Flag | Set when | Cleared when |
 |---|---|---|
+| `cycle.awaiting_scoping` | SCOPING node waiting for user input | User provides input or max rounds exceeded |
 | `cycle.awaiting_confirmation` | CONFIRM gate reached | User approves, modifies, or halts |
 | `cycle.awaiting_sharding_approval` | Planner produces sharding proposal | User approves or rejects the proposal |
 
-Both flags are boolean fields on the cycle record in `map.yaml`. They do not
+All flags are boolean fields on the cycle record in `map.yaml`. They do not
 change `meta.status` (remains `cycling`). At most one is `true` at a time.
 
 See [state-machine.md](state-machine.md) §Intra-cycle transitions for the
@@ -137,122 +138,46 @@ Produced during EXEC and consumed by DEBUG. Stored under `.sle/runs/{id}/`:
 ### DAG flow diagram
 
 ```
-USER INTENT
-    │
-    ▼
-CONTEXT ASSEMBLY
-    │
-    ▼
-┌──────────────────────────────────────────────────────────────┐
-│ EXPLORE ─ conditional                                        │
-│ User-initiated only (DDR-023). Not triggered by depth.       │
-│ If skipped, proceed directly to DESIGN.                      │
-└──────────────────────────────────────────────────────────────┘
-    │
-    ▼
-DESIGN
-    │  Designer produces architecture.md + requirements.md (DDR-019)
-    │
-    ▼
-┌──────────────────────────────────────────────────────────────┐
-│ CRITIQUE ─ conditional (depth: deep | research only)         │
-│ Reviews DESIGN output, not PLAN (DDR-022).                   │
-│ Blocking issues → Designer revises → Critic re-reviews.      │
-│ All clear → proceed to PLAN.                                 │
-└──────────────────────────────────────────────────────────────┘
-    │
-    ▼
-PLAN
-    │  Planner produces plan.md + test-plan.md (DDR-019)
-    │  At deep/research: also produces build-plan.md
-    │  May also produce sharding proposal (intake sub-phase)
-    │
-    ▼
-TEST
-    │  Tester writes test scripts from requirements only
-    │  Never sees architecture or implementation (TDD separation)
-    │
-    ▼
-┌──────────────────────────────────────────────────────────────┐
-│ SHARDING APPROVAL ─ conditional (DDR-026)                    │
-│ Only when Planner produced a sharding proposal.              │
-│ cycle.awaiting_sharding_approval = true                      │
-│ Facilitator in decision mode.                                │
-│ approve → CONFIRM  |  reject → re-plan without sharding      │
-└──────────────────────────────────────────────────────────────┘
-    │
-    ▼
-CONFIRM GATE
-    │  cycle.awaiting_confirmation = true (DDR-021)
-    │  meta.status stays cycling. Facilitator in decision mode.
-    │  User reviews plan + tests + coverage.
-    │  approve → BUILD
-    │  modify → TEST (re-derive) → CONFIRM (revision loop)
-    │  halt → cycle halts
-    │
-    ▼ approved
-BUILD
-    │  Builder produces implementation + instrumented test scripts
-    │
-    ▼
-HISTORY
-    │  Historian appends entry to decisions.md
-    │
-    ▼
-EXEC ─ validation fan-out, all categories in parallel
-    │  Per category: static-check → llm-check → exec-check
-    │  static-check fail skips remaining sub-phases for that category
-    │
-    ▼
-VALIDATION GATE ─ deterministic, no LLM
-    │
-    ├─── PASS
-    │       │
-    │       ▼
-    │   EVALUATE
-    │       │  Evaluator: did implementation satisfy intent?
-    │       ▼
-    │   SUMMARISE
-    │       │  User-facing summary + generated artifacts
-    │       ▼
-    │   SNAPSHOT
-    │       │  Lock version. Commit artifacts.
-    │       ▼
-    │   CYCLE COMPLETE → meta.status → idle (two-step: SNAPSHOT sets status→complete, then T9 automatically transitions complete→idle)
-    │
-    └─── FAIL
-            │
-            ▼
-        DEBUG
-            │  Debugger reads run artifacts + failed category slices
-            │  Produces FailureReport with root causes
-            │
-            ▼
-        iteration++
-            │
-            ▼
-        ┌─── iteration cap reached? ──── YES ──→ HALT
-        │                                       (meta.status → halted)
-        NO
-        │
-        ▼
-    PLAN ◄─── FailureReport injected into Planner context
-        │
-        └──→ TEST → SHARDING_APPROVAL → CONFIRM → BUILD → HISTORY
-             → EXEC → VALIDATION_GATE (iteration loop)
+SCOPING (Facilitator-led, guided discussion)
+  │  Input: tagged nodes/layers + scope draft (if any) + existing artifacts
+  │  Output: doc:cycle-charter
+  │  User interaction: Facilitator guides structured discussion
+  │  awaiting_scoping flag: set when waiting for user input
+  │
+  ▼
+DESIGN (Designer agent)
+  │  Input: cycle-charter + existing architecture/requirements
+  │  Output: doc:architecture, doc:requirements
+  │
+  ▼
+CRITIQUE (conditional — depth: deep | research only)
+  │  Reviews DESIGN output
+  │
+  ▼
+PLAN (Planner agent)
+  │  Input: charter + architecture + requirements + decisions
+  │  Output: doc:plan, doc:test-plan (doc:build-plan at deep/research)
+  │
+  ▼
+TEST → [SHARDING_APPROVAL] → CONFIRM → BUILD → HISTORY → EXEC
+  │
+  ▼
+VALIDATION_GATE
+  ├── PASS → EVALUATE → SUMMARISE → SNAPSHOT → complete
+  └── FAIL → DEBUG → PLAN → ... (iteration loop)
 ```
 
 ### Happy path (no conditionals triggered)
 
 ```
-INTENT → CONTEXT_ASSEMBLY → DESIGN → PLAN → TEST → CONFIRM → BUILD
+SCOPING → DESIGN → PLAN → TEST → CONFIRM → BUILD
 → HISTORY → EXEC → VALIDATION_GATE → EVALUATE → SUMMARISE → SNAPSHOT
 ```
 
 ### Full path with all conditionals
 
 ```
-INTENT → CONTEXT_ASSEMBLY → EXPLORE → DESIGN → CRITIQUE → PLAN → TEST
+SCOPING → DESIGN → CRITIQUE → PLAN → TEST
 → SHARDING_APPROVAL → CONFIRM → BUILD → HISTORY → EXEC → VALIDATION_GATE
 → (fail) → DEBUG → PLAN → TEST → CONFIRM → BUILD → HISTORY → EXEC
 → VALIDATION_GATE → (pass) → EVALUATE → SUMMARISE → SNAPSHOT
@@ -262,7 +187,7 @@ INTENT → CONTEXT_ASSEMBLY → EXPLORE → DESIGN → CRITIQUE → PLAN → TES
 
 ## Node definitions
 
-All 17 DAG nodes are defined with their layer, agent role, inputs, outputs, success criteria, and failure handling in [dag-node-reference.md](dag-node-reference.md).
+All 15 DAG nodes are defined with their layer, agent role, inputs, outputs, success criteria, and failure handling in [dag-node-reference.md](dag-node-reference.md).
 
 ---
 
@@ -355,24 +280,50 @@ Configured in `planning.yaml → max_iterations`. When the cap is reached:
 
 ### Overview
 
-The DAG has two human checkpoints. Both use the same mechanism: a boolean
+The DAG has three human checkpoints. All use the same mechanism: a boolean
 flag on the cycle record, with the Facilitator operating in decision mode.
 
 ```
-... → PLAN → TEST → SHARDING_APPROVAL → CONFIRM → BUILD → ...
-                         flag 1              flag 2
-                    (sharding)          (plan approval)
+SCOPING → ... → PLAN → TEST → SHARDING_APPROVAL → CONFIRM → BUILD → ...
+  flag 0                    flag 1              flag 2
+(scoping)               (sharding)          (plan approval)
 ```
 
-At most one flag is `true` at a time. The system does not prompt for sharding
-approval and plan confirmation concurrently.
+At most one flag is `true` at a time. The system does not prompt for scoping,
+sharding approval, and plan confirmation concurrently.
+
+### Checkpoint 0 — SCOPING
+
+**Flag:** `cycle.awaiting_scoping`
+
+**When:** SCOPING node is active and waiting for user input during guided discussion.
+
+**Presented by:** Facilitator in scoping mode.
+
+**User reviews:**
+
+- Scope — what is included and excluded from this cycle
+- Purpose — what the cycle aims to achieve
+- Requirements — what must be satisfied
+- Boundaries — what is explicitly deferred
+- Version bump — whether the inferred semver bump is correct
+
+**Actions:**
+
+| Action | Effect |
+|---|---|
+| Provide input | Facilitator processes input, continues discussion |
+| Approve charter | `awaiting_scoping = false`, charter produced, proceed to DESIGN |
+| Halt | Cycle halts (meta.status → halted) |
+
+**DDR reference:** DDR-028
 
 ### Checkpoint 1 — Sharding approval
 
 **Flag:** `cycle.awaiting_sharding_approval`
 
-**When:** After PLAN produces a sharding proposal (only if intake sub-phase
-ran and produced a proposal).
+**When:** After PLAN produces a sharding proposal (only if Planner's
+analysis determined the work benefits from task decomposition).
 
 **Presented by:** Facilitator in decision mode.
 
@@ -447,11 +398,11 @@ POST /api/v2/cycles
 
 Request:
 {
-  "goal":            string,
+  "scope_draft_id":  string | null,
+  "version_bump":    'major' | 'minor' | 'patch' | null,
+  "quick_start_goal": string | null,
   "depth_override":  PlanningDepth | null,
-  "explore":         boolean,
-  "category_hints":  string[] | null,
-  "intake":          "auto" | "force" | "skip" | null
+  "category_hints":  string[] | null
 }
 
 Response 201:
@@ -489,8 +440,9 @@ Response 200:
   "outcome":      CycleOutcome,
   "dag_state":    DAGState,
   "flags": {
-    "awaiting_confirmation":       boolean,
-    "awaiting_sharding_approval":  boolean
+    "awaiting_scoping":             boolean,
+    "awaiting_confirmation":        boolean,
+    "awaiting_sharding_approval":   boolean
   },
   "started_at":   string,
   "completed_at": string | null
@@ -679,9 +631,9 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 
 | Error | Node | Condition | Response |
 |---|---|---|---|
-| `intent_rejected` | INTENT | `meta.status ≠ idle` | 409 with current state |
-| `discovery_required` | INTENT | No discovery, no `--force` | 403 with message |
-| `artifact_missing` | CONTEXT_ASSEMBLY | Required artifact not found | Halt cycle (unrecoverable) |
+| `scoping_timeout` | SCOPING | Max rounds exceeded (`planning.yaml → scoping.max_rounds`) | 409 with scoping state |
+| `charter_validation_failed` | SCOPING | Charter missing required fields (scope, purpose) | Halt cycle (unrecoverable) |
+| `discovery_required` | SCOPING | No discovery, no `--force` | 403 with message |
 | `agent_timeout` | Any L3 node | Agent call exceeds timeout | Retry once, then halt |
 | `agent_empty_output` | DESIGN, PLAN, TEST, BUILD | Agent produced empty/invalid output | Retry once, then halt |
 | `llm_provider_error` | Any L3 node | Provider returns 5xx or rate limit | Retry with backoff (3 attempts), then halt |
@@ -748,13 +700,13 @@ Full type: `ExitConfig` in [../reference/types.md](../reference/types.md) §8.2.
 
 7. **Critic placement.** The Critic reviews at the DESIGN node, not the PLAN node (DDR-022). It reviews architecture + requirements, not the plan or test-plan.
 
-8. **EXPLORE trigger.** EXPLORE is user-initiated only. `planning.depth` does not auto-trigger EXPLORE (DDR-023).
+8. **SCOPING is always first.** SCOPING is the first DAG node in every cycle. It must produce `doc:cycle-charter` before DESIGN can start.
 
 9. **Deterministic gate.** The VALIDATION gate is a pure function of category results. No LLM, no user input, no external services.
 
-10. **Flag exclusivity.** At most one of `awaiting_confirmation` and `awaiting_sharding_approval` may be `true` at a time.
+10. **Flag exclusivity.** At most one of `awaiting_scoping`, `awaiting_confirmation`, and `awaiting_sharding_approval` may be `true` at a time.
 
-11. **Flag scope.** Both flags are scoped to the active cycle. They reset to `false` when the cycle ends.
+11. **Flag scope.** All flags are scoped to the active cycle. They reset to `false` when the cycle ends.
 
 12. **Category caching.** Passing categories are never re-run on retry. Their `CategoryResult` is preserved across iterations.
 
@@ -770,7 +722,9 @@ Full type: `ExitConfig` in [../reference/types.md](../reference/types.md) §8.2.
 
 18. **Sharding before CONFIRM.** Sharding approval is a separate checkpoint that runs before the CONFIRM gate, not embedded within it (DDR-026).
 
-19. **Iteration loop starts at PLAN.** On retry, the loop goes to PLAN (or DESIGN if structural failure). It does not re-run EXPLORE.
+19. **Iteration loop starts at PLAN.** On retry, the loop goes to PLAN (or DESIGN if structural failure). The charter from SCOPING is not re-derived.
+
+20. **awaiting_scoping follows flag exclusivity.** `awaiting_scoping` follows the same exclusivity pattern as `awaiting_confirmation` — at most one flag is true at a time.
 
 ---
 
@@ -786,5 +740,6 @@ Full type: `ExitConfig` in [../reference/types.md](../reference/types.md) §8.2.
 | DAG-006 | Should DAG history be persisted across daemon restarts, or regenerated from `map.yaml` state? | Recovery behavior | Open |
 | DAG-007 | Is there a maximum wall-clock time for a single cycle (regardless of iteration count)? | Resource management | Open |
 | DAG-008 | Should the EVALUATE node's verdict influence the VALIDATION gate's pass/fail decision, or is it purely informational? | Gate semantics | Open |
-| DAG-009 | Can the user request EXPLORE mid-cycle (after DESIGN has run), or only before DESIGN? | EXPLORE timing flexibility | Open |
 | DAG-010 | What is the expected behavior when `force_pass` is configured and the cycle produces obviously broken output? | Safety guardrails | Open |
+
+> **Note (DDR-028):** Any remaining references to INTENT, CONTEXT_ASSEMBLY, or EXPLORE are historical. These nodes were replaced by SCOPING.

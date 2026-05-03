@@ -1,6 +1,6 @@
 # Daemon API — Endpoints
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-25 · **Depends on:** DDR-005, DDR-013, DDR-020, DDR-024, DDR-025, DDR-026
+**Type:** spec · **Status:** draft · **Updated:** 2026-04-25 · **Depends on:** DDR-005, DDR-013, DDR-020, DDR-024, DDR-025, DDR-026, DDR-028
 
 > This document contains all REST endpoint definitions for the SDK daemon API.
 > For architecture overview, data model, authentication, error handling,
@@ -66,6 +66,7 @@ Response 200:
     "revision": number,
     "awaiting_confirmation": boolean,
     "awaiting_sharding_approval": boolean,
+    "awaiting_scoping": boolean,
     "chat": {
       "session_open": boolean
     }
@@ -496,11 +497,11 @@ POST /api/v2/cycles
 
 Request:
 {
-  "goal": string,
+  "scope_draft_id": string | null,
+  "quick_start_goal": string | null,
   "depth_override": "minimal" | "standard" | "deep" | "research" | null,
-  "explore": boolean,
   "category_hints": string[] | null,
-  "intake": "auto" | "force" | "skip" | null
+  "version_bump": "major" | "minor" | "patch" | null
 }
 
 Response 201:
@@ -509,7 +510,8 @@ Response 201:
   "data": {
     "cycle_id": string,
     "dag_state": DAGState,
-    "started_at": string
+    "started_at": string,
+    "first_node": "SCOPING"
   }
 }
 
@@ -694,7 +696,8 @@ PATCH /api/v2/cycles/{cycle_id}/flags
 Request:
 {
   "awaiting_confirmation": boolean | null,
-  "awaiting_sharding_approval": boolean | null
+  "awaiting_sharding_approval": boolean | null,
+  "awaiting_scoping": boolean | null
 }
 
 Response 200:
@@ -704,7 +707,8 @@ Response 200:
     "cycle_id": string,
     "flags": {
       "awaiting_confirmation": boolean,
-      "awaiting_sharding_approval": boolean
+      "awaiting_sharding_approval": boolean,
+      "awaiting_scoping": boolean
     }
   }
 }
@@ -786,6 +790,242 @@ Response 200:
 
 Response 409: not_awaiting_sharding_approval
 ```
+
+---
+
+## Tags
+
+Endpoints for managing node tags, including the #next-cycle tag used by the
+SCOPING node (DDR-028).
+
+### List tags
+
+```
+GET /api/v2/tags?type={TagPrefix}&scope={group_id}
+
+Query params (all optional):
+  type: TagPrefix — filter by tag prefix (e.g., "next-cycle")
+  scope: string — filter by group_id
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "tags": Array<{ "node_id": string, "tags": NodeTag[] }>
+  }
+}
+```
+
+### Add tag
+
+```
+POST /api/v2/tags
+
+Request:
+{
+  "node_id": string,
+  "tag": {
+    "prefix": TagPrefix,
+    "value": string | null
+  }
+}
+
+Response 201:
+{
+  "ok": true,
+  "data": {
+    "node_id": string,
+    "tag": NodeTag
+  }
+}
+```
+
+### Remove tag
+
+```
+DELETE /api/v2/tags/{node_id}/{tag_prefix}/{value?}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "node_id": string,
+    "removed": true
+  }
+}
+
+Response 404:
+{
+  "ok": false,
+  "error": {
+    "code": "tag_not_found",
+    "message": "Tag not found on node {node_id}."
+  }
+}
+```
+
+### List next-cycle nodes
+
+```
+GET /api/v2/tags/next-cycle
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "nodes": Array<{
+      "node_id": string,
+      "group_id": string,
+      "node_type": string,
+      "tags": NodeTag[]
+    }>
+  }
+}
+```
+
+Convenience endpoint: returns all nodes tagged #next-cycle.
+
+---
+
+## Scoping
+
+Endpoints for managing scope drafts and submitting input during the SCOPING
+node's guided discussion (DDR-028).
+
+### List scope drafts
+
+```
+GET /api/v2/scoping/drafts
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "drafts": Array<{
+      "id": string,
+      "title": string,
+      "created_at": string,
+      "tagged_node_count": number
+    }>
+  }
+}
+```
+
+### Create scope draft
+
+```
+POST /api/v2/scoping/drafts
+
+Request:
+{
+  "title": string,
+  "content": string | null
+}
+
+Response 201:
+{
+  "ok": true,
+  "data": {
+    "id": string,
+    "title": string,
+    "created_at": string,
+    "tagged_node_count": 0
+  }
+}
+```
+
+### Update scope draft
+
+```
+PATCH /api/v2/scoping/drafts/{id}
+
+Request:
+{
+  "title": string | null,
+  "content": string | null
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "id": string,
+    "title": string,
+    "updated_at": string
+  }
+}
+
+Response 404:
+{
+  "ok": false,
+  "error": {
+    "code": "draft_not_found",
+    "message": "Scope draft {id} does not exist."
+  }
+}
+```
+
+### Delete scope draft
+
+```
+DELETE /api/v2/scoping/drafts/{id}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "id": string,
+    "deleted": true
+  }
+}
+
+Response 404:
+{
+  "ok": false,
+  "error": {
+    "code": "draft_not_found",
+    "message": "Scope draft {id} does not exist."
+  }
+}
+```
+
+### Submit scoping input
+
+```
+POST /api/v2/cycles/{cycle_id}/scoping/input
+
+Request:
+{
+  "message": string,
+  "approve_charter": boolean | null,
+  "version_bump_override": "major" | "minor" | "patch" | null
+}
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "cycle_id": string,
+    "charter_produced": boolean,
+    "dag_state": DAGState
+  }
+}
+
+Response 409:
+{
+  "ok": false,
+  "error": {
+    "code": "not_awaiting_scoping",
+    "message": "SCOPING node is not active for this cycle."
+  }
+}
+
+Response 404: cycle_not_found
+```
+
+Submit user input during the SCOPING node's guided discussion. If
+`approve_charter` is true, the charter is accepted and SCOPING completes. If
+`version_bump_override` is provided, it overrides the inferred bump type.
 
 ---
 
@@ -1087,7 +1327,7 @@ Request:
   "role": AgentRole,
   "cycle_state": CycleState,
   "task_id": string | null,
-  "facilitator_mode": "chat" | "decision" | null
+  "facilitator_mode": "chat" | "decision" | "scoping" | null
 }
 
 Response 200: { context: AssembledContext, assembly_mode, role_budget, warnings[] }
@@ -1330,6 +1570,10 @@ Full task store internals (BeadsTaskStore, LocalTaskStore, stale claim recovery)
 
 Endpoints for the document intake and task sharding pipeline. Source spec:
 [intake-and-sharding.md](intake-and-sharding.md).
+
+The intake pipeline is triggered by the Planner's analysis during the PLAN node,
+not by an intent parameter. Coherence checks and sharding occur when the Planner
+determines the scope of work requires task decomposition (DDR-028).
 
 ### Run intake pipeline
 
@@ -2184,3 +2428,18 @@ Response 404:
   }
 }
 ```
+
+---
+
+## WebSocket events (DDR-028 additions)
+
+Additional WebSocket events for the SCOPING cycle start and tag system:
+
+| Event | Payload | When |
+|---|---|---|
+| `cycle.scoping_input_requested` | `cycle_id, timestamp` | Fired when `awaiting_scoping` becomes true |
+| `cycle.charter_produced` | `cycle_id, charter_content, timestamp` | Fired when SCOPING produces the charter |
+| `graph.node_tagged` | `node_id, tag, timestamp` | Fired when a tag is added to a node |
+| `graph.node_untagged` | `node_id, tag_prefix, value, timestamp` | Fired when a tag is removed from a node |
+
+Full event catalogue: [../reference/websocket-events.md](../reference/websocket-events.md).

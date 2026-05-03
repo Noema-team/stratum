@@ -124,7 +124,7 @@ Populated initially from `GET /api/v2/cycles/{cycle_id}` and
 ```typescript
 interface ActionsRequiredPanel {
   gates: Array<{
-    kind: 'confirm' | 'gate_pass' | 'sharding_approval'
+    kind: 'confirm' | 'gate_pass' | 'sharding_approval' | 'scoping'
     cycle_id: string
     iteration: number
     revision: number
@@ -142,8 +142,14 @@ interface ActionsRequiredPanel {
 
 `priority` is `critical` for any gate — the daemon is paused and waiting. Gates
 are derived from `GET /api/v2/system/state` (`awaiting_confirmation`,
-`awaiting_sharding_approval` fields) and WebSocket events
-`gate.awaiting_confirmation`, `cycle.awaiting_sharding_approval`.
+`awaiting_sharding_approval`, `awaiting_scoping` fields) and WebSocket events
+`gate.awaiting_confirmation`, `cycle.awaiting_sharding_approval`,
+`cycle.scoping_input_requested`.
+
+**Scoping gate** (`awaiting_scoping`):
+- Title: "Scoping Discussion"
+- Description: "Review and refine cycle scope with the Facilitator"
+- Action: Opens chat page in scoping mode (FacilitatorMode `'scoping'`)
 
 ### Recent Activity panel data
 
@@ -315,9 +321,7 @@ user-flow.md.
 
 ```typescript
 type DAGNode =
-  | 'INTENT'
-  | 'CONTEXT_ASSEMBLY'
-  | 'EXPLORE'
+  | 'SCOPING'
   | 'DESIGN'
   | 'CRITIQUE'
   | 'PLAN'
@@ -611,6 +615,16 @@ User closes browser or session timeout
   │  Session closes. History persisted in daemon-side chat-history.jsonl
 ```
 
+**Pre-cycle scoping UI (DDR-028):**
+
+When the system is idle and the user wants to start a cycle:
+- "Start scoping" button appears in the chat input area
+- Scope draft management: list existing scope drafts, create new one
+- Tag indicator panel: show which nodes/layers are tagged `#next-cycle`
+- When a cycle is in the SCOPING node: chat automatically switches to scoping
+  mode (`FacilitatorMode: 'scoping'`) via `cycle.scoping_input_requested`
+  WebSocket event
+
 ### Graph page behavior
 
 ```
@@ -644,6 +658,21 @@ nodes with their lifecycle layers as a force-directed layout.
 **Committed state only.** The graph reflects artifacts that have been committed
 to the project (via SNAPSHOT node completing). In-progress cycle work does not
 appear. This prevents the graph from flickering during execution.
+
+**Cycle start UI (DDR-028, resolves UI-001):**
+
+A "New cycle" button appears on the Overview page (top-right of Active Jobs panel)
+and on the Chat page (when idle). Clicking it opens a dialog:
+- Choose scope draft (if any exist) or enter a quick-start goal
+- Option to set `version_bump` override
+- Starts cycle via `POST /api/v2/cycles` with `scope_draft_id` or `quick_start_goal`
+
+**Tag indicators on graph nodes (DDR-028):**
+
+Tagged nodes show colored badges (see project-overview.md §Tag visual indicators).
+The filter bar includes a "Tagged for next cycle" filter option. Right-click
+context menu includes tag actions (delegated to project-overview.md §Graph
+interactions).
 
 **Layout toggles:**
 
@@ -803,6 +832,9 @@ Browser opens WebSocket to ws://localhost:7700/events
 | `chat.session_changed` | Chat | Update session_open state |
 | `chat.decision_captured` | Chat | Mark decision as captured in history |
 | `link.index_updated` | Graph | Re-fetch links, re-render graph |
+| `graph.node_tagged` | Graph | Update node rendering (add badge/border) |
+| `graph.node_untagged` | Graph | Update node rendering (remove badge/border) |
+| `cycle.scoping_input_requested` | Chat | Switch chat to scoping mode |
 | `task.claimed` | Tasks | Re-fetch tasks |
 | `task.resolved` | Tasks | Re-fetch tasks |
 | `dag.confirm_requested` | Overlay | Populate confirm overlay data |
@@ -1003,7 +1035,7 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 
 | ID | Question | Impact | Status |
 |---|---|---|---|
-| UI-001 | Where does the user trigger a new cycle from the UI? Overview page? Dedicated action button? Nav bar? | UX flow, page responsibility | Deferred |
+| UI-001 | ~~Where does the user trigger a new cycle from the UI?~~ Resolved by DDR-028: "New cycle" button on Chat page + Overview page. Opens dialog with scope draft selector or quick-start goal. | — | Resolved (DDR-028) |
 | UI-002 | How much detail should the CONFIRM gate overlay render for plan steps and test criteria? Full text or summary cards? | Overlay complexity, information density | Open |
 | UI-003 | Should the cycle graph (SLE-013) be a mode on the Graph page or a separate page/overlay? | Navigation structure, graph page scope | Open |
 | UI-004 | What are the mobile/responsive breakpoints? When does the three-panel layout collapse? | Layout behavior, CSS architecture | Deferred |

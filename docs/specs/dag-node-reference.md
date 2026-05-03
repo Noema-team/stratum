@@ -7,7 +7,7 @@
 
 ## Overview
 
-This spec is the per-node reference for all 17 DAG nodes that make up one cycle
+This spec is the per-node reference for all 15 DAG nodes that make up one cycle
 iteration. Nodes span four layers — L1 (Interface), L2 (Daemon), L3 (Agent
 Runtime), and L4 (Execution Plane) — and are executed in strict sequence by the
 daemon's DAG runner. Each node definition specifies its layer, agent role,
@@ -15,171 +15,96 @@ conditional activation rules, inputs, outputs, success criteria, and failure
 handling. For flow diagrams, iteration rules, retry semantics, and the overall
 API contracts, see the parent spec [dag-execution.md](dag-execution.md).
 
+DDR-028: INTENT, CONTEXT_ASSEMBLY, and EXPLORE replaced by SCOPING (node 1). Any
+remaining references to the old nodes are historical.
+
 ## Data model
 
-The canonical `DAGNode` enum is defined in [types.md](types.md) §5. All 17
+The canonical `DAGNode` enum is defined in [types.md](types.md) §5. All 15
 values, in execution order:
 
 | # | Node | Conditional? | Activation condition |
 |---|------|-------------|----------------------|
-| 1 | `INTENT` | No | — |
-| 2 | `CONTEXT_ASSEMBLY` | No | — |
-| 3 | `EXPLORE` | Yes | `intent.explore === true` (DDR-023) |
-| 4 | `DESIGN` | No | — |
-| 5 | `CRITIQUE` | Yes | `planning.depth` is `deep` or `research` |
-| 6 | `PLAN` | No | — |
-| 7 | `TEST` | No | — |
-| 8 | `SHARDING_APPROVAL` | Yes | Planner produced a sharding proposal (DDR-026) |
-| 9 | `CONFIRM` | Yes | `user_validation.yaml → approval_required` is true |
-| 10 | `BUILD` | No | — |
-| 11 | `HISTORY` | No | — |
-| 12 | `EXEC` | No | — |
-| 13 | `VALIDATION_GATE` | No | — |
-| 14 | `DEBUG` | Yes | VALIDATION_GATE outcome is fail |
-| 15 | `EVALUATE` | No | — |
-| 16 | `SUMMARISE` | No | — |
-| 17 | `SNAPSHOT` | No | — |
+| 1 | `SCOPING` | No | — |
+| 2 | `DESIGN` | No | — |
+| 3 | `CRITIQUE` | Yes | `planning.depth` is `deep` or `research` |
+| 4 | `PLAN` | No | — |
+| 5 | `TEST` | No | — |
+| 6 | `SHARDING_APPROVAL` | Yes | Planner produced a sharding proposal (DDR-026) |
+| 7 | `CONFIRM` | Yes | `user_validation.yaml → approval_required` is true |
+| 8 | `BUILD` | No | — |
+| 9 | `HISTORY` | No | — |
+| 10 | `EXEC` | No | — |
+| 11 | `VALIDATION_GATE` | No | — |
+| 12 | `DEBUG` | Yes | VALIDATION_GATE outcome is fail |
+| 13 | `EVALUATE` | No | — |
+| 14 | `SUMMARISE` | No | — |
+| 15 | `SNAPSHOT` | No | — |
 
 Six nodes are conditional. When a conditional node is skipped, the daemon
 advances to the next node without incrementing the iteration counter.
 
 ## Node definitions
 
-### Node 1 — INTENT
+### Node 1 — SCOPING
 
 | Field | Value |
-|---|---|
-| **Layer** | L1 (Interface) |
-| **Agent role** | None (user input) |
+|-------|-------|
+| **Layer** | L1 — Scoping |
+| **Agent role** | Facilitator (scoping mode) |
 | **Conditional** | No |
-| **Inputs** | User message, planning depth (optional override), session ID |
-| **Outputs** | Intent object passed to CONTEXT_ASSEMBLY |
+| **User checkpoint** | Yes — guided discussion, max rounds configurable |
+| **DDR** | DDR-028 |
 
-The entry point. Accepts input from CLI (`sle start "..."`) or API. The daemon
-normalises all input sources into a single intent object.
+**Purpose.** First node in every cycle. Replaces the former INTENT → CONTEXT_ASSEMBLY → EXPLORE sequence. The Facilitator guides the user through a structured discussion to produce a formal `doc:cycle-charter`.
 
-```
-interface UserIntent {
-  goal:              string
-  session_id:        string
-  depth_override?:   PlanningDepth
-  explore?:          boolean
-  category_hints?:   string[]
-  intake?:           'auto' | 'force' | 'skip'
-}
-```
+**Inputs:**
+- Tagged nodes/layers (all `#next-cycle` tagged elements)
+- `doc:cycle-scope-draft` (if created during pre-cycle chat)
+- Existing project artifacts (architecture, requirements, decisions)
+- `quick_start_goal` (if cycle started via `sle start "goal"` — auto-generates minimal scope)
 
-**Success criteria:** `goal` is non-empty. If `meta.status ≠ idle`, reject.
+**Process:**
+1. Load tagged nodes/layers and scope draft into context
+2. Facilitator switches to 'scoping' mode
+3. Guided discussion: scope, purpose, requirements, boundaries, deferred items
+4. Facilitator infers `version_bump` from scope/purpose (patch default, minor for features, major for rewrites)
+5. User can override version_bump during discussion
+6. Max rounds: configurable via `planning.yaml → scoping.max_rounds` (default 5, hard cap 10)
+7. On max rounds exceeded: cycle halts with `scoping_timeout` error
 
-**Failure handling:** Reject with 409 `session_conflict` if a session is
-already active. Reject with 403 `discovery_required` if discovery has not
-completed and `--force` is not set.
+**Outputs:**
+- `doc:cycle-charter` — formal scope document (scope, purpose, requirements, boundaries, version_bump, deferred items)
 
----
+**`awaiting_scoping` flag:** Set to true when waiting for user input during discussion. Follows same exclusivity pattern as `awaiting_confirmation`.
 
-### Node 2 — CONTEXT_ASSEMBLY
+**Skip conditions:**
+- If `quick_start_goal` is provided: SCOPING runs with minimal context, auto-generates charter from goal string, skips guided discussion. Charter is produced immediately.
+- SCOPING cannot be fully skipped — charter is required for DESIGN.
 
-| Field | Value |
-|---|---|
-| **Layer** | L2 (Daemon) |
-| **Agent role** | None (daemon operation) |
-| **Conditional** | No |
-| **Inputs** | Current `map.yaml`, agent role for the next node |
-| **Outputs** | `AssembledContext` for the next agent call |
-
-The daemon assembles a surgical context window. No raw conversation history
-is passed. The window contains five components:
-
-| Component | Content | Target tokens |
-|---|---|---|
-| System prompt | Role definition + behavioral rules | ~500 |
-| Artifact slices | Only documents the target role needs | ~2,000 |
-| State summary | Cycle number, iteration, depth | ~300 |
-| Task for this turn | Specific instruction for this call | ~200 |
-| Failure context | `FailureReport` from previous iteration (iteration > 1) | ~400 |
-
-Total target: under 3,500 tokens per agent call.
-
-Artifact slices use typed references (DDR-025). The context manager resolves
-`doc:{key}` against `.sle/project-docs/` and `node:{group}:{key}` against
-`.sle/project-graph/layers/`.
-
-```
-interface AssembledContext {
-  system_prompt:    string
-  artifact_slices:  Record<string, string>
-  state_summary:    string
-  task:             string
-  failure_context?: string
-  knowledge_context?: string
-  token_count:      number
-  truncated:        string[]
-}
-```
-
-**Success criteria:** Context assembled within token budget. `truncated` list
-records any slices that were truncated to fit.
-
-**Failure handling:** If a required artifact is missing, the node errors and
-the cycle halts (unrecoverable — a required document was not produced).
+**Error conditions:**
+- `scoping_timeout` — max rounds exceeded
+- `charter_validation_failed` — charter missing required fields (scope, purpose)
 
 ---
 
-### Node 3 — EXPLORE
-
-| Field | Value |
-|---|---|
-| **Layer** | L3 (Agent Runtime) |
-| **Agent role** | Explorer |
-| **Conditional** | Yes — user-initiated only (DDR-023) |
-| **Inputs** | Intent + discovery docs + prior evaluation |
-| **Outputs** | Research findings document |
-
-EXPLORE runs only when the user explicitly requests it (`intent.explore = true`
-or via Facilitator). It is **never** auto-triggered by `planning.depth` or
-daemon heuristics (DDR-023).
-
-The Explorer investigates the user's open questions, runs spikes, benchmarks
-alternatives, and produces a research findings document. The findings are
-tagged `explore:user-guided` and fed into the DESIGN node's context.
-
-Automatic gap detection is a separate mechanism (not this node). It runs at
-defined points during context assembly and surfaces flagged issues to the user
-via the Facilitator.
-
-**Activation rule:**
-
-```
-if intent.explore === true → run EXPLORE
-else → skip, proceed to DESIGN
-```
-
-**Success criteria:** Research findings document written. Explorer does not
-produce architecture or requirements — those belong to the Designer.
-
-**Failure handling:** If the Explorer cannot complete its investigation (e.g.,
-dependency unavailable), it produces partial findings with a warning. The
-cycle does not halt — partial findings are still useful for DESIGN.
-
----
-
-### Node 4 — DESIGN
+### Node 2 — DESIGN
 
 | Field | Value |
 |---|---|
 | **Layer** | L3 (Agent Runtime) |
 | **Agent role** | Designer |
 | **Conditional** | No |
-| **Inputs** | Discovery docs + intent + prior architecture + decisions + exploration findings (if EXPLORE ran) |
+| **Inputs** | `doc:cycle-charter` from SCOPING + discovery docs + prior architecture + decisions |
 | **Outputs** | `architecture.md`, `requirements.md` |
 
 The Designer is the sole owner of `architecture.md` and `requirements.md`
-(DDR-019). No other role writes these files. The Designer reads discovery
-documents, the user's intent, and any exploration findings.
+(DDR-019). No other role writes these files. The Designer reads the cycle
+charter, discovery documents, and existing project artifacts.
 
 At `minimal` depth, the Designer runs one reasoning pass. At `standard`, two
 passes (draft + self-review). At `deep` and `research`, the Designer produces
-an initial draft, then the Critic reviews it (see Node 5 — CRITIQUE).
+an initial draft, then the Critic reviews it (see Node 3 — CRITIQUE).
 
 Artifact references:
 - Reads: `doc:product-brief`, `doc:system-description`, `doc:constraints`, `doc:vision`, `doc:open-questions`, `doc:decisions` (last 3 entries)
@@ -195,7 +120,7 @@ structurally invalid), the node errors. The cycle retries once if
 
 ---
 
-### Node 5 — CRITIQUE
+### Node 3 — CRITIQUE
 
 | Field | Value |
 |---|---|
@@ -250,30 +175,29 @@ blocking, at the system level.
 
 ---
 
-### Node 6 — PLAN
+### Node 4 — PLAN
 
 | Field | Value |
 |---|---|
 | **Layer** | L3 (Agent Runtime) |
 | **Agent role** | Planner |
 | **Conditional** | No |
-| **Inputs** | `architecture.md` + `requirements.md` + decisions (last 3 entries) + evaluation (last cycle) + FailureReport (iteration > 1) |
+| **Inputs** | `doc:cycle-charter` + `architecture.md` + `requirements.md` + decisions (last 3 entries) + evaluation (last cycle) + FailureReport (iteration > 1) |
 | **Outputs** | `plan.md`, `test-plan.md`, `build-plan.md` (deep/research only), sharding proposal (conditional) |
 
-The Planner reads the Designer's output and produces step-level implementation
-instructions and a test-plan (DDR-019). It does not write `requirements.md` or
-`architecture.md`.
+The Planner reads the cycle charter and the Designer's output, then produces
+step-level implementation instructions and a test-plan (DDR-019). It does not
+write `requirements.md` or `architecture.md`.
 
 Artifact references:
-- Reads: `doc:architecture`, `doc:requirements`, `doc:decisions`, `doc:evaluation`
+- Reads: `doc:cycle-charter`, `doc:architecture`, `doc:requirements`, `doc:decisions`, `doc:evaluation`
 - Writes: `doc:plan`, `doc:test-plan`, `doc:build-plan` (deep/research only)
 
-**Intake sub-phase (conditional):**
+**Sharding proposal (conditional):**
 
-If project documents exist in `.sle/project-docs/` and `intent.intake ≠ skip`,
-the Planner runs a coherence check before the LLM call. If the check passes,
-the Planner produces a sharding proposal alongside the plan. The proposal is
-reviewed at the SHARDING_APPROVAL node (DDR-026).
+The Planner may produce a sharding proposal alongside the plan if its own
+analysis determines the work benefits from task decomposition. The proposal
+is reviewed at the SHARDING_APPROVAL node (DDR-026).
 
 ```
 interface ShardingProposal {
@@ -311,7 +235,7 @@ provides context for the Planner to adjust.
 
 ---
 
-### Node 7 — TEST
+### Node 5 — TEST
 
 | Field | Value |
 |---|---|
@@ -345,7 +269,7 @@ halts (unrecoverable — cannot validate without test scripts).
 
 ---
 
-### Node 8 — SHARDING_APPROVAL
+### Node 6 — SHARDING_APPROVAL
 
 | Field | Value |
 |---|---|
@@ -388,7 +312,7 @@ pause, not a retry.
 
 ---
 
-### Node 9 — CONFIRM
+### Node 7 — CONFIRM
 
 | Field | Value |
 |---|---|
@@ -468,7 +392,7 @@ and `on_timeout` action. Halt action triggers transition to `halted`.
 
 ---
 
-### Node 10 — BUILD
+### Node 8 — BUILD
 
 | Field | Value |
 |---|---|
@@ -501,7 +425,7 @@ generated scripts), the node errors. The cycle retries if within iteration cap.
 
 ---
 
-### Node 11 — HISTORY
+### Node 9 — HISTORY
 
 | Field | Value |
 |---|---|
@@ -535,7 +459,7 @@ continues and the entry is reconstructed from DAG history.
 
 ---
 
-### Node 12 — EXEC
+### Node 10 — EXEC
 
 | Field | Value |
 |---|---|
@@ -589,7 +513,7 @@ categories. Node-level failure (e.g., Docker unavailable) triggers halt.
 
 ---
 
-### Node 13 — VALIDATION_GATE
+### Node 11 — VALIDATION_GATE
 
 | Field | Value |
 |---|---|
@@ -634,7 +558,7 @@ results are malformed, the node errors and the cycle halts (unrecoverable).
 
 ---
 
-### Node 14 — DEBUG
+### Node 12 — DEBUG
 
 | Field | Value |
 |---|---|
@@ -676,7 +600,7 @@ is available.
 
 ---
 
-### Node 15 — EVALUATE
+### Node 13 — EVALUATE
 
 | Field | Value |
 |---|---|
@@ -703,7 +627,7 @@ SUMMARISE. A placeholder evaluation is generated from the category results.
 
 ---
 
-### Node 16 — SUMMARISE
+### Node 14 — SUMMARISE
 
 | Field | Value |
 |---|---|
@@ -740,7 +664,7 @@ produced. The cycle still proceeds to SNAPSHOT — reports are best-effort.
 
 ---
 
-### Node 17 — SNAPSHOT
+### Node 15 — SNAPSHOT
 
 | Field | Value |
 |---|---|
@@ -769,6 +693,9 @@ interface VersionSnapshot {
   artifact_hashes:  Record<string, string>
   category_results: CategoryResult[]
   outcome:          'completed' | 'halted'
+  version_bump:     'major' | 'minor' | 'patch'  // DDR-028 SC-014
+  deployable:       boolean                       // DDR-028 SC-014
+  changed_nodes:    string[]                      // DDR-028 SC-014 D3
 }
 ```
 
@@ -792,7 +719,7 @@ the push.
 These constraints apply across multiple nodes and are stated here as a
 consolidated reference to avoid repetition in individual node definitions.
 
-1. **Single active cycle.** Only one cycle is active at a time. INTENT rejects
+1. **Single active cycle.** Only one cycle is active at a time. SCOPING rejects
    with 409 `session_conflict` if `meta.status ≠ idle`. The daemon enforces
    this at L2.
 2. **TDD separation (Tester vs Builder).** The Tester never sees architecture
@@ -807,9 +734,8 @@ consolidated reference to avoid repetition in individual node definitions.
 5. **Revision ≠ iteration.** Plan modifications at the CONFIRM gate increment
    the `revision` counter, not the `iteration` counter. The iteration counter
    increments only on VALIDATION_GATE failure.
-6. **EXPLORE is user-initiated only.** The EXPLORE node is never auto-triggered
-   by daemon heuristics or planning depth (DDR-023). It activates only when
-   `intent.explore === true`.
+6. **SCOPING is always first.** SCOPING is the first DAG node in every cycle.
+   It must produce `doc:cycle-charter` before DESIGN can start.
 7. **VALIDATION_GATE is deterministic.** No LLM involvement. Pure boolean
    logic: all active categories must pass. The daemon applies this at L2.
 8. **History is non-blocking.** If the Historian cannot append to `decisions.md`,

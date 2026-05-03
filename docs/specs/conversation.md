@@ -19,11 +19,12 @@ without blocking, interrupting, or affecting state transitions. This resolves
 gap G13: SLE-012's "conversation mode is always available" no longer
 contradicts the state machine.
 
-The Facilitator operates in two modes — chat mode (freeform Q&A) and decision
-mode (structured gate actions) — that can coexist when both a chat session is
-open and a cycle flag is set. This spec defines the mode switching mechanism,
-prompt template selection, context assembly per mode, session persistence,
-decision capture, and ChatContext injection.
+The Facilitator operates in three modes — chat mode (freeform Q&A), decision
+mode (structured gate actions), and scoping mode (guided cycle scoping) — that
+can coexist when both a chat session is open and cycle flags are set. This spec
+defines the mode switching mechanism, prompt template selection, context
+assembly per mode, session persistence, decision capture, scoping discussion,
+and ChatContext injection.
 
 ## Data model
 
@@ -105,7 +106,7 @@ conclusions only.
 ### Facilitator mode
 
 ```typescript
-type FacilitatorMode = 'chat' | 'decision'
+type FacilitatorMode = 'chat' | 'decision' | 'scoping'
 ```
 
 Determines which prompt template and context assembly the Facilitator uses. The
@@ -139,9 +140,12 @@ resolveFacilitatorMode(chatState, cycleFlags):
   modes: FacilitatorMode[] = []
   if chatState.session_open:
     modes.push('chat')
-  if cycleFlags.awaiting_confirmation
-      OR cycleFlags.awaiting_sharding_approval:
-    modes.push('decision')
+  if state is cycling:
+    if cycleFlags.awaiting_scoping:
+      modes.push('scoping')
+    if cycleFlags.awaiting_confirmation
+        OR cycleFlags.awaiting_sharding_approval:
+      modes.push('decision')
   return modes
 ```
 
@@ -151,7 +155,10 @@ When the result contains both modes, the Facilitator operates in dual mode:
 |---|---|
 | `['chat']` only | Freeform Q&A using `facilitator-chat.md` template |
 | `['decision']` only | Structured gate actions using `facilitator-decision.md` template |
+| `['scoping']` only | Guided scoping discussion using `facilitator-scoping.md` template |
 | `['chat', 'decision']` | Chat context by default; switches to decision context when user input matches a gate action keyword |
+| `['scoping', 'decision']` | Scoping context primary; switches to decision context for gate actions |
+| `['chat', 'scoping']` | Scoping context primary (chat subsumed during SCOPING node) |
 
 Gate action keywords are matched by the daemon (not by the LLM) before
 dispatching to the Facilitator:
@@ -169,14 +176,18 @@ When the daemon detects a gate action keyword, it sets `facilitator_mode:
 
 ### Prompt template selection
 
-Two separate prompt templates exist for the Facilitator (DDR-020), stored at
-`.sle/prompts/facilitator-chat.md` and `.sle/prompts/facilitator-decision.md`.
+Three separate prompt templates exist for the Facilitator (DDR-020, DDR-028),
+stored at `.sle/prompts/facilitator-chat.md`,
+`.sle/prompts/facilitator-decision.md`, and
+`.sle/prompts/facilitator-scoping.md`.
 Full template content is defined in [prompt-templates.md](prompt-templates.md).
 
 The context manager selects the template based on the resolved mode:
 
 ```
 selectTemplate(modes: FacilitatorMode[], input: string):
+  if modes includes 'scoping' AND NOT input matches gate action keyword:
+    return 'facilitator-scoping'
   if modes includes 'decision' AND input matches gate action keyword:
     return 'facilitator-decision'
   if modes includes 'chat':
@@ -184,9 +195,13 @@ selectTemplate(modes: FacilitatorMode[], input: string):
   return 'facilitator-chat'
 ```
 
+Scoping takes priority over chat when active. Decision mode takes priority over
+all modes when the user triggers a gate action.
+
 Project-local overrides follow the same convention as all other roles — place a
-file at `.sle/prompts/facilitator-chat.md` or
-`.sle/prompts/facilitator-decision.md` to override the built-in.
+file at `.sle/prompts/facilitator-chat.md`,
+`.sle/prompts/facilitator-decision.md`, or
+`.sle/prompts/facilitator-scoping.md` to override the built-in.
 
 ### Context assembly per mode
 
@@ -218,11 +233,27 @@ Total budget: ~1,350 tokens.
 
 Total budget: ~1,000 tokens (base), ~1,400 tokens (with sharding artifacts).
 
+**Scoping mode assembly:**
+
+| Component | Source |
+|---|---|
+| System prompt | `facilitator-scoping.md` template |
+| Artifact slices | Tagged nodes/layers (all `#next-cycle` elements), `doc:cycle-scope-draft` (if exists), `doc:architecture`, `doc:requirements`, `doc:decisions`, `.sle/chat-history.jsonl` (last 20), `agent.md` |
+| State summary | Current cycle state; `map.yaml` summary |
+| Task | "Guide the user through scoping discussion" |
+| Failure context | Absent |
+
+Total budget: ~1,500 tokens.
+
 **Dual-mode assembly:** When both modes are active, the context manager produces
 two assemblies. The Facilitator receives the chat context by default. The daemon
 switches to the decision context only for the turn where the user triggers a
 gate action. This prevents the decision context from polluting freeform Q&A and
 vice versa.
+
+When scoping mode is active alongside chat or decision, scoping context is the
+primary assembly. The daemon switches to decision context only for gate action
+turns.
 
 ### Session lifecycle
 
@@ -303,6 +334,7 @@ what is available:
 | `idle` | Full project context from discovery docs | None |
 | `discovering` | Partial discovery docs (rounds completed so far) | No cycle artifacts |
 | `cycling` (no flags) | Project context + read-only cycle state | Cannot modify cycle artifacts |
+| `cycling` (`awaiting_scoping`) | Tagged nodes/layers + scope draft + project artifacts + map.yaml summary | Can produce scope draft and charter (DDR-028) |
 | `cycling` (`awaiting_confirmation`) | Project context + cycle artifacts + plan/test-plan for review (`doc:build-plan` excluded) | Can approve/revise/halt |
 | `cycling` (`awaiting_sharding_approval`) | Project context + sharding proposal + coherence report | Can approve/reject split |
 | `halted` | Full project context + halt report | None |
@@ -377,19 +409,50 @@ Chat-sourced decisions use the same format as cycle-sourced decisions, with
 `source: chat session` to distinguish provenance. They are interleaved
 chronologically with Historian entries in the same file.
 
+### Scoping discussion (scoping mode)
+
+When the Facilitator is in scoping mode (during the SCOPING DAG node):
+
+1. **Guided structure.** The Facilitator follows a predefined discussion
+   structure covering: scope, purpose, requirements, boundaries, deferred items.
+2. **Tag awareness.** The Facilitator can see which nodes/layers are tagged
+   `#next-cycle` and discusses their relevance.
+3. **Charter production.** The discussion culminates in a `doc:cycle-charter`
+   artifact. The Facilitator proposes the charter; the user approves or modifies
+   it.
+4. **Version bump inference.** The Facilitator infers the semver bump type from
+   the scope and purpose discussion. User can override.
+5. **Max rounds.** Configurable via `planning.yaml → scoping.max_rounds`
+   (default 5, hard cap 10). On timeout, the cycle halts.
+6. **Quick start bypass.** If the cycle was started with `quick_start_goal`,
+   the Facilitator auto-generates a minimal charter from the goal string without
+   guided discussion.
+
 ### Transition to development cycle
 
 #### How it happens
 
-The user explicitly initiates a transition, either by:
+The transition from conversation to cycle now involves a scoping phase (DDR-028):
 
-1. CLI: `sle start "intent"` — standard cycle start
-2. Natural language in chat: "let's do this" / "start a cycle for X"
+1. **Pre-cycle chat.** User and Facilitator discuss goals in chat mode.
+2. **Scope draft creation.** Together they create a `doc:cycle-scope-draft` and
+   tag relevant nodes/layers with `#next-cycle`.
+3. **Cycle start.** User triggers the cycle via:
+   - CLI: `sle start --scope <draft-id>` — start with a prepared scope draft
+   - CLI: `sle start "quick goal"` — start with a quick goal (auto-generates
+     minimal charter, bypasses guided scoping)
+   - Natural language in chat: "let's do this" / "start a cycle for X"
+4. **SCOPING node.** The daemon starts the cycle. The SCOPING DAG node runs
+   first (before DESIGN).
+5. **Scoping mode.** The Facilitator switches to scoping mode. Guided
+   discussion produces a `doc:cycle-charter`.
+6. **Charter feeds DESIGN.** The charter flows into the Designer's context as
+   an additional artifact slice.
 
-In option 2, the Facilitator does not call the API directly. The daemon detects
-the intent to start a cycle from the user message and constructs the cycle start
-request on the user's behalf. This prevents the Facilitator from having
-cycle-starting capability.
+In option 3 (natural language), the Facilitator does not call the API directly.
+The daemon detects the intent to start a cycle from the user message and
+constructs the cycle start request on the user's behalf. This prevents the
+Facilitator from having cycle-starting capability.
 
 #### ChatContext construction
 
@@ -410,15 +473,40 @@ If the chat history is empty or the LLM call for summarization fails, the
 ChatContext is omitted. The cycle starts without it. Chat context is an
 enhancement, not a requirement.
 
-#### Injection into Planner context
+#### Injection into SCOPING node context
 
-The Planner receives ChatContext as additional context within its artifact
-slices (Component 2). It is not a sixth component — it is injected as a special
-slice key `chat-context` in the Planner's assembled context.
+ChatContext is now injected into the SCOPING node's context rather than directly
+into the Planner. The SCOPING node receives ChatContext as additional context
+within its artifact slices (Component 2). It is injected as a special slice key
+`chat-context` in the assembled context.
 
-The slice is loaded after the standard Planner slices and is bounded to ~200
-tokens. If the Planner's slice budget is already exceeded, the ChatContext slice
-is skipped.
+The charter produced by the SCOPING node (`doc:cycle-charter`) is then passed to
+the Designer as an artifact slice, which in turn flows to the Planner.
+
+If the cycle was started with `--scope <draft-id>`, the scope draft is also
+loaded into the SCOPING node's context. If started with a quick goal, the goal
+string is provided directly.
+
+The slice is loaded after the standard slices and is bounded to ~200 tokens. If
+the slice budget is already exceeded, the ChatContext slice is skipped.
+
+#### Scope draft reference in cycle start API
+
+The cycle start API now accepts an optional `scope_draft_id` parameter:
+
+```
+POST /api/v2/cycles
+{
+  "intent": "string",
+  "scope_draft_id": "string | null",
+  "quick_start_goal": "string | null",
+  "no_chat_context": false
+}
+```
+
+Only one of `scope_draft_id` or `quick_start_goal` may be set. If neither is
+set, the cycle starts with an empty scope and the SCOPING node runs its full
+guided discussion.
 
 #### Opting out
 
@@ -519,9 +607,14 @@ maps to a query parameter `?no_chat_context=true` on the cycle start endpoint.
    `session_id`) is independent of `map.yaml → meta.status`. Chat never blocks,
    delays, or cancels a state transition (DDR-020).
 
-2. **No cycle modification.** The Facilitator cannot write to cycle artifacts,
-   modify DAG state, or change rule files. Chat during a cycle is read-only
-   except for decision capture (which writes to `docs/decisions.md`).
+2. **No cycle modification (with scoping exception).** The Facilitator cannot
+   write to cycle artifacts, modify DAG state, or change rule files. Chat during
+   a cycle is read-only except for:
+   1. Decision capture (writes to `docs/decisions.md`) — all modes
+   2. Scoping artifacts (writes `doc:cycle-scope-draft` and `doc:cycle-charter`)
+      — scoping mode only (DDR-028 SC-010)
+   The Facilitator cannot produce build artifacts, test artifacts, validation
+   artifacts, or graph nodes.
 
 3. **No raw history to agents.** No agent other than the Facilitator receives
    chat history. The Planner receives ChatContext as a compressed summary, not
@@ -558,10 +651,11 @@ maps to a query parameter `?no_chat_context=true` on the cycle start endpoint.
     daemon rejects a second `POST /chat/session/open` with 204 (idempotent),
     returning the existing session_id.
 
-12. **Facilitator template separation.** The `facilitator-chat.md` and
-    `facilitator-decision.md` templates are distinct files with distinct role
-    identities, behavioral constraints, and artifact access rules. They are
-    never combined into a single template.
+12. **Facilitator template separation.** The `facilitator-chat.md`,
+    `facilitator-decision.md`, and `facilitator-scoping.md` templates are
+    distinct files with distinct role identities, behavioral constraints, and
+    artifact access rules. They are never combined into a single template
+    (DDR-020, DDR-028).
 
 13. **Scope-aware capture.** Decision capture suggestions are filtered by
     project scope derived from `doc:product-brief`, `doc:constraints`, and
@@ -572,10 +666,11 @@ maps to a query parameter `?no_chat_context=true` on the cycle start endpoint.
 | ID | Question | Impact | Status |
 |---|---|---|---|
 | CONV-001 | Should the gate action keyword list be configurable per project, or remain hardcoded in the daemon? | Extensibility, localization | Open |
-| CONV-002 | Should ChatContext injection be limited to the Planner, or also available to the Designer on cycle revision? | Context breadth, iteration quality | Open |
+| CONV-002 | Should ChatContext injection be limited to the Planner, or also available to the Designer on cycle revision? | Context breadth, iteration quality | Resolved by DDR-028 — ChatContext now feeds into SCOPING node, which produces charter for Designer. Direct Planner injection replaced. |
 | CONV-003 | What is the optimal `context_window_exchanges` default? 20 may be too many for short sessions and too few for long ones. | Facilitator context quality, token budget | Open |
 | CONV-004 | Should the Facilitator response be streamed (SSE or WebSocket chunks) or returned as a single payload? | Latency, user experience, daemon-api.md API-006 | Open |
 | CONV-005 | Should chat history compaction run synchronously (blocking the next message) or asynchronously in the background? | Response latency, file consistency | Open |
 | CONV-006 | Can the decision detection be improved beyond keyword heuristics without adding per-message LLM cost? | Capture accuracy, cost | Open |
 | CONV-007 | Should the `--no-chat-context` flag persist across cycles within a session, or apply per-cycle only? | User intent, session state management | Open |
 | CONV-008 | Is there a maximum chat session duration beyond `session_timeout_minutes` that should trigger forced close? | Resource management, daemon memory | Open |
+| CONV-009 | Should scoping mode have its own `context_window_exchanges` budget, separate from chat mode? | Scoping context quality, token budget | Resolved by DDR-028 — scoping mode has its own assembly budget (~1,500 tokens). |

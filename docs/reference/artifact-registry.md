@@ -62,10 +62,24 @@ discovery revisits.
 
 ---
 
+## Scoping phase
+
+Produced during the SCOPING node (DDR-028). The Facilitator creates scope
+artifacts that replace the old goal string as the Designer's and Planner's
+primary input. `doc:cycle-scope-draft` may also be created during pre-cycle
+chat before the SCOPING node runs.
+
+| Key | Type | Scope | Generator | Required | Description |
+|-----|------|-------|-----------|----------|-------------|
+| `doc:cycle-scope-draft` | markdown | project | Facilitator (DDR-028 SC-010) | false | Informal scope document created during pre-cycle chat. Captures scope, purpose, initial requirements, and deferred items. Not a formal cycle artifact — serves as input to SCOPING node. |
+| `doc:cycle-charter` | markdown | run | Facilitator (DDR-028 SC-010) | true | Formal scope document produced by the SCOPING node. Defines scope, purpose, requirements, boundaries, version_bump intent, and deferred items. Replaces the old goal string as the Planner's primary input. |
+
+---
+
 ## Design phase
 
-Produced during the DESIGN node (and optional EXPLORE node before it). The
-Designer owns `doc:requirements` and `doc:architecture` (DDR-019). The Critic
+Produced during the DESIGN node. The Designer reads the cycle charter from the
+SCOPING node and produces requirements and architecture. The Critic
 reviews both at the DESIGN node when `planning.depth` is `deep` or `research`
 (DDR-022).
 
@@ -272,7 +286,7 @@ project-level documents. Referenced via `node:{group}:{key}`.
 Every artifact has exactly one generator role (or the daemon/human). This table
 maps each of the 10 agent roles to the artifacts they produce.
 
-### Facilitator (Discovery + Chat)
+### Facilitator (Discovery + Chat + Scoping)
 
 | Output | Scope | Session type |
 |--------|-------|-------------|
@@ -284,6 +298,8 @@ maps each of the 10 agent roles to the artifacts they produce.
 | `doc:vision` | project | Discovery |
 | `doc:open-questions` | project | Discovery |
 | `doc:project-plan` | project | Discovery |
+| `doc:cycle-scope-draft` | project | Cycle (pre-scope chat) |
+| `doc:cycle-charter` | run | Cycle (SCOPING node) |
 
 ### Explorer (EXPLORE node, conditional)
 
@@ -358,9 +374,9 @@ token budget.
 |------|--------------------------------|
 | **Facilitator** | `doc:product-brief`, `doc:system-description`, `doc:vision`, `doc:open-questions`, `doc:project-plan`, `.sle/chat-history.jsonl` |
 | **Explorer** | Intent, `doc:system-description`, `doc:open-questions`, prior `doc:evaluation`, `doc:constraints` |
-| **Designer** | Intent, discovery docs (all 8), prior `doc:architecture`, prior `doc:evaluation`, `doc:decisions` (last 3), `doc:research-findings` (if EXPLORE ran), `agent.md` |
+| **Designer** | `doc:cycle-charter`, Intent, discovery docs (all 8), prior `doc:architecture`, prior `doc:evaluation`, `doc:decisions` (last 3), `doc:research-findings` (if EXPLORE ran), `agent.md` |
 | **Critic** | `doc:architecture`, `doc:requirements`, prior `doc:evaluation`, `doc:constraints` |
-| **Planner** | `doc:requirements`, `doc:architecture`, `doc:decisions` (last 3), prior `doc:evaluation`, `FailureReport` (on retry), `doc:debug-diagnosis` (on retry) |
+| **Planner** | `doc:cycle-charter`, `doc:requirements`, `doc:architecture`, `doc:decisions` (last 3), prior `doc:evaluation`, `FailureReport` (on retry), `doc:debug-diagnosis` (on retry) |
 | **Tester** | `doc:requirements`, `doc:test-plan` only. Explicitly excluded: `doc:architecture`, implementation source, Builder output. |
 | **Builder** | `doc:requirements`, `doc:architecture`, `doc:test-plan`, `doc:plan` (deep+), `doc:build-plan` (deep+), `doc:test-script:{category}` (as contract) |
 | **Debugger** | `.sle/runs/{id}/manifest.json`, `.sle/runs/{id}/ai/context-pack.md`, failed category result/metrics/traces/logs |
@@ -408,6 +424,7 @@ context:
 | Typed prefix format (`doc:` / `node:`) | DDR-025 |
 | Local task fallback (no Beads) | DDR-024 |
 | Sharding approval (CONFIRM gate tab) | DDR-026 |
+| Scoping phase artifacts (cycle-scope-draft, cycle-charter) | DDR-028 |
 | Document intake pipeline | SLE-019 |
 | Context manager slices | SLE-007 |
 | Run artifacts | SLE-022 |

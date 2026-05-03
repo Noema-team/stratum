@@ -123,6 +123,31 @@ export type ContextAssemblyMode = 'declared' | 'inferred'
 How the context manager assembles slices. `declared` uses Beads task declarations; `inferred` uses role-based defaults.
 
 ```typescript
+export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred'
+```
+Priority order for context truncation: `user_defined` truncated last, `inferred` truncated first. DDR-028 SC-005.
+
+```typescript
+export type TagPrefix = 'next-cycle' | 'scope' | 'area'
+```
+Extensible tag prefix. `#next-cycle` marks nodes as priority for upcoming cycle. `#scope:{draft-id}` links to a scope draft. `#area:{name}` for categorization.
+
+```typescript
+export interface NodeTag {
+  prefix: TagPrefix
+  value?: string
+  source: 'user' | 'facilitator' | 'system'
+  applied_at: string
+}
+```
+Extensible tag system. Tags are applied by users, the Facilitator, or the system and tracked per node.
+
+```typescript
+export type VersionBump = 'major' | 'minor' | 'patch'
+```
+Semver bump type for cycle completion. DDR-028 SC-014.
+
+```typescript
 export type SubPhase = 'static-check' | 'llm-check' | 'exec-check'
 ```
 Validation sub-phase identifiers. Execution order is fixed: `static-check` → `llm-check` → `exec-check`.
@@ -147,11 +172,12 @@ export interface ChatState {
 
 ```typescript
 export interface CycleFlags {
+  awaiting_scoping: boolean
   awaiting_confirmation: boolean
   awaiting_sharding_approval: boolean
 }
 ```
-⚡ **DDR-021, DDR-026.** Pause-point flags on the cycle record. `meta.status` remains `cycling` when these are true.
+⚡ **DDR-021, DDR-026, DDR-028.** Pause-point flags on the cycle record. `awaiting_scoping` added for Phase 1 scoping. `meta.status` remains `cycling` when these are true.
 
 ---
 
@@ -245,9 +271,7 @@ Output from a single agent invocation.
 
 ```typescript
 export enum DAGNode {
-  INTENT = 'INTENT',
-  CONTEXT_ASSEMBLY = 'CONTEXT_ASSEMBLY',
-  EXPLORE = 'EXPLORE',
+  SCOPING = 'SCOPING',
   DESIGN = 'DESIGN',
   CRITIQUE = 'CRITIQUE',
   PLAN = 'PLAN',
@@ -264,7 +288,7 @@ export enum DAGNode {
   SNAPSHOT = 'SNAPSHOT',
 }
 ```
-⚡ **Expanded from init-specs.** Added nodes per SLE-024 §5.1. Init-specs had `PLAN`, `CONFIRM`, `BUILD`, `VALIDATE_LLM`, `VALIDATE_EXEC`, `GATE`, `COMPLETE`.
+⚡ **DDR-028.** Replaced INTENT, CONTEXT_ASSEMBLY, EXPLORE with SCOPING. Was 17 nodes, now 14.
 
 ```typescript
 export interface DAGState {
@@ -298,12 +322,27 @@ export interface CycleState {
   completed_at?: string
   outcome: CycleOutcome
   approval_gate: 'after_planning' | 'after_gate_pass' | null
+  awaiting_scoping: boolean
   awaiting_confirmation: boolean
   awaiting_sharding_approval: boolean
   last_summary?: { path: string; generated_at: string }
 }
 ```
 ⚡ **DDR-021, DDR-026.** Added `revision`, `awaiting_confirmation`, `awaiting_sharding_approval`. Removed `status` — system state is tracked at `meta.status`.
+
+```typescript
+export interface CycleExecutionSummary {
+  version_id: string
+  cycle: number
+  nodes_completed: DAGNode[]
+  iterations_used: number
+  total_revisions: number
+  failed_at?: { node: DAGNode; reason: string }
+  duration_ms: number
+  agent_runs: Record<AgentRole, number>
+}
+```
+Condensed DAG execution trace stored in `history[]` on SNAPSHOT. DDR-028 SC-014 D4.
 
 ---
 
@@ -350,11 +389,13 @@ export interface ArtifactEntry {
   required: boolean
   append_only?: boolean
   scope?: ArtifactScope
+  source_weight?: SourceWeight
+  version_produced?: string
   last_updated: string
   dirty: boolean
 }
 ```
-⚡ **DDR-025.** Added optional `scope` field to distinguish project vs group artifacts.
+⚡ **DDR-025, DDR-028.** Added optional `scope` field. `source_weight` added for context truncation priority (DDR-028 SC-005). `version_produced` added for provenance tracking (DDR-028 SC-014, post-MVP).
 
 ```typescript
 export interface GeneratedOutput {

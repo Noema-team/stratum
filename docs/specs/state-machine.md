@@ -44,12 +44,13 @@ is set.
 
 | Flag | Field | Set when | Cleared when |
 |---|---|---|---|
+| `awaiting_scoping` | `cycle.awaiting_scoping` | SCOPING node active and waiting for user input | User confirms scope |
 | `awaiting_confirmation` | `cycle.awaiting_confirmation` | CONFIRM gate reached (post-TEST, pre-BUILD) | User approves, modifies, or halts |
 | `awaiting_sharding_approval` | `cycle.awaiting_sharding_approval` | Planner proposes sharding split | User approves or rejects the split |
 
-Both flags may be `false` simultaneously (normal execution within `cycling`).
+All flags may be `false` simultaneously (normal execution within `cycling`).
 At most one flag is `true` at a time — the system does not prompt for
-confirmation and sharding approval concurrently.
+scoping, confirmation, and sharding approval concurrently.
 
 ### Chat session layer
 
@@ -65,7 +66,7 @@ of `system.state`. Chat can be open in any machine state. Chat never blocks,
 interrupts, or otherwise affects state transitions.
 
 When `session_open` is `true`, the Facilitator operates in **chat mode**
-(freeform Q&A). When either `awaiting_confirmation` or
+(freeform Q&A). When any of `awaiting_scoping`, `awaiting_confirmation`, or
 `awaiting_sharding_approval` is `true`, the Facilitator simultaneously operates
 in **decision mode** (structured gate actions). These two modes coexist — chat
 mode does not replace decision mode.
@@ -113,12 +114,13 @@ Populated from `map.yaml` on every daemon tick. Exposed via the status API.
                 └─────────┴────────────┴──────────────────────────┘
 
    Flag-based pauses (state stays "cycling"):
-   ┌────────────────────────────┬──────────────────────────────────┐
-   │ Flag                       │ Effect                           │
-   ├────────────────────────────┼──────────────────────────────────┤
-   │ awaiting_confirmation      │ DAG pauses pre-BUILD             │
-   │ awaiting_sharding_approval │ DAG pauses pre-shard-split       │
-   └────────────────────────────┴──────────────────────────────────┘
+    ┌────────────────────────────┬──────────────────────────────────┐
+    │ Flag                       │ Effect                           │
+    ├────────────────────────────┼──────────────────────────────────┤
+    │ awaiting_scoping           │ DAG pauses at SCOPING node       │
+    │ awaiting_confirmation      │ DAG pauses pre-BUILD             │
+    │ awaiting_sharding_approval │ DAG pauses pre-shard-split       │
+    └────────────────────────────┴──────────────────────────────────┘
 
    Orthogonal chat layer:
    ┌────────────────────────────┬──────────────────────────────────┐
@@ -151,6 +153,8 @@ record that pause or resume DAG execution.
 
 | Flag transition | Trigger | Effect on DAG |
 |---|---|---|
+| `awaiting_scoping := true` | SCOPING node active, needs user input | DAG pauses at SCOPING node |
+| `awaiting_scoping := false` (confirm) | User confirms scope | DAG resumes past SCOPING to DESIGN node |
 | `awaiting_confirmation := true` | CONFIRM gate reached (post-TEST) | DAG pauses before BUILD node |
 | `awaiting_confirmation := false` (approve) | User approves plan + tests | DAG resumes at BUILD node |
 | `awaiting_confirmation := false` (modify) | User modifies plan or tests | `revision++`, DAG resumes at TEST node for re-derivation |
@@ -176,6 +180,7 @@ Chat availability matrix:
 | `idle` | Yes | Freeform Q&A | No |
 | `discovering` | Yes | Freeform Q&A | No |
 | `cycling` (no flags) | Yes | Freeform Q&A | No |
+| `cycling` (`awaiting_scoping`) | Yes | Freeform Q&A | Yes — confirm scope |
 | `cycling` (`awaiting_confirmation`) | Yes | Freeform Q&A | Yes — approve/modify/halt |
 | `cycling` (`awaiting_sharding_approval`) | Yes | Freeform Q&A | Yes — approve/reject split |
 | `halted` | Yes | Freeform Q&A | No |
@@ -196,6 +201,7 @@ Response 200:
   "discovery_status":    "not_started" | "in_progress" | "complete",
   "iteration":           number,
   "revision":            number,
+  "awaiting_scoping":             boolean,
   "awaiting_confirmation":      boolean,
   "awaiting_sharding_approval": boolean,
   "chat": {
@@ -239,6 +245,7 @@ PATCH /api/v2/cycles/{cycle_id}/flags
 
 Request:
 {
+  "awaiting_scoping":             boolean | null,
   "awaiting_confirmation":      boolean | null,
   "awaiting_sharding_approval": boolean | null
 }
@@ -247,6 +254,7 @@ Response 200:
 {
   "cycle_id": string,
   "flags": {
+    "awaiting_scoping":             boolean,
     "awaiting_confirmation":      boolean,
     "awaiting_sharding_approval": boolean
   }
@@ -279,9 +287,16 @@ event: system.state_changed
 event: cycle.flag_changed
 {
   "cycle_id": string,
-  "flag":     "awaiting_confirmation" | "awaiting_sharding_approval",
+  "flag":     "awaiting_scoping" | "awaiting_confirmation" | "awaiting_sharding_approval",
   "value":    boolean,
   "timestamp": string
+}
+
+event: cycle.scoping_input_requested
+{
+  "cycle_id": string,
+  "scope_draft_id": string,
+  "timestamp":       string
 }
 
 event: chat.session_changed
@@ -298,7 +313,7 @@ event: chat.session_changed
 | `invalid_transition` | Transition not in the transition table for current state | 409 with allowed targets |
 | `discovery_required` | `sle start` when `discovery_status ≠ complete` and `--force` not set | 403 with message suggesting `sle discover` |
 | `session_conflict` | `sle discover` or `sle start` when state is not `idle` | 409 with current state |
-| `flag_conflict` | Attempting to set both `awaiting_confirmation` and `awaiting_sharding_approval` to `true` simultaneously | 409 |
+| `flag_conflict` | Attempting to set more than one of `awaiting_scoping`, `awaiting_confirmation`, and `awaiting_sharding_approval` to `true` simultaneously | 409 |
 | `stale_flag` | PATCH to a flag that is already the requested value | 204 (idempotent, no-op) |
 | `cycle_not_found` | PATCH flags for a cycle_id that does not exist | 404 |
 | `chat_already_open` | POST open when `session_open = true` | 204 (idempotent, no-op) |
@@ -324,12 +339,12 @@ event: chat.session_changed
    Transitions T1–T12 proceed regardless of chat state. Chat never blocks,
    delays, or cancels a state transition.
 
-5. **Flag exclusivity.** At most one of `awaiting_confirmation` and
+5. **Flag exclusivity.** At most one of `awaiting_scoping`, `awaiting_confirmation`, and
    `awaiting_sharding_approval` may be `true` at any time. Setting one to
-   `true` implicitly sets the other to `false`.
+   `true` implicitly sets the others to `false`.
 
-6. **Flag scope.** Both flags are scoped to the active cycle. When the cycle
-   ends (transition to `halted`, `complete`, or `idle`), both flags are reset
+6. **Flag scope.** All flags are scoped to the active cycle. When the cycle
+   ends (transition to `halted`, `complete`, or `idle`), all flags are reset
    to `false`.
 
 7. **Iteration cap enforcement.** Transition T4 (retry) is only valid when
