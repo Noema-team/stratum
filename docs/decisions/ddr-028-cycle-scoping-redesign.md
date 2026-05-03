@@ -63,34 +63,50 @@ Introduce a **tag system** on nodes, layers, and groups:
 
 The Facilitator assesses scope realism primarily through thorough, objective reasoning about the scope, goals, and requirements — evaluating completeness, internal consistency, feasibility, and potential risks. Quantitative metrics (node count, token count, feature group limits) serve as secondary signals only, since a narrow scope can have extensive detail and an out-of-scope idea can be a single sentence. The assessment must be flexible, consistent, and reliable — avoiding rigid limits that don't account for context.
 
-### Revised cycle phases
+### Revised DAG flow (final)
+
+New DAG node: `SCOPING` replaces INTENT, INTAKE, CONTEXT_ASSEMBLY, and EXPLORE.
 
 ```
 Pre-cycle (outside DAG):
-  User + Facilitator chat → mark nodes → create scope draft → user triggers cycle
+  User + Facilitator chat → tag nodes with #next-cycle → create scope draft → user triggers cycle
 
-Phase 1: SCOPING (new DAG node, Facilitator-led)
-  - Pull in tagged nodes/layers + scope draft
-  - Guided discussion to finalize scope, purpose, requirements
-  - Facilitator in 'scoping' mode (MVP: explicit toggle; post-MVP: seamless auto-detection)
-  - Max rounds: configurable (default 5, hard cap 10) via planning.yaml → scoping.max_rounds
-  - Output: doc:cycle-charter
-
-Phase 2: PLANNING (revised)
-  - Planner reads cycle-charter + tagged node content + existing artifacts
-  - Produces plan.md, test-plan.md (and optionally build-plan.md)
-  - Borrowed from current PLAN node but with richer input
-
-Phase 3: REVIEW (current CONFIRM gate)
-  - User reviews plan, modifies steps, approves/halts
-  - Sharding approval still applies for multi-task plans
-  - Borrowed from current CONFIRM gate
-
-Phase 4: EXECUTION (current pipeline)
-  - BUILD → VALIDATE → DEBUG (on failure) → SNAPSHOT
-  - Borrowed from current BUILD + VALIDATION + SNAPSHOT nodes
-  - Iteration loop on validation failure (unchanged)
+DAG:
+  SCOPING (new, Facilitator-led)
+    │  Pulls in tagged nodes/layers + scope draft + existing artifacts
+    │  Facilitator in 'scoping' mode guides structured discussion
+    │  Output: doc:cycle-charter
+    │
+    ▼
+  DESIGN
+    │  Designer produces architecture.md + requirements.md
+    │  Charter provides focused scope (richer than old goal string)
+    │
+    ▼
+  CRITIQUE (conditional — depth: deep | research only)
+    │  Reviews DESIGN output
+    │
+    ▼
+  PLAN
+    │  Planner reads charter + architecture + requirements
+    │  Produces plan.md, test-plan.md (+ build-plan.md at deep/research)
+    │
+    ▼
+  TEST → [SHARDING_APPROVAL] → CONFIRM → BUILD → HISTORY → EXEC
+    │
+    ▼
+  VALIDATION_GATE
+    ├── PASS → EVALUATE → SUMMARISE → SNAPSHOT → complete
+    └── FAIL → DEBUG → PLAN → ... (iteration loop)
 ```
+
+Nodes dropped from current DAG:
+- INTENT — replaced by cycle-charter from SCOPING
+- INTAKE — absorbed into pre-cycle discussion + SCOPING
+- CONTEXT_ASSEMBLY — absorbed into SCOPING (charter creation includes context pull)
+- EXPLORE — absorbed into pre-cycle discussion (user explores with Facilitator before committing)
+
+Nodes kept unchanged: DESIGN, CRITIQUE, PLAN, TEST, SHARDING_APPROVAL, CONFIRM, BUILD, HISTORY, EXEC, VALIDATION_GATE, DEBUG, EVALUATE, SUMMARISE, SNAPSHOT
 
 ### Source weighting in context assembly
 
@@ -114,20 +130,7 @@ The Facilitator gains a scoped exception to conversation.md constraint 2:
 
 ### Borrowed from current DAG
 
-The current 17-node DAG is not discarded. Elements carried forward:
-
-- SHARDING_APPROVAL → kept in Phase 3 (when Planner shards into multiple tasks)
-- EXPLORE → absorbed into pre-cycle discussion (user explores with Facilitator before committing)
-- PLAN → becomes Phase 2 (richer input, same Planner agent)
-- TEST → kept in Phase 4 (generates test criteria from plan)
-- CONFIRM → becomes Phase 3 (user reviews plan)
-- BUILD → kept in Phase 4
-- VALIDATION_GATE → kept in Phase 4
-- DEBUG → kept in Phase 4 (on validation failure)
-- SNAPSHOT → kept in Phase 4
-- INTENT → replaced by cycle-charter from Phase 1
-- INTAKE → absorbed into pre-cycle discussion + Phase 1
-- CRITIQUE → kept at deep/research depth in Phase 2
+See §Revised DAG flow above for the complete new DAG. The current 17-node DAG reduces to 14 nodes (4 dropped, 1 new). All remaining nodes keep their current behavior and agent assignments.
 
 ### New artifacts
 
@@ -178,9 +181,9 @@ The current 17-node DAG is not discarded. Elements carried forward:
 | SC-006 | What happens to `#next-cycle` tags if the user starts a cycle but doesn't include all tagged nodes? | Tag cleanup semantics | Resolved: `#next-cycle` means priority, not exclusion. Tags cleared only on nodes/layers the cycle actually modifies. Untouched tags persist. Planner reasons over full graph via linking. |
 | SC-007 | Should the guided Phase 1 discussion have a maximum number of rounds? | Cycle latency | Resolved: configurable via `planning.yaml → scoping.max_rounds` (default 5, hard cap 10). |
 | SC-008 | How does this interact with the existing depth_override mechanism? | Planner configuration | Resolved: orthogonal. Charter is the *what* (scope), depth is the *how deep* (planner output detail). No change needed. |
-| SC-009 | How does the revised flow handle the DESIGN node? Currently the Designer produces architecture.md and requirements.md which the Planner reads. If DESIGN is removed from the cycle, how are these artifacts produced or updated? | DAG structure, Critic dependency | Open |
+| SC-009 | How does the revised flow handle the DESIGN node? Currently the Designer produces architecture.md and requirements.md which the Planner reads. If DESIGN is removed from the cycle, how are these artifacts produced or updated? | DAG structure, Critic dependency | Resolved: keep DESIGN. Charter feeds into DESIGN as richer, more focused input. Designer still produces architecture.md + requirements.md. Critic still reviews DESIGN. Pipeline: SCOPING → DESIGN → [CRITIQUE] → PLAN → ... |
 | SC-010 | The Facilitator currently cannot write cycle artifacts (conversation.md constraint 2). Producing doc:cycle-charter during Phase 1 violates this. Should cycle-charter be classified as a pre-cycle artifact, or should constraint 2 be revised? | Facilitator permissions | Resolved: scoped exception — Facilitator can produce scoping artifacts (charter, scope-draft) only. Cannot produce execution artifacts. Full node creation deferred. |
-| SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Open — depends on SC-009 (DESIGN placement determines CONTEXT_ASSEMBLY fate) |
+| SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Resolved: DESIGN kept (per SC-009). CONTEXT_ASSEMBLY absorbed into SCOPING. HISTORY, EXEC, EVALUATE, SUMMARISE all kept in current positions. Dropped nodes: INTENT (replaced by charter), INTAKE (absorbed into pre-cycle + SCOPING), EXPLORE (absorbed into pre-cycle chat), CONTEXT_ASSEMBLY (absorbed into SCOPING). |
 | SC-012 | Should a `FacilitatorMode = 'scoping'` be added for the guided Phase 1 discussion? Currently only 'chat' and 'decision' modes exist. | conversation.md, prompt-templates.md | Resolved: yes. MVP: explicit toggle in mode switcher. Post-MVP: seamless auto-detection. |
-| SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Open — depends on SC-009 (DAG structure must be finalised before adding flags) |
+| SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Resolved: yes. Add `awaiting_scoping` flag to cycle record. Same pattern as `awaiting_confirmation` — boolean, at most one flag true at a time. |
 | SC-014 | Should the project have a semver-like versioning system where each cycle bumps a version (major/minor/hotfix)? Would make graph navigation easier and provide context for node relevance. | Graph navigation, artifact lifecycle | Open — captured for future DDR. Complex: touches entire artifact lifecycle, not just scoping. |
