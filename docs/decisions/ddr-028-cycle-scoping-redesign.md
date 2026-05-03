@@ -137,6 +137,86 @@ See §Revised DAG flow above for the complete new DAG. The current 17-node DAG r
 - `doc:cycle-scope-draft` — informal, created during pre-cycle chat. scope: project. generator: user+facilitator.
 - `doc:cycle-charter` — formal, created in Phase 1. scope: run. generator: facilitator. The definitive input for the Planner.
 
+## Project versioning (SC-014)
+
+**Post-MVP implementation. Design captured now to avoid spec rework.**
+
+The system already has versioning primitives (`meta.version_id`, `meta.cycle`, `history[]`, `.sle/snapshots/{version}/`, `VersionSnapshot`). What's missing is semantic meaning behind the bump and version-aware metadata on graph elements.
+
+### D1: Bump type inference
+
+Semver bump is **inferred from scope + purpose**:
+- **Patch** (default): bug fix, refinement, internal improvement
+- **Minor**: new feature, refactor, new capability — anything mentioned in charter purpose as additive
+- **Major**: breaking change, rewrite, architectural overhaul
+
+Inference rules applied at SCOPING (charter creation). User can **override** at cycle start via `--bump major|minor|patch` or UI toggle. Override recorded in charter.
+
+### D2: Version semantics
+
+Version is **provenance metadata, not a relevance signal** for context assembly:
+- Version on nodes/artifacts tells you *when* something was last substantively changed
+- It does **not** affect context-manager truncation order — `source_weight` remains the sole priority signal
+- Rationale: foundational architecture from v0.1.0 is often more relevant than a recent bug-fix artifact. Age ≠ irrelevance.
+
+**Post-MVP Facilitator awareness:** if the user is working on a node that hasn't been touched in 10+ versions, the Facilitator may surface a note ("This architecture decision hasn't been revisited since v0.2.0 — still accurate?"). This is a prompt behavior, not a data model concern.
+
+**Deployment semantics:** semver bump type carries conventional deployment meaning:
+- Patch = internal fix, not necessarily deployable
+- Minor = new feature, candidate for deployment
+- Major = breaking change, deploy with caution
+
+`VersionSnapshot` gets an optional `deployable: boolean` field. Defaults to `false` for patch, `true` for minor/major. User overrides at cycle start. Post-snapshot hooks can gate on this flag to trigger CI/CD.
+
+No hosting/deployment engine in SLE — the version metadata + hooks enable external tooling.
+
+### D3: Version-aware graph (Model C)
+
+The graph is always the **current live version**. No frozen copies of the full graph per version.
+
+- Each node gets a `last_modified_version: string` field — the version that last substantively changed it
+- Each `history[]` entry gets a `changed_nodes: string[]` field — lightweight list of node IDs modified in that cycle
+- Full artifact content at any version is reconstructable from `.sle/snapshots/{version}/` + `changed_nodes[]`
+- This gives: "what changed in v1.4?" → query `history[3].changed_nodes`. "When was this node last touched?" → query `node.last_modified_version`. "What does the full graph look like now?" → it's just the graph.
+
+### D4: Cross-cycle DAG history (Option 2 — summarize on snapshot)
+
+During a cycle, `DAGEvent[]` works as-is (per-cycle, in-memory). On SNAPSHOT, the full event log is condensed into a `CycleExecutionSummary`:
+
+```typescript
+interface CycleExecutionSummary {
+  version_id: string
+  cycle: number
+  nodes_completed: DAGNode[]
+  iterations_used: number
+  total_revisions: number
+  failed_at?: { node: DAGNode, reason: string }
+  duration_ms: number
+  agent_runs: Record<AgentRole, number>
+}
+```
+
+Stored in `history[]` alongside existing fields. Raw `DAGEvent[]` is discarded. Run directories (`.sle/runs/`) preserve full execution detail if needed.
+
+### D5: Artifact version tracking
+
+`ArtifactEntry` gets a `version_produced: string` field — the version that created or last-modified the artifact. This is provenance metadata. An artifact with `version_produced: "v0.2.0"` is not "expired" — it simply hasn't needed changes since v0.2.0.
+
+### D6: Cumulative changelog
+
+A project-root `CHANGELOG.md` is appended to on each SNAPSHOT. Each entry is a summary with a link to the per-cycle `reports/changelog-{version}.md` for full detail. Format follows [Keep a Changelog](https://keepachangelog.com) convention.
+
+### Data model changes (summary)
+
+| Element | New field | Type | Purpose |
+|---------|-----------|------|---------|
+| `ArtifactEntry` | `version_produced` | `string` | Provenance — which version created/modified this artifact |
+| Graph node | `last_modified_version` | `string` | Which version last changed this node |
+| `history[]` entry | `changed_nodes` | `string[]` | Which nodes this cycle modified |
+| `history[]` entry | `execution_summary` | `CycleExecutionSummary` | Condensed DAG execution trace |
+| `VersionSnapshot` | `deployable` | `boolean` | Whether this version is a deployment candidate |
+| Cycle charter | `version_bump` | `"major" \| "minor" \| "patch"` | Intended semver bump (inferred or user-overridden) |
+
 ## Consequences
 
 ### Positive
@@ -186,4 +266,4 @@ See §Revised DAG flow above for the complete new DAG. The current 17-node DAG r
 | SC-011 | 6 current DAG nodes are unaccounted for in the revised flow: CONTEXT_ASSEMBLY, DESIGN, HISTORY, EXEC, EVALUATE, SUMMARISE. Each needs explicit placement or removal rationale. | DAG completeness | Resolved: DESIGN kept (per SC-009). CONTEXT_ASSEMBLY absorbed into SCOPING. HISTORY, EXEC, EVALUATE, SUMMARISE all kept in current positions. Dropped nodes: INTENT (replaced by charter), INTAKE (absorbed into pre-cycle + SCOPING), EXPLORE (absorbed into pre-cycle chat), CONTEXT_ASSEMBLY (absorbed into SCOPING). |
 | SC-012 | Should a `FacilitatorMode = 'scoping'` be added for the guided Phase 1 discussion? Currently only 'chat' and 'decision' modes exist. | conversation.md, prompt-templates.md | Resolved: yes. MVP: explicit toggle in mode switcher. Post-MVP: seamless auto-detection. |
 | SC-013 | state-machine.md is missing from the Affects list. Phase 1 scoping needs an `awaiting_scoping` flag similar to `awaiting_confirmation`. | state-machine.md | Resolved: yes. Add `awaiting_scoping` flag to cycle record. Same pattern as `awaiting_confirmation` — boolean, at most one flag true at a time. |
-| SC-014 | Should the project have a semver-like versioning system where each cycle bumps a version (major/minor/hotfix)? Would make graph navigation easier and provide context for node relevance. | Graph navigation, artifact lifecycle | Open — captured for future DDR. Complex: touches entire artifact lifecycle, not just scoping. |
+| SC-014 | Should the project have a semver-like versioning system where each cycle bumps a version (major/minor/hotfix)? Would make graph navigation easier and provide context for node relevance. | Graph navigation, artifact lifecycle, hosting/deployment | Resolved: yes — see §Project versioning below. Post-MVP implementation. |
