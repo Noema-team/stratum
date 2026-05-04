@@ -240,8 +240,10 @@ between project-level milestones and per-category validation steps.
 
 The word **node** appears in two contexts:
 
-1. **DAG node** — a step in the cycle's directed acyclic graph (INTENT, DESIGN,
-   PLAN, BUILD, etc.). Always qualified as "DAG node" in cycle-context docs.
+1. **DAG node** — a step in the cycle's directed acyclic graph (SCOPING, DESIGN,
+   CRITIQUE, PLAN, TEST, CONFIRM GATE, SHARDING_APPROVAL, BUILD, HISTORY, EXEC,
+   VALIDATION GATE, DEBUG, EVALUATE, SUMMARISE, SNAPSHOT). Always qualified as
+   "DAG node" in cycle-context docs.
 2. **Graph node** — a work unit in the knowledge graph, scoped to a group and
    tied to a lifecycle layer. Always qualified as "graph node" or just "node"
    in knowledge-graph contexts.

@@ -79,7 +79,7 @@ ownership a first-class concern.
 | Role | DAG node(s) | Session | Primary purpose | Produces |
 |------|-------------|---------|-----------------|----------|
 | Facilitator | — (discovery/chat) | Discovery, Chat | Ask questions, capture decisions | Discovery docs, decisions |
-| Explorer | EXPLORE (conditional) | Cycle | Research design space, run spikes | Research findings |
+| Explorer | SCOPING (conditional) | Cycle | Research design space, run spikes | Research findings |
 | Designer | DESIGN | Cycle | Define what to build | `architecture.md`, `requirements.md` |
 | Planner | PLAN | Cycle | Define how to build it | `plan.md`, `test-plan.md` |
 | Tester | TEST | Cycle | Write unbiased test scripts | Test scripts per category |
@@ -143,14 +143,14 @@ now assembles different slices depending on which mode is active.
 before committing to a design. The Explorer produces research findings that
 inform the Designer's architecture decisions.
 
-**DAG node:** EXPLORE (conditional, before DESIGN).
+**DAG node:** Triggered by SCOPING (conditional, before DESIGN).
 
 **Reads:**
 
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From INTENT node |
+| User intent | From SCOPING node (via cycle-charter) |
 | Discovery documents | Full set |
 | Prior evaluation | If revisiting a cycle |
 
@@ -190,11 +190,11 @@ contract between intent and implementation.
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From INTENT node |
+| User intent | From SCOPING node (via cycle-charter) |
 | Discovery documents | Full set |
 | Prior architecture | If revisiting |
 | `docs/decisions.md` | Last 3 entries |
-| Explorer research findings | If EXPLORE ran |
+| Explorer research findings | If Explorer triggered by SCOPING |
 | Critic review (if present) | If previous DESIGN was blocked |
 
 **Produces:**
@@ -383,7 +383,7 @@ user asked for.
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From INTENT node |
+| User intent | From SCOPING node (via cycle-charter) |
 | `docs/requirements.md` | Designer's output |
 | `docs/evaluation.md` | Prior cycle evaluation (if revisiting) |
 | `docs/test-plan.md` | Planner's output |

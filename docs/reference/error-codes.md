@@ -566,9 +566,7 @@ Which errors can fire at each node in the cycle DAG.
 
 | DAG node | Possible error codes |
 |---|---|
-| INTENT | E014, E008 |
-| CONTEXT ASSEMBLY | E030, E031, E032, E033, E034 |
-| EXPLORE | E053, E054, E055, E068, E040, E044 |
+| SCOPING | E014, E008, E030, E031, E032, E033, E034, E053, E054, E055, E068, E040, E044 |
 | DESIGN | E050, E051, E052, E040, E044, E047 |
 | CRITIQUE | E061, E040, E044 |
 | PLAN | E062, E040, E044, E047 |

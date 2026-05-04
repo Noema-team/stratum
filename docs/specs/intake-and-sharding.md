@@ -665,8 +665,8 @@ superseded document into an agent's context window.
 The intake pipeline is embedded within the DAG, not separate from it.
 
 ```
-INTENT → CONTEXT_ASSEMBLY → [EXPLORE] → DESIGN → [CRITIQUE] → PLAN → TEST
-→ [SHARDING_APPROVAL] → CONFIRM → BUILD → HISTORY → EXEC → VALIDATION_GATE → ...
+SCOPING → DESIGN → [CRITIQUE] → PLAN → TEST → [SHARDING_APPROVAL] → CONFIRM
+→ BUILD → HISTORY → EXEC → VALIDATION_GATE → ...
 ```
 
 The intake sub-phase runs inside the PLAN node. When the Planner encounters

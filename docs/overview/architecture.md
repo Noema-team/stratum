@@ -218,7 +218,7 @@ configured in `agents.yaml` and dispatched by the DAG runner.
 | Role | DAG node | Reads | Writes | Conditional? |
 |---|---|---|---|---|
 | **Designer** | `DESIGN` | requirements, architecture, decisions, evaluation | `requirements.md`, `architecture.md` | No |
-| **Explorer** | `EXPLORE` | requirements, evaluation, decisions | research findings | Yes — user-initiated only |
+| **Explorer** | triggered by `SCOPING` | requirements, evaluation, decisions | research findings | Yes — conditional, daemon heuristic |
 | **Planner** | `PLAN` | requirements, architecture, decisions, evaluation | `test-plan.md`, `plan.md` | No |
 | **Tester** | `TEST` | requirements, test-plan | executable test scripts | No |
 | **Builder** | `BUILD` | requirements, architecture, test-plan | implementation, instrumented test scripts | No |

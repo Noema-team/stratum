@@ -68,7 +68,7 @@ the project:
 | Role | Purpose | When active |
 |------|---------|-------------|
 | **Facilitator** | Asks questions, captures decisions, structures discovery output | Discovery, Chat |
-| **Explorer** | Investigates unknowns, runs spikes, produces research findings | EXPLORE node (user-initiated only) |
+| **Explorer** | Investigates unknowns, runs spikes, produces research findings | Triggered by SCOPING (conditional, DDR-028) |
 | **Designer** | Owns requirements and architecture documents | DESIGN node |
 | **Critic** | Reviews architecture for flaws before planning proceeds | CRITIQUE node (deep/research depth) |
 | **Planner** | Produces step-level implementation plan and test-plan | PLAN node |
@@ -262,9 +262,7 @@ A development cycle is a single pass through a fixed DAG of nodes. This is
 the system's execution backbone — every cycle follows this path:
 
 ```
-EXPLORE (optional, user-initiated)
-  ↓
-CONTEXT ASSEMBLY ─── daemon loads artifact slices per role
+SCOPING ─────────── daemon builds cycle-charter; may trigger Explorer
   ↓
 DESIGN ─────────── Designer produces requirements + architecture
   ↓
@@ -319,9 +317,8 @@ runs, and how much context each agent receives:
 | `research` | 4+ | Yes (multi-pass) | Complex architecture, high stakes |
 
 Depth is set in `planning.yaml` and can be overridden per cycle with
-`--depth`. It does not control the EXPLORE node — exploration is always
-user-initiated regardless of depth setting
-([DDR-023](../decisions/ddr-023-explore-trigger.md)).
+`--depth`. It does not control the Explorer — the Explorer is now triggered
+conditionally by SCOPING (DDR-028), not as a standalone node.
 
 ### Agent bootstrap
 

@@ -89,15 +89,10 @@ Below is the full cycle DAG. Nodes run top-to-bottom. Indented branches show
 conditional paths and loops.
 
 ```
-USER INTENT
-    │  User provides a goal. System transitions to cycling.
-    ▼
-CONTEXT ASSEMBLY
-    │  Daemon assembles a surgical context window for the first agent.
-    │  No raw conversation history — artifact slices + system state only.
-    ▼
-[EXPLORE]  ← conditional (unknowns flagged by user or daemon heuristic)
-    │  Explorer investigates and feeds findings to the Design phase.
+SCOPING
+    │  Daemon builds a cycle-charter from user input and project state.
+    │  Replaces INTENT + CONTEXT_ASSEMBLY + EXPLORE (DDR-028).
+    │  May conditionally trigger the Explorer for unknowns.
     ▼
 DESIGN
     │  Designer produces requirements + architecture.
