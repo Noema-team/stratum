@@ -186,27 +186,31 @@ Turn 1:
     { type: 'file_search', pattern: 'src/services/*.ts', reason: 'Check existing service patterns' }
 
 Turn 2:
-  DAG runner validates request (§5)
-  DAG runner fulfills request: lists files matching pattern
-  DAG runner appends result to agent context as a new user message:
-    "File search results for 'src/services/*.ts':
-     - src/services/auth.ts (48 lines)
-     - src/services/item.ts (62 lines)
-     Read any of these files? Specify which."
+  DAG runner runs safety gate: role=Builder, type=file_search → allowed. Budget OK.
+  DAG runner fulfills with intelligent ranking:
+    "3 files matched:
+     1. src/services/auth.ts (48 lines) — Classes: AuthService
+     2. src/services/item.ts (62 lines) — Classes: ItemService
+     3. src/services/orderProcessor.ts (340 lines, 12.4KB) — Note: large file"
   Builder sees the listing:
-    "I need to see auth.ts to understand the pattern."
+    "auth.ts is small and probably the canonical pattern. Let me read it."
   Builder produces ReadRequest:
     { type: 'file', path: 'src/services/auth.ts', reason: 'Understand existing service pattern for consistency' }
 
 Turn 3:
-  DAG runner validates and fulfills: reads file content
-  DAG runner appends to context:
-    "File content of 'src/services/auth.ts':
-     [file content]"
-  Builder sees the pattern, now has enough context:
+  DAG runner runs safety gate: path OK, file is small (under 5KB threshold) → return full content.
+  Builder sees the full file:
     "I see — services use dependency injection via constructor, return Result<T> types,
-     and follow the repository pattern."
-  Builder produces final BuilderOutput with file operations
+     and follow the repository pattern. I also see they import from '../types/result'.
+     Let me check that type."
+  Builder produces ReadRequest:
+    { type: 'symbol_lookup', symbol: 'Result', reason: 'Understand return type used by existing services' }
+
+Turn 4:
+  DAG runner fulfills symbol lookup: finds Result in src/types/result.ts, returns definition + imports.
+  Builder sees the Result type:
+    "Good — Result<T> is { ok: boolean; value?: T; error?: string }. Now I have enough context."
+  Builder produces final BuilderOutput with file operations that follow the discovered patterns.
 ```
 
 #### Turn budget
@@ -226,9 +230,149 @@ If the agent hits `max_turns` without producing a final output, the DAG runner f
 - One final LLM call, which MUST produce output (not another read request)
 - If the final call still produces a read request, it's treated as `agent_empty_output` (retry once, then halt)
 
-### 5. Read request validation and scoping
+### 5. Read request processing — two-phase gate
 
-The DAG runner validates every read request before fulfilling it. Not all roles can request reads, and not all reads are allowed.
+Read requests go through two phases: **mechanical safety validation** then **intelligent fulfillment**. Most requests pass validation cleanly — the safety gate is a hard boundary, not a judgment call. The intelligence is in *how* the DAG runner fulfills, not *whether* it fulfills.
+
+#### Phase 1: Mechanical safety gate
+
+The DAG runner checks hard rules before any fulfillment. These are non-negotiable safety constraints:
+
+1. **Role permission** — does this role have read access? (see per-role table below)
+2. **Request type permission** — is this request type allowed for this role?
+3. **Budget check** — has the turn budget been exhausted? Has the byte budget been exceeded?
+4. **Path validation** — all paths relative to project root, no `.sle/`, no `.git/`, no `.env`, no `credentials.*`, no `..` traversal
+5. **Blocked directories** — configurable list in `agents.yaml → read_restrictions.blocked_paths` (e.g., `['secrets/', 'private/', '.ssh/']`)
+6. **File size limit** — files exceeding `max_file_read_bytes` (default 20KB) are not returned whole
+
+If any check fails, the request is rejected with a structured reason injected into context:
+
+```
+[READ REJECTED]
+Request: file read "secrets/api-keys.json"
+Reason: path matches blocked pattern (secrets/)
+You have {remaining_turns} turns remaining.
+```
+
+Most requests pass this gate. It is not filtering for relevance — that's the fulfillment phase.
+
+#### Phase 2: Intelligent fulfillment
+
+Once a request passes safety validation, the DAG runner fulfills it. Fulfillment is where the intelligence lives — the DAG runner returns *useful* content, not raw dumps.
+
+**File reads — targeted extraction:**
+
+When an agent requests a file that exceeds a size threshold (configurable, default 5KB), the DAG runner performs targeted extraction rather than returning the whole file:
+
+```typescript
+export interface FileReadConfig {
+  max_full_return_bytes: number   // default 5KB — files smaller returned whole
+  targeted_window_lines: number   // default 50 lines per window
+  max_windows_per_file: number    // default 3
+}
+```
+
+The DAG runner reads the file and returns:
+- **Small files** (under 5KB): full content, no extraction needed
+- **Large files**: the agent must provide a `focus` hint in the request. The DAG runner extracts the most relevant section(s) based on the hint. If no hint is provided, the DAG runner returns a structured summary:
+
+```
+[READ RESULT — file (truncated)]
+Source: src/services/orderProcessor.ts (340 lines, 12.4KB)
+Reason: Understand existing service pattern for consistency
+Note: File exceeds full-return threshold. Showing structure summary.
+---
+Lines 1-15: imports (express, zod, Result, Logger)
+Lines 17-42: interface OrderProcessorConfig { ... }
+Lines 44-89: class OrderProcessor
+  Lines 46-58: constructor(config, repository, eventBus)
+  Lines 60-78: async processOrder(order): Promise<Result<Order>>
+  Lines 80-88: private validateOrder(order): ValidationResult
+Lines 91-120: class OrderProcessorFactory
+Lines 122-340: tests
+---
+To read a specific section, request with focus hint:
+{ type: 'file', path: 'src/services/orderProcessor.ts', focus: 'class OrderProcessor' }
+```
+
+The agent can then request a targeted follow-up to get the specific lines it needs.
+
+**File search — ranked results:**
+
+When an agent searches for files, the DAG runner doesn't just return a flat glob match. It ranks and annotates:
+
+```
+[READ RESULT — file_search]
+Pattern: src/services/*.ts
+Reason: Check existing service patterns
+---
+3 files matched (showing all):
+
+1. src/services/auth.ts (48 lines, 1.2KB)
+   Classes: AuthService
+   Exports: AuthService, AuthConfig
+
+2. src/services/item.ts (62 lines, 1.8KB)
+   Classes: ItemService
+   Exports: ItemService, ItemRepository
+
+3. src/services/orderProcessor.ts (340 lines, 12.4KB)
+   Classes: OrderProcessor, OrderProcessorFactory
+   Exports: OrderProcessor, OrderProcessorFactory
+   Note: large file — request with focus for targeted read
+---
+You have {remaining_turns} turns remaining.
+```
+
+Ranking signals (in priority order):
+1. Files already referenced in the agent's context (path proximity — mentioned in architecture, plan, etc.)
+2. Recency of modification (git mtime)
+3. File size (smaller files first — more likely to be focused utilities)
+
+**Symbol lookup — definition with context:**
+
+Symbol lookup returns the symbol definition plus its immediate context (imports, type annotations, surrounding interface), not just the raw lines:
+
+```
+[READ RESULT — symbol_lookup]
+Symbol: AuthService
+File: src/services/auth.ts
+---
+import { Result } from '../types/result';
+import { Logger } from '../utils/logger';
+
+export interface AuthConfig {
+  tokenExpiry: number;
+  refreshTokenExpiry: number;
+}
+
+export class AuthService {
+  constructor(
+    private config: AuthConfig,
+    private userRepo: UserRepository,
+    private logger: Logger,
+  ) {}
+
+  async validateToken(token: string): Promise<Result<User>> { ... }
+  async refreshToken(token: string): Promise<Result<string>> { ... }
+}
+---
+```
+
+The DAG runner extracts the symbol using pattern matching (MVP: regex on `export (function|const|class|interface|type) {symbol}`). Post-MVP: language-aware AST resolution via the knowledge engine (DDR-005).
+
+**Dependency check — existence + version:**
+
+```
+[READ RESULT — dependency_check]
+Package: zod
+Found in: package.json → dependencies
+Version: ^3.22.0
+Installed: yes (node_modules/zod exists)
+---
+```
+
+MVP: reads `package.json` directly. Post-MVP: resolves from lockfile.
 
 #### Per-role read permissions
 
@@ -244,16 +388,6 @@ The DAG runner validates every read request before fulfilling it. Not all roles 
 | Historian | No | — | Writes audit entries only. |
 | Explorer | Yes | `file`, `file_search`, `symbol_lookup`, `dependency_check` | Research role — broadest read access |
 | Facilitator | No | — | Conversational role. Context manager provides what's needed. |
-
-#### Path restrictions
-
-Read requests are constrained by the same path rules as artifact access:
-
-1. **No `.sle/` access** — agents never read internal state
-2. **No absolute paths** — all paths relative to project root
-3. **No `..` traversal** — no escaping project root
-4. **No `.env`, `.git/`, `credentials.*`** — blocked path patterns (configurable in `agents.yaml`)
-5. **Max file size** — files exceeding a configurable limit (default 20KB) are truncated with a warning injected into context
 
 #### Content injection format
 
@@ -396,17 +530,15 @@ For each L3 DAG node:
   2. Invoke agent runner
   3. If output → write artifacts, advance node
   4. If read_request:
-     a. Validate requests (§5)
-     b. Fulfill requests
+     a. Phase 1: safety gate (role permission, path rules, budget)
+        - If rejected → inject rejection, invoke again (goto 2, doesn't count as turn)
+     b. Phase 2: intelligent fulfillment (targeted extraction, ranked results)
      c. Append results to invocation state
      d. If turns_used < max_turns → invoke again (goto 2)
      e. If turns_used >= max_turns → force final output (one more call)
 ```
 
-The existing retry and error handling still applies:
-- `agent_timeout` — per LLM call, not per multi-turn loop
-- `agent_empty_output` — applies to the final output only
-- `llm_provider_error` — per LLM call, retried independently
+Safety gate rejections do not count against the turn budget — the agent didn't get information, so it shouldn't be penalized.
 
 #### context-manager.md changes
 
@@ -437,9 +569,11 @@ New types: `AgentRunner`, `AgentTurnResult`, `ReadRequest` (and subtypes), `Agen
 - Builder and Debugger can investigate existing codebase — produces more consistent, grounded output
 - Designer can check what exists before proposing architecture — fewer conflicts with existing structure
 - Planner can understand real project structure — more accurate plans
+- Two-phase gate separates safety (mechanical, fast, non-negotiable) from intelligence (how to return useful content)
+- Intelligent fulfillment prevents token waste — large files get structured summaries, searches get ranked results
 - Multi-turn is bounded (turn budget, byte budget) — no runaway loops
 - Read requests are validated and scoped per-role — Tester isolation preserved
-- Consistent with existing architecture: agents declare what they need, system decides whether to provide it
+- Consistent with existing architecture: agents declare what they need, system decides how to provide it
 - LLM provider interface is now defined — unblocks implementation
 - Agent invocation lifecycle is now specified — fills the biggest spec gap
 
@@ -448,14 +582,15 @@ New types: `AgentRunner`, `AgentTurnResult`, `ReadRequest` (and subtypes), `Agen
 - Multi-turn increases latency per DAG node — each turn is a full LLM round-trip
 - Token costs increase — the multi-turn conversation grows the prompt with each turn
 - Parsing complexity — detecting read requests vs final output requires careful prompt engineering and parsing
+- Intelligent fulfillment adds implementation complexity (targeted extraction, ranking, structured summaries)
 - LLMs may overuse read requests (explore too broadly) — mitigated by turn budget and per-turn request limit
 
 ### Risks
 
 - LLMs may produce malformed read requests — mitigation: parse failure is treated as the final output (the agent runner wraps it as a prose output for the role)
-- Context window overflow from accumulated read results — mitigation: `total_read_bytes_limit` caps total injected content; agent runner truncates individual results
-- Agent quality may degrade if it makes poor read choices (reads irrelevant files) — mitigation: the `reason` field forces the agent to justify each request, and the DAG runner could log requests for later analysis
-- This adds a conversational loop to L3 nodes which were previously single-shot — the system is no longer purely single-turn. However, the loop is bounded, scoped, and controlled by the DAG runner
+- Context window overflow from accumulated read results — mitigation: `total_read_bytes_limit` caps total injected content; intelligent fulfillment trims individual results
+- Targeted extraction for large files may miss the relevant section if the agent's focus hint is vague — mitigation: the structured summary lets the agent identify the right section before requesting it
+- Ranking signals may not match actual relevance — mitigation: MVP uses simple heuristics (path proximity, file size), can be improved based on read-request logs
 
 ## Explicitly deferred
 
@@ -478,5 +613,6 @@ New types: `AgentRunner`, `AgentTurnResult`, `ReadRequest` (and subtypes), `Agen
 | RE-003 | Should Explorer have a higher turn budget than other roles? Explorer is a research role and may need more turns. | Explorer capability | Open — likely yes. Explorer default: 10 turns. Others: 5. |
 | RE-004 | Can agents request reads of files produced earlier in the same cycle (e.g., Builder reads Designer's architecture.md via read request rather than context)? | Redundancy, consistency | Open — no, this would bypass context manager's slice control. Architecture.md should be in Builder's context slice already. Read requests are for files OUTSIDE the artifact system (source code, configs). |
 | RE-005 | What is the parse failure recovery strategy? If an LLM returns something that is neither valid output nor valid read requests, what happens? | Robustness | Open — likely: (1) retry once with "produce valid output" instruction, (2) treat as `agent_empty_output` on second failure. |
-| RE-006 | Should `dependency_check` actually resolve package versions, or just check existence in package.json / package-lock.json? | Scope of dependency information | Open — MVP: existence check in package.json only. Version resolution post-MVP. |
+| RE-006 | Should `dependency_check` actually resolve package versions, or just check existence in package.json / package-lock.json? | Scope of dependency information | Resolved: MVP shows version range from package.json + whether installed. Lockfile resolution post-MVP. |
 | RE-007 | Should the turn budget be configurable per-role in agents.yaml, or is it a global daemon config? | Configuration granularity | Open — likely per-role in agents.yaml with a daemon-level default. |
+| RE-008 | Should large-file summaries (the structure outline) be generated by a lightweight LLM call for accuracy, or is a regex/heuristic approach sufficient? | Summary quality vs latency | Open — MVP: regex/heuristic (line scanning for class/function/export patterns). Post-MVP: LLM-generated summaries cached per file version. |
