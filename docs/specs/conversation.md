@@ -497,10 +497,11 @@ The cycle start API now accepts an optional `scope_draft_id` parameter:
 ```
 POST /api/v2/cycles
 {
-  "intent": "string",
-  "scope_draft_id": "string | null",
+  "scope_draft_id":  "string | null",
   "quick_start_goal": "string | null",
-  "no_chat_context": false
+  "version_bump":    "'major' | 'minor' | 'patch' | null",
+  "depth_override":  "PlanningDepth | null",
+  "category_hints":  "string[] | null"
 }
 ```
 
@@ -617,8 +618,8 @@ maps to a query parameter `?no_chat_context=true` on the cycle start endpoint.
    artifacts, or graph nodes.
 
 3. **No raw history to agents.** No agent other than the Facilitator receives
-   chat history. The Planner receives ChatContext as a compressed summary, not
-   the raw JSONL file.
+chat history. The SCOPING node receives ChatContext as a compressed summary, not
+the raw JSONL file. The charter produced by SCOPING then flows to the Designer and Planner.
 
 4. **Conservative decision detection.** Only `high` confidence candidates are
    surfaced. Every false positive is an interruption. Detection runs on user

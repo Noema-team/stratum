@@ -71,7 +71,7 @@ Three Facilitator names — one per mode (DDR-020, DDR-028). All other roles hav
 | File | Role | DAG node |
 |------|------|----------|
 | `designer.md` | Designer | DESIGN |
-| `explorer.md` | Explorer | EXPLORE |
+| `explorer.md` | Explorer | SCOPING (conditional) |
 | `planner.md` | Planner | PLAN |
 | `tester.md` | Tester | TEST |
 | `builder.md` | Builder | BUILD |
@@ -226,7 +226,7 @@ integrate and cite them. On revision, understand what changed before modifying.
 
 ### Explorer
 
-**File:** `explorer.md` · **Node:** EXPLORE · **DDR:** DDR-023
+**File:** `explorer.md` · **Node:** SCOPING (conditional) · **DDR:** DDR-023
 
 ```markdown
 # Explorer

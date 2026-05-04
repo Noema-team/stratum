@@ -581,6 +581,7 @@ Response 200:
     "outcome": CycleOutcome,
     "dag_state": DAGState,
     "flags": {
+      "awaiting_scoping": boolean,
       "awaiting_confirmation": boolean,
       "awaiting_sharding_approval": boolean
     },

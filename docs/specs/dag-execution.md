@@ -12,7 +12,7 @@ executes, the conditions under which nodes are skipped or repeated, the two
 decision gates where control flow diverges, and the data that flows between
 nodes.
 
-A cycle begins when the user submits an intent (`sle start`) and ends when
+A cycle begins when the user starts a cycle (`sle start`) and ends when
 either a validated snapshot is locked (success) or the cycle halts with a
 partial report (failure, cap, or user abort). Between those two endpoints, the
 daemon walks the DAG node by node, pausing at human checkpoints and looping on
@@ -52,7 +52,7 @@ enum DAGNode {
 }
 ```
 
-14 nodes total. DDR-028: INTENT, CONTEXT_ASSEMBLY, EXPLORE replaced by SCOPING.
+15 nodes total. DDR-028: INTENT, CONTEXT_ASSEMBLY, EXPLORE replaced by SCOPING.
 
 Full type definition: `DAGNode` in [../reference/types.md](../reference/types.md) §4.
 

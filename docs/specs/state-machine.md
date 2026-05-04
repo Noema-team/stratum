@@ -135,7 +135,7 @@ Populated from `map.yaml` on every daemon tick. Exposed via the status API.
 |---|---|---|---|---|---|
 | T1 | `idle` | `discovering` | `sle discover` | `discovery_status ≠ complete` | Create discovery session, set `active_session_id` |
 | T2 | `discovering` | `idle` | Discovery session ends (synthesis + planning complete) | Discovery session is in terminal round | Write discovery artifacts, set `discovery_status := complete`, clear `active_session_id` |
-| T3 | `idle` | `cycling` | `sle start "intent"` | `discovery_status = complete` | Create cycle record, set `active_cycle_id`, set `iteration := 1`, `revision := 0` |
+| T3 | `idle` | `cycling` | `sle start "goal"` | `discovery_status = complete` | Create cycle record, set `active_cycle_id`, set `iteration := 1`, `revision := 0` |
 | T4 | `cycling` | `cycling` | VALIDATION gate fails, iteration cap not reached | `iteration < iteration_cap` | `iteration++`, inject FailureReport into next PLAN context, clear run artifacts |
 | T5 | `cycling` | `halted` | User issues `sle halt` | `system.state = cycling` | Write partial report, preserve run artifacts |
 | T6 | `cycling` | `halted` | VALIDATION gate fails, iteration cap reached | `iteration ≥ iteration_cap` | Write partial report with cap-exceeded notice |
@@ -143,7 +143,7 @@ Populated from `map.yaml` on every daemon tick. Exposed via the status API.
 | T8 | `cycling` | `complete` | SNAPSHOT node finishes | All validation categories pass, EVALUATE done | Lock snapshot, write changelog, increment version |
 | T9 | `complete` | `idle` | Snapshot acknowledgement (automatic after lock) | Snapshot is locked | Clear `active_cycle_id`, persist versioned artifacts |
 | T10 | `halted` | `idle` | User acknowledges halt report | Halt report has been read | Clear `active_cycle_id` |
-| T11 | `idle` | `cycling` | `sle start "intent"` with `--force` | None (skips discovery check) | Same as T3 but no discovery guard |
+| T11 | `idle` | `cycling` | `sle start "goal"` with `--force` | None (skips discovery check) | Same as T3 but no discovery guard |
 | T12 | `halted` | `cycling` | `sle resume` | Halted state, user confirmation | Resume keeps cycle context. Iteration count preserved. |
 
 ### Intra-cycle transitions (flag-based, state stays `cycling`)

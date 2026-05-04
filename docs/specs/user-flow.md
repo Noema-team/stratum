@@ -340,7 +340,7 @@ Chat with no cycle running:
 3. User may initiate cycle from chat
    │  Natural language: "start a cycle for X"
    │  Daemon detects intent, constructs cycle start request
-   │  ChatContext injected into Planner
+   │  ChatContext injected into SCOPING node
    │
 4. Pre-cycle actions available (DDR-028)
    │  Tag nodes/layers for next cycle (#next-cycle)

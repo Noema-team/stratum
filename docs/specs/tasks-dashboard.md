@@ -502,9 +502,10 @@ This integrates with the daemon's cycle start endpoint:
 ```
 POST /api/v2/cycles
 {
-  "goal": string,
-  "task_id": string,
-  "scope_draft_id"?: string
+  "quick_start_goal"?: string,
+  "task_id"?: string,
+  "scope_draft_id"?: string,
+  "version_bump"?: "major" | "minor" | "patch"
 }
 ```
 

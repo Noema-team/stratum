@@ -258,7 +258,7 @@ Default loading modes per artifact key:
 | `doc:evaluation` | `last_cycle` | Only the most recent evaluation entry |
 | `doc:plan`                  | `full`              | Only loaded at `deep`+ depth |
 | `doc:build-plan`           | `full`              | Only present at `deep`/`research` depth after PLAN node |
-| `doc:research-findings`     | `full`              | Only present when EXPLORE node ran |
+| `doc:research-findings`     | `full`              | Only present when Explorer agent ran (triggered by SCOPING) |
 | `doc:debug-diagnosis` | `full` | Ephemeral — only present on retry, only for Planner/Debugger |
 | `doc:critique-report` | `full` | Only present at `deep`/`research` depth after CRITIQUE node. Project-scoped persistent design review. |
 | `doc:cycle-critique` | `full` | Per-cycle structured critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE node ran. |
@@ -308,7 +308,7 @@ implementation files most relevant to the current task. The context manager
 uses the `repo.key_files` list from `map.yaml` to select files by path pattern.
 
 ```
-resolveSourceSlice(intent.goal, map.repo.key_files, budget=800)
+resolveSourceSlice(charter.goal, map.repo.key_files, budget=800)
 ```
 
 The source slice is loaded after document slices. If the document slice budget
@@ -476,7 +476,7 @@ ensures architecture decisions are grounded in project context.
 | `doc:vision` | `summary_only` | 150 | Long-term direction |
 | `doc:open-questions` | `full` | 100 | Unresolved questions |
 | `doc:project-plan` | `summary_only` | 100 | Phase breakdown, cycle targets |
-| `doc:research-findings` | `full` | 200 | Only present when EXPLORE node ran (DDR-023) |
+| `doc:research-findings` | `full` | 200 | Only present when Explorer agent ran (triggered by SCOPING, DDR-023) |
 | `doc:architecture` | `full` | 400 | Prior architecture — present on revision, absent on first design |
 | `doc:requirements` | `full` | 300 | Prior requirements — present on revision |
 | `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |

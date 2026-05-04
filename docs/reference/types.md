@@ -130,7 +130,7 @@ Priority order for context truncation: `user_defined` truncated last, `inferred`
 ```typescript
 export type TagPrefix = 'next-cycle' | 'scope' | 'area'
 ```
-Extensible tag prefix. `#next-cycle` marks nodes as priority for upcoming cycle. `#scope:{draft-id}` links to a scope draft. `#area:{name}` for categorization.
+DDR-028. Extensible tag prefix for the node tagging system. `#next-cycle` marks nodes as priority for upcoming cycle. `#scope:{draft-id}` links to a scope draft. `#area:{name}` for categorization.
 
 ```typescript
 export interface NodeTag {
@@ -140,7 +140,7 @@ export interface NodeTag {
   applied_at: string
 }
 ```
-Extensible tag system. Tags are applied by users, the Facilitator, or the system and tracked per node.
+DDR-028. Tag applied to nodes, layers, or groups. Tags are applied by users, the Facilitator, or the system and tracked per node.
 
 ```typescript
 export type VersionBump = 'major' | 'minor' | 'patch'
@@ -288,7 +288,7 @@ export enum DAGNode {
   SNAPSHOT = 'SNAPSHOT',
 }
 ```
-⚡ **DDR-028.** Replaced INTENT, CONTEXT_ASSEMBLY, EXPLORE with SCOPING. Was 17 nodes, now 14.
+⚡ **DDR-028.** Replaced INTENT, CONTEXT_ASSEMBLY, EXPLORE with SCOPING. Was 17 nodes, now 15.
 
 ```typescript
 export interface DAGState {
@@ -343,6 +343,23 @@ export interface CycleExecutionSummary {
 }
 ```
 Condensed DAG execution trace stored in `history[]` on SNAPSHOT. DDR-028 SC-014 D4.
+
+```typescript
+export interface VersionSnapshot {
+  version_id: string
+  cycle: number
+  iteration: number
+  revision: number
+  locked_at: string
+  artifact_hashes: Record<string, string>
+  category_results: CategoryResult[]
+  outcome: 'completed' | 'halted'
+  version_bump: VersionBump
+  deployable: boolean
+  changed_nodes: string[]
+}
+```
+DDR-028 SC-014. Immutable snapshot of a completed cycle, stored in `.sle/versions/{version_id}/`. `artifact_hashes` maps artifact keys to content hashes for provenance. `deployable` is `true` only when `outcome === 'completed'` and all categories pass.
 
 ---
 

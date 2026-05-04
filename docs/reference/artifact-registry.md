@@ -85,7 +85,7 @@ reviews both at the DESIGN node when `planning.depth` is `deep` or `research`
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
-| `doc:research-findings` | markdown | project | Explorer | Research findings, spike results, benchmarks, tradeoff analysis. Tagged `explore:user-guided` (DDR-023). Injected into Designer context when EXPLORE runs. |
+| `doc:research-findings` | markdown | project | Explorer | Research findings, spike results, benchmarks, tradeoff analysis. Tagged `explore:user-guided` (DDR-023). Injected into Designer context when Explorer runs (triggered by SCOPING). |
 | `doc:requirements` | markdown | project | Designer | Functional and non-functional requirements — what to build. Owned by Designer per DDR-019. Consumed by Planner (reads), Tester (reads), Builder (reads), Evaluator (reads). |
 | `doc:architecture` | markdown | project | Designer | Architecture decisions, system shape, component boundaries, data models, API contracts. Owned by Designer per DDR-019. Consumed by Planner (reads), Builder (reads), Critic (reads), Evaluator (reads). Tester does NOT see this — TDD separation (G22). |
 | `doc:critique-report` | markdown | project | Critic | Persistent architecture review: blocking issues, warnings, suggestions. Only produced at `deep` or `research` planning depth (DDR-022). Persists across cycles. |
@@ -301,7 +301,7 @@ maps each of the 10 agent roles to the artifacts they produce.
 | `doc:cycle-scope-draft` | project | Cycle (pre-scope chat) |
 | `doc:cycle-charter` | run | Cycle (SCOPING node) |
 
-### Explorer (EXPLORE node, conditional)
+### Explorer (invoked by SCOPING, conditional)
 
 | Output | Scope | Notes |
 |--------|-------|-------|
@@ -374,7 +374,7 @@ token budget.
 |------|--------------------------------|
 | **Facilitator** | `doc:product-brief`, `doc:system-description`, `doc:vision`, `doc:open-questions`, `doc:project-plan`, `.sle/chat-history.jsonl` |
 | **Explorer** | Intent, `doc:system-description`, `doc:open-questions`, prior `doc:evaluation`, `doc:constraints` |
-| **Designer** | `doc:cycle-charter`, Intent, discovery docs (all 8), prior `doc:architecture`, prior `doc:evaluation`, `doc:decisions` (last 3), `doc:research-findings` (if EXPLORE ran), `agent.md` |
+| **Designer** | `doc:cycle-charter`, Intent, discovery docs (all 8), prior `doc:architecture`, prior `doc:evaluation`, `doc:decisions` (last 3), `doc:research-findings` (if Explorer ran), `agent.md` |
 | **Critic** | `doc:architecture`, `doc:requirements`, prior `doc:evaluation`, `doc:constraints` |
 | **Planner** | `doc:cycle-charter`, `doc:requirements`, `doc:architecture`, `doc:decisions` (last 3), prior `doc:evaluation`, `FailureReport` (on retry), `doc:debug-diagnosis` (on retry) |
 | **Tester** | `doc:requirements`, `doc:test-plan` only. Explicitly excluded: `doc:architecture`, implementation source, Builder output. |

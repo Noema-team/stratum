@@ -511,10 +511,10 @@ endpoints below are specified here and will be added to daemon-api-endpoints.md.
 | `/api/v2/graph/hosting/{group_id}/plan` | POST | Send a message to the hosting planner conversation | Project graph |
 | `/api/v2/cycles/{cycle_id}/lock-snapshot` | POST | Lock cycle snapshot (gate pass) — triggers graph refresh on completion | Cycles (user-flow.md) |
 | `/api/v2/cycles/{cycle_id}/run-tests-locally` | POST | Run tests locally (gate pass) — cycle completion triggers graph update | Cycles (user-flow.md) |
-| `/api/v2/graph/nodes/{id}/tags` | GET | List tags on a node | Project graph — tags (DDR-028) |
-| `/api/v2/graph/nodes/{id}/tags` | POST | Add tag to a node | Project graph — tags (DDR-028) |
-| `/api/v2/graph/nodes/{id}/tags/{tag_id}` | DELETE | Remove tag from a node | Project graph — tags (DDR-028) |
-| `/api/v2/graph/tags?type={prefix}` | GET | Find all nodes with a specific tag type | Project graph — tags (DDR-028) |
+| `/api/v2/tags?type={TagPrefix}&scope={group_id}` | GET | List tags, optionally filtered by type and scope | Tags (DDR-028) |
+| `/api/v2/tags` | POST | Add tag to a node (`node_id` + `tag` in body) | Tags (DDR-028) |
+| `/api/v2/tags/{node_id}/{tag_prefix}/{value?}` | DELETE | Remove tag from a node | Tags (DDR-028) |
+| `/api/v2/tags/next-cycle` | GET | List all nodes tagged #next-cycle | Tags (DDR-028) |
 
 ### List groups
 
