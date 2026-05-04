@@ -32,3 +32,4 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-026-sharding-approval-ui.md](ddr-026-sharding-approval-ui.md) | Sharding approval as separate step before CONFIRM |
 | [ddr-027-product-naming.md](ddr-027-product-naming.md) | Product renamed from SLE/sdk-orchestrator to **Stratum** |
 | [ddr-028-cycle-scoping-redesign.md](ddr-028-cycle-scoping-redesign.md) | Pre-cycle discussion + guided Phase 1, replaces INTENT/CONTEXT_ASSEMBLY/EXPLORE with SCOPING |
+| [ddr-029-agent-output-contracts.md](ddr-029-agent-output-contracts.md) | Typed AgentOutput discriminated union, BuilderOutput declarative file operations schema, per-role output schemas |
