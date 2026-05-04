@@ -241,9 +241,13 @@ The DAG runner checks hard rules before any fulfillment. These are non-negotiabl
 1. **Role permission** — does this role have read access? (see per-role table below)
 2. **Request type permission** — is this request type allowed for this role?
 3. **Budget check** — has the turn budget been exhausted? Has the byte budget been exceeded?
-4. **Path validation** — all paths relative to project root, no `.sle/`, no `.git/`, no `.env`, no `credentials.*`, no `..` traversal
-5. **Blocked directories** — configurable list in `agents.yaml → read_restrictions.blocked_paths` (e.g., `['secrets/', 'private/', '.ssh/']`)
-6. **File size limit** — files exceeding `max_file_read_bytes` (default 20KB) are not returned whole
+4. **Path rules:**
+   - No `.sle/` access — agents never read internal state
+   - No absolute paths — all paths relative to project root
+   - No `..` traversal — no escaping project root
+   - No `.env`, `.git/`, `credentials.*`, `*.pem`, `*.key` — blocked patterns (configurable in `agents.yaml → read_restrictions.blocked_patterns`)
+   - No `.ssh/`, `secrets/`, `private/` — blocked directories (configurable in `agents.yaml → read_restrictions.blocked_paths`)
+5. **File size limit** — files exceeding `max_file_read_bytes` (default 20KB) trigger intelligent extraction instead of full return
 
 If any check fails, the request is rejected with a structured reason injected into context:
 
