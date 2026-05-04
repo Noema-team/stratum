@@ -159,17 +159,21 @@ planning depth.
 
 ### Explorer (E053–E055, E068)
 
-The Explorer runs conditionally at the EXPLORE node when unknowns are flagged in
-the user intent. It produces research findings injected into the Designer's context.
-EXPLORE is skipped if no unknowns are detected — the cycle proceeds directly to
-DESIGN.
+> **Deprecated — EXPLORE node removed in DDR-028.** Explorer is now triggered by
+> the SCOPING node instead of running as a standalone EXPLORE node. The error
+> codes below are retained for backward compatibility but should not appear in
+> current SLE v2 cycles.
+
+The Explorer runs conditionally, triggered by SCOPING when unknowns are flagged
+in the user intent. It produces research findings injected into the Designer's
+context. SCOPING proceeds directly to DESIGN if no unknowns are detected.
 
 | Code | Name | Condition | Severity | Recovery |
 |---|---|---|---|---|
-| E053 | explorer_research_timeout | EXPLORE node exceeds configured time budget (default: configurable in `agents.yaml`, suggested 300s). | warning | Partial findings captured. Explorer forced to produce summary of findings so far, even if incomplete. Designer receives partial research with truncation note. Cycle continues — EXPLORE is conditional, not blocking. |
+| E053 | explorer_research_timeout | *(Deprecated — EXPLORE node removed in DDR-028. Explorer is now triggered by SCOPING.)* Explorer research exceeds configured time budget. | warning | Partial findings captured. Explorer forced to produce summary of findings so far, even if incomplete. Designer receives partial research with truncation note. Cycle continues — Explorer is conditional, not blocking. |
 | E054 | explorer_resource_inaccessible | Explorer requires access to external resource (API docs, repository, benchmark data) for spike but cannot reach it — network failure, 403, or resource not found. | warning | Explorer proceeds with available information. Missing resource noted in research findings. Designer receives context noting the gap. User may provide resource manually or adjust intent. |
-| E055 | explorer_no_findings | Explorer completes research phase but produces no actionable findings — empty output or only restatements of the intent. | warning | EXPLORE completes with empty findings. Designer proceeds without research input (same as if EXPLORE were not triggered). Warning logged. Consider whether unknowns flag was appropriate. |
-| E068 | explorer_trigger_invalid | EXPLORE node activated (unknowns flagged) but intent contains no actionable unknowns, or heuristic score is below threshold. | warning | EXPLORE skipped. Cycle proceeds directly to DESIGN. Flag logged for intent quality review. User may need more specific intent on next cycle. |
+| E055 | explorer_no_findings | *(Deprecated — EXPLORE node removed in DDR-028. Explorer is now triggered by SCOPING.)* Explorer completes research phase but produces no actionable findings — empty output or only restatements of the intent. | warning | SCOPING completes with empty findings. Designer proceeds without research input (same as if Explorer were not triggered). Warning logged. Consider whether unknowns flag was appropriate. |
+| E068 | explorer_trigger_invalid | *(Deprecated — EXPLORE node removed in DDR-028. Explorer is now triggered by SCOPING.)* Explorer activated (unknowns flagged) but intent contains no actionable unknowns, or heuristic score is below threshold. | warning | Explorer skipped. SCOPING proceeds directly to DESIGN. Flag logged for intent quality review. User may need more specific intent on next cycle. |
 
 ### Tester (E056–E057)
 

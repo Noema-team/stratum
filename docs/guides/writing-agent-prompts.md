@@ -18,7 +18,7 @@ There are eleven prompt templates — one per role — covering the full DAG lif
 | File | Role | DAG node |
 |------|------|----------|
 | `designer.md` | Designer | DESIGN |
-| `explorer.md` | Explorer | EXPLORE |
+| `explorer.md` | Explorer | SCOPING (conditional) |
 | `planner.md` | Planner | PLAN |
 | `tester.md` | Tester | TEST |
 | `builder.md` | Builder | BUILD |

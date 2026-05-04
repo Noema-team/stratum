@@ -416,13 +416,13 @@ checks the caller identity and field path before committing.
 
 When active, the Critic runs at the DESIGN node (DDR-022), reviewing the
 Designer's output (architecture + requirements). DAG flow becomes:
-`EXPLORE (conditional) → DESIGN → CRITIQUE → PLAN → TEST → CONFIRM → BUILD → ...`
+`SCOPING (conditional) → DESIGN → CRITIQUE → PLAN → TEST → CONFIRM → BUILD → ...`
 
-**EXPLORE trigger (DDR-023):**
+**SCOPING / Explorer trigger (DDR-023, updated DDR-028):**
 
-`planning.depth` does NOT auto-trigger the EXPLORE node. EXPLORE is
-user-initiated only. Automatic gap detection is a separate mechanism — see
-[validation.md](validation.md).
+`planning.depth` does NOT auto-trigger the Explorer. The Explorer is now
+triggered by the SCOPING node (DDR-028) when unknowns are flagged. Automatic gap
+detection is a separate mechanism — see [validation.md](validation.md).
 
 **Depth change mid-project:**
 
@@ -942,8 +942,9 @@ the exact object injected into the DAG runner.
    the Critic runs at DESIGN node for `deep` and `research` depth only. Explicit
    `true` or `false` overrides depth inference.
 
-9. **EXPLORE is user-initiated only (DDR-023).** `planning.depth: research` or
-   `deep` does NOT auto-trigger the EXPLORE node. Automatic gap detection is a
+9. **Explorer is triggered by SCOPING (DDR-023, updated DDR-028).**
+   `planning.depth: research` or `deep` does NOT auto-trigger the Explorer.
+   The Explorer runs when SCOPING detects unknowns. Automatic gap detection is a
    separate mechanism.
 
 10. **Category caching across iterations.** Passing categories are never re-run

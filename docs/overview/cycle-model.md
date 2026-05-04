@@ -343,7 +343,7 @@ outside its scope.
 
 | Role | Node | What it produces | Key constraint |
 |---|---|---|---|
-| **Explorer** | EXPLORE | Research findings, benchmarks | Conditional — only when unknowns are flagged |
+| **Explorer** | SCOPING (conditional) | Research findings, benchmarks | Triggered by SCOPING when unknowns are flagged |
 | **Designer** | DESIGN | `requirements.md`, `architecture.md` | Owns both artifacts (DDR-019) |
 | **Critic** | CRITIQUE | Blocking issues, warnings, suggestions | Reviews Designer output (DDR-022). Deep/research only. |
 | **Planner** | PLAN | Implementation plan, test-plan, sharding proposal | Reads Designer output. Owns plan + test-plan (DDR-019). |

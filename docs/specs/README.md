@@ -6,7 +6,7 @@ Primary build reference — what to implement.
 |-----|-------------|
 | [state-machine.md](state-machine.md) | System states, transitions, orthogonal chat |
 | [dag-execution.md](dag-execution.md) | DAG flow, iteration rules, scheduling |
-| [dag-node-reference.md](dag-node-reference.md) | Per-node definitions for all 17 DAG nodes (split from dag-execution.md) |
+| [dag-node-reference.md](dag-node-reference.md) | Per-node definitions for all 15 DAG nodes (split from dag-execution.md) |
 | [validation.md](validation.md) | static-check, llm-check, exec-check, gates |
 | [context-manager.md](context-manager.md) | Assembly algorithm, slices per role, budgets |
 | [rule-files.md](rule-files.md) | All 7 YAML schemas (including agents.yaml) |
