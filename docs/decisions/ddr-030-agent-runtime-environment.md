@@ -1,6 +1,6 @@
 # DDR-030 — Agent runtime environment and multi-turn execution
 
-**Date:** 2026-05-04 · **Status:** proposed
+**Date:** 2026-05-04 · **Status:** deferred (post-MVP)
 **Affects:** types.md, daemon-api.md, dag-execution.md, context-manager.md, prompt-templates.md, job-dispatch.md
 
 ## Context

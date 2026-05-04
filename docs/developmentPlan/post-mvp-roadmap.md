@@ -107,7 +107,67 @@ auto-detection based on context (user just started a cycle, SCOPING node is acti
 
 ---
 
-## 5. Open questions from specs
+## 5. Agent output contracts and runtime environment (DDR-029, DDR-030)
+
+**Design captured in:**
+- `decisions/ddr-029-agent-output-contracts.md` — typed AgentOutput discriminated union, BuilderOutput declarative file operations, per-role output schemas
+- `decisions/ddr-030-agent-runtime-environment.md` — agent runner, LLM provider interface, multi-turn read-request mechanism, per-role read permissions, two-phase safety gate + intelligent fulfillment
+
+**Why deferred:** Both DDRs are architecturally sound but have 14 critical specification gaps that would require significant additional design work before implementation. The existing single-shot model (context manager assembles slice → single LLM call → write artifacts) is sufficient for MVP. Deferring lets us learn from real usage what agents actually need.
+
+**MVP baseline:** `AgentResult.output: unknown` (types.md:244). The daemon calls the LLM, parses the response, writes artifacts. No typed output validation, no multi-turn read requests, no structured file operations.
+
+### Critical gaps to resolve before implementation
+
+| # | Gap | Source | Issue |
+|---|-----|--------|-------|
+| C1 | FailureReport naming collision | DDR-029 | `FailureReportRich` (Debugger output) doesn't replace gate's `FailureReport` (VALIDATION_GATE pointer). Both must coexist with distinct names. Need to rename to e.g. `DebuggerDiagnosis`. |
+| C2 | Builder retry vs patch operations | DDR-029 | Spec says "regenerate from scratch on retry" but `PatchFile`/`SymbolReplace` are most useful on retry. Constraint must be relaxed for targeted category-specific fixes. |
+| C3 | Artifact persistence mapping | DDR-029 | DDR changes agents from "write artifacts" to "return typed JSON" but never defines the mapping from output fields to artifact paths. DAG runner can't persist without it. |
+| C4 | Validation only for Builder | DDR-029 | All roles return typed JSON but only BuilderOutput has Zod validation. Other roles have no parse-failure behavior. |
+| C5 | Facilitator role identity | DDR-029 | `AgentRole` = `'facilitator'` but 3 templates/modes exist. Discriminated union can't dispatch on mode. Need either 3 role values or a mode field on AgentResult. |
+| C6 | `LLMProvider` name collision | DDR-030 | types.md defines `LLMProvider` as string union. DDR-030 redefines as interface. Must rename one (e.g., `LLMProviderClient`). |
+| C7 | "No conversation history" invariant | DDR-030 | Multi-turn builds a conversation array that objectively is conversation history. Must formally amend the invariant in context-manager.md to scope it to "no history from other DAG nodes or prior iterations." |
+| C8 | No context window limit for accumulated turns | DDR-030 | 3,500-token initial cap + 100KB read limit + growing message array can blow past model context window with no guard. Need `total_context_token_limit`. |
+| C9 | Parse routing ambiguity | DDR-030 | No reliable way to distinguish "read request" from "final output" — especially for prose roles with fragile `<read_request>` XML markers. Need top-level discriminator key or envelope. |
+| C10 | Turn budget vs iteration/retry undefined | DDR-030 | Does turn budget reset per iteration? Global LLM-call cap? Does `agent_timeout` apply per-turn or per-invocation? All unspecified. |
+| C11 | Read fulfillment failure modes | DDR-030 | File not found, symbol not found, binary files, symlink escape, encoding issues — none specified. Need typed `ReadResult` success/failure union. |
+| C12 | TDD isolation bypass via Planner reads | DDR-030 | Planner can read implementation files via `symbol_lookup`, then embed implementation details in `test-plan.md`, which Tester reads. Indirect information leakage past context manager. Need artifact-aware safety gate. |
+| C13 | Redundant `role` field in AgentOutput | DDR-029/030 | `AgentResult.role` already carries it. LLM must produce it again inside JSON, creating mismatch risk. Should remove from inner type. |
+| C14 | Safety gate rejections unbounded | DDR-030 | Rejections don't count against turn budget → agent could loop forever on invalid requests. Need max consecutive rejections (e.g., 3). |
+
+### Medium gaps to resolve (13 total)
+
+- `AgentRoleConfig` not updated for read permissions / turn config
+- No output-to-artifact mapping table
+- `FileReadConfig` has no config-file home (which YAML file?)
+- `dependency_check` assumes Node.js
+- Forced output on max_turns may produce garbage — no quality/confidence flag
+- No WebSocket events for intra-node multi-turn progress
+- `partial_output` lifecycle undefined across turns
+- `CritiqueResult` has two incompatible definitions across DDR-029 and dag-node-reference.md
+- `agent_timeout` doesn't account for multi-turn (per-turn vs per-invocation)
+- Prose `<read_request>` marker parsing fragile and underspecified
+- LLM must choose between two output schemas at runtime (read request vs final output)
+- `AgentResult.tokens_used` / `duration_ms` unclear if cumulative across turns
+- Multiple concurrent read requests within a single turn unspecified
+
+### Implementation items
+
+| # | Item | Effort | Depends on |
+|---|------|--------|------------|
+| 5.1 | Resolve 14 critical gaps | Large | Design review |
+| 5.2 | Update existing specs (context-manager, dag-execution, types.md, prompt-templates, dag-node-reference) | Large | 5.1 |
+| 5.3 | Implement typed AgentOutput discriminated union + Zod validation | Medium | 5.2 |
+| 5.4 | Implement BuilderOutput declarative file operations | Medium | 5.3 |
+| 5.5 | Implement AgentRunner component + LLMProvider interface | Medium | 5.2 |
+| 5.6 | Implement multi-turn read-request loop | Large | 5.5 |
+| 5.7 | Implement two-phase safety gate + intelligent fulfillment | Large | 5.6 |
+| 5.8 | Implement read-request-aware prompt templates | Medium | 5.6 |
+
+---
+
+## 6. Open questions from specs
 
 These are tracked in individual specs' `## Open questions` sections. Not all are
 post-MVP — some may be resolved during implementation. The full list is in each spec.

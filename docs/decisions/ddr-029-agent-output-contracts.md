@@ -1,6 +1,6 @@
 # DDR-029 — Agent output contracts and Builder schema
 
-**Date:** 2026-05-04 · **Status:** proposed
+**Date:** 2026-05-04 · **Status:** deferred (post-MVP)
 **Affects:** types.md, prompt-templates.md, dag-node-reference.md, dag-execution.md, context-manager.md
 
 ## Context
