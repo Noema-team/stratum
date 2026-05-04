@@ -5,7 +5,7 @@
 
 This guide walks you through installing SLE, initializing a project, running
 discovery, and completing your first development cycle. By the end you will
-understand the core workflow: `sle init` → `sle discover` → `sle start`.
+understand the core workflow: `sle init` → `sle discover` → (discuss scope with Facilitator) → `sle start`.
 
 ---
 
@@ -335,41 +335,56 @@ cycle.
 
 ## Your first cycle
 
-With discovery complete, start a development cycle:
+With discovery complete, you have two ways to start a development cycle. The
+recommended flow is to discuss scope with the Facilitator first:
+
+1. Open a chat session and describe what you want to build:
+   ```bash
+   sle chat
+   ```
+   The Facilitator helps you identify relevant nodes, tag them with
+   `#next-cycle`, and draft a scope document.
+
+2. Start the cycle with the scope draft:
+   ```bash
+   sle start --scope my-draft-id
+   ```
+
+For a quick start, you can pass a goal string directly and SLE will create a
+scope draft automatically:
 
 ```bash
 sle start "Add rate limiting to the API"
+# or with a pre-created scope draft:
+sle start --scope my-draft-id
 ```
 
-This triggers transition T3 in the state machine (state-machine.md §Transition
-table): `idle` → `cycling`. The daemon creates a cycle record, sets the
-iteration counter to 1, and begins walking the DAG.
+Either form triggers transition T3 in the state machine (state-machine.md
+§Transition table): `idle` → `cycling`. The daemon creates a cycle record, sets
+the iteration counter to 1, and begins walking the DAG — starting with the
+SCOPING node.
 
 ### The DAG at a glance
 
-A cycle walks through a series of DAG nodes (dag-execution.md §DAG flow
+A cycle walks through a series of 15 DAG nodes (dag-execution.md §DAG flow
 diagram). On the happy path — no conditionals triggered — the sequence is:
 
 ```
-INTENT → CONTEXT_ASSEMBLY → DESIGN → PLAN → TEST → CONFIRM → BUILD
-→ HISTORY → EXEC → VALIDATION_GATE → EVALUATE → SUMMARISE → SNAPSHOT
+SCOPING → DESIGN → PLAN → TEST → CONFIRM → BUILD → HISTORY → EXEC
+→ VALIDATION_GATE → EVALUATE → SUMMARISE → SNAPSHOT
 ```
 
 Here is what each node does:
 
-**INTENT.** The daemon records your goal string. If the system is not `idle` or
-discovery is incomplete, this node rejects the request.
+**SCOPING.** The Facilitator guides you through a structured discussion.
+Together you define the cycle's scope, purpose, requirements, and boundaries.
+This produces a cycle-charter document that feeds into the rest of the DAG.
+If you started with `sle start --scope`, the existing draft is refined; if you
+passed a goal string, the Facilitator generates the charter from scratch.
 
-**CONTEXT_ASSEMBLY.** The context manager gathers relevant slices from
-`map.yaml`, discovery artifacts, rule files, and any existing run artifacts.
-Each agent receives a tailored context pack targeting under 3,500 tokens.
-
-**EXPLORE** (conditional). Only runs if you pass `--explore` or
-`explore: true`. Disabled by default (DDR-023). Skipped on most cycles.
-
-**DESIGN.** The Designer agent produces `architecture.md` and
-`requirements.md`. These are the canonical design artifacts — only the Designer
-writes them (DDR-019).
+**DESIGN.** The Designer agent receives the cycle-charter from SCOPING and
+produces `architecture.md` and `requirements.md`. These are the canonical
+design artifacts — only the Designer writes them (DDR-019).
 
 **CRITIQUE** (conditional). Only runs at deep or research planning depth. The
 Critic reviews the Designer's output for blind spots. Blocking issues trigger a
@@ -629,10 +644,8 @@ entry captures the node, event type, and timestamp:
 
 ```json
 [
-  { "node": "INTENT", "type": "enter", "timestamp": "2026-05-02T14:32:00Z" },
-  { "node": "INTENT", "type": "exit", "timestamp": "2026-05-02T14:32:00Z" },
-  { "node": "CONTEXT_ASSEMBLY", "type": "enter", "timestamp": "2026-05-02T14:32:01Z" },
-  { "node": "CONTEXT_ASSEMBLY", "type": "exit", "timestamp": "2026-05-02T14:32:03Z" },
+  { "node": "SCOPING", "type": "enter", "timestamp": "2026-05-02T14:32:00Z" },
+  { "node": "SCOPING", "type": "exit", "timestamp": "2026-05-02T14:32:02Z" },
   { "node": "DESIGN", "type": "enter", "timestamp": "2026-05-02T14:32:03Z" },
   { "node": "DESIGN", "type": "exit", "timestamp": "2026-05-02T14:33:15Z" },
   { "node": "PLAN", "type": "enter", "timestamp": "2026-05-02T14:33:15Z" },
@@ -685,6 +698,8 @@ If you want to skip discovery and jump straight into a cycle:
 
 ```bash
 sle start "Prototype the auth flow" --force
+# or with a pre-created scope draft:
+sle start --scope my-draft-id --force
 ```
 
 The `--force` flag bypasses the discovery guard (transition T11 in

@@ -9,25 +9,65 @@ running daemon with discovery artifacts in place.
 
 ---
 
+## Pre-cycle scoping
+
+Before starting a cycle, you can discuss what you want to build with the
+Facilitator in the Chat page. Together you can:
+
+1. **Tag nodes** — Right-click a node in the Graph or ask the Facilitator to
+   mark nodes/layers as `#next-cycle`. Tagged nodes are loaded first in the
+   Planner's context.
+2. **Create a scope draft** — The Facilitator helps you draft an informal scope
+   document capturing your goals, requirements, and boundaries.
+3. **Defer ideas** — Out-of-scope ideas are captured in the scope draft's
+   deferred section for future cycles.
+
+When you're satisfied with the scope, start the cycle with
+`sle start --scope <draft-id>`.
+
+Pre-cycle discussion is optional. You can skip it with `sle start "goal"` for
+quick changes.
+
+---
+
 ## Starting a cycle
 
 ### The `sle start` command
 
-A cycle begins with a goal string that describes what you want built:
+A cycle begins with one of three start methods:
 
 ```
+# Preferred: start with a pre-created scope draft
+$ sle start --scope draft-abc123
+
+# Quick start with a goal string (auto-generates minimal scope)
 $ sle start "Add rate-limiting middleware to the auth service"
+
+# Empty start — SCOPING node will define scope from scratch
+$ sle start
 ```
 
-Under the hood this sends `POST /api/v2/cycles` to the daemon on port 7700. The
-daemon responds with a `cycle_id` and the initial `DAGState`:
+Under the hood this sends `POST /api/v2/cycles` to the daemon on port 7700:
+
+```json
+POST /api/v2/cycles
+{
+  "scope_draft_id": "draft-abc123",        // optional
+  "quick_start_goal": "Add rate limiting",  // optional, alternative to scope_draft_id
+  "version_bump": "patch",                  // optional, inferred during SCOPING
+  "depth_override": "standard",             // optional
+  "category_hints": ["correctness"]         // optional
+}
+```
+
+The daemon responds with a `cycle_id` and the initial `DAGState`:
 
 ```
 201 Created
 {
   "cycle_id": "c-20260502-001",
   "dag_state": {
-    "current": "CONTEXT_ASSEMBLY",
+    "current": "SCOPING",
     "iteration": 1,
     "max_iterations": 3,
     "started_at": "2026-05-02T14:30:00Z",
@@ -53,12 +93,12 @@ $ sle start "Fix the pagination bug" --force
 The `--force` flag bypasses the discovery guard. Use it when you want to run a
 cycle without prior discovery artifacts.
 
-### The goal string
+### The goal string (quick start)
 
-The goal string is normalised into a `UserIntent` object and passed to the
-Planner via the CONTEXT_ASSEMBLY node. It should be a single, specific
-instruction — not a wish list. The Planner reads it alongside `architecture.md`
-and `requirements.md` to produce `plan.md` and `test-plan.md`.
+The goal string is a backward-compatible shorthand. The `quick_start_goal`
+parameter auto-generates a minimal scope draft and the SCOPING node still runs
+but skips the guided discussion — the charter is produced from your goal
+directly. It should be a single, specific instruction — not a wish list.
 
 Good goal strings:
 
@@ -69,51 +109,51 @@ Good goal strings:
 Avoid vague goals like "improve performance" or "make it better". The Planner
 works best with concrete, bounded objectives.
 
+For richer control over scope, requirements, and boundaries, use `--scope` with
+a pre-created scope draft instead.
+
 ### Optional flags
 
 | Flag | Effect |
 |---|---|
+| `--scope <draft-id>` | Start with a pre-created scope draft (preferred) |
+| `--bump <major\|minor\|patch>` | Override the version_bump for this cycle |
 | `--depth minimal\|standard\|deep\|research` | Override the planning depth for this cycle only |
-| `--explore` | Run the EXPLORE node before DESIGN (user-initiated research) |
-| `--intake auto\|force\|skip` | Control the intake sub-phase within PLAN |
 | `--force` | Bypass the discovery-completed precondition |
 
 ---
 
 ## Cycle lifecycle
 
-### The 17-node DAG
+### The 15-node DAG
 
-Every cycle walks a directed acyclic graph of up to 17 nodes. Six of those
+Every cycle walks a directed acyclic graph of up to 15 nodes. Four of those
 nodes are conditional and may be skipped. The daemon executes nodes in strict
 sequence, pausing at human checkpoints and looping on validation failure.
 
 The full flow (see §dag-execution.md for the diagram):
 
 ```
-INTENT → CONTEXT_ASSEMBLY → [EXPLORE] → DESIGN → [CRITIQUE] → PLAN → TEST
-→ [SHARDING_APPROVAL] → [CONFIRM] → BUILD → HISTORY → EXEC → VALIDATION_GATE
+SCOPING → DESIGN → [CRITIQUE] → PLAN → TEST → [SHARDING_APPROVAL] → [CONFIRM]
+→ BUILD → HISTORY → EXEC → VALIDATION_GATE
 → (fail → DEBUG → PLAN ...) | (pass → EVALUATE → SUMMARISE → SNAPSHOT)
 ```
 
-### Phase 1: Context through Planning
+### Phase 1: Scoping through Planning
 
-These nodes assemble what the system knows and decide what to build.
+These nodes define scope, design the solution, and decide what to build.
 
-**INTENT** — Accepts your goal string and normalises it. Rejects if the system
-is not `idle` or if discovery has not completed.
+**SCOPING** — The first node in every cycle. The Facilitator guides you through
+a structured discussion to define scope, purpose, requirements, and boundaries.
+This produces a `doc:cycle-charter` artifact. If you used a quick-start goal,
+the charter is auto-generated. Max rounds: configurable via `planning.yaml`
+(default 5, hard cap 10). The `awaiting_scoping` flag is set while waiting for
+your input.
 
-**CONTEXT_ASSEMBLY** — The daemon builds a surgical context window for the next
-agent call. No raw conversation history — five typed components totalling under
-3,500 tokens. See §dag-node-reference.md Node 2 for the component breakdown.
-
-**EXPLORE** *(conditional)* — Runs only when `--explore` is set. The Explorer
-agent investigates open questions, runs spikes, and produces research findings.
-Never auto-triggered by planning depth (DDR-023).
-
-**DESIGN** — The Designer produces `architecture.md` and `requirements.md`. It
-is the sole owner of these artifacts — no other role writes them (DDR-019). At
-`minimal` depth the Designer runs one pass; at `standard`, two passes.
+**DESIGN** — The Designer receives the charter from SCOPING and produces
+`architecture.md` and `requirements.md`. It is the sole owner of these
+artifacts — no other role writes them (DDR-019). At `minimal` depth the
+Designer runs one pass; at `standard`, two passes.
 
 **CRITIQUE** *(conditional)* — Runs at `deep` and `research` depth only. The
 Critic reviews the Designer's output (architecture + requirements, not the
@@ -121,10 +161,12 @@ plan). If it finds blocking issues, the Designer revises and the Critic
 re-reviews. Pass limit is `reasoning_passes - 1`. The Critic is advisory — it
 never halts the DAG at the system level (DDR-022).
 
-**PLAN** — The Planner reads the Designer's output and produces `plan.md` and
-`test-plan.md`. At `deep`/`research` depth it also produces `build-plan.md`. On
-retry iterations (iteration > 1), the Planner receives the `FailureReport` from
-the Debugger and rewrites only sections relevant to failed categories.
+**PLAN** — The Planner reads the charter from SCOPING as its primary input,
+alongside the architecture and requirements produced by DESIGN. It produces
+`plan.md` and `test-plan.md`. At `deep`/`research` depth it also produces
+`build-plan.md`. On retry iterations (iteration > 1), the Planner receives the
+`FailureReport` from the Debugger and rewrites only sections relevant to failed
+categories.
 
 ### Phase 2: Testing through Snapshot
 
@@ -211,6 +253,10 @@ progresses. Key events for cycle monitoring:
 | `dag.sharding_requested` | SHARDING_APPROVAL gate awaits your decision |
 | `dag.snapshot_locked` | Cycle completes and version is locked |
 | `cycle.flag_changed` | An awaiting flag is set or cleared |
+| `cycle.scoping_input_requested` | SCOPING node waiting for your input |
+| `cycle.charter_produced` | SCOPING completed, charter ready |
+| `graph.node_tagged` | A node was tagged (e.g. `#next-cycle`) |
+| `graph.node_untagged` | A node tag was removed |
 
 Example `node.started` event:
 
@@ -387,9 +433,14 @@ the system transitions to `idle` and you can immediately start a new cycle:
 $ sle start "Add IP-based rate limiting on top of the auth middleware"
 ```
 
-The second cycle's CONTEXT_ASSEMBLY reads the first cycle's `architecture.md`,
+The second cycle's SCOPING node reads the first cycle's `architecture.md`,
 `requirements.md`, `decisions.md` (last 3 entries), and `evaluation.md`.
 This is how context carries forward across cycles.
+
+`#next-cycle` tags persist across cycles — untouched tags remain for future
+use. Scope drafts are also reusable: if you deferred ideas in a previous
+scope draft, you can start a new cycle with `sle start --scope <same-draft-id>`
+and the Facilitator will use the deferred section as a starting point.
 
 ### How context carries forward
 
@@ -402,6 +453,12 @@ This is how context carries forward across cycles.
 | `plan.md` | Fresh each cycle — the Planner writes a new plan |
 | `test-plan.md` | Fresh each cycle |
 | Version snapshots | Locked in `map.yaml` under `versions[]` |
+| `CHANGELOG.md` | Cumulative — each cycle's SUMMARISE node appends entries |
+
+The `version_bump` for each cycle can be set explicitly via `--bump` or is
+inferred during SCOPING based on the scope's impact. Multiple sequential patch
+cycles accumulate into the CHANGELOG under a single version if no bump override
+is provided.
 
 ### When to start fresh vs continue
 
@@ -451,6 +508,14 @@ and then halts. Resume with `sle resume` after the issue resolves.
 
 **`docker_unavailable`** — EXEC requires Docker but the Docker daemon is not
 running. Start Docker and resume.
+
+**`scoping_timeout`** — The SCOPING node's max rounds were exceeded and the
+cycle halts. Increase `planning.yaml → scoping.max_rounds` or simplify the
+scope. Restart with `sle start` after adjusting.
+
+**`charter_validation_failed`** — SCOPING could not produce a valid cycle
+charter. Ensure your scope and purpose are clearly defined. For quick starts,
+provide a more specific goal string.
 
 ### Stuck in a state
 
