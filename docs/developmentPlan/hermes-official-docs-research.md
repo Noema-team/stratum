@@ -5,8 +5,8 @@
 **Purpose:** Findings from Hermes official docs. How to configure, customize, and operate Hermes for building SLE/Stratum autonomously.
 **Related docs:**
 - `./hermes-agent.md` — development plan and Hermes technical profile
-- `../ideas/hermes-agent-architecture.md` — architecture deep dive
-- `../ideas/browser-harness-architecture.md` — browser harness analysis
+- `../research/hermes-agent-architecture.md` — architecture deep dive
+- `../research/browser-harness-architecture.md` — browser harness analysis
 
 ---
 

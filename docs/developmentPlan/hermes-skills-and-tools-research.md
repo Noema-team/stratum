@@ -6,7 +6,7 @@
 **Related docs:**
 - `./hermes-agent.md` — development plan and Hermes technical profile
 - `./hermes-official-docs-research.md` — agent loop, prompt assembly, context engine, MCP, cron
-- `../ideas/hermes-agent-architecture.md` — architecture deep dive
+- `../research/hermes-agent-architecture.md` — architecture deep dive
 
 ---
 

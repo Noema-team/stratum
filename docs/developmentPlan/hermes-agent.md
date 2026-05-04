@@ -4,8 +4,8 @@
 **Date:** 2026-04-23
 **Purpose:** Assess Hermes agent as the autonomous builder for SLE/Stratum, define the build loop, and outline a phased implementation plan.
 **Related docs:**
-- `../ideas/hermes-agent-architecture.md` — Hermes architecture deep dive
-- `../ideas/browser-harness-architecture.md` — Browser harness analysis
+- `../research/hermes-agent-architecture.md` — Hermes architecture deep dive
+- `../research/browser-harness-architecture.md` — Browser harness analysis
 - `../specs/` — Primary build reference
 - `../overview/` — Architecture mental models
 

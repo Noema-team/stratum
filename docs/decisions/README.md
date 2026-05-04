@@ -31,3 +31,4 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-025-artifact-slice-references.md](ddr-025-artifact-slice-references.md) | Typed prefix: doc:{key} and node:{group}:{key} |
 | [ddr-026-sharding-approval-ui.md](ddr-026-sharding-approval-ui.md) | Sharding approval as separate step before CONFIRM |
 | [ddr-027-product-naming.md](ddr-027-product-naming.md) | Product renamed from SLE/sdk-orchestrator to **Stratum** |
+| [ddr-028-cycle-scoping-redesign.md](ddr-028-cycle-scoping-redesign.md) | Pre-cycle discussion + guided Phase 1, replaces INTENT/CONTEXT_ASSEMBLY/EXPLORE with SCOPING |
