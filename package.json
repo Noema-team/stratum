@@ -7,8 +7,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --import tsx --test tests/types.test.ts tests/runtime-map.test.ts",
-    "test:watch": "node --import tsx --watch --test tests/types.test.ts tests/runtime-map.test.ts",
+    "test": "node --import tsx --test tests/types.test.ts tests/runtime-map.test.ts tests/state-machine.test.ts",
+    "test:watch": "node --import tsx --watch --test tests/types.test.ts tests/runtime-map.test.ts tests/state-machine.test.ts",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
