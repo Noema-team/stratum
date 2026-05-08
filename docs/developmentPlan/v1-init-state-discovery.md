@@ -1,7 +1,31 @@
 # Vertical Slice 1: Init + State Machine + Discovery
 
-**Type:** implementation plan · **Status:** draft · **Updated:** 2026-05-08
+**Type:** implementation plan · **Status:** in progress · **Updated:** 2026-05-08
 **Slice:** v1 · **Prerequisite:** None (this is the first slice)
+
+## Implementation Progress
+
+| Phase | Component | Status | Commit |
+|-------|-----------|--------|--------|
+| A | Foundation Types | ✅ Complete | bf690b2 |
+| B | Runtime Map | ⏳ In Progress | -- |
+| C | State Machine | ⏳ Pending | -- |
+| D | Rule File Schemas | ⏳ Pending | -- |
+| E | Daemon Shell | ⏳ Pending | -- |
+| F | State API | ⏳ Pending | -- |
+| G | sle init | ⏳ Pending | -- |
+| H | Init API | ⏳ Pending | -- |
+| I | Facilitator LLM | ⏳ Pending | -- |
+| J | sle discover | ⏳ Pending | -- |
+| K | Discovery API | ⏳ Pending | -- |
+| L | Integration Test | ⏳ Pending | -- |
+
+**Phase A Summary:**
+- Implemented all 57 type definitions from types.md
+- Created 27 Zod enum validators
+- Comprehensive unit tests (17 tests) for all schemas
+- Full TypeScript compilation with no errors
+- Implementation location: `src/sdk-orchestrator/v2/src/types.ts`
 
 ---
 
