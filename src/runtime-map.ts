@@ -3,8 +3,8 @@ import { z } from 'zod';
 import {
   SystemStatusEnum,
   ProjectTypeEnum,
+  PlanningDepthEnum,
   ChatStateSchema,
-  CycleStateSchema,
   ArtifactEntrySchema,
   ValidationCategorySchema,
   ValidationGateSchema,
@@ -114,7 +114,7 @@ export const RuntimeMapSchema = z.object({
   }),
   project: z.object({
     name: z.string().min(1),
-    description: z.string().min(1),
+    description: z.string(),
     description_long: z.string().optional(),
     type: ProjectTypeEnum,
   }),
@@ -166,7 +166,26 @@ export const RuntimeMapSchema = z.object({
     open_questions_count: z.number().nonnegative(),
     blocking_questions_count: z.number().nonnegative(),
   }),
-  cycle: CycleStateSchema,
+  cycle: z.object({
+    number: z.number().nonnegative(),
+    iteration: z.number().nonnegative(),
+    revision: z.number().nonnegative(),
+    max_iterations: z.number().positive(),
+    planning_depth: PlanningDepthEnum,
+    started_at: z.string().datetime().optional(),
+    completed_at: z.string().datetime().optional(),
+    outcome: z.enum(['cycling', 'completed', 'halted']),
+    approval_gate: z.string().nullable(),
+    awaiting_scoping: z.boolean(),
+    awaiting_confirmation: z.boolean(),
+    awaiting_sharding_approval: z.boolean(),
+    last_summary: z
+      .object({
+        path: z.string(),
+        generated_at: z.string().datetime(),
+      })
+      .optional(),
+  }),
   chat: ChatStateSchema,
   artifacts: z.array(ArtifactEntrySchema),
   validation: z.object({
