@@ -1,0 +1,32 @@
+{
+  "name": "sdk-orchestrator",
+  "version": "0.1.0",
+  "description": "SLE (Sustained Learning Engine) - SDK orchestration system",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test 'tests/**/*.test.ts'",
+    "test:watch": "node --watch --test 'tests/**/*.test.ts'",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "^3.22.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/js-yaml": "^4.0.5",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "sle",
+    "orchestration",
+    "development-automation"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
