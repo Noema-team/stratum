@@ -8,7 +8,7 @@
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
 | A | Foundation Types | ✅ Complete | bf690b2 |
-| B | Runtime Map | ✅ Complete | 0801381 |
+| B | Runtime Map | ✅ Complete | 0801381, eb592f7 |
 | C | State Machine | ⏳ In Progress | -- |
 | D | Rule File Schemas | ⏳ Pending | -- |
 | E | Daemon Shell | ⏳ Pending | -- |
