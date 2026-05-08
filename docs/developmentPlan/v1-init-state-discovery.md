@@ -8,8 +8,8 @@
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
 | A | Foundation Types | ✅ Complete | bf690b2 |
-| B | Runtime Map | ⏳ In Progress | -- |
-| C | State Machine | ⏳ Pending | -- |
+| B | Runtime Map | ✅ Complete | 0801381 |
+| C | State Machine | ⏳ In Progress | -- |
 | D | Rule File Schemas | ⏳ Pending | -- |
 | E | Daemon Shell | ⏳ Pending | -- |
 | F | State API | ⏳ Pending | -- |
@@ -26,6 +26,17 @@
 - Comprehensive unit tests (17 tests) for all schemas
 - Full TypeScript compilation with no errors
 - Implementation location: `src/sdk-orchestrator/v2/src/types.ts`
+
+**Phase B Summary:**
+- Complete RuntimeMap schema with all required nested objects
+- Atomic write semantics: temp file → rename (crash-safe)
+- FileMutex for concurrent write serialization
+- RuntimeMapManager with read/write/update operations
+- createInitialMap factory for initialization
+- Orphaned temp file cleanup
+- Support for Git and Dolt remotes
+- 10 unit tests with mock filesystem
+- Implementation location: `src/sdk-orchestrator/v2/src/runtime-map.ts`
 
 ---
 
