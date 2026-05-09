@@ -1,8 +1,5 @@
-node_modules/
 dist/
-*.js
-*.d.ts
-*.d.ts.map
-*.js.map
+node_modules/
+*.tgz
 .env
 .env.local

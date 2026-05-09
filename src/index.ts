@@ -1,2 +1,2 @@
-// Re-export all types and schemas
-export * from './types';
+export * from './types.js';
+export * from './runtime-map.js';
