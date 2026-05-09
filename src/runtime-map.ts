@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import {
   SystemStatusEnum,
@@ -9,6 +10,8 @@ import {
   ValidationGateSchema,
   DiscoveryStatusEnum,
   DiscoveryModeEnum,
+  AgentLLMConfigSchema,
+  type AgentLLMConfig,
 } from './types.js';
 
 // ============================================================================
@@ -31,14 +34,16 @@ export interface RuntimeMap {
   };
   remotes: {
     code: { type: 'git'; url: string; branch: string };
-    issues: { type: 'git' | 'dolt'; url: string; branch?: string; local_dir?: string; bd_prefix?: string };
+    issues:
+      | { type: 'git'; url: string; branch: string }
+      | { type: 'dolt'; url: string; local_dir: string; bd_prefix: string };
     docs: { url: string; pending: boolean };
   };
   task_store: {
     type: 'beads' | 'local';
     path?: string;
   };
-  agents: Record<string, { active: boolean; node: string | null; llm: Record<string, unknown> }>;
+  agents: Record<string, { active: boolean; node: string | null; llm: AgentLLMConfig }>;
   discovery: {
     status: 'not_started' | 'in_progress' | 'complete';
     mode: 'full' | 'solo';
@@ -57,10 +62,10 @@ export interface RuntimeMap {
     revision: number;
     max_iterations: number;
     planning_depth: 'minimal' | 'standard' | 'deep' | 'research';
-    started_at?: string;
+    started_at: string;
     completed_at?: string;
     outcome: 'cycling' | 'completed' | 'halted';
-    approval_gate: string | null;
+    approval_gate: 'after_planning' | 'after_gate_pass' | null;
     awaiting_scoping: boolean;
     awaiting_confirmation: boolean;
     awaiting_sharding_approval: boolean;
@@ -85,8 +90,8 @@ export interface RuntimeMap {
   validation: {
     categories: Array<{
       name: string;
-      method: string;
-      status: string;
+      method: 'llm' | 'executable' | 'both';
+      status: 'passed' | 'failed' | 'pending' | 'skipped';
       last_run?: string;
       executable?: string;
       prompt_template?: string;
@@ -146,7 +151,7 @@ export const RuntimeMapSchema = z.object({
     z.object({
       active: z.boolean(),
       node: z.string().nullable(),
-      llm: z.record(z.string(), z.unknown()),
+      llm: AgentLLMConfigSchema,
     })
   ),
   discovery: z.object({
@@ -177,9 +182,22 @@ export const RuntimeMapSchema = z.object({
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 100;
 
-/**
- * Simple mutex for serializing concurrent writes
- */
+// ============================================================================
+// RuntimeMapManager
+// ============================================================================
+
+export interface RuntimeMapManager {
+  read(): Promise<RuntimeMap>;
+  write(map: RuntimeMap): Promise<void>;
+  update(fn: (map: RuntimeMap) => RuntimeMap): Promise<void>;
+  getVersion(): string;
+}
+
+export interface RuntimeMapManagerOptions {
+  mapPath: string;
+  fsModule?: typeof import('fs').promises;
+}
+
 class FileMutex {
   private locked = false;
   private queue: Array<() => void> = [];
@@ -208,36 +226,15 @@ class FileMutex {
   }
 }
 
-const fileMutex = new FileMutex();
-
-// ============================================================================
-// RuntimeMapManager
-// ============================================================================
-
-export interface RuntimeMapManager {
-  read(): Promise<RuntimeMap>;
-  write(map: RuntimeMap): Promise<void>;
-  update(fn: (map: RuntimeMap) => RuntimeMap): Promise<void>;
-  getVersion(): string;
-}
-
-export interface RuntimeMapManagerOptions {
-  mapPath: string;
-  fsModule?: typeof import('fs').promises;
-  pathModule?: typeof import('path');
-}
-
-/**
- * Manages atomic read/write of RuntimeMap with Zod validation
- */
 export class RuntimeMapManagerImpl implements RuntimeMapManager {
   private mapPath: string;
   private fs: typeof import('fs').promises;
   private lastVersion = '';
+  private mutex = new FileMutex();
+  private yamlModule: typeof import('js-yaml') | null = null;
 
   constructor(options: RuntimeMapManagerOptions) {
     this.mapPath = options.mapPath;
-    // Dynamic import for testing compatibility
     this.fs = options.fsModule || require('fs').promises;
   }
 
@@ -255,36 +252,53 @@ export class RuntimeMapManagerImpl implements RuntimeMapManager {
   }
 
   async write(map: RuntimeMap): Promise<void> {
-    const release = await fileMutex.acquire();
+    const release = await this.mutex.acquire();
     try {
-      // Validate before writing
-      RuntimeMapSchema.parse(map);
+      const mapCopy = JSON.parse(JSON.stringify(map)) as RuntimeMap;
+      mapCopy.meta.updated_at = new Date().toISOString();
+      RuntimeMapSchema.parse(mapCopy);
 
-      // Update timestamps
-      map.meta.updated_at = new Date().toISOString();
-
-      // Write atomically: write to temp, then rename
       const tempPath = `${this.mapPath}.tmp`;
-      const yaml = await this.stringifyYaml(map);
+      const yaml = await this.stringifyYaml(mapCopy);
 
       await this.writeFile(tempPath, yaml);
       await this.renameFile(tempPath, this.mapPath);
+      this.lastVersion = mapCopy.meta.version_id;
     } finally {
       release();
     }
   }
 
   async update(fn: (map: RuntimeMap) => RuntimeMap): Promise<void> {
-    const current = await this.read();
-    const updated = fn(current);
-    await this.write(updated);
+    const release = await this.mutex.acquire();
+    try {
+      const current = await this.readInternal();
+      const updated = fn(current);
+      const mapCopy = JSON.parse(JSON.stringify(updated)) as RuntimeMap;
+      mapCopy.meta.updated_at = new Date().toISOString();
+      RuntimeMapSchema.parse(mapCopy);
+
+      const tempPath = `${this.mapPath}.tmp`;
+      const yaml = await this.stringifyYaml(mapCopy);
+
+      await this.writeFile(tempPath, yaml);
+      await this.renameFile(tempPath, this.mapPath);
+      this.lastVersion = mapCopy.meta.version_id;
+    } finally {
+      release();
+    }
   }
 
   getVersion(): string {
     return this.lastVersion;
   }
 
-  // Internal helper methods (can be overridden for testing)
+  private async readInternal(): Promise<RuntimeMap> {
+    const content = await this.readFile(this.mapPath);
+    const yaml = await this.parseYaml(content);
+    return RuntimeMapSchema.parse(yaml);
+  }
+
   private async readFile(filePath: string): Promise<string> {
     let lastError: Error | null = null;
     for (let i = 0; i < MAX_RETRIES; i++) {
@@ -310,15 +324,21 @@ export class RuntimeMapManagerImpl implements RuntimeMapManager {
     await this.fs.rename(oldPath, newPath);
   }
 
+  private async getYaml(): Promise<typeof import('js-yaml')> {
+    if (!this.yamlModule) {
+      this.yamlModule = await import('js-yaml');
+    }
+    return this.yamlModule;
+  }
+
   private async parseYaml(content: string): Promise<unknown> {
-    // Dynamic require for YAML parsing - allows for different parsers
-    const yaml = await import('js-yaml').then((m) => m.default);
-    return yaml.load(content);
+    const yaml = await this.getYaml();
+    return yaml.default.load(content);
   }
 
   private async stringifyYaml(obj: unknown): Promise<string> {
-    const yaml = await import('js-yaml').then((m) => m.default);
-    return yaml.dump(obj, { indent: 2, lineWidth: -1 }) || '';
+    const yaml = await this.getYaml();
+    return yaml.default.dump(obj, { indent: 2, lineWidth: -1 }) || '';
   }
 }
 
@@ -333,12 +353,22 @@ export interface InitialMapOptions {
   issuesRemote: { type: 'git' | 'dolt'; url: string; branch?: string; local_dir?: string; bd_prefix?: string };
   docsRemote: { url: string; pending: boolean };
   taskStore: { type: 'beads' | 'local'; path?: string };
-  agents: Record<string, { active: boolean; node: string | null; llm: Record<string, unknown> }>;
+  agents: Record<string, { active: boolean; node: string | null; llm: AgentLLMConfig }>;
 }
 
 export function createInitialMap(options: InitialMapOptions): RuntimeMap {
   const now = new Date().toISOString();
-  const versionId = generateUUID();
+  const versionId = randomUUID();
+
+  const issues =
+    options.issuesRemote.type === 'git'
+      ? { type: 'git' as const, url: options.issuesRemote.url, branch: options.issuesRemote.branch ?? 'main' }
+      : {
+          type: 'dolt' as const,
+          url: options.issuesRemote.url,
+          local_dir: options.issuesRemote.local_dir ?? '',
+          bd_prefix: options.issuesRemote.bd_prefix ?? '',
+        };
 
   return {
     meta: {
@@ -350,7 +380,7 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
     },
     project: {
       name: options.projectName,
-      description: '',
+      description: `Initialized ${options.projectName} project`,
       type: options.projectType,
     },
     remotes: {
@@ -359,15 +389,7 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
         url: options.codeRemote.url,
         branch: options.codeRemote.branch,
       },
-      issues: {
-        type: options.issuesRemote.type,
-        url: options.issuesRemote.url,
-        ...(options.issuesRemote.type === 'git' && { branch: options.issuesRemote.branch }),
-        ...(options.issuesRemote.type === 'dolt' && {
-          local_dir: options.issuesRemote.local_dir,
-          bd_prefix: options.issuesRemote.bd_prefix,
-        }),
-      } as any,
+      issues,
       docs: {
         url: options.docsRemote.url,
         pending: options.docsRemote.pending,
@@ -392,6 +414,7 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
       revision: 0,
       max_iterations: 5,
       planning_depth: 'standard',
+      started_at: now,
       outcome: 'cycling',
       approval_gate: null,
       awaiting_scoping: false,
@@ -417,20 +440,6 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
 // Utility Functions
 // ============================================================================
 
-/**
- * Generate a UUID v4 - simple implementation
- */
-function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-/**
- * Clean up orphaned temp files on startup
- */
 export async function cleanupOrphanedTempFiles(
   mapPath: string,
   fs: typeof import('fs').promises

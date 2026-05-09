@@ -3,7 +3,6 @@ import {
   RuntimeMap,
   RuntimeMapSchema,
   RuntimeMapManagerImpl,
-  RuntimeMapManagerOptions,
   createInitialMap,
   cleanupOrphanedTempFiles,
 } from '../src/runtime-map.js';
@@ -48,10 +47,6 @@ class MockFs {
     return this.files.get(path);
   }
 
-  getFiles(): string[] {
-    return Array.from(this.files.keys());
-  }
-
   getRenames(): Array<[string, string]> {
     return this.renames;
   }
@@ -62,12 +57,8 @@ class MockFs {
   }
 }
 
-// ============================================================================
-// RuntimeMapSchema Tests
-// ============================================================================
-
-export function testRuntimeMapSchemaValid() {
-  const validMap: RuntimeMap = {
+function makeValidMap(): RuntimeMap {
+  return {
     meta: {
       status: 'idle',
       cycle: 0,
@@ -103,7 +94,7 @@ export function testRuntimeMapSchemaValid() {
       designer: {
         active: true,
         node: 'design',
-        llm: { provider: 'openai_compatible', model: 'gpt-4o' },
+        llm: { provider: 'openai_compatible', api_key_env: 'OPENAI_API_KEY', model: 'gpt-4o' },
       },
     },
     discovery: {
@@ -123,6 +114,7 @@ export function testRuntimeMapSchemaValid() {
       revision: 0,
       max_iterations: 5,
       planning_depth: 'standard',
+      started_at: '2026-05-08T12:00:00Z',
       outcome: 'cycling',
       approval_gate: null,
       awaiting_scoping: false,
@@ -142,29 +134,45 @@ export function testRuntimeMapSchemaValid() {
       },
     },
   };
-
-  const result = RuntimeMapSchema.safeParse(validMap);
-  assert(result.success, 'Valid RuntimeMap should pass validation');
 }
 
-export function testRuntimeMapSchemaMissingField() {
+function makeInitialMapOptions() {
+  return {
+    projectName: 'test-project',
+    projectType: 'api' as const,
+    codeRemote: { url: 'https://github.com/test/repo.git', branch: 'main' },
+    issuesRemote: { type: 'git' as const, url: 'https://github.com/test/issues', branch: 'main' },
+    docsRemote: { url: 'https://github.com/test/docs.git', pending: false },
+    taskStore: { type: 'local' as const },
+    agents: {} as Record<string, { active: boolean; node: string | null; llm: { provider: string; api_key_env: string; model: string } }>,
+  };
+}
+
+// ============================================================================
+// RuntimeMapSchema Tests
+// ============================================================================
+
+async function testRuntimeMapSchemaValid() {
+  const result = RuntimeMapSchema.safeParse(makeValidMap());
+  assert(result.success, `Valid RuntimeMap should pass validation: ${result.success ? '' : JSON.stringify((result as any).error?.issues)}`);
+}
+
+async function testRuntimeMapSchemaMissingField() {
   const invalidMap = {
     meta: {
       status: 'idle',
       cycle: 0,
-      // Missing version_id
       initialized_at: '2026-05-08T12:00:00Z',
       updated_at: '2026-05-08T12:00:00Z',
     },
-    // ... incomplete
   };
 
   const result = RuntimeMapSchema.safeParse(invalidMap);
   assert(!result.success, 'RuntimeMap with missing required field should fail');
-  assert(result.error?.issues.length > 0);
+  assert(result.error?.issues.length! > 0);
 }
 
-export function testRuntimeMapSchemaInvalidStatus() {
+async function testRuntimeMapSchemaInvalidStatus() {
   const invalidMap = {
     meta: {
       status: 'invalid_status',
@@ -173,244 +181,288 @@ export function testRuntimeMapSchemaInvalidStatus() {
       initialized_at: '2026-05-08T12:00:00Z',
       updated_at: '2026-05-08T12:00:00Z',
     },
-    // ... rest would fail too
   };
 
   const result = RuntimeMapSchema.safeParse(invalidMap);
   assert(!result.success, 'RuntimeMap with invalid status should fail');
 }
 
+async function testRuntimeMapSchemaCorruptedYaml() {
+  const result = RuntimeMapSchema.safeParse({ garbage: true });
+  assert(!result.success, 'Corrupted data should fail validation');
+  const path = result.error?.issues[0]?.path?.join('.') ?? '';
+  assert(path.length > 0, 'Error should include field path');
+}
+
 // ============================================================================
 // createInitialMap Tests
 // ============================================================================
 
-export function testCreateInitialMap() {
-  const map = createInitialMap({
-    projectName: 'my-project',
-    projectType: 'api',
-    codeRemote: {
-      url: 'https://github.com/org/repo.git',
-      branch: 'main',
-    },
-    issuesRemote: {
-      type: 'git',
-      url: 'https://github.com/org/issues',
-      branch: 'main',
-    },
-    docsRemote: {
-      url: 'https://github.com/org/docs.git',
-      pending: false,
-    },
-    taskStore: { type: 'local' },
-    agents: {},
-  });
+async function testCreateInitialMap() {
+  const map = createInitialMap(makeInitialMapOptions());
 
-  assert.strictEqual(map.project.name, 'my-project');
+  assert.strictEqual(map.project.name, 'test-project');
   assert.strictEqual(map.meta.status, 'idle');
   assert.strictEqual(map.discovery.status, 'not_started');
   assert(map.meta.version_id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i));
 }
 
-export function testCreateInitialMapWithDoltRemote() {
+async function testCreateInitialMapWithDoltRemote() {
   const map = createInitialMap({
-    projectName: 'my-project',
-    projectType: 'api',
-    codeRemote: {
-      url: 'https://github.com/org/repo.git',
-      branch: 'main',
-    },
+    ...makeInitialMapOptions(),
     issuesRemote: {
       type: 'dolt',
       url: 'dolt://doltdb.com/org/tasks',
       local_dir: '.beads',
       bd_prefix: 'BDS',
     },
-    docsRemote: {
-      url: 'https://github.com/org/docs.git',
-      pending: false,
-    },
     taskStore: { type: 'beads', path: '.beads/tasks' },
-    agents: {},
   });
 
   assert.strictEqual(map.remotes.issues.type, 'dolt');
   assert.strictEqual(map.task_store.type, 'beads');
 }
 
+async function testCreateInitialMapPassesSchema() {
+  const map = createInitialMap(makeInitialMapOptions());
+  const result = RuntimeMapSchema.safeParse(map);
+  assert(result.success, `createInitialMap() output should pass schema validation: ${result.success ? '' : JSON.stringify((result as any).error?.issues)}`);
+}
+
 // ============================================================================
 // RuntimeMapManager Tests
 // ============================================================================
 
-export function testRuntimeMapManagerWrite() {
+async function testRuntimeMapManagerWriteAndReadRoundTrip() {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
     fsModule: mockFs as any,
   });
 
-  const map = createInitialMap({
-    projectName: 'test-project',
-    projectType: 'api',
-    codeRemote: { url: 'https://github.com/test/repo.git', branch: 'main' },
-    issuesRemote: { type: 'git', url: 'https://github.com/test/issues', branch: 'main' },
-    docsRemote: { url: 'https://github.com/test/docs.git', pending: false },
-    taskStore: { type: 'local' },
-    agents: {},
-  });
+  const map = createInitialMap(makeInitialMapOptions());
+  await manager.write(map);
 
-  manager.write(map).then(() => {
-    // Check that file was written to actual path (not temp)
-    const content = mockFs.getFileContent('.sle/map.yaml');
-    assert(content, 'Map should be written to actual path');
-    assert(content!.includes('test-project'));
-    assert(content!.includes('api'));
-  });
+  const content = mockFs.getFileContent('.sle/map.yaml');
+  assert(content, 'Map should be written to actual path');
+  assert(content!.includes('test-project'));
+
+  const readBack = await manager.read();
+  assert.strictEqual(readBack.project.name, 'test-project');
+  assert.strictEqual(readBack.meta.status, 'idle');
 }
 
-export function testRuntimeMapManagerAtomicWrite() {
+async function testRuntimeMapManagerAtomicWrite() {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
     fsModule: mockFs as any,
   });
 
-  const map = createInitialMap({
-    projectName: 'test-project',
-    projectType: 'api',
-    codeRemote: { url: 'https://github.com/test/repo.git', branch: 'main' },
-    issuesRemote: { type: 'git', url: 'https://github.com/test/issues', branch: 'main' },
-    docsRemote: { url: 'https://github.com/test/docs.git', pending: false },
-    taskStore: { type: 'local' },
-    agents: {},
-  });
+  const map = createInitialMap(makeInitialMapOptions());
+  await manager.write(map);
 
-  manager.write(map).then(() => {
-    // Check that rename occurred (temp -> actual)
-    const renames = mockFs.getRenames();
-    assert(renames.length > 0, 'Should have called rename');
-    const [oldPath, newPath] = renames[0];
-    assert(oldPath.endsWith('.tmp'), 'Should write to temp file first');
-    assert.strictEqual(newPath, '.sle/map.yaml', 'Should rename to actual path');
-  });
+  const renames = mockFs.getRenames();
+  assert(renames.length > 0, 'Should have called rename');
+  const [oldPath, newPath] = renames[0];
+  assert(oldPath.endsWith('.tmp'), 'Should write to temp file first');
+  assert.strictEqual(newPath, '.sle/map.yaml', 'Should rename to actual path');
 }
 
-export function testRuntimeMapManagerValidationFails() {
+async function testRuntimeMapManagerWriteDoesNotMutateInput() {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
     fsModule: mockFs as any,
   });
 
-  const invalidMap = {
-    meta: {
-      status: 'invalid',
-    },
-    // Very incomplete
-  };
+  const map = createInitialMap(makeInitialMapOptions());
+  const originalUpdatedAt = map.meta.updated_at;
+  await manager.write(map);
 
-  manager.write(invalidMap as any).catch((error) => {
-    assert(error instanceof Error);
-    assert(error.message.includes('validation') || error.message.includes('Failed'));
-  });
+  assert.strictEqual(map.meta.updated_at, originalUpdatedAt, 'write() should not mutate the input object');
 }
 
-export function testRuntimeMapManagerUpdate() {
+async function testRuntimeMapManagerValidationFails() {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
     fsModule: mockFs as any,
   });
 
-  const initialMap = createInitialMap({
-    projectName: 'test-project',
-    projectType: 'api',
-    codeRemote: { url: 'https://github.com/test/repo.git', branch: 'main' },
-    issuesRemote: { type: 'git', url: 'https://github.com/test/issues', branch: 'main' },
-    docsRemote: { url: 'https://github.com/test/docs.git', pending: false },
-    taskStore: { type: 'local' },
-    agents: {},
+  const invalidMap = { meta: { status: 'invalid' } };
+  await assert.rejects(
+    async () => manager.write(invalidMap as any),
+    (error: Error) => {
+      assert(error instanceof Error);
+      return true;
+    }
+  );
+
+  assert(!mockFs.getFileContent('.sle/map.yaml'), 'No file should be written on validation failure');
+  assert(!mockFs.getFileContent('.sle/map.yaml.tmp'), 'No temp file should remain on validation failure');
+}
+
+async function testRuntimeMapManagerUpdate() {
+  const mockFs = new MockFs();
+  const manager = new RuntimeMapManagerImpl({
+    mapPath: '.sle/map.yaml',
+    fsModule: mockFs as any,
   });
 
-  // First write
-  manager.write(initialMap).then(() => {
-    // Then update
-    manager.update((map) => {
-      map.meta.cycle = 5;
-      map.meta.status = 'discovering';
-      return map;
-    });
+  const initialMap = createInitialMap(makeInitialMapOptions());
+  await manager.write(initialMap);
+
+  await manager.update((map) => {
+    map.meta.cycle = 5;
+    map.meta.status = 'discovering';
+    return map;
   });
+
+  const readBack = await manager.read();
+  assert.strictEqual(readBack.meta.cycle, 5);
+  assert.strictEqual(readBack.meta.status, 'discovering');
+}
+
+async function testRuntimeMapManagerConcurrentWrites() {
+  const mockFs = new MockFs();
+  const manager = new RuntimeMapManagerImpl({
+    mapPath: '.sle/map.yaml',
+    fsModule: mockFs as any,
+  });
+
+  const map1 = createInitialMap(makeInitialMapOptions());
+  await manager.write(map1);
+
+  const executed: number[] = [];
+  const updates = [
+    manager.update((m) => { executed.push(1); m.meta.cycle = 1; return m; }),
+    manager.update((m) => { executed.push(2); m.meta.cycle = 2; return m; }),
+    manager.update((m) => { executed.push(3); m.meta.cycle = 3; return m; }),
+  ];
+
+  await Promise.all(updates);
+
+  assert.strictEqual(executed.length, 3, 'All 3 updates must execute');
+  const readBack = await manager.read();
+  assert([1, 2, 3].includes(readBack.meta.cycle), 'Concurrent updates should be serialized (one of the values)');
+}
+
+async function testRuntimeMapManagerGetVersion() {
+  const mockFs = new MockFs();
+  const manager = new RuntimeMapManagerImpl({
+    mapPath: '.sle/map.yaml',
+    fsModule: mockFs as any,
+  });
+
+  assert.strictEqual(manager.getVersion(), '', 'Version should be empty before first write');
+
+  const map = createInitialMap(makeInitialMapOptions());
+  await manager.write(map);
+
+  assert.strictEqual(manager.getVersion(), map.meta.version_id, 'Version should match after write');
 }
 
 // ============================================================================
 // Cleanup Tests
 // ============================================================================
 
-export function testCleanupOrphanedTempFiles() {
+async function testCleanupOrphanedTempFiles() {
   const mockFs = new MockFs();
 
-  // Create an orphaned temp file
-  mockFs.writeFile('.sle/map.yaml.tmp', 'orphaned content').then(() => {
-    assert(mockFs.getFileContent('.sle/map.yaml.tmp'), 'Temp file should exist');
+  await mockFs.writeFile('.sle/map.yaml.tmp', 'orphaned content');
+  assert(mockFs.getFileContent('.sle/map.yaml.tmp'), 'Temp file should exist');
 
-    // Clean it up
-    cleanupOrphanedTempFiles('.sle/map.yaml', mockFs as any).then(() => {
-      const remaining = mockFs.getFileContent('.sle/map.yaml.tmp');
-      assert(!remaining, 'Orphaned temp file should be deleted');
-    });
-  });
+  await cleanupOrphanedTempFiles('.sle/map.yaml', mockFs as any);
+  assert(!mockFs.getFileContent('.sle/map.yaml.tmp'), 'Orphaned temp file should be deleted');
 }
 
-export function testCleanupNoTempFile() {
+async function testCleanupNoTempFile() {
   const mockFs = new MockFs();
+  let threw = false;
+  try {
+    await cleanupOrphanedTempFiles('.sle/map.yaml', mockFs as any);
+  } catch {
+    threw = true;
+  }
+  assert(!threw, 'Should handle missing temp file without throwing');
+}
 
-  // No temp file exists - should not throw
-  cleanupOrphanedTempFiles('.sle/map.yaml', mockFs as any).then(() => {
-    assert(true, 'Should handle missing temp file gracefully');
+async function testManagerReadNonexistentFile() {
+  const mockFs = new MockFs();
+  const manager = new RuntimeMapManagerImpl({
+    mapPath: '.sle/map.yaml',
+    fsModule: mockFs as any,
   });
+
+  await assert.rejects(
+    async () => manager.read(),
+    (error: Error) => {
+      assert(error instanceof Error);
+      assert(error.message.includes('Failed to read RuntimeMap'), `Error message should be descriptive: ${error.message}`);
+      return true;
+    }
+  );
+}
+
+async function testManagerReadCorruptedYaml() {
+  const mockFs = new MockFs();
+  await mockFs.writeFile('.sle/map.yaml', 'meta:\n  status: not_a_real_status\n  garbage: true\n');
+
+  const manager = new RuntimeMapManagerImpl({
+    mapPath: '.sle/map.yaml',
+    fsModule: mockFs as any,
+  });
+
+  await assert.rejects(
+    async () => manager.read(),
+    (error: Error) => {
+      assert(error instanceof Error);
+      assert(error.message.includes('Failed to read RuntimeMap'), `Error message should be descriptive: ${error.message}`);
+      return true;
+    }
+  );
 }
 
 // ============================================================================
 // Run All Tests
 // ============================================================================
 
-export function runAllTests() {
+async function runAllTests() {
   console.log('Running Phase B (Runtime Map) tests...\n');
 
-  console.log('✓ Testing RuntimeMapSchema with valid map');
-  testRuntimeMapSchemaValid();
+  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
+    { name: 'RuntimeMapSchema valid', fn: testRuntimeMapSchemaValid },
+    { name: 'RuntimeMapSchema missing field', fn: testRuntimeMapSchemaMissingField },
+    { name: 'RuntimeMapSchema invalid status', fn: testRuntimeMapSchemaInvalidStatus },
+    { name: 'RuntimeMapSchema corrupted data', fn: testRuntimeMapSchemaCorruptedYaml },
+    { name: 'createInitialMap', fn: testCreateInitialMap },
+    { name: 'createInitialMap with Dolt remote', fn: testCreateInitialMapWithDoltRemote },
+    { name: 'createInitialMap passes schema', fn: testCreateInitialMapPassesSchema },
+    { name: 'Manager write + read round-trip', fn: testRuntimeMapManagerWriteAndReadRoundTrip },
+    { name: 'Manager atomic write', fn: testRuntimeMapManagerAtomicWrite },
+    { name: 'Manager write does not mutate input', fn: testRuntimeMapManagerWriteDoesNotMutateInput },
+    { name: 'Manager validation fails', fn: testRuntimeMapManagerValidationFails },
+    { name: 'Manager update', fn: testRuntimeMapManagerUpdate },
+    { name: 'Manager concurrent writes', fn: testRuntimeMapManagerConcurrentWrites },
+    { name: 'Manager getVersion', fn: testRuntimeMapManagerGetVersion },
+    { name: 'Manager read nonexistent file', fn: testManagerReadNonexistentFile },
+    { name: 'Manager read corrupted YAML', fn: testManagerReadCorruptedYaml },
+    { name: 'Cleanup orphaned temp files', fn: testCleanupOrphanedTempFiles },
+    { name: 'Cleanup no temp file', fn: testCleanupNoTempFile },
+  ];
 
-  console.log('✓ Testing RuntimeMapSchema with missing field');
-  testRuntimeMapSchemaMissingField();
+  for (const test of tests) {
+    try {
+      await test.fn();
+      console.log(`  ✓ ${test.name}`);
+    } catch (error) {
+      console.error(`  ✗ ${test.name}`);
+      throw error;
+    }
+  }
 
-  console.log('✓ Testing RuntimeMapSchema with invalid status');
-  testRuntimeMapSchemaInvalidStatus();
-
-  console.log('✓ Testing createInitialMap');
-  testCreateInitialMap();
-
-  console.log('✓ Testing createInitialMap with Dolt remote');
-  testCreateInitialMapWithDoltRemote();
-
-  console.log('✓ Testing RuntimeMapManager write');
-  testRuntimeMapManagerWrite();
-
-  console.log('✓ Testing RuntimeMapManager atomic write');
-  testRuntimeMapManagerAtomicWrite();
-
-  console.log('✓ Testing RuntimeMapManager validation fails');
-  testRuntimeMapManagerValidationFails();
-
-  console.log('✓ Testing RuntimeMapManager update');
-  testRuntimeMapManagerUpdate();
-
-  console.log('✓ Testing cleanup orphaned temp files');
-  testCleanupOrphanedTempFiles();
-
-  console.log('✓ Testing cleanup when no temp file exists');
-  testCleanupNoTempFile();
-
-  console.log('\n✅ All Phase B tests passed!');
+  console.log(`\n✅ All ${tests.length} Phase B tests passed!`);
 }
 
 runAllTests();
