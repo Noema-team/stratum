@@ -162,7 +162,7 @@ export const AgentRoleConfigSchema = z.object({
   active: z.boolean(),
   node: z.string().nullable(),
   llm: AgentLLMConfigSchema,
-  temperature: z.number().min(0).max(2),
+  temperature: z.number(),
   max_tokens: z.number().positive(),
   system_prompt: z.string(),
   artifact_slice: z.array(ArtifactRefSchema),
@@ -186,16 +186,19 @@ export interface AgentsConfig {
   agents: Record<string, AgentRoleConfig>;
 }
 
-export const AgentsConfigSchema = z.object({
+export const AgentsSchema = z.object({
   defaults: z.object({
     llm: AgentLLMConfigSchema,
-    temperature: z.number().min(0).max(2),
+    temperature: z.number(),
     max_tokens: z.number().positive(),
     system_prompt_root: z.string(),
   }),
   providers: z.record(z.string(), AgentLLMConfigSchema),
   agents: z.record(z.string(), AgentRoleConfigSchema),
-});
+}).refine(
+  (data) => 'planner' in data.agents,
+  { message: 'planner agent role is required' },
+);
 
 export interface AgentInput {
   role: AgentRole;
@@ -403,8 +406,8 @@ export interface ArtifactsConfig {
   generated_outputs: GeneratedOutputRule[];
 }
 
-export const ArtifactsConfigSchema = z.object({
-  artifacts: z.array(ArtifactRuleSchema),
+export const ArtifactsSchema = z.object({
+  artifacts: z.array(ArtifactRuleSchema).min(1),
   generated_outputs: z.array(GeneratedOutputRuleSchema),
 });
 
@@ -501,7 +504,19 @@ export const ValidationRuleCategorySchema = z.object({
     feed_to: z.enum(['planner', 'evaluator']),
     include: z.array(z.string()),
   }),
-});
+}).refine(
+  (data) => {
+    if (data.method === 'executable' || data.method === 'both') return !!data.executable;
+    return true;
+  },
+  { message: 'executable config required when method is executable or both', path: ['executable'] },
+).refine(
+  (data) => {
+    if (data.method === 'llm' || data.method === 'both') return !!data.llm;
+    return true;
+  },
+  { message: 'llm config required when method is llm or both', path: ['llm'] },
+);
 
 export interface StaticAnalysisCheck {
   command: string;
@@ -545,10 +560,10 @@ export interface ValidationConfig {
   categories: ValidationRuleCategory[];
 }
 
-export const ValidationConfigSchema = z.object({
+export const ValidationSchema = z.object({
   static_analysis: StaticAnalysisConfigSchema,
   container: ContainerConfigSchema,
-  categories: z.array(ValidationRuleCategorySchema),
+  categories: z.array(ValidationRuleCategorySchema).min(1),
 });
 
 export interface CategoryResult {
@@ -775,20 +790,25 @@ export interface PlanningConfig {
   artifact_slice_size: number;
   summary_max_tokens: number;
   system_prompt_max_tokens: number;
-  reasoning_passes: number;
-  critic_enabled: boolean;
-  on_depth_change?: string;
+  reasoning_passes: Record<PlanningDepth, number>;
+  critic_enabled: boolean | null;
+  on_depth_change: 're_plan' | 'continue';
 }
 
-export const PlanningConfigSchema = z.object({
+export const PlanningSchema = z.object({
   depth: PlanningDepthEnum,
-  max_iterations: z.number().positive(),
-  artifact_slice_size: z.number().positive(),
-  summary_max_tokens: z.number().positive(),
-  system_prompt_max_tokens: z.number().positive(),
-  reasoning_passes: z.number().positive(),
-  critic_enabled: z.boolean(),
-  on_depth_change: z.string().optional(),
+  max_iterations: z.number().int().min(1).max(50),
+  artifact_slice_size: z.number().int().min(500).max(10000),
+  summary_max_tokens: z.number().int().min(100).max(2000),
+  system_prompt_max_tokens: z.number().int().min(100).max(2000),
+  reasoning_passes: z.object({
+    minimal: z.number().int().min(1),
+    standard: z.number().int().min(1),
+    deep: z.number().int().min(1),
+    research: z.number().int().min(1),
+  }),
+  critic_enabled: z.boolean().nullable(),
+  on_depth_change: z.enum(['re_plan', 'continue']),
 });
 
 export interface ExitConfig {
@@ -797,34 +817,52 @@ export interface ExitConfig {
     requirements_met: boolean;
   };
   on_cap_hit: CapBehavior;
-  halt_behavior: ErrorBehavior;
-  on_error: ErrorBehavior;
+  halt_behavior: {
+    write_partial_report: boolean;
+    notify_user: boolean;
+    block_version_snapshot: boolean;
+    preserve_decisions: boolean;
+  };
+  on_error: {
+    behavior: ErrorBehavior;
+    write_error_report: boolean;
+    block_version_snapshot: boolean;
+  };
 }
 
-export const ExitConfigSchema = z.object({
+export const ExitSchema = z.object({
   conditions: z.object({
     all_categories_pass: z.boolean(),
     requirements_met: z.boolean(),
   }),
   on_cap_hit: CapBehaviorEnum,
-  halt_behavior: ErrorBehaviorEnum,
-  on_error: ErrorBehaviorEnum,
+  halt_behavior: z.object({
+    write_partial_report: z.boolean(),
+    notify_user: z.boolean(),
+    block_version_snapshot: z.boolean(),
+    preserve_decisions: z.boolean(),
+  }),
+  on_error: z.object({
+    behavior: ErrorBehaviorEnum,
+    write_error_report: z.boolean(),
+    block_version_snapshot: z.boolean(),
+  }),
 });
 
 export interface UserValidationConfig {
   approval_required: boolean;
-  review_at: string[];
-  prompts?: { [key: string]: string };
+  review_at: ('after_planning' | 'after_gate_pass')[];
+  prompts: Record<string, string>;
   timeout_minutes: number;
   on_timeout: TimeoutAction;
   auto_approve_on_rerun: boolean;
 }
 
-export const UserValidationConfigSchema = z.object({
+export const UserValidationSchema = z.object({
   approval_required: z.boolean(),
-  review_at: z.array(z.string()),
-  prompts: z.record(z.string(), z.string()).optional(),
-  timeout_minutes: z.number().positive(),
+  review_at: z.array(z.enum(['after_planning', 'after_gate_pass'])).min(1),
+  prompts: z.record(z.string(), z.string()),
+  timeout_minutes: z.number().int().min(1),
   on_timeout: TimeoutActionEnum,
   auto_approve_on_rerun: z.boolean(),
 });
@@ -840,14 +878,14 @@ export interface SummaryConfig {
   output_path: string;
 }
 
-export const SummaryConfigSchema = z.object({
+export const SummarySchema = z.object({
   format: SummaryFormatEnum,
-  sections: z.array(z.string()),
+  sections: z.array(z.string()).min(1),
   test_command_format: TestCommandFormatEnum,
   show_confidence_scores: z.boolean(),
   show_failed_test_ids: z.boolean(),
-  what_was_built_max_tokens: z.number().positive(),
-  next_steps_max_count: z.number().positive(),
+  what_was_built_max_tokens: z.number().int().min(50).max(2000),
+  next_steps_max_count: z.number().int().min(0).max(20),
   output_path: z.string(),
 });
 
@@ -862,13 +900,13 @@ export interface RuntimeConfig {
 }
 
 export const RuntimeConfigSchema = z.object({
-  planning: PlanningConfigSchema,
-  validation: ValidationConfigSchema,
-  artifacts: ArtifactsConfigSchema,
-  exit: ExitConfigSchema,
-  user_validation: UserValidationConfigSchema,
-  summary: SummaryConfigSchema,
-  agents: AgentsConfigSchema,
+  planning: PlanningSchema,
+  validation: ValidationSchema,
+  artifacts: ArtifactsSchema,
+  exit: ExitSchema,
+  user_validation: UserValidationSchema,
+  summary: SummarySchema,
+  agents: AgentsSchema,
 });
 
 // ============================================================================
@@ -959,7 +997,7 @@ export const InitOptionsSchema = z.object({
 
 export interface OpenQuestion {
   title: string;
-  status: 'open' | 'resolved' | 'deferred';
+  status: 'open' | 'resolved';
   blocking: OpenQuestionBlocking;
   owner?: string;
   resolve_by?: string;
@@ -968,7 +1006,7 @@ export interface OpenQuestion {
 
 export const OpenQuestionSchema = z.object({
   title: z.string().min(1),
-  status: z.enum(['open', 'resolved', 'deferred']),
+  status: z.enum(['open', 'resolved']),
   blocking: OpenQuestionBlockingSchema,
   owner: z.string().optional(),
   resolve_by: z.string().optional(),
@@ -1067,32 +1105,6 @@ export const AgentMdMapRefSchema = z.object({
 // 11 — Task Store
 // ============================================================================
 
-export interface SLETask {
-  id: string;
-  title: string;
-  description: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  dependencies: string[];
-  context_declarations?: string[];
-  created_at: string;
-  updated_at: string;
-  stale?: boolean;
-}
-
-export const SLETaskSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string().min(1),
-  description: z.string(),
-  status: z.enum(['pending', 'in_progress', 'completed', 'blocked']),
-  priority: z.enum(['low', 'medium', 'high', 'critical']),
-  dependencies: z.array(z.string().uuid()),
-  context_declarations: z.array(z.string()).optional(),
-  created_at: z.string().datetime(),
-  updated_at: z.string().datetime(),
-  stale: z.boolean().optional(),
-});
-
 export interface TaskContextDeclaration {
   task_id: string;
   slices: ArtifactRef[];
@@ -1105,12 +1117,39 @@ export const TaskContextDeclarationSchema = z.object({
   intent: z.string(),
 });
 
+export interface SLETask {
+  id: string;
+  title: string;
+  description: string;
+  status: 'open' | 'in_progress' | 'blocked' | 'closed';
+  priority: number;
+  dependencies: string[];
+  context_declarations?: TaskContextDeclaration[];
+  created_at: string;
+  updated_at: string;
+  stale?: boolean;
+}
+
+export const SLETaskSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().min(1),
+  description: z.string(),
+  status: z.enum(['open', 'in_progress', 'blocked', 'closed']),
+  priority: z.number().int().min(0),
+  dependencies: z.array(z.string().uuid()),
+  context_declarations: z.array(TaskContextDeclarationSchema).optional(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  stale: z.boolean().optional(),
+});
+
 export interface TaskStore {
   createTask: (task: Omit<SLETask, 'id' | 'created_at' | 'updated_at'>) => Promise<SLETask>;
   getReadyTasks: () => Promise<SLETask[]>;
   updateStatus: (taskId: string, status: SLETask['status']) => Promise<void>;
   closeTask: (taskId: string) => Promise<void>;
   getStale: () => Promise<SLETask[]>;
+  addDependency: (taskId: string, dependencyTaskId: string) => Promise<void>;
 }
 
 // ============================================================================

@@ -8,18 +8,23 @@ import {
   LLMProviderEnum,
   AgentLLMConfigSchema,
   AgentRoleConfigSchema,
-  AgentsConfigSchema,
+  AgentsSchema,
   ValidationRuleCategorySchema,
-  ValidationConfigSchema,
+  ValidationSchema,
   RuntimeConfigSchema,
   InitStateSchema,
   DiscoveryStateSchema,
   ChatStateSchema,
   CycleFlagsSchema,
   ArtifactRuleSchema,
-  ArtifactsConfigSchema,
+  ArtifactsSchema,
   NodeTagSchema,
   OpenQuestionSchema,
+  PlanningSchema,
+  ExitSchema,
+  UserValidationSchema,
+  SummarySchema,
+  SLETaskSchema,
 } from '../src/types.js';
 
 // ============================================================================
@@ -98,7 +103,6 @@ export function testAgentRoleEnum() {
 // ============================================================================
 
 export function testAgentLLMConfig() {
-  // Valid config
   const valid = {
     provider: 'openai_compatible' as const,
     api_key_env: 'OPENAI_API_KEY',
@@ -108,7 +112,6 @@ export function testAgentLLMConfig() {
   assert(result.success, 'Valid AgentLLMConfig should pass');
   assert(result.data?.model === 'gpt-4o');
 
-  // Invalid: missing required field
   const missingField = {
     provider: 'openai_compatible',
     api_key_env: 'OPENAI_API_KEY',
@@ -116,7 +119,6 @@ export function testAgentLLMConfig() {
   const result2 = AgentLLMConfigSchema.safeParse(missingField);
   assert(!result2.success, 'Missing required field should fail');
 
-  // Invalid: wrong provider
   const wrongProvider = {
     provider: 'invalid_provider',
     api_key_env: 'OPENAI_API_KEY',
@@ -146,12 +148,10 @@ export function testAgentRoleConfig() {
   assert(result.success, 'Valid AgentRoleConfig should pass');
   assert(result.data?.temperature === 0.7);
 
-  // Invalid: temperature out of range
-  const invalidTemp = { ...validConfig, temperature: 3.0 };
-  const result2 = AgentRoleConfigSchema.safeParse(invalidTemp);
-  assert(!result2.success, 'Temperature > 2 should fail');
+  const highTemperature = { ...validConfig, temperature: 3.0 };
+  const result2 = AgentRoleConfigSchema.safeParse(highTemperature);
+  assert(result2.success, 'Temperature constraint removed, 3.0 should be valid');
 
-  // Invalid: negative max_tokens
   const negativeTokens = { ...validConfig, max_tokens: -100 };
   const result3 = AgentRoleConfigSchema.safeParse(negativeTokens);
   assert(!result3.success, 'Negative max_tokens should fail');
@@ -177,6 +177,21 @@ export function testAgentsConfig() {
       },
     },
     agents: {
+      planner: {
+        active: true,
+        node: 'plan',
+        llm: {
+          provider: 'openai_compatible' as const,
+          api_key_env: 'OPENAI_API_KEY',
+          model: 'gpt-4o',
+        },
+        temperature: 0.7,
+        max_tokens: 8000,
+        system_prompt: 'You are a planner',
+        artifact_slice: [],
+        outputs: [],
+        conditional: false,
+      },
       designer: {
         active: true,
         node: 'design',
@@ -194,8 +209,8 @@ export function testAgentsConfig() {
       },
     },
   };
-  const result = AgentsConfigSchema.safeParse(validConfig);
-  assert(result.success, 'Valid AgentsConfig should pass');
+  const result = AgentsSchema.safeParse(validConfig);
+  assert(result.success, 'Valid AgentsConfig with planner should pass');
 }
 
 // ============================================================================
@@ -222,13 +237,114 @@ export function testValidationRuleCategory() {
   const result = ValidationRuleCategorySchema.safeParse(validCategory);
   assert(result.success, 'Valid ValidationRuleCategory should pass');
 
-  // Invalid: missing required fields
   const incomplete = {
     name: 'correctness',
     method: 'executable',
   };
   const result2 = ValidationRuleCategorySchema.safeParse(incomplete);
   assert(!result2.success, 'Missing required fields should fail');
+}
+
+export function testValidationRuleCategoryRefine() {
+  const noExecutable = {
+    name: 'correctness',
+    method: 'executable' as const,
+    pass_criteria: { executable: 'all_pass' },
+    on_fail: { feed_to: 'planner' as const, include: [] },
+  };
+  const result1 = ValidationRuleCategorySchema.safeParse(noExecutable);
+  assert(!result1.success, 'executable method without executable config should fail');
+
+  const noLlm = {
+    name: 'quality',
+    method: 'llm' as const,
+    pass_criteria: {},
+    on_fail: { feed_to: 'evaluator' as const, include: [] },
+  };
+  const result2 = ValidationRuleCategorySchema.safeParse(noLlm);
+  assert(!result2.success, 'llm method without llm config should fail');
+
+  const bothMissingExecutable = {
+    name: 'full-check',
+    method: 'both' as const,
+    llm: {
+      artifact_slice: ['doc:architecture'],
+      prompt_template: 'Check quality',
+      pass_threshold: 0.8,
+    },
+    pass_criteria: {},
+    on_fail: { feed_to: 'planner' as const, include: [] },
+  };
+  const result3 = ValidationRuleCategorySchema.safeParse(bothMissingExecutable);
+  assert(!result3.success, 'both method without executable config should fail');
+
+  const bothMissingLlm = {
+    name: 'full-check',
+    method: 'both' as const,
+    executable: {
+      runner: 'npm test',
+      timeout_ms: 60000,
+      output_format: 'json' as const,
+    },
+    pass_criteria: {},
+    on_fail: { feed_to: 'planner' as const, include: [] },
+  };
+  const result4 = ValidationRuleCategorySchema.safeParse(bothMissingLlm);
+  assert(!result4.success, 'both method without llm config should fail');
+
+  const bothComplete = {
+    name: 'full-check',
+    method: 'both' as const,
+    executable: {
+      runner: 'npm test',
+      timeout_ms: 60000,
+      output_format: 'json' as const,
+    },
+    llm: {
+      artifact_slice: ['doc:architecture'],
+      prompt_template: 'Check quality',
+      pass_threshold: 0.8,
+    },
+    pass_criteria: {},
+    on_fail: { feed_to: 'planner' as const, include: [] },
+  };
+  const result5 = ValidationRuleCategorySchema.safeParse(bothComplete);
+  assert(result5.success, 'both method with all configs should pass');
+}
+
+export function testAgentsSchemaRefine() {
+  const noPlanner = {
+    defaults: {
+      llm: {
+        provider: 'openai_compatible' as const,
+        api_key_env: 'OPENAI_API_KEY',
+        model: 'gpt-4o',
+      },
+      temperature: 0.7,
+      max_tokens: 8000,
+      system_prompt_root: '.sle/prompts',
+    },
+    providers: {},
+    agents: {
+      designer: {
+        active: true,
+        node: 'design',
+        llm: {
+          provider: 'openai_compatible' as const,
+          api_key_env: 'OPENAI_API_KEY',
+          model: 'gpt-4o',
+        },
+        temperature: 0.7,
+        max_tokens: 8000,
+        system_prompt: 'You are a designer',
+        artifact_slice: [],
+        outputs: [],
+        conditional: false,
+      },
+    },
+  };
+  const result = AgentsSchema.safeParse(noPlanner);
+  assert(!result.success, 'AgentsConfig without planner should fail');
 }
 
 export function testValidationConfig() {
@@ -274,7 +390,7 @@ export function testValidationConfig() {
       },
     ],
   };
-  const result = ValidationConfigSchema.safeParse(validConfig);
+  const result = ValidationSchema.safeParse(validConfig);
   assert(result.success, 'Valid ValidationConfig should pass');
 }
 
@@ -333,7 +449,6 @@ export function testArtifactRule() {
   const result = ArtifactRuleSchema.safeParse(validRule);
   assert(result.success, 'Valid ArtifactRule should pass');
 
-  // Invalid: append_only not a boolean
   const invalidBool = { ...validRule, append_only: 'true' };
   const result2 = ArtifactRuleSchema.safeParse(invalidBool);
   assert(!result2.success, 'Non-boolean append_only should fail');
@@ -360,7 +475,7 @@ export function testArtifactsConfig() {
       },
     ],
   };
-  const result = ArtifactsConfigSchema.safeParse(validConfig);
+  const result = ArtifactsSchema.safeParse(validConfig);
   assert(result.success, 'Valid ArtifactsConfig should pass');
 }
 
@@ -401,7 +516,6 @@ export function testInitState() {
   const result = InitStateSchema.safeParse(validInitState);
   assert(result.success, 'Valid InitState should pass');
 
-  // Invalid: missing required field
   const missing = { ...validInitState };
   delete missing.project.name;
   const result2 = InitStateSchema.safeParse(missing);
@@ -428,7 +542,6 @@ export function testDiscoveryState() {
   assert(result.success, 'Valid DiscoveryState should pass');
   assert(result.data?.status === 'not_started');
 
-  // Invalid: invalid status
   const invalidStatus = { ...validState, status: 'started' };
   const result2 = DiscoveryStateSchema.safeParse(invalidStatus);
   assert(!result2.success, 'Invalid status should fail');
@@ -456,7 +569,6 @@ export function testNodeTag() {
   const result2 = NodeTagSchema.safeParse(withValue);
   assert(result2.success, 'NodeTag with value should pass');
 
-  // Invalid: invalid source
   const invalidSource = { ...validTag, source: 'unknown' };
   const result3 = NodeTagSchema.safeParse(invalidSource);
   assert(!result3.success, 'Invalid source should fail');
@@ -486,10 +598,174 @@ export function testOpenQuestion() {
   const result2 = OpenQuestionSchema.safeParse(withBlocking);
   assert(result2.success, 'OpenQuestion with phase blocking should pass');
 
-  // Invalid: bad blocking format
   const invalidBlocking = { ...validQuestion, blocking: 'phase:invalid' };
   const result3 = OpenQuestionSchema.safeParse(invalidBlocking);
   assert(!result3.success, 'Invalid blocking format should fail');
+
+  const deferredStatus = { ...validQuestion, status: 'deferred' as const };
+  const result4 = OpenQuestionSchema.safeParse(deferredStatus);
+  assert(!result4.success, 'Deferred status should be invalid');
+}
+
+// ============================================================================
+// ExitConfig Tests (C4, C5)
+// ============================================================================
+
+export function testExitConfig() {
+  const valid = {
+    conditions: {
+      all_categories_pass: true,
+      requirements_met: true,
+    },
+    on_cap_hit: 'halt_with_report' as const,
+    halt_behavior: {
+      write_partial_report: true,
+      notify_user: true,
+      block_version_snapshot: false,
+      preserve_decisions: true,
+    },
+    on_error: {
+      behavior: 'halt' as const,
+      write_error_report: true,
+      block_version_snapshot: false,
+    },
+  };
+  const result = ExitSchema.safeParse(valid);
+  assert(result.success, 'Valid ExitConfig with structured halt_behavior and on_error should pass');
+
+  const missingHaltField = {
+    conditions: {
+      all_categories_pass: true,
+      requirements_met: true,
+    },
+    on_cap_hit: 'halt_with_report' as const,
+    halt_behavior: {
+      write_partial_report: true,
+      notify_user: true,
+    },
+    on_error: {
+      behavior: 'halt' as const,
+      write_error_report: true,
+      block_version_snapshot: false,
+    },
+  };
+  const result2 = ExitSchema.safeParse(missingHaltField);
+  assert(!result2.success, 'Missing halt_behavior fields should fail');
+
+  const missingErrorField = {
+    conditions: {
+      all_categories_pass: true,
+      requirements_met: true,
+    },
+    on_cap_hit: 'halt_with_report' as const,
+    halt_behavior: {
+      write_partial_report: true,
+      notify_user: true,
+      block_version_snapshot: false,
+      preserve_decisions: true,
+    },
+    on_error: {
+      behavior: 'retry_once' as const,
+    },
+  };
+  const result3 = ExitSchema.safeParse(missingErrorField);
+  assert(!result3.success, 'Missing on_error fields should fail');
+}
+
+// ============================================================================
+// SLETask Tests (C6, C7, C8)
+// ============================================================================
+
+export function testSLETask() {
+  const validTask = {
+    id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+    title: 'Implement feature',
+    description: 'Add new feature to module',
+    status: 'open' as const,
+    priority: 3,
+    dependencies: [],
+    context_declarations: [
+      {
+        task_id: 'b1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        slices: ['doc:architecture', 'node:design:req-001'],
+        intent: 'Need architecture context for planning',
+      },
+    ],
+    created_at: '2026-05-08T12:00:00Z',
+    updated_at: '2026-05-08T12:00:00Z',
+  };
+  const result = SLETaskSchema.safeParse(validTask);
+  assert(result.success, 'Valid SLETask with new types should pass');
+
+  const oldStatus = {
+    ...validTask,
+    status: 'pending' as const,
+  };
+  const result2 = SLETaskSchema.safeParse(oldStatus);
+  assert(!result2.success, 'Old "pending" status should fail');
+
+  const oldPriority = {
+    ...validTask,
+    priority: 'high',
+  };
+  const result3 = SLETaskSchema.safeParse(oldPriority);
+  assert(!result3.success, 'String priority should fail');
+
+  const negativePriority = {
+    ...validTask,
+    priority: -1,
+  };
+  const result4 = SLETaskSchema.safeParse(negativePriority);
+  assert(!result4.success, 'Negative priority should fail');
+
+  const closedStatus = {
+    ...validTask,
+    status: 'closed' as const,
+    priority: 5,
+  };
+  const result5 = SLETaskSchema.safeParse(closedStatus);
+  assert(result5.success, '"closed" status and numeric priority should pass');
+}
+
+// ============================================================================
+// PlanningConfig Tests (C1, C2, C3)
+// ============================================================================
+
+export function testPlanningConfig() {
+  const valid = {
+    depth: 'standard' as const,
+    max_iterations: 5,
+    artifact_slice_size: 2000,
+    summary_max_tokens: 1000,
+    system_prompt_max_tokens: 2000,
+    reasoning_passes: {
+      minimal: 1,
+      standard: 2,
+      deep: 3,
+      research: 4,
+    },
+    critic_enabled: true,
+    on_depth_change: 're_plan' as const,
+  };
+  const result = PlanningSchema.safeParse(valid);
+  assert(result.success, 'Valid PlanningConfig should pass');
+
+  const nullCritic = { ...valid, critic_enabled: null };
+  const result2 = PlanningSchema.safeParse(nullCritic);
+  assert(result2.success, 'critic_enabled: null should pass');
+
+  const oldPasses = { ...valid, reasoning_passes: 2 };
+  const result3 = PlanningSchema.safeParse(oldPasses);
+  assert(!result3.success, 'reasoning_passes as number should fail');
+
+  const missingOnDepthChange = { ...valid };
+  delete missingOnDepthChange.on_depth_change;
+  const result4 = PlanningSchema.safeParse(missingOnDepthChange);
+  assert(!result4.success, 'Missing on_depth_change should fail');
+
+  const invalidOnDepthChange = { ...valid, on_depth_change: 'invalid' };
+  const result5 = PlanningSchema.safeParse(invalidOnDepthChange);
+  assert(!result5.success, 'Invalid on_depth_change value should fail');
 }
 
 // ============================================================================
@@ -504,8 +780,14 @@ export function testRuntimeConfigFull() {
       artifact_slice_size: 2000,
       summary_max_tokens: 1000,
       system_prompt_max_tokens: 2000,
-      reasoning_passes: 2,
+      reasoning_passes: {
+        minimal: 1,
+        standard: 2,
+        deep: 3,
+        research: 4,
+      },
       critic_enabled: true,
+      on_depth_change: 're_plan' as const,
     },
     validation: {
       static_analysis: {
@@ -563,12 +845,22 @@ export function testRuntimeConfigFull() {
         requirements_met: true,
       },
       on_cap_hit: 'halt_with_report' as const,
-      halt_behavior: 'halt' as const,
-      on_error: 'halt' as const,
+      halt_behavior: {
+        write_partial_report: true,
+        notify_user: true,
+        block_version_snapshot: false,
+        preserve_decisions: true,
+      },
+      on_error: {
+        behavior: 'halt' as const,
+        write_error_report: true,
+        block_version_snapshot: false,
+      },
     },
     user_validation: {
       approval_required: true,
-      review_at: ['after_planning'],
+      review_at: ['after_planning'] as const,
+      prompts: { default: 'Please review the plan' },
       timeout_minutes: 30,
       on_timeout: 'notify_and_wait' as const,
       auto_approve_on_rerun: false,
@@ -596,9 +888,9 @@ export function testRuntimeConfigFull() {
       },
       providers: {},
       agents: {
-        designer: {
+        planner: {
           active: true,
-          node: 'design',
+          node: 'plan',
           llm: {
             provider: 'openai_compatible' as const,
             api_key_env: 'OPENAI_API_KEY',
@@ -606,7 +898,7 @@ export function testRuntimeConfigFull() {
           },
           temperature: 0.7,
           max_tokens: 8000,
-          system_prompt: 'You are a designer',
+          system_prompt: 'You are a planner',
           artifact_slice: [],
           outputs: [],
           conditional: false,
@@ -652,6 +944,12 @@ export function runAllTests() {
   console.log('✓ Testing ValidationRuleCategory');
   testValidationRuleCategory();
 
+  console.log('✓ Testing ValidationRuleCategory refine');
+  testValidationRuleCategoryRefine();
+
+  console.log('✓ Testing AgentsSchema refine');
+  testAgentsSchemaRefine();
+
   console.log('✓ Testing ValidationConfig');
   testValidationConfig();
 
@@ -678,6 +976,15 @@ export function runAllTests() {
 
   console.log('✓ Testing OpenQuestion');
   testOpenQuestion();
+
+  console.log('✓ Testing ExitConfig');
+  testExitConfig();
+
+  console.log('✓ Testing SLETask');
+  testSLETask();
+
+  console.log('✓ Testing PlanningConfig');
+  testPlanningConfig();
 
   console.log('✓ Testing Full RuntimeConfig');
   testRuntimeConfigFull();
