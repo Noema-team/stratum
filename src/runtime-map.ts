@@ -62,10 +62,10 @@ export interface RuntimeMap {
     revision: number;
     max_iterations: number;
     planning_depth: 'minimal' | 'standard' | 'deep' | 'research';
-    started_at: string;
+    started_at?: string;
     completed_at?: string;
     outcome: 'cycling' | 'completed' | 'halted';
-    approval_gate: 'after_planning' | 'after_gate_pass' | null;
+    approval_gate: string | null;
     awaiting_scoping: boolean;
     awaiting_confirmation: boolean;
     awaiting_sharding_approval: boolean;
