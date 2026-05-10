@@ -10,6 +10,7 @@ See [../research/](../research/) for external system research (Hermes, browser-h
 | [hermes-stratum-integration.md](hermes-stratum-integration.md) | Naming discussion, 3-level Hermes integration analysis (borrow concepts, custom skill, deep runtime integration) |
 | [platform-flexibility-vision.md](platform-flexibility-vision.md) | Open-source roadmap: opinionated dev tool → configurable workflow platform |
 | [ideal-state-and-validation-vision.md](ideal-state-and-validation-vision.md) | Full system vision, validation model assessment, dynamic category selection, optimization/telemetry system proposal |
+| [html-content-vision.md](html-content-vision.md) | How agents produce, consume, and validate HTML — current spec support, gaps, and proposed extensions |
 
 ## Key takeaways
 
