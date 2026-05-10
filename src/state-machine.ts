@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import type { SystemStatus, DiscoveryStatus } from './types.js';
+import {
+  SystemStatusEnum,
+  DiscoveryStatusEnum,
+  type SystemStatus,
+  type DiscoveryStatus,
+} from './types.js';
 import type { RuntimeMap, RuntimeMapManager } from './runtime-map.js';
 
 export type TransitionId =
@@ -54,13 +59,13 @@ export interface TransitionResult {
 export const TransitionResultSchema = z.object({
   success: z.boolean(),
   transition: TransitionIdSchema.optional(),
-  from: z.enum(['idle', 'discovering', 'cycling', 'halted', 'complete']),
-  to: z.enum(['idle', 'discovering', 'cycling', 'halted', 'complete']),
+  from: SystemStatusEnum,
+  to: SystemStatusEnum,
   error: z
     .object({
       code: z.string(),
       reason: z.string(),
-      allowedTargets: z.array(z.enum(['idle', 'discovering', 'cycling', 'halted', 'complete'])),
+      allowedTargets: z.array(SystemStatusEnum),
     })
     .optional(),
 });
@@ -75,10 +80,10 @@ export interface StateContext {
 }
 
 export const StateContextSchema = z.object({
-  state: z.enum(['idle', 'discovering', 'cycling', 'halted', 'complete']),
+  state: SystemStatusEnum,
   active_session_id: z.string().nullable(),
   active_cycle_id: z.string().nullable(),
-  discovery_status: z.enum(['not_started', 'in_progress', 'complete']),
+  discovery_status: DiscoveryStatusEnum,
   iteration: z.number().nonnegative(),
   revision: z.number().nonnegative(),
 });
@@ -154,6 +159,7 @@ const TRANSITION_TABLE: TransitionRule[] = [
           started_at: new Date().toISOString(),
           completed_at: undefined,
           outcome: 'cycling',
+          approval_gate: null,
         },
       });
     },
@@ -242,20 +248,22 @@ const TRANSITION_TABLE: TransitionRule[] = [
     from: 'complete',
     to: 'idle',
     precondition: () => true,
-    apply: (map) => ({
-      ...map,
-      meta: { ...map.meta, status: 'idle' },
-    }),
+    apply: (map) =>
+      resetCycleFlags({
+        ...map,
+        meta: { ...map.meta, status: 'idle' },
+      }),
   },
   {
     id: 'T10',
     from: 'halted',
     to: 'idle',
     precondition: () => true,
-    apply: (map) => ({
-      ...map,
-      meta: { ...map.meta, status: 'idle' },
-    }),
+    apply: (map) =>
+      resetCycleFlags({
+        ...map,
+        meta: { ...map.meta, status: 'idle' },
+      }),
   },
   {
     id: 'T11',
@@ -275,6 +283,7 @@ const TRANSITION_TABLE: TransitionRule[] = [
           started_at: new Date().toISOString(),
           completed_at: undefined,
           outcome: 'cycling',
+          approval_gate: null,
         },
       });
     },
@@ -284,15 +293,16 @@ const TRANSITION_TABLE: TransitionRule[] = [
     from: 'halted',
     to: 'cycling',
     precondition: () => true,
-    apply: (map) => ({
-      ...map,
-      meta: { ...map.meta, status: 'cycling' },
-      cycle: {
-        ...map.cycle,
-        outcome: 'cycling',
-        completed_at: undefined,
-      },
-    }),
+    apply: (map) =>
+      resetCycleFlags({
+        ...map,
+        meta: { ...map.meta, status: 'cycling' },
+        cycle: {
+          ...map.cycle,
+          outcome: 'cycling',
+          completed_at: undefined,
+        },
+      }),
   },
 ];
 
@@ -314,23 +324,49 @@ function getAllowedTargetStates(state: SystemStatus): SystemStatus[] {
   return [...targets];
 }
 
+export class TransitionRejection extends Error {
+  error: string;
+  from: SystemStatus;
+  to: SystemStatus;
+  reason: string;
+  allowedTargets: SystemStatus[];
+
+  constructor(options: {
+    error: string;
+    from: SystemStatus;
+    to: SystemStatus;
+    reason: string;
+    allowedTargets: SystemStatus[];
+  }) {
+    super(options.reason);
+    this.name = 'TransitionRejection';
+    this.error = options.error;
+    this.from = options.from;
+    this.to = options.to;
+    this.reason = options.reason;
+    this.allowedTargets = options.allowedTargets;
+  }
+}
+
 export function validateTransition(
   id: TransitionId,
   map: RuntimeMap
-): { valid: boolean; reason?: string } {
+): { valid: boolean; reason?: string; errorCode?: string } {
   const rule = TRANSITION_MAP.get(id);
   if (!rule) {
-    return { valid: false, reason: `Unknown transition: ${id}` };
+    return { valid: false, reason: `Unknown transition: ${id}`, errorCode: 'invalid_transition' };
   }
   if (map.meta.status !== rule.from) {
     return {
       valid: false,
+      errorCode: 'invalid_transition',
       reason: `Transition ${id} requires state '${rule.from}' but current state is '${map.meta.status}'`,
     };
   }
   if (!rule.precondition(map)) {
     return {
       valid: false,
+      errorCode: id === 'T3' ? 'discovery_required' : 'invalid_transition',
       reason: `Precondition for ${id} not met in current state '${map.meta.status}'`,
     };
   }
@@ -365,7 +401,7 @@ export class StateMachine {
         from: map.meta.status,
         to: map.meta.status,
         error: {
-          code: 'TRANSITION_INVALID',
+          code: validation.errorCode ?? 'invalid_transition',
           reason: validation.reason!,
           allowedTargets: getAllowedTargetStates(map.meta.status),
         },
@@ -433,7 +469,15 @@ export class StateMachine {
     return getAllowedTransitionsFromState(map.meta.status);
   }
 
-  async setFlag(flag: CycleFlag, value: boolean): Promise<void> {
+  async setFlag(
+    flag: CycleFlag,
+    value: boolean,
+    confirmAction?: 'approve' | 'modify' | 'halt'
+  ): Promise<TransitionResult | void> {
+    if (flag === 'awaiting_confirmation' && !value && confirmAction === 'halt') {
+      return this.halt('user');
+    }
+
     await this.mapManager.update((map) => {
       const updated = { ...map, cycle: { ...map.cycle } };
 
@@ -443,6 +487,10 @@ export class StateMachine {
         }
       } else {
         updated.cycle[flag] = false;
+      }
+
+      if (flag === 'awaiting_confirmation' && !value && confirmAction === 'modify') {
+        updated.cycle.revision += 1;
       }
 
       return updated;
