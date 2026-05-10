@@ -1,6 +1,6 @@
 # Vertical Slice 1: Init + State Machine + Discovery
 
-**Type:** implementation plan · **Status:** in progress · **Updated:** 2026-05-08
+**Type:** implementation plan · **Status:** in progress · **Updated:** 2026-05-10
 **Slice:** v1 · **Prerequisite:** None (this is the first slice)
 
 ## Implementation Progress
@@ -9,7 +9,7 @@
 |-------|-----------|--------|--------|
 | A | Foundation Types | ✅ Complete | bf690b2 |
 | B | Runtime Map | ✅ Complete | 0801381, eb592f7 |
-| C | State Machine | ⏳ In Progress | -- |
+| C | State Machine | ✅ Complete | ad59035 |
 | D | Rule File Schemas | ⏳ Pending | -- |
 | E | Daemon Shell | ⏳ Pending | -- |
 | F | State API | ⏳ Pending | -- |
