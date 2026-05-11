@@ -11,6 +11,7 @@ See [../research/](../research/) for external system research (Hermes, browser-h
 | [platform-flexibility-vision.md](platform-flexibility-vision.md) | Open-source roadmap: opinionated dev tool → configurable workflow platform |
 | [ideal-state-and-validation-vision.md](ideal-state-and-validation-vision.md) | Full system vision, validation model assessment, dynamic category selection, optimization/telemetry system proposal |
 | [html-content-vision.md](html-content-vision.md) | How agents produce, consume, and validate HTML — current spec support, gaps, and proposed extensions |
+| [agent-authored-html-components.md](agent-authored-html-components.md) | Synthesis of HTML content vision + Space Agent widget authoring — agent lifecycle for HTML with validation, templates, and self-improvement |
 
 ## Key takeaways
 
@@ -52,3 +53,10 @@ See [../research/](../research/) for external system research (Hermes, browser-h
 3. **Optimization category** — bottleneck reports, flamegraphs, benchmark suites, cross-cycle regression tracking
 4. **Telemetry builder** — Builder mode that generates instrumentation code and benchmark suites for performance-critical systems
 5. **Self-improving validation** — learned validation rules persisted as prompt includes, improving accuracy over cycles
+
+### Agent-Authored HTML Components
+1. **Structured HTML manifests** — agents declare HTML components (manifest + renderer + schema) as graph node content
+2. **DAG-enforced mutation model** — read-before-write enforced by DAG ordering (design declares, plan schemas, build renders)
+3. **L0/L1/L2 HTML templates** — agents compose from layered templates rather than writing HTML from scratch
+4. **Three-phase HTML validation** — static (DOMPurify) + LLM (semantic/XSS) + exec (headless render + axe-core + screenshot)
+5. **Self-improving HTML via prompt includes** — Evaluator writes behavioral notes, human approves, loaded as Builder standing context
