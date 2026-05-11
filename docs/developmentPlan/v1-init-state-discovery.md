@@ -10,7 +10,7 @@
 | A | Foundation Types | ✅ Complete | bf690b2 |
 | B | Runtime Map | ✅ Complete | 0801381, eb592f7 |
 | C | State Machine | ✅ Complete | ad59035 |
-| D | Rule File Schemas | ⏳ Pending | -- |
+| D | Rule File Schemas | ✅ Complete | -- |
 | E | Daemon Shell | ⏳ Pending | -- |
 | F | State API | ⏳ Pending | -- |
 | G | sle init | ⏳ Pending | -- |
