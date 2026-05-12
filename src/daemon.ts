@@ -155,6 +155,39 @@ export class DaemonServer {
       return;
     }
 
+    const roundMatch = path.match(/^\/api\/v2\/discovery\/round\/(\d+)\/(approve|response)$/);
+    if (roundMatch && (method === 'POST')) {
+      const round = parseInt(roundMatch[1], 10);
+      const action = roundMatch[2];
+      const sessionId = url.searchParams.get('session_id') || '';
+
+      if (action === 'approve') {
+        await this.deps.discoveryService.approveRound(sessionId, round);
+        this.sendResponse(res, {
+          ok: true,
+          data: { round, approved: true },
+          meta: {
+            request_id: randomUUID(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+
+      if (action === 'response') {
+        await this.deps.discoveryService.submitResponse(sessionId, round);
+        this.sendResponse(res, {
+          ok: true,
+          data: { round, status: 'collecting' },
+          meta: {
+            request_id: randomUUID(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+    }
+
     if (path === '/api/v2/discovery/status' && method === 'GET') {
       const sessionId = url.searchParams.get('session_id') || '';
       const result = await this.deps.discoveryService.getStatus(sessionId);
