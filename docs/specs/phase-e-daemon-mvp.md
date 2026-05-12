@@ -1,6 +1,7 @@
 # Phase E — Daemon MVP
 **Status:** Implementation spec · **Depends on:** Phases A–D
-**Source specs:** `specs/daemon-api.md`, `specs/daemon-api-endpoints.md` (subset), `specs/init-and-discovery.md` (subset)
+**Spec coverage:** See `implementation-tracking.md` for per-section breakdown
+**Source specs:** `specs/daemon-api.md` (10 of 85 endpoints), `specs/daemon-api-endpoints.md` (health, state, init, discovery groups only), `specs/init-and-discovery.md` (simplified init, solo discovery only)
 **Canonical types:** `reference/types.md`
 **State machine:** `specs/state-machine.md`
 
