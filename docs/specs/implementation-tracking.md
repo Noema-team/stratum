@@ -81,7 +81,7 @@ Implements a **subset** of 3 source specs:
 | Health & info | ✅ | `GET /health`, `GET /info` |
 | System state | ✅ | `GET /system/state`, `POST /system/state/transition`, `GET /system/flags`, `PATCH /system/flags` |
 | Init | ✅ | `POST /init`, `GET /init/state` |
-| Discovery | ✅ | `POST /discovery/start`, `GET /discovery/status` |
+| Discovery | ✅ | `POST /discovery/start`, `POST /discovery/round/{n}/response`, `POST /discovery/round/{n}/approve`, `GET /discovery/status` |
 | Cycles | 📝 | 0 of many |
 | Sharding | 📝 | 0 |
 | Tags | 📝 | 0 |
@@ -99,7 +99,7 @@ Implements a **subset** of 3 source specs:
 | Modules | 📝 | 0 |
 | Document linking | 📝 | 0 |
 
-**Total:** 10 of 85 endpoints implemented (~12%)
+**Total:** 11 of 85 endpoints implemented (~13%)
 
 #### From `specs/init-and-discovery.md`
 

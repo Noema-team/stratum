@@ -1,7 +1,7 @@
 # Phase E — Daemon MVP
 **Status:** Implementation spec · **Depends on:** Phases A–D
 **Spec coverage:** See `implementation-tracking.md` for per-section breakdown
-**Source specs:** `specs/daemon-api.md` (10 of 85 endpoints), `specs/daemon-api-endpoints.md` (health, state, init, discovery groups only), `specs/init-and-discovery.md` (simplified init, solo discovery only)
+**Source specs:** `specs/daemon-api.md` (11 of 85 endpoints), `specs/daemon-api-endpoints.md` (health, state, init, discovery groups only), `specs/init-and-discovery.md` (simplified init, solo discovery only)
 **Canonical types:** `reference/types.md`
 **State machine:** `specs/state-machine.md`
 
@@ -13,7 +13,7 @@ The Daemon MVP is the first executable vertical slice of the SLE system. It take
 
 **Scope:** The smallest set of features that makes the daemon runnable, testable, and useful:
 - Daemon HTTP server (port 7700)
-- 10 core REST endpoints (health, info, system state, transitions, init, discovery)
+- 11 core REST endpoints (health, info, system state, transitions, flags, init, discovery rounds)
 - CLI entry point (`sle init`, `sle start`, `sle status`, `sle stop`)
 - Init flow: project setup (git detection, rule file generation, map.yaml creation)
 - Discovery flow: single-round interactive Q&A with approval gate
@@ -134,7 +134,7 @@ The HTTP server. Built on Node.js `http` module (no Express dependency — keeps
 
 ```typescript
 interface DaemonServer {
-  start(config: DaemonConfig): Promise<void>
+  start(config: DaemonConfig, pidFile: PIDFile): Promise<void>
   stop(): Promise<void>
   getPort(): number
   getUptimeMs(): number
@@ -157,15 +157,16 @@ interface DaemonServer {
 | PATCH | `/api/v2/system/flags` | Update flags | StateAPI |
 | POST | `/api/v2/init` | Start init sequence | InitService |
 | GET | `/api/v2/init/state` | Get init progress | InitService |
-| GET | `/api/v2/discovery/start` | Start discovery session | DiscoveryService |
+| POST | `/api/v2/discovery/start` | Start discovery session | DiscoveryService |
 | POST | `/api/v2/discovery/round/{n}/response` | Submit response for round n | DiscoveryService |
+| POST | `/api/v2/discovery/round/{n}/approve` | Approve draft for round n | DiscoveryService |
 
 **Middleware:**
 - JSON body parser (content-type: application/json)
 - Request ID generation (UUID per request)
 - Response envelope wrapper (automatically wraps in `APIResponse<T>` or `APIError`)
 - Error handler (catches unhandled errors → 500 `internal_error`)
-- State lock (serialize state-changing requests)
+- State lock (deferred to Phase G — requires request queuing, out of scope for MVP)
 
 **Startup sequence:**
 1. Parse CLI flags
@@ -277,17 +278,27 @@ interface InitParams {
 
 **Init steps (simplified for MVP):**
 
-| Step | Action | Idempotent |
-|------|--------|------------|
-| 0 | Prerequisite check: git repo, Node 20+, .sle/ absent | Yes |
-| 1 | Create .sle/ directory structure | Yes |
-| 2 | Generate 7 rule files from project type templates | Yes |
-| 3 | Create map.yaml (status: idle, cycle: 0, version_id: v0.0.0) | Yes |
-| 4 | Create agent.md (basic template) | Yes |
-| 5 | Create .sle/daemon.pid placeholder | Yes |
-| — | Write progress to .sle/init-state.json after each step | — |
+| Step | Action | Type | Notes |
+|------|--------|------|-------|
+| 0 | Prerequisite check: git repo, Node 20+, .sle/ absent | Idempotent | |
+| 1 | Create .sle/ directory structure | Idempotent | mkdir -p .sle/rules/ |
+| 2 | Generate 7 rule files from project type templates | Idempotent | Uses RuleLoader |
+| 3 | Create map.yaml (status: idle, cycle: 0, version_id: v0.0.0) | Idempotent | |
+| 4 | Create agent.md (basic template) | Idempotent | |
+| — | Write progress to .sle/init-state.json after each step | — | Enables resume |
+| — | On completion: delete .sle/init-state.json | — | |
 
-On completion: delete .sle/init-state.json, return InitResult.
+**Deferred from full spec:** Step 3a-3c (remote configuration), Step 5 (TaskStore init — accepts `taskStore` param in InitParams but only creates a stub), Step 6 (docs clone), Step 8 (prompt templates), Step 9 (git commit), Step 10 (daemon start — `noDaemon: false` means the caller must run `sle start` separately).
+
+**Resume logic:**
+- Reads `.sle/init-state.json`
+- Re-runs all steps where `last_completed_step < current_step`
+- Non-idempotent steps (5, 6, 9) are skipped if their boolean flag is `true`
+- On completion: delete init-state.json
+
+**Reset logic:**
+- Removes `.sle/`, `.beads/`, `.server/`, `agent.md`
+- Requires `confirm_name` matching project name
 
 ### Module: DiscoveryService
 
