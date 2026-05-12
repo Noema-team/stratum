@@ -1189,7 +1189,7 @@ export const ConnectionStateSchema = z.object({
 });
 
 export interface APIResponse<T> {
-  ok: boolean;
+  ok: true;
   data: T;
   meta?: {
     request_id: string;
@@ -1210,7 +1210,7 @@ export const APIResponseSchema = <T extends z.ZodSchema>(dataSchema: T) =>
   });
 
 export interface APIError {
-  ok: boolean;
+  ok: false;
   error: {
     code: string;
     message: string;
