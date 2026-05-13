@@ -25,6 +25,14 @@ export class DaemonServer {
   private config: DaemonConfig;
   private deps: DaemonDeps;
 
+  getPort(): number {
+    if (this.server) {
+      const addr = this.server.address();
+      if (addr && typeof addr === 'object') return addr.port;
+    }
+    return this.config.port ?? 7700;
+  }
+
   constructor() {
     this.config = {};
     this.deps = {
