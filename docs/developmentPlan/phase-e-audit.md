@@ -1,7 +1,7 @@
 # Phase E — Audit: Spec vs Implementation (Updated)
 
 **Date:** 2026-05-12 (updated after spec corrections)
-**Spec:** `docs/apps/sdk-orchestrator/v2/specs/phase-e-daemon-mvp.md`
+**Spec:** `phase-e-daemon-mvp.md` (this directory)
 **Implementation:** `src/sdk-orchestrator/v2/src/`
 
 ---
