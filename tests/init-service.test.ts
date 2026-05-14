@@ -152,6 +152,55 @@ async function testInitResumeSkipsCompletedSteps() {
   await fs.rm(tmpDir, { recursive: true, force: true });
 }
 
+async function testInitGeneratesAgentMd() {
+  const tmpDir = makeTempDir();
+  const service = new InitService({ projectRoot: tmpDir });
+
+  const result = await service.init(makeDefaultRequest(tmpDir));
+  assert.strictEqual((result as APIResponse<InitResponseData>).data.status, 'complete');
+
+  const agentMdPath = join(tmpDir, 'agent.md');
+  const content = await fs.readFile(agentMdPath, 'utf-8');
+
+  assert.ok(content.startsWith('# test-project'), 'agent.md should start with project name');
+  assert.ok(content.includes('## Conventions'), 'agent.md should have Conventions section');
+  assert.ok(content.includes('## Map'), 'agent.md should have Map section');
+  assert.ok(content.includes('map: .sle/map.yaml'), 'agent.md should reference map.yaml');
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+}
+
+async function testInitInstallsPromptTemplates() {
+  const tmpDir = makeTempDir();
+  const service = new InitService({ projectRoot: tmpDir });
+
+  const result = await service.init(makeDefaultRequest(tmpDir));
+  assert.strictEqual((result as APIResponse<InitResponseData>).data.status, 'complete');
+
+  const templateFiles = [
+    'facilitator-chat.md',
+    'facilitator-decision.md',
+    'facilitator-scoping.md',
+  ];
+
+  for (const file of templateFiles) {
+    const filePath = join(tmpDir, '.sle', 'prompts', file);
+    try {
+      await fs.access(filePath);
+      const content = await fs.readFile(filePath, 'utf-8');
+      assert.ok(content.includes('## Role identity'), `${file} should have Role identity section`);
+      assert.ok(content.includes('## Behavioral constraints'), `${file} should have Behavioral constraints section`);
+      assert.ok(content.includes('## Artifact access'), `${file} should have Artifact access section`);
+      assert.ok(content.includes('## Output format'), `${file} should have Output format section`);
+      assert.ok(content.includes('## Reasoning approach'), `${file} should have Reasoning approach section`);
+    } catch {
+      assert.fail(`Prompt template ${file} was not created`);
+    }
+  }
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -162,6 +211,8 @@ async function runAllTests() {
     { name: 'Init deletes init-state.json on completion', fn: testInitDeletesInitStateOnCompletion },
     { name: 'Init detects existing .sle/ and fails (no overwrite)', fn: testInitDetectsExistingSle },
     { name: 'Resume skips completed steps', fn: testInitResumeSkipsCompletedSteps },
+    { name: 'Init generates agent.md with map reference', fn: testInitGeneratesAgentMd },
+    { name: 'Init installs facilitator prompt templates', fn: testInitInstallsPromptTemplates },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

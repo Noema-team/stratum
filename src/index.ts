@@ -6,3 +6,5 @@ export * from './rule-loader.js';
 export * from './state-api.js';
 export * from './init-service.js';
 export * from './discovery-service.js';
+export * from './llm-provider.js';
+export * from './prompt-templates.js';

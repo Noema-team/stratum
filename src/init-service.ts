@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import { z } from 'zod';
 import { join as pathJoin } from 'path';
@@ -8,7 +9,9 @@ import {
   ProjectTypeEnum,
   type APIResponse,
   type APIError,
+  type ProjectType,
 } from './types.js';
+import { FACILITATOR_TEMPLATES } from './prompt-templates.js';
 
 export const InitRequestSchema = z.object({
   project_name: z.string().min(1),
@@ -337,7 +340,7 @@ export class InitService {
       case 6:
         return await this.step6DocsClone(state);
       case 7:
-        return await this.step7AgentMdAndMap();
+        return await this.step7AgentMdAndMap(state);
       case 8:
         return await this.step8PromptTemplates();
       case 9:
@@ -414,20 +417,77 @@ export class InitService {
     return { files: [] };
   }
 
-  private async step7AgentMdAndMap(): Promise<{ files: string[] }> {
+  private async step7AgentMdAndMap(state: InitState): Promise<{ files: string[] }> {
+    const projectName = state.project.name ?? 'untitled';
+    const projectType = state.project.type ?? 'custom';
+    const description = state.project.description ?? '';
+
+    const agentMdContent = this.generateAgentMd(projectName, description, projectType);
     const agentMdPath = pathJoin(this.projectRoot, 'agent.md');
-    await fs.writeFile(agentMdPath, '', 'utf-8');
+    await fs.writeFile(agentMdPath, agentMdContent, 'utf-8');
 
     const mapPath = pathJoin(this.projectRoot, '.sle', 'map.yaml');
     await fs.writeFile(mapPath, '', 'utf-8');
 
+    if (process.env.EDITOR) {
+      try {
+        execSync(`${process.env.EDITOR} "${agentMdPath}"`, {
+          stdio: 'ignore',
+          timeout: 30000,
+        });
+      } catch {
+      }
+    }
+
     return { files: [agentMdPath, mapPath] };
+  }
+
+  private generateAgentMd(name: string, description: string, type: ProjectType): string {
+    const conventions = this.getProjectTypeDefaults(type);
+    const parts = [
+      `# ${name}`,
+      '',
+    ];
+
+    if (description) {
+      parts.push(description);
+      parts.push('');
+    }
+
+    parts.push('## Conventions');
+    parts.push(conventions);
+    parts.push('');
+    parts.push('## Map');
+    parts.push('map: .sle/map.yaml');
+    parts.push('');
+
+    return parts.join('\n');
+  }
+
+  private getProjectTypeDefaults(type: ProjectType): string {
+    const defaults: Record<ProjectType, string> = {
+      api: '- TypeScript, Node.js ESM\n- JSON REST API conventions\n- Zod for runtime validation\n- Tests use Node.js built-in test runner',
+      ui: '- TypeScript, React or similar framework\n- Component-based architecture\n- CSS-in-JS or utility classes\n- Tests use component testing patterns',
+      library: '- TypeScript, Node.js ESM\n- Public API surface documented in types\n- Zod for input validation\n- Comprehensive unit test coverage',
+      research: '- Markdown-first documentation\n- Experimental code in isolated modules\n- Clear documentation of findings\n- Reproducible experiments',
+      custom: '- Follow existing project conventions\n- Maintain consistency with current codebase\n- Document any new patterns introduced',
+    };
+    return defaults[type];
   }
 
   private async step8PromptTemplates(): Promise<{ files: string[] }> {
     const promptsDir = pathJoin(this.projectRoot, '.sle', 'prompts');
     await fs.mkdir(promptsDir, { recursive: true });
-    return { files: [] };
+
+    const files: string[] = [];
+
+    for (const [filename, content] of Object.entries(FACILITATOR_TEMPLATES)) {
+      const filePath = pathJoin(promptsDir, filename);
+      await fs.writeFile(filePath, content, 'utf-8');
+      files.push(pathJoin('.sle', 'prompts', filename));
+    }
+
+    return { files };
   }
 
   private async step9Commit(): Promise<{ files: string[] }> {
