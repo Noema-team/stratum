@@ -15,7 +15,7 @@
 | F | State API | ✅ Complete | (se implementation-tracking.md) |
 | G | sle init | ✅ Complete | (se implementation-tracking.md) |
 | H | Init API | ✅ Complete | (se implementation-tracking.md) |
-| I | Facilitator LLM | ⏳ Pending | -- |
+| I | Facilitator LLM | ✅ Complete | (se implementation-tracking.md) |
 | J | sle discover | ✅ Complete | (se implementation-tracking.md) |
 | K | Discovery API | ✅ Complete | (se implementation-tracking.md) |
 | L | Integration Test | ⏳ Pending | -- |
