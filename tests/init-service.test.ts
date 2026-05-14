@@ -156,13 +156,16 @@ async function testInitGeneratesAgentMd() {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
-  const result = await service.init(makeDefaultRequest(tmpDir));
+  const req = makeDefaultRequest(tmpDir);
+  req.description_long = 'A long description about this test project.';
+  const result = await service.init(req);
   assert.strictEqual((result as APIResponse<InitResponseData>).data.status, 'complete');
 
   const agentMdPath = join(tmpDir, 'agent.md');
   const content = await fs.readFile(agentMdPath, 'utf-8');
 
   assert.ok(content.startsWith('# test-project'), 'agent.md should start with project name');
+  assert.ok(content.includes('A long description about this test project.'), 'agent.md should include description_long');
   assert.ok(content.includes('## Conventions'), 'agent.md should have Conventions section');
   assert.ok(content.includes('## Map'), 'agent.md should have Map section');
   assert.ok(content.includes('map: .sle/map.yaml'), 'agent.md should reference map.yaml');

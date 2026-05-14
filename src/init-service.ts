@@ -19,6 +19,8 @@ export const InitRequestSchema = z.object({
   task_store: z.enum(['beads', 'local']),
   daemon_port: z.number().int().positive(),
   docs_remote: z.string().url().nullable(),
+  description_long: z.string().optional(),
+  no_editor: z.boolean().optional(),
   non_interactive: z.boolean(),
 });
 
@@ -340,7 +342,7 @@ export class InitService {
       case 6:
         return await this.step6DocsClone(state);
       case 7:
-        return await this.step7AgentMdAndMap(state);
+        return await this.step7AgentMdAndMap(state, request);
       case 8:
         return await this.step8PromptTemplates();
       case 9:
@@ -359,6 +361,7 @@ export class InitService {
   private async step1ProjectIdentity(state: InitState, request: InitRequest): Promise<{ files: string[] }> {
     state.project.name = request.project_name;
     state.project.description = '';
+    state.project.description_long = request.description_long ?? '';
     return { files: [] };
   }
 
@@ -417,19 +420,20 @@ export class InitService {
     return { files: [] };
   }
 
-  private async step7AgentMdAndMap(state: InitState): Promise<{ files: string[] }> {
+  private async step7AgentMdAndMap(state: InitState, request: InitRequest): Promise<{ files: string[] }> {
     const projectName = state.project.name ?? 'untitled';
     const projectType = state.project.type ?? 'custom';
     const description = state.project.description ?? '';
+    const descriptionLong = state.project.description_long ?? '';
 
-    const agentMdContent = this.generateAgentMd(projectName, description, projectType);
+    const agentMdContent = this.generateAgentMd(projectName, description, descriptionLong, projectType);
     const agentMdPath = pathJoin(this.projectRoot, 'agent.md');
     await fs.writeFile(agentMdPath, agentMdContent, 'utf-8');
 
     const mapPath = pathJoin(this.projectRoot, '.sle', 'map.yaml');
     await fs.writeFile(mapPath, '', 'utf-8');
 
-    if (process.env.EDITOR) {
+    if (!request.no_editor && process.env.EDITOR) {
       try {
         execSync(`${process.env.EDITOR} "${agentMdPath}"`, {
           stdio: 'ignore',
@@ -442,7 +446,7 @@ export class InitService {
     return { files: [agentMdPath, mapPath] };
   }
 
-  private generateAgentMd(name: string, description: string, type: ProjectType): string {
+  private generateAgentMd(name: string, description: string, descriptionLong: string, type: ProjectType): string {
     const conventions = this.getProjectTypeDefaults(type);
     const parts = [
       `# ${name}`,
@@ -451,6 +455,11 @@ export class InitService {
 
     if (description) {
       parts.push(description);
+      parts.push('');
+    }
+
+    if (descriptionLong) {
+      parts.push(descriptionLong);
       parts.push('');
     }
 
