@@ -11,13 +11,13 @@
 | B | Runtime Map | ✅ Complete | 0801381, eb592f7 |
 | C | State Machine | ✅ Complete | ad59035 |
 | D | Rule File Schemas | ✅ Complete | -- |
-| E | Daemon Shell | ⏳ Pending | -- |
-| F | State API | ⏳ Pending | -- |
-| G | sle init | ⏳ Pending | -- |
-| H | Init API | ⏳ Pending | -- |
+| E | Daemon Shell | ✅ Complete | (se implementation-tracking.md) |
+| F | State API | ✅ Complete | (se implementation-tracking.md) |
+| G | sle init | ✅ Complete | (se implementation-tracking.md) |
+| H | Init API | ✅ Complete | (se implementation-tracking.md) |
 | I | Facilitator LLM | ⏳ Pending | -- |
-| J | sle discover | ⏳ Pending | -- |
-| K | Discovery API | ⏳ Pending | -- |
+| J | sle discover | ✅ Complete | (se implementation-tracking.md) |
+| K | Discovery API | ✅ Complete | (se implementation-tracking.md) |
 | L | Integration Test | ⏳ Pending | -- |
 
 **Phase A Summary:**
