@@ -4,6 +4,7 @@ import { writePidFile, removePidFile } from './pid-file.js';
 import type { StateAPI } from './state-api.js';
 import type { InitService } from './init-service.js';
 import type { DiscoveryService } from './discovery-service.js';
+import type { CycleService } from './cycle-service.js';
 import type { APIResponse, APIError } from './types.js';
 
 interface DaemonConfig {
@@ -15,6 +16,7 @@ interface DaemonDeps {
   stateAPI: StateAPI;
   initService: InitService;
   discoveryService: DiscoveryService;
+  cycleService: CycleService;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
     removePidFile: (path: string) => Promise<void>;
@@ -40,6 +42,7 @@ export class DaemonServer {
       stateAPI: null as unknown as StateAPI,
       initService: null as unknown as InitService,
       discoveryService: null as unknown as DiscoveryService,
+      cycleService: null as unknown as CycleService,
       pidFile: { writePidFile, removePidFile },
     };
   }
@@ -214,6 +217,84 @@ export class DaemonServer {
           timestamp: new Date().toISOString(),
         },
       });
+      return;
+    }
+
+    if (path === '/api/v2/cycles/start' && method === 'POST') {
+      const body = await this.parseBody(req);
+      const params = body as { intent?: string; depth?: string; force?: boolean };
+      try {
+        const result = await this.deps.cycleService.start({
+          intent: params.intent ?? '',
+          depth: params.depth as Parameters<CycleService['start']>[0]['depth'],
+          force: params.force,
+        });
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        const code = error.code ?? 'cycle_start_failed';
+        const statusCode = code === 'cycle_already_active' || code === 'discovery_required' ? 409 : 400;
+        this.sendError(res, statusCode, code, error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/current' && method === 'GET') {
+      const record = await this.deps.cycleService.getCurrent();
+      this.sendResponse(res, {
+        ok: true,
+        data: record,
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (path === '/api/v2/cycles/halt' && method === 'POST') {
+      try {
+        await this.deps.cycleService.halt();
+        this.sendResponse(res, {
+          ok: true,
+          data: { halted: true },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'halt_failed', error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/acknowledge-halt' && method === 'POST') {
+      try {
+        await this.deps.cycleService.acknowledgeHalt();
+        this.sendResponse(res, {
+          ok: true,
+          data: { acknowledged: true },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'acknowledge_failed', error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/resume' && method === 'POST') {
+      try {
+        await this.deps.cycleService.resume();
+        this.sendResponse(res, {
+          ok: true,
+          data: { resumed: true },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'resume_failed', error.message);
+      }
       return;
     }
 

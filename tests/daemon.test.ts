@@ -61,6 +61,32 @@ class MockInitService {
   }
 }
 
+class MockCycleService {
+  private _cycling = false;
+  private _halted = false;
+
+  async start(params: { intent: string; depth?: string; force?: boolean }) {
+    if (this._cycling) throw Object.assign(new Error('A cycle is already active.'), { code: 'cycle_already_active' });
+    this._cycling = true;
+    return { cycle_id: 'c1', cycle_number: 1, planning_depth: 'standard', intent: params.intent, started_at: new Date().toISOString(), initial_node: 'SCOPING' };
+  }
+  async getCurrent() {
+    return { cycle_id: this._cycling ? 'c1' : null, cycle_number: 1, iteration: 1, revision: 0, planning_depth: 'standard', intent: null, started_at: undefined, completed_at: undefined, outcome: 'cycling', max_iterations: 5, approval_gate: null, awaiting_scoping: false, awaiting_confirmation: false, awaiting_sharding_approval: false };
+  }
+  async halt() {
+    if (!this._cycling) throw Object.assign(new Error('Not cycling.'), { code: 'invalid_transition' });
+    this._cycling = false; this._halted = true;
+  }
+  async acknowledgeHalt() {
+    if (!this._halted) throw Object.assign(new Error('Not halted.'), { code: 'invalid_transition' });
+    this._halted = false;
+  }
+  async resume() {
+    if (!this._halted) throw Object.assign(new Error('Not halted.'), { code: 'invalid_transition' });
+    this._halted = false; this._cycling = true;
+  }
+}
+
 class MockDiscoveryService {
   private _complete = false;
   async start(): Promise<APIResponse<Record<string, unknown>>> {
@@ -108,10 +134,12 @@ function startServer(): Promise<DaemonServer> {
   const stateAPI = new MockStateAPI() as unknown as StateAPI;
   const initService = new MockInitService() as unknown as InitService;
   const discoveryService = new MockDiscoveryService() as unknown as Record<string, unknown>;
+  const cycleService = new MockCycleService() as unknown as Record<string, unknown>;
   return server.start({ port: 0 }, {
     stateAPI,
     initService,
     discoveryService: discoveryService as never,
+    cycleService: cycleService as never,
     pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
   }).then(() => server);
 }
@@ -241,6 +269,65 @@ async function testInitIdempotent() {
   await server.stop();
 }
 
+async function testCycleStart() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/start', {
+    intent: 'Add user authentication to the API',
+  });
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { cycle_id: string; initial_node: string } };
+  assert.strictEqual(body.ok, true);
+  assert.ok(typeof body.data.cycle_id === 'string');
+  assert.strictEqual(body.data.initial_node, 'SCOPING');
+  await server.stop();
+}
+
+async function testCycleStartAlreadyActive() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'A second concurrent intent here' });
+  assert.strictEqual(res.statusCode, 409);
+  assert.strictEqual((res.body as { error: { code: string } }).error.code, 'cycle_already_active');
+  await server.stop();
+}
+
+async function testCycleGetCurrent() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/current');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { ok: boolean }).ok, true);
+  await server.stop();
+}
+
+async function testCycleHalt() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/halt');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: { halted: boolean } }).data.halted, true);
+  await server.stop();
+}
+
+async function testCycleAcknowledgeHalt() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  await makeRequest(server, 'POST', '/api/v2/cycles/halt');
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/acknowledge-halt');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: { acknowledged: boolean } }).data.acknowledged, true);
+  await server.stop();
+}
+
+async function testCycleResume() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  await makeRequest(server, 'POST', '/api/v2/cycles/halt');
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/resume');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: { resumed: boolean } }).data.resumed, true);
+  await server.stop();
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -259,6 +346,12 @@ async function runAllTests() {
     { name: 'JSON parse error handling returns 500', fn: testJsonParseErrorReturns500 },
     { name: 'Unknown route returns 404', fn: testUnknownRouteReturns404 },
     { name: 'Init idempotent (second call fails)', fn: testInitIdempotent },
+    { name: 'POST /api/v2/cycles/start returns cycle record', fn: testCycleStart },
+    { name: 'POST /api/v2/cycles/start returns 409 when already active', fn: testCycleStartAlreadyActive },
+    { name: 'GET /api/v2/cycles/current returns cycle record', fn: testCycleGetCurrent },
+    { name: 'POST /api/v2/cycles/halt returns halted', fn: testCycleHalt },
+    { name: 'POST /api/v2/cycles/acknowledge-halt returns acknowledged', fn: testCycleAcknowledgeHalt },
+    { name: 'POST /api/v2/cycles/resume returns resumed', fn: testCycleResume },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
@@ -281,7 +374,7 @@ async function runAllTests() {
     throw failures[0].error;
   }
 
-  console.log(`\n✅ All ${tests.length} Phase E daemon tests passed!`);
+  console.log(`\n✅ All ${tests.length} Phase E+A daemon tests passed!`);
 }
 
 runAllTests();

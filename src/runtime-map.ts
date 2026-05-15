@@ -23,6 +23,7 @@ export interface RuntimeMap {
   meta: {
     status: 'idle' | 'discovering' | 'cycling' | 'halted' | 'complete';
     cycle: number;
+    active_cycle_id?: string | null;
     version_id: string;
     initialized_at: string;
     updated_at: string;
@@ -63,6 +64,7 @@ export interface RuntimeMap {
     revision: number;
     max_iterations: number;
     planning_depth: 'minimal' | 'standard' | 'deep' | 'research';
+    intent?: string;
     started_at?: string;
     completed_at?: string;
     outcome: 'cycling' | 'completed' | 'halted';
@@ -109,6 +111,7 @@ export const RuntimeMapSchema = z.object({
   meta: z.object({
     status: SystemStatusEnum,
     cycle: z.number().nonnegative(),
+    active_cycle_id: z.string().uuid().nullable().optional(),
     version_id: z.string().uuid(),
     initialized_at: z.string().datetime(),
     updated_at: z.string().datetime(),
@@ -173,6 +176,7 @@ export const RuntimeMapSchema = z.object({
     revision: z.number().nonnegative(),
     max_iterations: z.number().positive(),
     planning_depth: PlanningDepthEnum,
+    intent: z.string().optional(),
     started_at: z.string().datetime().optional(),
     completed_at: z.string().datetime().optional(),
     outcome: z.enum(['cycling', 'completed', 'halted']),

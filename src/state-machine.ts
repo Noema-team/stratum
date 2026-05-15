@@ -377,7 +377,7 @@ export function computeStateContext(map: RuntimeMap): StateContext {
   return {
     state: map.meta.status,
     active_session_id: null,
-    active_cycle_id: null,
+    active_cycle_id: map.meta.active_cycle_id ?? null,
     discovery_status: map.discovery.status,
     iteration: map.cycle.iteration,
     revision: map.cycle.revision,
