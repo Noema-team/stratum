@@ -75,6 +75,13 @@ export class DiscoveryService {
   }
 
   async start(projectRoot: string, params: StartParams = {}): Promise<DiscoverySession> {
+    const map = await this.mapManager.read();
+    if (map.discovery.status === 'complete') {
+      throw Object.assign(new Error('Discovery is already complete for this project.'), {
+        code: 'discovery_already_complete',
+      });
+    }
+
     const sleDir = path.join(projectRoot, '.sle');
     const sessionPath = path.join(sleDir, 'discovery-session.json');
 

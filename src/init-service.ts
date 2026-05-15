@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import { z } from 'zod';
 import { join as pathJoin } from 'path';
+import { dump } from 'js-yaml';
 import {
   type InitState,
   InitStateSchema,
@@ -12,6 +13,7 @@ import {
   type ProjectType,
 } from './types.js';
 import { FACILITATOR_TEMPLATES } from './prompt-templates.js';
+import { createInitialMap } from './runtime-map.js';
 
 export const InitRequestSchema = z.object({
   project_name: z.string().min(1),
@@ -371,6 +373,17 @@ export class InitService {
   }
 
   private async step3Remotes(state: InitState, request: InitRequest): Promise<{ files: string[] }> {
+    try {
+      const originUrl = execSync('git remote get-url origin', {
+        cwd: this.projectRoot,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
+      state.remotes.code.url = originUrl;
+      state.remotes.code.branch = 'main';
+    } catch {
+      state.remotes.code.url = 'https://github.com/placeholder/project.git';
+      state.remotes.code.branch = 'main';
+    }
     state.remotes.docs.url = request.docs_remote || '';
     state.remotes.docs.pending = !request.docs_remote;
     return { files: [] };
@@ -430,8 +443,22 @@ export class InitService {
     const agentMdPath = pathJoin(this.projectRoot, 'agent.md');
     await fs.writeFile(agentMdPath, agentMdContent, 'utf-8');
 
+    const codeRemoteUrl = state.remotes.code.url || 'https://github.com/placeholder/project.git';
+    const codeRemoteBranch = state.remotes.code.branch || 'main';
+    const docsRemoteUrl = request.docs_remote || codeRemoteUrl;
+
+    const initialMap = createInitialMap({
+      projectName,
+      projectType,
+      codeRemote: { url: codeRemoteUrl, branch: codeRemoteBranch },
+      issuesRemote: { type: 'git', url: codeRemoteUrl, branch: codeRemoteBranch },
+      docsRemote: { url: docsRemoteUrl, pending: !request.docs_remote },
+      taskStore: { type: state.task_store.provider },
+      agents: {},
+    });
+
     const mapPath = pathJoin(this.projectRoot, '.sle', 'map.yaml');
-    await fs.writeFile(mapPath, '', 'utf-8');
+    await fs.writeFile(mapPath, dump(initialMap), 'utf-8');
 
     if (!request.no_editor && process.env.EDITOR) {
       try {

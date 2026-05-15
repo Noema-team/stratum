@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { promises as nodeFsPromises } from 'fs';
 import { z } from 'zod';
 import {
   SystemStatusEnum,
@@ -254,7 +255,7 @@ export class RuntimeMapManagerImpl implements RuntimeMapManager {
 
   constructor(options: RuntimeMapManagerOptions) {
     this.mapPath = options.mapPath;
-    this.fs = options.fsModule || require('fs').promises;
+    this.fs = options.fsModule || nodeFsPromises;
   }
 
   async read(): Promise<RuntimeMap> {

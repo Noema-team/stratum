@@ -1,6 +1,6 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-05-12
+**Updated:** 2026-05-15
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
 ---
@@ -117,7 +117,7 @@ Implements a **subset** of 3 source specs:
 | Step 5 — TaskStore init | 🔶 | Local only (YAML file) |
 | Step 6 — Docs clone | 📝 | Skipped |
 | Step 7 — agent.md + map.yaml | ✅ | Basic templates |
-| Step 8 — Prompt templates | 📝 | Skipped |
+| Step 8 — Prompt templates | ✅ | 3 facilitator templates installed (chat, decision, scoping) |
 | Step 9 — Commit | 📝 | Skipped |
 | Step 10 — Daemon start | 📝 | Manual (`sle start` separate) |
 | Resume behaviour | ✅ | init-state.json tracking |
@@ -138,7 +138,7 @@ Implements a **subset** of 3 source specs:
 |---|---|---|---|---|---|---|
 | **Daemon MVP** | VS1 A–H, J–K | Init + discover + daemon shell | daemon-api.md (subset), init-and-discovery.md (subset) | 10 | ✅ |
 | **Facilitator** | VS1 I | Facilitator LLM integration | prompt-templates.md, conversation.md | — | ✅ |
-| **Integration** | VS1 L | End-to-end integration test | — | — | ⏳ |
+| **Integration** | VS1 L | End-to-end integration test | — | — | ✅ |
 | **Full API** | VS2 (fremtidig) | 75 remaining endpoints | daemon-api-endpoints.md (remaining 75) | 85 | 📝 |
 | **WebSocket** | VS2 (fremtidig) | WebSocket events | websocket-events.md, daemon-api.md (WS) | — | 📝 |
 | **DAG Runner** | VS2 (fremtidig) | DAG execution engine | dag-execution.md, dag-node-reference.md | — | 📝 |

@@ -8,6 +8,7 @@ import type { APIResponse, APIError } from './types.js';
 
 interface DaemonConfig {
   port?: number;
+  projectRoot?: string;
 }
 
 interface DaemonDeps {
@@ -150,16 +151,22 @@ export class DaemonServer {
 
     if (path === '/api/v2/discovery/start' && method === 'POST') {
       const body = await this.parseBody(req);
-      const projectRoot = process.cwd();
-      const result = await this.deps.discoveryService.start(projectRoot, body as Parameters<DiscoveryService['start']>[1]);
-      this.sendResponse(res, {
-        ok: true,
-        data: result,
-        meta: {
-          request_id: randomUUID(),
-          timestamp: new Date().toISOString(),
-        },
-      });
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      try {
+        const result = await this.deps.discoveryService.start(projectRoot, body as Parameters<DiscoveryService['start']>[1]);
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: {
+            request_id: randomUUID(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        const code = error.code ?? 'discovery_start_failed';
+        this.sendError(res, 409, code, error.message);
+      }
       return;
     }
 

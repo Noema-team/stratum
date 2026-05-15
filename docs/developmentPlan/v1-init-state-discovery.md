@@ -1,6 +1,6 @@
 # Vertical Slice 1: Init + State Machine + Discovery
 
-**Type:** implementation plan · **Status:** in progress · **Updated:** 2026-05-10
+**Type:** implementation plan · **Status:** complete · **Updated:** 2026-05-15
 **Slice:** v1 · **Prerequisite:** None (this is the first slice)
 
 ## Implementation Progress
@@ -11,14 +11,14 @@
 | B | Runtime Map | ✅ Complete | 0801381, eb592f7 |
 | C | State Machine | ✅ Complete | ad59035 |
 | D | Rule File Schemas | ✅ Complete | -- |
-| E | Daemon Shell | ✅ Complete | (se implementation-tracking.md) |
-| F | State API | ✅ Complete | (se implementation-tracking.md) |
-| G | sle init | ✅ Complete | (se implementation-tracking.md) |
-| H | Init API | ✅ Complete | (se implementation-tracking.md) |
-| I | Facilitator LLM | ✅ Complete | (se implementation-tracking.md) |
-| J | sle discover | ✅ Complete | (se implementation-tracking.md) |
-| K | Discovery API | ✅ Complete | (se implementation-tracking.md) |
-| L | Integration Test | ⏳ Pending | -- |
+| E | Daemon Shell | ✅ Complete | (see implementation-tracking.md) |
+| F | State API | ✅ Complete | (see implementation-tracking.md) |
+| G | sle init | ✅ Complete | (see implementation-tracking.md) |
+| H | Init API | ✅ Complete | (see implementation-tracking.md) |
+| I | Facilitator LLM | ✅ Complete | (see implementation-tracking.md) |
+| J | sle discover | ✅ Complete | (see implementation-tracking.md) |
+| K | Discovery API | ✅ Complete | (see implementation-tracking.md) |
+| L | Integration Test | ✅ Complete | (see implementation-tracking.md) |
 
 **Phase A Summary:**
 - Implemented all 57 type definitions from types.md
@@ -37,6 +37,20 @@
 - Support for Git and Dolt remotes
 - 10 unit tests with mock filesystem
 - Implementation location: `src/sdk-orchestrator/v2/src/runtime-map.ts`
+
+**Phase L Summary:**
+- 5 integration tests covering the full VS1 acceptance flow
+- Discovered and fixed 3 implementation gaps:
+  - `step7AgentMdAndMap()` was writing empty `map.yaml` — now writes a valid RuntimeMap via `createInitialMap()` + js-yaml
+  - `step3Remotes()` was not detecting git origin URL — now reads from `git remote get-url origin` with placeholder fallback
+  - `RuntimeMapManagerImpl` constructor used `require('fs')` (CJS) — replaced with ESM static import
+- Discovered and fixed 2 behavioural gaps:
+  - `DiscoveryService.start()` was not checking for completed discovery — now throws `discovery_already_complete` before proceeding
+  - Daemon `discovery/start` handler was not catching service errors — now wraps in try/catch and returns 409 with error code
+- `DaemonConfig` extended with optional `projectRoot` field — daemon now uses configured root instead of always `process.cwd()`
+- All 12 existing test suites remain green (236 tests total)
+- Scope note: synthesis/planning approval and docs/ artifact verification are deferred (not yet implemented); test covers the solo-mode discovery lifecycle as the minimum complete path
+- Implementation location: `src/sdk-orchestrator/v2/tests/integration.test.ts`
 
 ---
 
