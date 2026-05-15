@@ -22,7 +22,10 @@ import { load as yamlLoad } from 'js-yaml';
 import { DaemonServer } from '../src/daemon.js';
 import { InitService } from '../src/init-service.js';
 import { DiscoveryService } from '../src/discovery-service.js';
+import { CycleService } from '../src/cycle-service.js';
+import { RunArtifactManager } from '../src/run-artifacts.js';
 import { StateAPI } from '../src/state-api.js';
+import { StateMachine } from '../src/state-machine.js';
 import { RuntimeMapManagerImpl } from '../src/runtime-map.js';
 
 // ─── Shared test fixtures ──────────────────────────────────────────────────
@@ -72,6 +75,9 @@ async function startDaemon(tmpDir: string): Promise<DaemonServer> {
 
   const initService = new InitService({ projectRoot: tmpDir });
   const discoveryService = new DiscoveryService(stateAPI, mapManager, tmpDir);
+  const stateMachine = new StateMachine(mapManager);
+  const runArtifacts = new RunArtifactManager({ projectRoot: tmpDir });
+  const cycleService = new CycleService(stateMachine, mapManager, runArtifacts);
 
   const daemon = new DaemonServer();
   await daemon.start(
@@ -80,6 +86,7 @@ async function startDaemon(tmpDir: string): Promise<DaemonServer> {
       stateAPI,
       initService,
       discoveryService,
+      cycleService,
       pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
     }
   );

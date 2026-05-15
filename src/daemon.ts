@@ -253,6 +253,26 @@ export class DaemonServer {
       return;
     }
 
+    if (path === '/api/v2/cycles/current/dag' && method === 'GET') {
+      const dagState = await this.deps.cycleService.getDAGState();
+      this.sendResponse(res, {
+        ok: true,
+        data: dagState,
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (path === '/api/v2/cycles/current/run' && method === 'GET') {
+      const manifest = await this.deps.cycleService.getCurrentRun();
+      this.sendResponse(res, {
+        ok: true,
+        data: manifest,
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
     if (path === '/api/v2/cycles/halt' && method === 'POST') {
       try {
         await this.deps.cycleService.halt();

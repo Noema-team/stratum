@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export type NodeStatus = 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
+
 // ============================================================================
 // 1 — Enumerations & Primitives
 // ============================================================================
@@ -82,6 +84,7 @@ export const SourceWeightEnum = z.enum(['user_defined', 'cycle_produced', 'infer
 export const TagPrefixEnum = z.enum(['next-cycle', 'scope', 'area']);
 export const VersionBumpEnum = z.enum(['major', 'minor', 'patch']);
 export const SubPhaseEnum = z.enum(['static-check', 'llm-check', 'exec-check']);
+export const NodeStatusEnum = z.enum(['pending', 'running', 'complete', 'failed', 'skipped']);
 
 // ArtifactRef is a template literal type, validated with custom logic
 export const ArtifactRefSchema = z.string().refine(

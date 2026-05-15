@@ -3,10 +3,13 @@
 import { DaemonServer } from './daemon.js';
 import { InitService, type InitRequest } from './init-service.js';
 import { DiscoveryService } from './discovery-service.js';
+import { CycleService } from './cycle-service.js';
+import { RunArtifactManager } from './run-artifacts.js';
 import { readPidFile, removePidFile, isPidAlive, writePidFile } from './pid-file.js';
 import { parseCLIArgs, type DaemonCommand, type InitCommand, type StartCommand } from './daemon-config.js';
 import { RuntimeMapManagerImpl } from './runtime-map.js';
 import { StateAPI } from './state-api.js';
+import { StateMachine } from './state-machine.js';
 import { ProjectTypeEnum } from './types.js';
 
 const projectRoot = process.cwd();
@@ -105,6 +108,7 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const mapPath = `${projectRoot}/.sle/map.yaml`;
 
   const mapManager = new RuntimeMapManagerImpl({ mapPath });
+  const stateMachine = new StateMachine(mapManager);
   const stateAPI = new StateAPI(mapManager, {
     version: '2.0.0',
     sleVersion: '2.0.0',
@@ -115,6 +119,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
 
   const initService = new InitService({ projectRoot });
   const discoveryService = new DiscoveryService(stateAPI, mapManager, projectRoot);
+  const runArtifacts = new RunArtifactManager({ projectRoot });
+  const cycleService = new CycleService(stateMachine, mapManager, runArtifacts);
 
   const daemon = new DaemonServer();
 
@@ -124,6 +130,7 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       stateAPI,
       initService,
       discoveryService,
+      cycleService,
       pidFile: { writePidFile, removePidFile },
     }
   );

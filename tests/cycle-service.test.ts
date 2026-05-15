@@ -2,6 +2,65 @@ import { strict as assert } from 'assert';
 import { CycleService } from '../src/cycle-service.js';
 import { StateMachine } from '../src/state-machine.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
+import type { RunManifest, ContextPack } from '../src/run-artifacts.js';
+import type { RunArtifactManager } from '../src/run-artifacts.js';
+
+// ─── In-memory run artifact manager ─────────────────────────────────────────
+
+class InMemoryRunArtifactManager implements RunArtifactManager {
+  private dirs = new Set<string>();
+  private manifests = new Map<string, RunManifest>();
+  private packs = new Map<string, ContextPack>();
+
+  private key(c: number, i: number): string { return `${c}-${i}`; }
+
+  runDir(c: number, i: number): string { return `.sle/runs/${this.key(c, i)}`; }
+  async createRunDir(c: number, i: number): Promise<string> {
+    this.dirs.add(this.key(c, i));
+    return this.runDir(c, i);
+  }
+  async createManifest(params: { cycleId: string; cycleNumber: number; iteration: number; planningDepth: import('../src/types.js').PlanningDepth }): Promise<void> {
+    this.manifests.set(this.key(params.cycleNumber, params.iteration), {
+      cycle_id: params.cycleId,
+      cycle_number: params.cycleNumber,
+      iteration: params.iteration,
+      planning_depth: params.planningDepth,
+      started_at: new Date().toISOString(),
+      outcome: 'in_progress',
+      nodes: [],
+    });
+  }
+  async readManifest(c: number, i: number): Promise<RunManifest> {
+    const m = this.manifests.get(this.key(c, i));
+    if (!m) throw new Error(`No manifest for ${c}-${i}`);
+    return JSON.parse(JSON.stringify(m)) as RunManifest;
+  }
+  async updateManifest(c: number, i: number, updater: (m: RunManifest) => RunManifest): Promise<void> {
+    const m = await this.readManifest(c, i);
+    this.manifests.set(this.key(c, i), updater(m));
+  }
+  async updateNodeStatus(c: number, i: number, nodeId: string, update: Record<string, unknown>): Promise<void> {
+    await this.updateManifest(c, i, (m) => ({
+      ...m,
+      nodes: m.nodes.map((n) => n.id === nodeId ? { ...n, ...update } : n),
+    }));
+  }
+  async finalizeManifest(c: number, i: number, outcome: 'complete' | 'halted'): Promise<void> {
+    await this.updateManifest(c, i, (m) => ({ ...m, outcome, completed_at: new Date().toISOString() }));
+  }
+  async writeContextPack(c: number, i: number, pack: ContextPack): Promise<void> {
+    this.packs.set(this.key(c, i), pack);
+  }
+  async readContextPack(c: number, i: number): Promise<ContextPack> {
+    return this.packs.get(this.key(c, i)) ?? {};
+  }
+  async writeNodeOutput(_c: number, _i: number, _nodeId: string, _content: string): Promise<void> {}
+  async dirExists(c: number, i: number): Promise<boolean> {
+    return this.dirs.has(this.key(c, i));
+  }
+  getDirs(): Set<string> { return this.dirs; }
+  getManifest(c: number, i: number): RunManifest | undefined { return this.manifests.get(this.key(c, i)); }
+}
 
 // ─── In-memory map manager ───────────────────────────────────────────────────
 
@@ -102,18 +161,23 @@ function makeHaltedMap(): RuntimeMap {
   return map;
 }
 
-function createService(map: RuntimeMap): { svc: CycleService; mgr: InMemoryMapManager } {
+function createService(map: RuntimeMap): {
+  svc: CycleService;
+  mgr: InMemoryMapManager;
+  ram: InMemoryRunArtifactManager;
+} {
   const mgr = new InMemoryMapManager(map);
   const sm = new StateMachine(mgr);
-  const svc = new CycleService(sm, mgr);
-  return { svc, mgr };
+  const ram = new InMemoryRunArtifactManager();
+  const svc = new CycleService(sm, mgr, ram as unknown as import('../src/run-artifacts.js').RunArtifactManager);
+  return { svc, mgr, ram };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 async function testStartCycleWithDiscoveryComplete() {
   const map = makeBaseMap({ discoveryComplete: true });
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   const result = await svc.start({ intent: 'Add user authentication to the API' });
 
@@ -132,11 +196,29 @@ async function testStartCycleWithDiscoveryComplete() {
   assert.strictEqual(after.cycle.iteration, 1);
   assert.strictEqual(after.cycle.revision, 0);
   assert.strictEqual(after.cycle.intent, 'Add user authentication to the API');
+
+  // Phase B: run dir created and manifest written
+  assert.ok(ram.getDirs().has('1-1'));
+  const manifest = ram.getManifest(1, 1);
+  assert.ok(manifest !== undefined);
+  assert.strictEqual(manifest!.cycle_id, result.cycle_id);
+  assert.strictEqual(manifest!.outcome, 'in_progress');
+
+  // Phase B: DAG state initialized in map
+  const dag = after.meta.dag;
+  assert.ok(dag !== undefined);
+  assert.strictEqual(dag!.current_node, null);
+  assert.deepStrictEqual(dag!.completed_nodes, []);
+  assert.strictEqual(dag!.iteration, 1);
+  assert.strictEqual(dag!.revision, 0);
+  assert.ok(dag!.nodes['SCOPING'] !== undefined);
+  assert.strictEqual(dag!.nodes['SCOPING'].status, 'pending');
+  assert.ok(dag!.nodes['SNAPSHOT'] !== undefined);
 }
 
 async function testStartCycleCustomDepth() {
   const map = makeBaseMap({ discoveryComplete: true });
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   const result = await svc.start({
     intent: 'Refactor the database layer completely',
@@ -150,7 +232,7 @@ async function testStartCycleCustomDepth() {
 
 async function testStartCycleWithForceBypassesDiscovery() {
   const map = makeBaseMap({ discoveryComplete: false });
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   const result = await svc.start({
     intent: 'Bootstrap the initial project structure',
@@ -236,7 +318,7 @@ async function testHaltCycle() {
   map.cycle.number = 1;
   map.cycle.iteration = 1;
   map.cycle.outcome = 'cycling';
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   await svc.halt();
 
@@ -260,7 +342,7 @@ async function testHaltWhenNotCycling() {
 
 async function testAcknowledgeHalt() {
   const map = makeHaltedMap();
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   await svc.acknowledgeHalt();
 
@@ -284,7 +366,7 @@ async function testAcknowledgeHaltWhenNotHalted() {
 
 async function testResumeCycle() {
   const map = makeHaltedMap();
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   await svc.resume();
 
@@ -309,7 +391,7 @@ async function testResumeWhenNotHalted() {
 
 async function testFullCycleLifecycle() {
   const map = makeBaseMap({ discoveryComplete: true });
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   const startResult = await svc.start({ intent: 'Implement the full auth system now' });
   assert.strictEqual(mgr.getMap().meta.status, 'cycling');
@@ -332,7 +414,7 @@ async function testFullCycleLifecycle() {
 
 async function testSecondCycleGetsNewId() {
   const map = makeBaseMap({ discoveryComplete: true });
-  const { svc, mgr } = createService(map);
+  const { svc, mgr, ram } = createService(map);
 
   const first = await svc.start({ intent: 'First cycle of work here' });
   await svc.halt();
@@ -345,10 +427,93 @@ async function testSecondCycleGetsNewId() {
   assert.strictEqual(mgr.getMap().meta.active_cycle_id, second.cycle_id);
 }
 
+// ─── Phase B tests ───────────────────────────────────────────────────────────
+
+async function testDAGStateInitializedOnStart() {
+  const map = makeBaseMap({ discoveryComplete: true });
+  const { svc, mgr } = createService(map);
+
+  await svc.start({ intent: 'Add user authentication to the API' });
+
+  const dagState = await svc.getDAGState();
+  assert.ok(dagState !== null);
+  assert.strictEqual(dagState!.current_node, null);
+  assert.deepStrictEqual(dagState!.completed_nodes, []);
+  assert.strictEqual(dagState!.iteration, 1);
+  assert.strictEqual(dagState!.revision, 0);
+
+  // All 12 core nodes initialized as pending
+  const nodeIds = Object.keys(dagState!.nodes);
+  assert.ok(nodeIds.includes('SCOPING'));
+  assert.ok(nodeIds.includes('DESIGN'));
+  assert.ok(nodeIds.includes('SNAPSHOT'));
+  assert.strictEqual(nodeIds.length, 12);
+  for (const node of Object.values(dagState!.nodes)) {
+    assert.strictEqual(node.status, 'pending');
+  }
+}
+
+async function testDAGStateClearedOnAcknowledge() {
+  const map = makeHaltedMap();
+  const { svc, mgr } = createService(map);
+
+  await svc.acknowledgeHalt();
+
+  const dagState = await svc.getDAGState();
+  assert.strictEqual(dagState, null);
+  assert.strictEqual(mgr.getMap().meta.dag, undefined);
+}
+
+async function testGetCurrentRunReturnsNullWhenNotCycling() {
+  const map = makeBaseMap({ discoveryComplete: true });
+  const { svc } = createService(map);
+  const run = await svc.getCurrentRun();
+  assert.strictEqual(run, null);
+}
+
+async function testGetCurrentRunReturnsManifestWhenCycling() {
+  const map = makeBaseMap({ discoveryComplete: true });
+  const { svc, ram } = createService(map);
+
+  const result = await svc.start({ intent: 'Add user authentication to the API' });
+  const run = await svc.getCurrentRun();
+
+  assert.ok(run !== null);
+  assert.strictEqual(run!.cycle_id, result.cycle_id);
+  assert.strictEqual(run!.cycle_number, 1);
+  assert.strictEqual(run!.iteration, 1);
+  assert.strictEqual(run!.outcome, 'in_progress');
+}
+
+async function testRunDirCreatedOnStart() {
+  const map = makeBaseMap({ discoveryComplete: true });
+  const { svc, ram } = createService(map);
+
+  await svc.start({ intent: 'Add user authentication to the API' });
+
+  assert.ok(ram.getDirs().has('1-1'), 'Run dir 1-1 should be created');
+  const manifest = ram.getManifest(1, 1);
+  assert.ok(manifest !== undefined);
+  assert.strictEqual(manifest!.planning_depth, 'standard');
+}
+
+async function testHaltFinalizesManifest() {
+  const map = makeBaseMap({ discoveryComplete: true });
+  const { svc, ram } = createService(map);
+
+  await svc.start({ intent: 'Add user authentication to the API' });
+  await svc.halt();
+
+  const manifest = ram.getManifest(1, 1);
+  assert.ok(manifest !== undefined);
+  assert.strictEqual(manifest!.outcome, 'halted');
+  assert.ok(manifest!.completed_at !== undefined);
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 
 async function runAllTests() {
-  console.log('Running Phase A (Cycle Service) tests...\n');
+  console.log('Running Phase A+B (Cycle Service + Run Artifacts) tests...\n');
 
   const tests: Array<{ name: string; fn: () => Promise<void> }> = [
     { name: 'start: discovery complete → cycling state', fn: testStartCycleWithDiscoveryComplete },
@@ -366,6 +531,12 @@ async function runAllTests() {
     { name: 'resume: error when not halted', fn: testResumeWhenNotHalted },
     { name: 'full lifecycle: start → halt → resume → halt → acknowledge', fn: testFullCycleLifecycle },
     { name: 'second cycle gets new UUID and incremented number', fn: testSecondCycleGetsNewId },
+    { name: 'DAG state initialized on cycle start', fn: testDAGStateInitializedOnStart },
+    { name: 'DAG state cleared on acknowledge-halt', fn: testDAGStateClearedOnAcknowledge },
+    { name: 'getCurrentRun: null when not cycling', fn: testGetCurrentRunReturnsNullWhenNotCycling },
+    { name: 'getCurrentRun: manifest when cycling', fn: testGetCurrentRunReturnsManifestWhenCycling },
+    { name: 'run dir created on cycle start', fn: testRunDirCreatedOnStart },
+    { name: 'halt finalizes manifest with halted outcome', fn: testHaltFinalizesManifest },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

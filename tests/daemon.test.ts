@@ -73,6 +73,14 @@ class MockCycleService {
   async getCurrent() {
     return { cycle_id: this._cycling ? 'c1' : null, cycle_number: 1, iteration: 1, revision: 0, planning_depth: 'standard', intent: null, started_at: undefined, completed_at: undefined, outcome: 'cycling', max_iterations: 5, approval_gate: null, awaiting_scoping: false, awaiting_confirmation: false, awaiting_sharding_approval: false };
   }
+  async getDAGState() {
+    if (!this._cycling) return null;
+    return { current_node: null, completed_nodes: [], iteration: 1, revision: 0, started_at: new Date().toISOString(), nodes: { SCOPING: { status: 'pending' } } };
+  }
+  async getCurrentRun() {
+    if (!this._cycling) return null;
+    return { cycle_id: 'c1', cycle_number: 1, iteration: 1, planning_depth: 'standard', started_at: new Date().toISOString(), outcome: 'in_progress', nodes: [] };
+  }
   async halt() {
     if (!this._cycling) throw Object.assign(new Error('Not cycling.'), { code: 'invalid_transition' });
     this._cycling = false; this._halted = true;
@@ -328,6 +336,45 @@ async function testCycleResume() {
   await server.stop();
 }
 
+async function testCycleDAGNotCycling() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/dag');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: null }).data, null);
+  await server.stop();
+}
+
+async function testCycleDAGWhenCycling() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/dag');
+  assert.strictEqual(res.statusCode, 200);
+  const data = (res.body as { data: { current_node: null; nodes: Record<string, unknown> } }).data;
+  assert.strictEqual(data.current_node, null);
+  assert.ok(data.nodes !== undefined);
+  await server.stop();
+}
+
+async function testCycleRunNotCycling() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/run');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: null }).data, null);
+  await server.stop();
+}
+
+async function testCycleRunWhenCycling() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/run');
+  assert.strictEqual(res.statusCode, 200);
+  const data = (res.body as { data: { cycle_id: string; outcome: string } }).data;
+  assert.ok(data !== null);
+  assert.strictEqual(data.cycle_id, 'c1');
+  assert.strictEqual(data.outcome, 'in_progress');
+  await server.stop();
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -352,6 +399,10 @@ async function runAllTests() {
     { name: 'POST /api/v2/cycles/halt returns halted', fn: testCycleHalt },
     { name: 'POST /api/v2/cycles/acknowledge-halt returns acknowledged', fn: testCycleAcknowledgeHalt },
     { name: 'POST /api/v2/cycles/resume returns resumed', fn: testCycleResume },
+    { name: 'GET /api/v2/cycles/current/dag returns null when not cycling', fn: testCycleDAGNotCycling },
+    { name: 'GET /api/v2/cycles/current/dag returns dag state when cycling', fn: testCycleDAGWhenCycling },
+    { name: 'GET /api/v2/cycles/current/run returns null when not cycling', fn: testCycleRunNotCycling },
+    { name: 'GET /api/v2/cycles/current/run returns manifest when cycling', fn: testCycleRunWhenCycling },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

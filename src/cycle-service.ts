@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import type { StateMachine } from './state-machine.js';
-import type { RuntimeMapManager } from './runtime-map.js';
+import type { RuntimeMapManager, RuntimeDAGState } from './runtime-map.js';
+import type { RunArtifactManager, RunManifest } from './run-artifacts.js';
+import { initialDAGNodes } from './run-artifacts.js';
 import type { PlanningDepth } from './types.js';
 
 export interface CycleStartParams {
@@ -38,7 +40,8 @@ export interface CycleRecord {
 export class CycleService {
   constructor(
     private stateMachine: StateMachine,
-    private mapManager: RuntimeMapManager
+    private mapManager: RuntimeMapManager,
+    private runArtifacts: RunArtifactManager
   ) {}
 
   async start(params: CycleStartParams): Promise<CycleStartResult> {
@@ -64,14 +67,27 @@ export class CycleService {
     }
 
     const cycleId = randomUUID();
+    const planningDepth = params.depth ?? map.cycle.planning_depth;
+    const now = new Date().toISOString();
 
     await this.mapManager.update((m) => ({
       ...m,
-      meta: { ...m.meta, active_cycle_id: cycleId },
+      meta: {
+        ...m.meta,
+        active_cycle_id: cycleId,
+        dag: {
+          current_node: null,
+          completed_nodes: [],
+          iteration: 1,
+          revision: 0,
+          started_at: now,
+          nodes: initialDAGNodes(),
+        } satisfies RuntimeDAGState,
+      },
       cycle: {
         ...m.cycle,
         intent: params.intent,
-        planning_depth: params.depth ?? m.cycle.planning_depth,
+        planning_depth: planningDepth,
       },
     }));
 
@@ -80,7 +96,7 @@ export class CycleService {
     if (!result.success) {
       await this.mapManager.update((m) => ({
         ...m,
-        meta: { ...m.meta, active_cycle_id: null },
+        meta: { ...m.meta, active_cycle_id: null, dag: undefined },
       }));
       throw Object.assign(
         new Error(result.error?.reason ?? 'Failed to start cycle'),
@@ -89,9 +105,20 @@ export class CycleService {
     }
 
     const updatedMap = await this.mapManager.read();
+    const cycleNumber = updatedMap.cycle.number;
+    const iteration = updatedMap.cycle.iteration;
+
+    await this.runArtifacts.createRunDir(cycleNumber, iteration);
+    await this.runArtifacts.createManifest({
+      cycleId,
+      cycleNumber,
+      iteration,
+      planningDepth,
+    });
+
     return {
       cycle_id: cycleId,
-      cycle_number: updatedMap.cycle.number,
+      cycle_number: cycleNumber,
       planning_depth: updatedMap.cycle.planning_depth,
       intent: params.intent,
       started_at: updatedMap.cycle.started_at!,
@@ -119,6 +146,22 @@ export class CycleService {
     };
   }
 
+  async getDAGState(): Promise<RuntimeDAGState | null> {
+    const map = await this.mapManager.read();
+    return map.meta.dag ?? null;
+  }
+
+  async getCurrentRun(): Promise<RunManifest | null> {
+    const map = await this.mapManager.read();
+    if (map.meta.status !== 'cycling' && map.meta.status !== 'halted') return null;
+    const { number: cycleNumber, iteration } = map.cycle;
+    try {
+      return await this.runArtifacts.readManifest(cycleNumber, iteration);
+    } catch {
+      return null;
+    }
+  }
+
   async halt(): Promise<void> {
     const result = await this.stateMachine.halt('user');
     if (!result.success) {
@@ -126,6 +169,12 @@ export class CycleService {
         new Error(result.error?.reason ?? 'Failed to halt cycle'),
         { code: result.error?.code ?? 'halt_failed' }
       );
+    }
+    const map = await this.mapManager.read();
+    try {
+      await this.runArtifacts.finalizeManifest(map.cycle.number, map.cycle.iteration, 'halted');
+    } catch {
+      // manifest may not exist if halted before first node
     }
   }
 
@@ -139,7 +188,7 @@ export class CycleService {
     }
     await this.mapManager.update((m) => ({
       ...m,
-      meta: { ...m.meta, active_cycle_id: null },
+      meta: { ...m.meta, active_cycle_id: null, dag: undefined },
     }));
   }
 
@@ -150,6 +199,20 @@ export class CycleService {
         new Error(result.error?.reason ?? 'Failed to resume cycle'),
         { code: result.error?.code ?? 'resume_failed' }
       );
+    }
+    const map = await this.mapManager.read();
+    const cycleNumber = map.cycle.number;
+    const iteration = map.cycle.iteration;
+
+    const alreadyExists = await this.runArtifacts.dirExists(cycleNumber, iteration);
+    if (!alreadyExists) {
+      await this.runArtifacts.createRunDir(cycleNumber, iteration);
+      await this.runArtifacts.createManifest({
+        cycleId: map.meta.active_cycle_id ?? '',
+        cycleNumber,
+        iteration,
+        planningDepth: map.cycle.planning_depth,
+      });
     }
   }
 }

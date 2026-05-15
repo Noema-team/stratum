@@ -12,8 +12,35 @@ import {
   DiscoveryStatusEnum,
   DiscoveryModeEnum,
   AgentLLMConfigSchema,
+  NodeStatusEnum,
   type AgentLLMConfig,
+  type NodeStatus,
 } from './types.js';
+
+export interface RuntimeDAGState {
+  current_node: string | null;
+  completed_nodes: string[];
+  iteration: number;
+  revision: number;
+  started_at: string;
+  nodes: Record<string, { status: NodeStatus; started_at?: string; completed_at?: string }>;
+}
+
+const RuntimeDAGStateSchema = z.object({
+  current_node: z.string().nullable(),
+  completed_nodes: z.array(z.string()),
+  iteration: z.number().nonnegative(),
+  revision: z.number().nonnegative(),
+  started_at: z.string().datetime(),
+  nodes: z.record(
+    z.string(),
+    z.object({
+      status: NodeStatusEnum,
+      started_at: z.string().datetime().optional(),
+      completed_at: z.string().datetime().optional(),
+    })
+  ),
+});
 
 // ============================================================================
 // RuntimeMap Schema Definition
@@ -24,6 +51,7 @@ export interface RuntimeMap {
     status: 'idle' | 'discovering' | 'cycling' | 'halted' | 'complete';
     cycle: number;
     active_cycle_id?: string | null;
+    dag?: RuntimeDAGState;
     version_id: string;
     initialized_at: string;
     updated_at: string;
@@ -112,6 +140,7 @@ export const RuntimeMapSchema = z.object({
     status: SystemStatusEnum,
     cycle: z.number().nonnegative(),
     active_cycle_id: z.string().uuid().nullable().optional(),
+    dag: RuntimeDAGStateSchema.optional(),
     version_id: z.string().uuid(),
     initialized_at: z.string().datetime(),
     updated_at: z.string().datetime(),

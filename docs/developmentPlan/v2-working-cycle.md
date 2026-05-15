@@ -10,7 +10,7 @@
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
 | A | Cycle Lifecycle (state + API) | ✅ Complete | cycle-service: start/halt/resume/acknowledge + 5 REST endpoints |
-| B | Run Artifacts + DAG Node State | 🔲 Not started | — |
+| B | Run Artifacts + DAG Node State | ✅ Complete | RunArtifactManager, RuntimeDAGState in map.yaml, 2 REST endpoints |
 | C | Context Manager | 🔲 Not started | — |
 | D | Agent Runner | 🔲 Not started | — |
 | E | SCOPING Node | 🔲 Not started | — |
