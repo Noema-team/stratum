@@ -18,7 +18,7 @@
 | G | PLAN Node | ✅ Complete | `e3eaf62` — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
 | H | TEST Node + CONFIRM Gate | ✅ Complete | `93945ba` — ConfirmService (gate/approve/revise), tester prefix paths, revision context, 4 daemon endpoints |
 | I | BUILD Node + HISTORY | ✅ Complete | `35fb3b2` — APPEND_ONLY_PATHS for decisions.md, builder unrestricted paths confirmed, 21 tests |
-| J | EXEC (stub) + Validation Gate | 🔲 Not started | — |
+| J | EXEC (stub) + Validation Gate | ✅ Complete | (this commit) — ExecService (always-pass stub), ValidationGateService (deterministic manifest check), FailureReport on failure, 21 tests |
 | K | EVALUATE + SUMMARISE + SNAPSHOT | 🔲 Not started | — |
 | L | Integration Test | 🔲 Not started | — |
 
