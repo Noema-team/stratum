@@ -17,7 +17,7 @@
 | F | DESIGN Node | ✅ Complete | `340bf87` — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
 | G | PLAN Node | ✅ Complete | `e3eaf62` — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
 | H | TEST Node + CONFIRM Gate | ✅ Complete | `93945ba` — ConfirmService (gate/approve/revise), tester prefix paths, revision context, 4 daemon endpoints |
-| I | BUILD Node | 🔲 Not started | — |
+| I | BUILD Node + HISTORY | ✅ Complete | (this commit) — APPEND_ONLY_PATHS for decisions.md, builder unrestricted paths confirmed, 21 tests |
 | J | EXEC (stub) + Validation Gate | 🔲 Not started | — |
 | K | EVALUATE + SUMMARISE + SNAPSHOT | 🔲 Not started | — |
 | L | Integration Test | 🔲 Not started | — |

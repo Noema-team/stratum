@@ -52,6 +52,10 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
   return allowed.some((p) => (p.endsWith('/') ? filePath.startsWith(p) : filePath === p));
 }
 
+// Paths where new content is appended after existing content (not overwritten).
+// decisions.md accumulates entries across cycles; all other artifacts are overwritten.
+export const APPEND_ONLY_PATHS = new Set(['docs/decisions.md']);
+
 const NODE_TO_ROLE: Record<string, AgentRole> = {
   SCOPING:   'facilitator',
   DESIGN:    'designer',
@@ -287,7 +291,11 @@ export class AgentRunner {
     for (const section of parsed.sections) {
       const filePath = path.join(this.projectRoot, section.path);
       await this.fs.mkdir(path.dirname(filePath), { recursive: true });
-      await this.fs.writeFile(filePath, section.content, 'utf-8');
+      if (APPEND_ONLY_PATHS.has(section.path)) {
+        await this.fs.appendFile(filePath, section.content, 'utf-8');
+      } else {
+        await this.fs.writeFile(filePath, section.content, 'utf-8');
+      }
       artifactsWritten.push(section.path);
     }
 

@@ -95,6 +95,10 @@ function makeFsMock(files: Record<string, string> = {}): {
     writeFile: async (filePath: unknown, content: unknown) => {
       written[filePath as string] = content as string;
     },
+    appendFile: async (filePath: unknown, content: unknown) => {
+      const key = filePath as string;
+      written[key] = (written[key] ?? '') + (content as string);
+    },
     readFile: async (filePath: unknown) => {
       const p = filePath as string;
       if (p in written) return written[p];
