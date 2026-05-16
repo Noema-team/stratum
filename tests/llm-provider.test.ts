@@ -181,20 +181,127 @@ async function testOpenAICompatibleProviderUsesCustomBaseUrl() {
   }
 }
 
-async function testAnthropicProviderThrowsNotImplemented() {
+async function testAnthropicProviderReturnsStructuredResponse() {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
 
-  await assert.rejects(
-    () => provider.complete({
+  mockFetchSuccess({
+    content: [{ type: 'text', text: 'Hello from Anthropic' }],
+    usage: { input_tokens: 10, output_tokens: 5 },
+  });
+
+  try {
+    const result = await provider.complete({
       model: 'claude-3',
       messages: [{ role: 'user', content: 'Hello' }],
       temperature: 0.7,
       max_tokens: 100,
-    }),
-    /Anthropic provider not implemented/
-  );
+    });
+
+    assert.strictEqual(result.content, 'Hello from Anthropic');
+    assert.strictEqual(result.tokens_used, 15);
+    assert.ok(result.duration_ms >= 0);
+  } finally {
+    restoreFetch();
+    delete process.env.TEST_LLM_API_KEY;
+  }
+}
+
+async function testAnthropicProviderSeparatesSystemMessage() {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
+
+  let capturedBody: Record<string, unknown> = {};
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = JSON.parse(init?.body as string);
+    return new Response(
+      JSON.stringify({
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  try {
+    await provider.complete({
+      model: 'claude-3',
+      messages: [
+        { role: 'system', content: 'You are helpful.' },
+        { role: 'user', content: 'Hi' },
+      ],
+      temperature: 0.5,
+      max_tokens: 50,
+    });
+
+    assert.strictEqual(capturedBody.system, 'You are helpful.');
+    assert.deepStrictEqual(capturedBody.messages, [{ role: 'user', content: 'Hi' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
+}
+
+async function testAnthropicProviderSendsCorrectHeaders() {
+  process.env.TEST_LLM_API_KEY = 'my-anthropic-key';
+  const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
+
+  let capturedHeaders: Record<string, string> = {};
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+    capturedHeaders = Object.fromEntries(new Headers(init?.headers as HeadersInit).entries());
+    return new Response(
+      JSON.stringify({ content: [{ type: 'text', text: '' }], usage: { input_tokens: 1, output_tokens: 1 } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  try {
+    await provider.complete({
+      model: 'claude-3',
+      messages: [{ role: 'user', content: 'test' }],
+      temperature: 0.5,
+      max_tokens: 10,
+    });
+
+    assert.strictEqual(capturedHeaders['x-api-key'], 'my-anthropic-key');
+    assert.ok(capturedHeaders['anthropic-version']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
+}
+
+async function testAnthropicProviderThrowsOnApiError() {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
+
+  mockFetchError(401, 'Unauthorized');
+
+  try {
+    await assert.rejects(
+      () => provider.complete({
+        model: 'claude-3',
+        messages: [{ role: 'user', content: 'Hello' }],
+        temperature: 0.7,
+        max_tokens: 100,
+      }),
+      /Anthropic API request failed: 401/
+    );
+  } finally {
+    restoreFetch();
+    delete process.env.TEST_LLM_API_KEY;
+  }
+}
+
+async function testAnthropicProviderThrowsOnMissingKey() {
   delete process.env.TEST_LLM_API_KEY;
+  delete process.env.SLE_LLM_API_KEY;
+  assert.throws(
+    () => new AnthropicProvider(ANTHROPIC_CONFIG),
+    /API key not found/
+  );
 }
 
 async function testCreateLLMProviderReturnsCorrectType() {
@@ -263,7 +370,11 @@ async function runAllTests() {
     { name: 'OpenAICompatibleProvider throws on API error', fn: testOpenAICompatibleProviderThrowsOnApiError },
     { name: 'OpenAICompatibleProvider handles empty choices', fn: testOpenAICompatibleProviderHandlesEmptyChoices },
     { name: 'OpenAICompatibleProvider uses custom base_url', fn: testOpenAICompatibleProviderUsesCustomBaseUrl },
-    { name: 'AnthropicProvider throws not implemented', fn: testAnthropicProviderThrowsNotImplemented },
+    { name: 'AnthropicProvider returns structured response', fn: testAnthropicProviderReturnsStructuredResponse },
+    { name: 'AnthropicProvider separates system message', fn: testAnthropicProviderSeparatesSystemMessage },
+    { name: 'AnthropicProvider sends correct headers', fn: testAnthropicProviderSendsCorrectHeaders },
+    { name: 'AnthropicProvider throws on API error', fn: testAnthropicProviderThrowsOnApiError },
+    { name: 'AnthropicProvider throws on missing key', fn: testAnthropicProviderThrowsOnMissingKey },
     { name: 'createLLMProvider returns correct type', fn: testCreateLLMProviderReturnsCorrectType },
     { name: 'createLLMProvider throws on unknown provider', fn: testCreateLLMProviderThrowsOnUnknownProvider },
     { name: 'LLMCompletionParamsSchema validates correctly', fn: testLLMCompletionParamsSchema },
@@ -291,7 +402,7 @@ async function runAllTests() {
     throw failures[0].error;
   }
 
-  console.log(`\n✅ All ${tests.length} LLM provider tests passed!`);
+  console.log(`\n✅ All ${tests.length} LLM provider + AnthropicProvider tests passed!`);
 }
 
 runAllTests();

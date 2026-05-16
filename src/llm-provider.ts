@@ -102,10 +102,80 @@ export class OpenAICompatibleProvider implements ILLMProvider {
 }
 
 export class AnthropicProvider implements ILLMProvider {
-  constructor(_config: AgentLLMConfig) {}
+  private apiKey: string;
+  private defaultModel: string;
+  private baseUrl: string;
 
-  async complete(_params: LLMCompletionParams): Promise<LLMCompletionResult> {
-    throw new Error('Anthropic provider not implemented');
+  constructor(config: AgentLLMConfig) {
+    this.apiKey = process.env[config.api_key_env] || process.env.SLE_LLM_API_KEY || '';
+    this.defaultModel = config.model;
+    this.baseUrl = (config.base_url || 'https://api.anthropic.com/v1').replace(/\/$/, '');
+
+    if (!this.apiKey) {
+      throw new Error(
+        `API key not found. Set ${config.api_key_env} or SLE_LLM_API_KEY environment variable.`
+      );
+    }
+  }
+
+  async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
+    LLMCompletionParamsSchema.parse(params);
+
+    const start = Date.now();
+    const url = `${this.baseUrl}/messages`;
+
+    // Anthropic separates system from user/assistant turns
+    const systemMessages = params.messages.filter((m) => m.role === 'system');
+    const turns = params.messages.filter((m) => m.role !== 'system');
+
+    const body: Record<string, unknown> = {
+      model: params.model || this.defaultModel,
+      max_tokens: params.max_tokens,
+      messages: turns,
+    };
+    if (systemMessages.length > 0) {
+      body.system = systemMessages.map((m) => m.content).join('\n\n');
+    }
+    if (params.temperature !== undefined) {
+      body.temperature = params.temperature;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'unknown error');
+      throw new Error(
+        `Anthropic API request failed: ${response.status} ${response.statusText} — ${errorBody}`
+      );
+    }
+
+    const data = await response.json() as {
+      content: Array<{ type: string; text: string }>;
+      usage?: { input_tokens: number; output_tokens: number };
+    };
+
+    const textBlock = data.content?.find((b) => b.type === 'text');
+    const content = textBlock?.text ?? '';
+    const tokensUsed = data.usage
+      ? (data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0)
+      : 0;
+
+    const result: LLMCompletionResult = {
+      content,
+      tokens_used: tokensUsed,
+      duration_ms: Date.now() - start,
+    };
+
+    LLMCompletionResultSchema.parse(result);
+    return result;
   }
 }
 
