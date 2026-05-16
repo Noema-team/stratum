@@ -15,7 +15,7 @@
 | D | Agent Runner | ✅ Complete | `1ba3f51` — AgentRunner, parseAgentOutput, AnthropicProvider (fetch-based) |
 | E | SCOPING Node | ✅ Complete | `9d88f31` — ScopingService, 3 REST endpoints (draft/response/approve) |
 | F | DESIGN Node | ✅ Complete | `340bf87` — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
-| G | PLAN Node | ✅ Complete | (this commit) — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
+| G | PLAN Node | ✅ Complete | `e3eaf62` — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
 | H | TEST Node + CONFIRM Gate | 🔲 Not started | — |
 | I | BUILD Node | 🔲 Not started | — |
 | J | EXEC (stub) + Validation Gate | 🔲 Not started | — |
