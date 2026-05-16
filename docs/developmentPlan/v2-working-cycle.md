@@ -19,7 +19,7 @@
 | H | TEST Node + CONFIRM Gate | ✅ Complete | `93945ba` — ConfirmService (gate/approve/revise), tester prefix paths, revision context, 4 daemon endpoints |
 | I | BUILD Node + HISTORY | ✅ Complete | `35fb3b2` — APPEND_ONLY_PATHS for decisions.md, builder unrestricted paths confirmed, 21 tests |
 | J | EXEC (stub) + Validation Gate | ✅ Complete | `f317342` — ExecService (always-pass stub), ValidationGateService (deterministic manifest check), FailureReport on failure, 21 tests |
-| K | EVALUATE + SUMMARISE + SNAPSHOT | 🔲 Not started | — |
+| K | EVALUATE + SUMMARISE + SNAPSHOT | ✅ Complete | (this commit) — SnapshotService (copies artifacts, writes snapshot.json, finalizes manifest), 22 tests |
 | L | Integration Test | 🔲 Not started | — |
 
 ---
