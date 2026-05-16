@@ -32,6 +32,25 @@ export interface ParsedOutput {
 
 // ─── Node → Role mapping ─────────────────────────────────────────────────────
 
+// ─── Write-path validation (DDR-019) ─────────────────────────────────────────
+
+// Roles with no entry (builder, explorer, debugger) may write to any path.
+const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
+  facilitator: ['docs/cycle-charter.md'],
+  designer:    ['docs/requirements.md', 'docs/architecture.md'],
+  planner:     ['docs/plan.md', 'docs/test-plan.md'],
+  tester:      ['docs/test-plan.md'],
+  historian:   ['docs/decisions.md', 'docs/cycle-summary.md'],
+  evaluator:   ['docs/evaluation-criteria.md'],
+  critic:      ['docs/critique.md'],
+};
+
+export function validateOutputPath(filePath: string, role: AgentRole): boolean {
+  const allowed = ROLE_OUTPUT_PATHS[role];
+  if (!allowed) return true;
+  return allowed.includes(filePath);
+}
+
 const NODE_TO_ROLE: Record<string, AgentRole> = {
   SCOPING:   'facilitator',
   DESIGN:    'designer',
@@ -248,7 +267,21 @@ export class AgentRunner {
       };
     }
 
-    // 6. Write artifacts
+    // 6. Validate write paths (DDR-019)
+    for (const section of parsed.sections) {
+      if (!validateOutputPath(section.path, role)) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: llmResult.tokens_used,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Role '${role}' is not permitted to write '${section.path}'`,
+        };
+      }
+    }
+
+    // 7. Write artifacts
     const artifactsWritten: string[] = [];
     for (const section of parsed.sections) {
       const filePath = path.join(this.projectRoot, section.path);

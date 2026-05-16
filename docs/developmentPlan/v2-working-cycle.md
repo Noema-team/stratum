@@ -13,8 +13,8 @@
 | B | Run Artifacts + DAG Node State | ✅ Complete | `18b5a70` — RunArtifactManager, RuntimeDAGState in map.yaml, 2 REST endpoints |
 | C | Context Manager | ✅ Complete | `6faf866` — ContextManager: role-aware artifact slices, token budget, failure context |
 | D | Agent Runner | ✅ Complete | `1ba3f51` — AgentRunner, parseAgentOutput, AnthropicProvider (fetch-based) |
-| E | SCOPING Node | ✅ Complete | (this commit) — ScopingService, 3 REST endpoints (draft/response/approve) |
-| F | DESIGN Node | 🔲 Not started | — |
+| E | SCOPING Node | ✅ Complete | `9d88f31` — ScopingService, 3 REST endpoints (draft/response/approve) |
+| F | DESIGN Node | ✅ Complete | (this commit) — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
 | G | PLAN Node | 🔲 Not started | — |
 | H | TEST Node + CONFIRM Gate | 🔲 Not started | — |
 | I | BUILD Node | 🔲 Not started | — |
