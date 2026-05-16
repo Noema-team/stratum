@@ -85,13 +85,16 @@ export function buildCycleStateContext(
   currentNode: string | null,
   failureReport?: FailureReport
 ): CycleStateContext {
+  const cycleAny = map.cycle as { intent?: string; revision?: number; revision_note?: string };
   return {
     cycle_number: map.cycle.number,
     iteration: map.cycle.iteration,
     planning_depth: map.cycle.planning_depth,
-    intent: (map.cycle as { intent?: string }).intent ?? '',
+    intent: cycleAny.intent ?? '',
     current_node: currentNode,
     failure_report: failureReport,
+    revision_count: cycleAny.revision ?? 0,
+    revision_note: cycleAny.revision_note,
   };
 }
 

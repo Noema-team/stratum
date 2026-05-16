@@ -287,6 +287,7 @@ export interface CycleState {
   awaiting_scoping: boolean;
   awaiting_confirmation: boolean;
   awaiting_sharding_approval: boolean;
+  revision_note?: string;
   last_summary?: { path: string; generated_at: string };
 }
 
@@ -303,6 +304,7 @@ export const CycleStateSchema = z.object({
   awaiting_scoping: z.boolean(),
   awaiting_confirmation: z.boolean(),
   awaiting_sharding_approval: z.boolean(),
+  revision_note: z.string().optional(),
   last_summary: z
     .object({
       path: z.string(),

@@ -35,11 +35,12 @@ export interface ParsedOutput {
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
 
 // Roles with no entry (builder, explorer, debugger) may write to any path.
+// Entries ending with '/' are prefix matches (any path under that directory).
 const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   facilitator: ['docs/cycle-charter.md'],
   designer:    ['docs/requirements.md', 'docs/architecture.md'],
   planner:     ['docs/plan.md', 'docs/test-plan.md'],
-  tester:      ['docs/test-plan.md'],
+  tester:      ['docs/test-plan.md', '.sle/runs/'],
   historian:   ['docs/decisions.md', 'docs/cycle-summary.md'],
   evaluator:   ['docs/evaluation-criteria.md'],
   critic:      ['docs/critique.md'],
@@ -48,7 +49,7 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
 export function validateOutputPath(filePath: string, role: AgentRole): boolean {
   const allowed = ROLE_OUTPUT_PATHS[role];
   if (!allowed) return true;
-  return allowed.includes(filePath);
+  return allowed.some((p) => (p.endsWith('/') ? filePath.startsWith(p) : filePath === p));
 }
 
 const NODE_TO_ROLE: Record<string, AgentRole> = {

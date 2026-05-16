@@ -15,6 +15,8 @@ export interface CycleStateContext {
   intent: string;
   current_node: string | null;
   failure_report?: FailureReport;
+  revision_count?: number;
+  revision_note?: string;
 }
 
 // ─── Per-role artifact slice defaults ────────────────────────────────────────
@@ -166,6 +168,12 @@ export class ContextManager {
       `- Current node: ${cycleState.current_node ?? 'not started'}`,
       `- Intent: "${cycleState.intent}"`,
     ];
+    if (cycleState.revision_count && cycleState.revision_count > 0) {
+      lines.push(`- Revision: ${cycleState.revision_count}`);
+      if (cycleState.revision_note) {
+        lines.push(`- Revision note: "${cycleState.revision_note}"`);
+      }
+    }
     return lines.join('\n');
   }
 

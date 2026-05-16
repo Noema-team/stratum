@@ -6,6 +6,7 @@ import type { InitService } from './init-service.js';
 import type { DiscoveryService } from './discovery-service.js';
 import type { CycleService } from './cycle-service.js';
 import type { ScopingService } from './scoping-service.js';
+import type { ConfirmService } from './confirm-service.js';
 import type { APIResponse, APIError } from './types.js';
 
 interface DaemonConfig {
@@ -19,6 +20,7 @@ interface DaemonDeps {
   discoveryService: DiscoveryService;
   cycleService: CycleService;
   scopingService: ScopingService;
+  confirmService: ConfirmService;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
     removePidFile: (path: string) => Promise<void>;
@@ -46,6 +48,7 @@ export class DaemonServer {
       discoveryService: null as unknown as DiscoveryService,
       cycleService: null as unknown as CycleService,
       scopingService: null as unknown as ScopingService,
+      confirmService: null as unknown as ConfirmService,
       pidFile: { writePidFile, removePidFile },
     };
   }
@@ -379,6 +382,49 @@ export class DaemonServer {
       } catch (err) {
         const error = err as Error & { code?: string };
         this.sendError(res, 409, error.code ?? 'approve_failed', error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/confirm' && method === 'POST') {
+      try {
+        const params = (await this.parseBody(req)) as { action?: string; note?: string };
+        const action = params.action;
+        if (action !== 'approve' && action !== 'revise' && action !== 'halt') {
+          this.sendError(res, 400, 'invalid_action', 'action must be approve, revise, or halt');
+          return;
+        }
+        const map = await this.deps.cycleService.getCurrent();
+        if (action === 'approve') {
+          const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+          this.sendResponse(res, {
+            ok: true,
+            data: result,
+            meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+          });
+        } else if (action === 'revise') {
+          const result = await this.deps.confirmService.revise(
+            map.cycle_number,
+            map.iteration,
+            params.note
+          );
+          this.sendResponse(res, {
+            ok: true,
+            data: result,
+            meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+          });
+        } else {
+          // halt
+          const halted = await this.deps.cycleService.halt();
+          this.sendResponse(res, {
+            ok: true,
+            data: halted,
+            meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+          });
+        }
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'confirm_failed', error.message);
       }
       return;
     }

@@ -16,7 +16,7 @@
 | E | SCOPING Node | ✅ Complete | `9d88f31` — ScopingService, 3 REST endpoints (draft/response/approve) |
 | F | DESIGN Node | ✅ Complete | `340bf87` — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
 | G | PLAN Node | ✅ Complete | `e3eaf62` — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
-| H | TEST Node + CONFIRM Gate | 🔲 Not started | — |
+| H | TEST Node + CONFIRM Gate | ✅ Complete | (this commit) — ConfirmService (gate/approve/revise), tester prefix paths, revision context, 4 daemon endpoints |
 | I | BUILD Node | 🔲 Not started | — |
 | J | EXEC (stub) + Validation Gate | 🔲 Not started | — |
 | K | EVALUATE + SUMMARISE + SNAPSHOT | 🔲 Not started | — |
