@@ -3,7 +3,8 @@ import { roleForNode } from './agent-runner.js';
 import type { CycleStateContext } from './context-manager.js';
 import type { RuntimeMapManager } from './runtime-map.js';
 import type { RunArtifactManager } from './run-artifacts.js';
-import type { AgentRole, PlanningDepth } from './types.js';
+import type { AgentRole, PlanningDepth, FailureReport } from './types.js';
+import type { RuntimeMap } from './runtime-map.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +76,23 @@ export async function updateArtifactEntries(
       return updated;
     })(),
   }));
+}
+
+// ─── CycleStateContext builder ────────────────────────────────────────────────
+
+export function buildCycleStateContext(
+  map: RuntimeMap,
+  currentNode: string | null,
+  failureReport?: FailureReport
+): CycleStateContext {
+  return {
+    cycle_number: map.cycle.number,
+    iteration: map.cycle.iteration,
+    planning_depth: map.cycle.planning_depth,
+    intent: (map.cycle as { intent?: string }).intent ?? '',
+    current_node: currentNode,
+    failure_report: failureReport,
+  };
 }
 
 // ─── DAGRunner ────────────────────────────────────────────────────────────────

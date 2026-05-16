@@ -1,6 +1,6 @@
 import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
-import type { NodeStatus, PlanningDepth } from './types.js';
+import type { NodeStatus, PlanningDepth, FailureReport } from './types.js';
 
 export const CORE_DAG_NODES = [
   'SCOPING',
@@ -179,6 +179,31 @@ export class RunArtifactManager {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async writeFailureReport(
+    cycleNumber: number,
+    iteration: number,
+    report: FailureReport
+  ): Promise<void> {
+    const dir = this.runDir(cycleNumber, iteration);
+    await this.fs.writeFile(
+      path.join(dir, 'failure-report.json'),
+      JSON.stringify(report, null, 2)
+    );
+  }
+
+  async readFailureReport(
+    cycleNumber: number,
+    iteration: number
+  ): Promise<FailureReport | null> {
+    const reportPath = path.join(this.runDir(cycleNumber, iteration), 'failure-report.json');
+    try {
+      const content = await this.fs.readFile(reportPath, 'utf-8');
+      return JSON.parse(content) as FailureReport;
+    } catch {
+      return null;
     }
   }
 }

@@ -1,6 +1,6 @@
 # Vertical Slice 2: Working Cycle
 
-**Type:** implementation plan · **Status:** not started · **Updated:** 2026-05-15
+**Type:** implementation plan · **Status:** not started · **Updated:** 2026-05-16
 **Slice:** v2 · **Prerequisite:** VS1 complete (init + discovery + daemon shell)
 
 ---
@@ -14,8 +14,8 @@
 | C | Context Manager | ✅ Complete | `6faf866` — ContextManager: role-aware artifact slices, token budget, failure context |
 | D | Agent Runner | ✅ Complete | `1ba3f51` — AgentRunner, parseAgentOutput, AnthropicProvider (fetch-based) |
 | E | SCOPING Node | ✅ Complete | `9d88f31` — ScopingService, 3 REST endpoints (draft/response/approve) |
-| F | DESIGN Node | ✅ Complete | (this commit) — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
-| G | PLAN Node | 🔲 Not started | — |
+| F | DESIGN Node | ✅ Complete | `340bf87` — DAGRunner, write-path validation (DDR-019), CRITIQUE skip logic |
+| G | PLAN Node | ✅ Complete | (this commit) — buildCycleStateContext, failure report I/O, PLAN node + failure context injection |
 | H | TEST Node + CONFIRM Gate | 🔲 Not started | — |
 | I | BUILD Node | 🔲 Not started | — |
 | J | EXEC (stub) + Validation Gate | 🔲 Not started | — |
