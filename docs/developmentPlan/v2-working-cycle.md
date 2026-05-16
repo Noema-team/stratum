@@ -9,11 +9,11 @@
 
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
-| A | Cycle Lifecycle (state + API) | ✅ Complete | cycle-service: start/halt/resume/acknowledge + 5 REST endpoints |
-| B | Run Artifacts + DAG Node State | ✅ Complete | RunArtifactManager, RuntimeDAGState in map.yaml, 2 REST endpoints |
-| C | Context Manager | ✅ Complete | ContextManager: role-aware artifact slices, token budget, failure context |
-| D | Agent Runner | ✅ Complete | AgentRunner, parseAgentOutput, AnthropicProvider (fetch-based) |
-| E | SCOPING Node | 🔲 Not started | — |
+| A | Cycle Lifecycle (state + API) | ✅ Complete | `07dadb6` — CycleService: start/halt/resume/acknowledge + 5 REST endpoints |
+| B | Run Artifacts + DAG Node State | ✅ Complete | `18b5a70` — RunArtifactManager, RuntimeDAGState in map.yaml, 2 REST endpoints |
+| C | Context Manager | ✅ Complete | `6faf866` — ContextManager: role-aware artifact slices, token budget, failure context |
+| D | Agent Runner | ✅ Complete | `1ba3f51` — AgentRunner, parseAgentOutput, AnthropicProvider (fetch-based) |
+| E | SCOPING Node | ✅ Complete | (this commit) — ScopingService, 3 REST endpoints (draft/response/approve) |
 | F | DESIGN Node | 🔲 Not started | — |
 | G | PLAN Node | 🔲 Not started | — |
 | H | TEST Node + CONFIRM Gate | 🔲 Not started | — |

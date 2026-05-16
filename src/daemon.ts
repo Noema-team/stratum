@@ -5,6 +5,7 @@ import type { StateAPI } from './state-api.js';
 import type { InitService } from './init-service.js';
 import type { DiscoveryService } from './discovery-service.js';
 import type { CycleService } from './cycle-service.js';
+import type { ScopingService } from './scoping-service.js';
 import type { APIResponse, APIError } from './types.js';
 
 interface DaemonConfig {
@@ -17,6 +18,7 @@ interface DaemonDeps {
   initService: InitService;
   discoveryService: DiscoveryService;
   cycleService: CycleService;
+  scopingService: ScopingService;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
     removePidFile: (path: string) => Promise<void>;
@@ -43,6 +45,7 @@ export class DaemonServer {
       initService: null as unknown as InitService,
       discoveryService: null as unknown as DiscoveryService,
       cycleService: null as unknown as CycleService,
+      scopingService: null as unknown as ScopingService,
       pidFile: { writePidFile, removePidFile },
     };
   }
@@ -224,14 +227,31 @@ export class DaemonServer {
       const body = await this.parseBody(req);
       const params = body as { intent?: string; depth?: string; force?: boolean };
       try {
-        const result = await this.deps.cycleService.start({
+        const startResult = await this.deps.cycleService.start({
           intent: params.intent ?? '',
           depth: params.depth as Parameters<CycleService['start']>[0]['depth'],
           force: params.force,
         });
+        // Immediately begin scoping (synchronous for VS2)
+        const scopingState = {
+          cycle_number: startResult.cycle_number,
+          iteration: 1,
+          planning_depth: startResult.planning_depth,
+          intent: startResult.intent,
+          current_node: 'SCOPING' as const,
+        };
+        try {
+          await this.deps.scopingService.begin(
+            startResult.cycle_number,
+            1,
+            scopingState
+          );
+        } catch {
+          // scoping failure doesn't abort the start response — cycle is live, scoping draft missing
+        }
         this.sendResponse(res, {
           ok: true,
-          data: result,
+          data: startResult,
           meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
         });
       } catch (err) {
@@ -314,6 +334,51 @@ export class DaemonServer {
       } catch (err) {
         const error = err as Error & { code?: string };
         this.sendError(res, 409, error.code ?? 'resume_failed', error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/scoping/draft' && method === 'GET') {
+      const draft = await this.deps.scopingService.getDraft();
+      if (draft === null) {
+        this.sendError(res, 404, 'no_scoping_draft', 'No scoping draft available');
+        return;
+      }
+      this.sendResponse(res, {
+        ok: true,
+        data: { content: draft },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (path === '/api/v2/cycles/scoping/response' && method === 'POST') {
+      const body = await this.parseBody(req);
+      const params = body as { text?: string };
+      await this.deps.scopingService.submitResponse(params.text ?? '');
+      this.sendResponse(res, {
+        ok: true,
+        data: { recorded: true },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (path === '/api/v2/cycles/scoping/approve' && method === 'POST') {
+      try {
+        const map = await this.deps.cycleService.getCurrent();
+        const result = await this.deps.scopingService.approve(
+          map.cycle_number,
+          map.iteration
+        );
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'approve_failed', error.message);
       }
       return;
     }

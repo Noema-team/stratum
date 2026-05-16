@@ -95,6 +95,25 @@ class MockCycleService {
   }
 }
 
+class MockScopingService {
+  private _draft: string | null = null;
+  private _pendingResponse: string | null = null;
+
+  async begin(_cn: number, _it: number, _state: unknown) {
+    this._draft = '# Cycle Charter: 1\n\n## Intent\nTest intent\n\n## Scope\nScope here.';
+    return { draft: this._draft, charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
+  }
+  async getDraft() { return this._draft; }
+  async submitResponse(text: string) { this._pendingResponse = text; }
+  async approve(_cn: number, _it: number) {
+    if (!this._draft) throw Object.assign(new Error('No draft'), { code: 'no_scoping_draft' });
+    this._draft = null;
+    this._pendingResponse = null;
+    return { charter_path: 'docs/cycle-charter.md', awaiting_scoping: false as const };
+  }
+  getPendingResponse() { return this._pendingResponse; }
+}
+
 class MockDiscoveryService {
   private _complete = false;
   async start(): Promise<APIResponse<Record<string, unknown>>> {
@@ -143,11 +162,13 @@ function startServer(): Promise<DaemonServer> {
   const initService = new MockInitService() as unknown as InitService;
   const discoveryService = new MockDiscoveryService() as unknown as Record<string, unknown>;
   const cycleService = new MockCycleService() as unknown as Record<string, unknown>;
+  const scopingService = new MockScopingService() as unknown as Record<string, unknown>;
   return server.start({ port: 0 }, {
     stateAPI,
     initService,
     discoveryService: discoveryService as never,
     cycleService: cycleService as never,
+    scopingService: scopingService as never,
     pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
   }).then(() => server);
 }
@@ -375,6 +396,55 @@ async function testCycleRunWhenCycling() {
   await server.stop();
 }
 
+async function testScopingDraftAfterStart() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/scoping/draft');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { content: string } };
+  assert.strictEqual(body.ok, true);
+  assert.ok(body.data.content.includes('Cycle Charter'));
+  await server.stop();
+}
+
+async function testScopingDraftNotFound() {
+  const server = await startServer();
+  // No cycle started — draft is null
+  const res = await makeRequest(server, 'GET', '/api/v2/cycles/scoping/draft');
+  assert.strictEqual(res.statusCode, 404);
+  assert.strictEqual((res.body as { error: { code: string } }).error.code, 'no_scoping_draft');
+  await server.stop();
+}
+
+async function testScopingSubmitResponse() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/response', { text: 'Please add rate limiting.' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual((res.body as { data: { recorded: boolean } }).data.recorded, true);
+  await server.stop();
+}
+
+async function testScopingApprove() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/approve');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { charter_path: string; awaiting_scoping: boolean } };
+  assert.strictEqual(body.ok, true);
+  assert.strictEqual(body.data.charter_path, 'docs/cycle-charter.md');
+  assert.strictEqual(body.data.awaiting_scoping, false);
+  await server.stop();
+}
+
+async function testScopingApproveFailsWithNoDraft() {
+  const server = await startServer();
+  // No start — no draft
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/approve');
+  assert.strictEqual(res.statusCode, 409);
+  await server.stop();
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -403,6 +473,11 @@ async function runAllTests() {
     { name: 'GET /api/v2/cycles/current/dag returns dag state when cycling', fn: testCycleDAGWhenCycling },
     { name: 'GET /api/v2/cycles/current/run returns null when not cycling', fn: testCycleRunNotCycling },
     { name: 'GET /api/v2/cycles/current/run returns manifest when cycling', fn: testCycleRunWhenCycling },
+    { name: 'GET /api/v2/cycles/scoping/draft returns draft after start', fn: testScopingDraftAfterStart },
+    { name: 'GET /api/v2/cycles/scoping/draft returns 404 with no draft', fn: testScopingDraftNotFound },
+    { name: 'POST /api/v2/cycles/scoping/response records response', fn: testScopingSubmitResponse },
+    { name: 'POST /api/v2/cycles/scoping/approve returns charter path', fn: testScopingApprove },
+    { name: 'POST /api/v2/cycles/scoping/approve 409 with no draft', fn: testScopingApproveFailsWithNoDraft },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
@@ -425,7 +500,7 @@ async function runAllTests() {
     throw failures[0].error;
   }
 
-  console.log(`\n✅ All ${tests.length} Phase E+A daemon tests passed!`);
+  console.log(`\n✅ All ${tests.length} Phase A+E daemon tests passed!`);
 }
 
 runAllTests();
