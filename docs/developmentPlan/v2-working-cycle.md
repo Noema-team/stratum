@@ -20,7 +20,7 @@
 | I | BUILD Node + HISTORY | ✅ Complete | `35fb3b2` — APPEND_ONLY_PATHS for decisions.md, builder unrestricted paths confirmed, 21 tests |
 | J | EXEC (stub) + Validation Gate | ✅ Complete | `f317342` — ExecService (always-pass stub), ValidationGateService (deterministic manifest check), FailureReport on failure, 21 tests |
 | K | EVALUATE + SUMMARISE + SNAPSHOT | ✅ Complete | `e51ac1b` — SnapshotService (copies artifacts, writes snapshot.json, finalizes manifest), 22 tests |
-| L | Integration Test | ✅ Complete | `(this commit)` — CycleRunner (SCOPING→SNAPSHOT orchestration), 10 tests (9 unit + 1 full integration) |
+| L | Integration Test | ✅ Complete | `6f13382` — CycleRunner (SCOPING→SNAPSHOT orchestration), 10 tests (9 unit + 1 full integration) |
 
 ---
 
