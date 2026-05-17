@@ -15,10 +15,13 @@ export interface SnapshotResult {
 
 export interface SnapshotMetadata {
   snapshot_id: string;
+  cycle_id: string;
   cycle: number;
   iteration: number;
   created_at: string;
   artifacts: string[];
+  evaluation_verdict: 'PASS' | 'PARTIAL' | 'FAIL';
+  locked: true;
 }
 
 // ─── SnapshotService ──────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ export class SnapshotService {
   }
 
   snapshotDir(cycleNumber: number, iteration: number): string {
-    return path.join(this.projectRoot, '.sle', 'snapshots', `${cycleNumber}-${iteration}`);
+    return path.join(this.projectRoot, '.sle', 'snapshots', `v${cycleNumber}.${iteration}`);
   }
 
   async run(cycleNumber: number, iteration: number): Promise<SnapshotResult> {
@@ -55,7 +58,15 @@ export class SnapshotService {
       },
     }));
 
-    // Read artifact paths from map
+    // Read cycle_id from manifest and artifact paths from map
+    let cycleId = String(cycleNumber);
+    try {
+      const manifest = await this.runArtifacts.readManifest(cycleNumber, iteration);
+      cycleId = manifest.cycle_id;
+    } catch {
+      // Fallback to cycle number string
+    }
+
     const map = await this.mapManager.read();
     const artifactPaths: string[] = (map.artifacts ?? []).map(
       (a: { path: string }) => a.path
@@ -83,10 +94,13 @@ export class SnapshotService {
     // Write snapshot metadata
     const metadata: SnapshotMetadata = {
       snapshot_id: snapshotId,
+      cycle_id: cycleId,
       cycle: cycleNumber,
       iteration,
       created_at: startedAt,
       artifacts: copied,
+      evaluation_verdict: 'PASS',
+      locked: true,
     };
     await this.fs.writeFile(
       path.join(snapDir, 'snapshot.json'),
@@ -94,9 +108,12 @@ export class SnapshotService {
       'utf-8'
     );
 
+    // Write .locked sentinel
+    await this.fs.writeFile(path.join(snapDir, '.locked'), '', 'utf-8');
+
     const completedAt = new Date().toISOString();
     const snapshotJsonPath = path.join(
-      '.sle', 'snapshots', `${cycleNumber}-${iteration}`, 'snapshot.json'
+      '.sle', 'snapshots', `v${cycleNumber}.${iteration}`, 'snapshot.json'
     );
 
     await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SNAPSHOT', {

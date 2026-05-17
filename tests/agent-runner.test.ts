@@ -7,6 +7,7 @@ import {
   parseAgentOutput,
   buildUserMessage,
   roleForNode,
+  validateOutputPath,
   AgentRunner,
   type AgentRunResult,
 } from '../src/agent-runner.js';
@@ -327,14 +328,35 @@ async function testRoleForNodeKnownNodes() {
   assert.strictEqual(roleForNode('BUILD'), 'builder');
   assert.strictEqual(roleForNode('HISTORY'), 'historian');
   assert.strictEqual(roleForNode('EVALUATE'), 'evaluator');
-  assert.strictEqual(roleForNode('SUMMARISE'), 'historian');
 }
 
 async function testRoleForNodeUnknownReturnsUndefined() {
   assert.strictEqual(roleForNode('EXEC'), undefined);
   assert.strictEqual(roleForNode('VALIDATION_GATE'), undefined);
   assert.strictEqual(roleForNode('SNAPSHOT'), undefined);
+  assert.strictEqual(roleForNode('SUMMARISE'), undefined); // daemon-generated, no LLM
   assert.strictEqual(roleForNode('NONEXISTENT'), undefined);
+}
+
+async function testValidateOutputPathBuilderDenyList() {
+  // Builder cannot write to .sle/ or docs/
+  assert.strictEqual(validateOutputPath('.sle/map.yaml', 'builder'), false);
+  assert.strictEqual(validateOutputPath('.sle/runs/1-1/manifest.yaml', 'builder'), false);
+  assert.strictEqual(validateOutputPath('docs/plan.md', 'builder'), false);
+  assert.strictEqual(validateOutputPath('docs/architecture.md', 'builder'), false);
+}
+
+async function testValidateOutputPathBuilderAllowsSrc() {
+  // Builder can write to src/, tests/, config files, etc.
+  assert.strictEqual(validateOutputPath('src/index.ts', 'builder'), true);
+  assert.strictEqual(validateOutputPath('src/api/routes.ts', 'builder'), true);
+  assert.strictEqual(validateOutputPath('package.json', 'builder'), true);
+}
+
+async function testValidateOutputPathEvaluatorAllowsEvaluationMd() {
+  // Evaluator output path must be docs/evaluation.md
+  assert.strictEqual(validateOutputPath('docs/evaluation.md', 'evaluator'), true);
+  assert.strictEqual(validateOutputPath('docs/evaluation-criteria.md', 'evaluator'), false);
 }
 
 // ─── AgentRunner integration tests ────────────────────────────────────────────
@@ -540,6 +562,9 @@ async function runAllTests() {
     { name: 'AgentRunner: returns failure for unknown node', fn: testRunnerReturnsFailureForUnknownNode },
     { name: 'AgentRunner: passes system prompt to LLM', fn: testRunnerPassesSystemPromptToLLM },
     { name: 'AgentRunner: builder writes multiple files', fn: testRunnerBuilderWritesMultipleFiles },
+    { name: 'validateOutputPath: builder deny-list blocks .sle/ and docs/', fn: testValidateOutputPathBuilderDenyList },
+    { name: 'validateOutputPath: builder allows src/ paths', fn: testValidateOutputPathBuilderAllowsSrc },
+    { name: 'validateOutputPath: evaluator allows docs/evaluation.md only', fn: testValidateOutputPathEvaluatorAllowsEvaluationMd },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

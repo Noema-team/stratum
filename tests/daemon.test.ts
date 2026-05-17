@@ -521,6 +521,24 @@ async function testConfirmHaltCallsCycleHalt() {
   await server.stop();
 }
 
+async function testCurrentApprove409WhenNotAwaiting() {
+  const server = await startServer();
+  // MockConfirmService._awaiting=false → approve throws not_awaiting_confirmation
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/current/approve');
+  assert.strictEqual(res.statusCode, 409);
+  assert.strictEqual((res.body as { ok: boolean }).ok, false);
+  await server.stop();
+}
+
+async function testCurrentRevise409WhenNotAwaiting() {
+  const server = await startServer();
+  // MockConfirmService._awaiting=false → revise throws not_awaiting_confirmation
+  const res = await makeRequest(server, 'POST', '/api/v2/cycles/current/revise', { note: 'Add auth' });
+  assert.strictEqual(res.statusCode, 409);
+  assert.strictEqual((res.body as { ok: boolean }).ok, false);
+  await server.stop();
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -558,6 +576,8 @@ async function runAllTests() {
     { name: 'POST /api/v2/cycles/confirm approve 409 when not awaiting', fn: testConfirmApproveSuccess },
     { name: 'POST /api/v2/cycles/confirm revise 409 when not awaiting', fn: testConfirmRevise },
     { name: 'POST /api/v2/cycles/confirm halt delegates to cycle halt', fn: testConfirmHaltCallsCycleHalt },
+    { name: 'POST /api/v2/cycles/current/approve 409 when not awaiting', fn: testCurrentApprove409WhenNotAwaiting },
+    { name: 'POST /api/v2/cycles/current/revise 409 when not awaiting', fn: testCurrentRevise409WhenNotAwaiting },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

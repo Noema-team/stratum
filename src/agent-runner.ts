@@ -42,11 +42,17 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   planner:     ['docs/plan.md', 'docs/test-plan.md'],
   tester:      ['docs/test-plan.md', '.sle/runs/'],
   historian:   ['docs/decisions.md', 'docs/cycle-summary.md'],
-  evaluator:   ['docs/evaluation-criteria.md'],
+  evaluator:   ['docs/evaluation.md'],
   critic:      ['docs/critique.md'],
 };
 
+// Builder can write anywhere except system dirs and docs (which belong to agent roles).
+const BUILDER_DENY_PREFIXES = ['.sle/', 'docs/'];
+
 export function validateOutputPath(filePath: string, role: AgentRole): boolean {
+  if (role === 'builder') {
+    return !BUILDER_DENY_PREFIXES.some((prefix) => filePath.startsWith(prefix));
+  }
   const allowed = ROLE_OUTPUT_PATHS[role];
   if (!allowed) return true;
   return allowed.some((p) => (p.endsWith('/') ? filePath.startsWith(p) : filePath === p));
@@ -57,14 +63,14 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
 export const APPEND_ONLY_PATHS = new Set(['docs/decisions.md']);
 
 const NODE_TO_ROLE: Record<string, AgentRole> = {
-  SCOPING:   'facilitator',
-  DESIGN:    'designer',
-  PLAN:      'planner',
-  TEST:      'tester',
-  BUILD:     'builder',
-  HISTORY:   'historian',
-  EVALUATE:  'evaluator',
-  SUMMARISE: 'historian',
+  SCOPING:  'facilitator',
+  DESIGN:   'designer',
+  PLAN:     'planner',
+  TEST:     'tester',
+  BUILD:    'builder',
+  HISTORY:  'historian',
+  EVALUATE: 'evaluator',
+  // SUMMARISE is daemon-generated (no LLM call) — handled by SummariseService
 };
 
 export function roleForNode(node: DAGNodeId): AgentRole | undefined {

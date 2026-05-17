@@ -117,19 +117,32 @@ export class ValidationGateService {
     const completed = [...((await this.mapManager.read()).meta.dag?.completed_nodes ?? [])];
     if (!completed.includes('VALIDATION_GATE')) completed.push('VALIDATION_GATE');
 
-    await this.mapManager.update((m) => ({
-      ...m,
-      meta: {
-        ...m.meta,
-        dag: m.meta.dag
-          ? {
-              ...m.meta.dag,
-              current_node: passed ? 'EVALUATE' : null,
-              completed_nodes: completed,
-            }
-          : undefined,
-      },
-    }));
+    await this.mapManager.update((m) => {
+      const updated = {
+        ...m,
+        meta: {
+          ...m.meta,
+          dag: m.meta.dag
+            ? { ...m.meta.dag, current_node: passed ? 'EVALUATE' : null, completed_nodes: completed }
+            : undefined,
+        },
+      };
+      // Keep validation.gate.last_outcome in sync so T8 precondition can fire.
+      if (m.validation) {
+        return {
+          ...updated,
+          validation: {
+            ...m.validation,
+            gate: {
+              ...m.validation.gate,
+              last_outcome: passed ? ('passed' as const) : ('failed' as const),
+              failed_categories: passed ? [] : failedNodes,
+            },
+          },
+        };
+      }
+      return updated;
+    });
 
     if (passed) {
       return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
@@ -142,7 +155,11 @@ export class ValidationGateService {
       run_dir: runDir,
       run_id: cycleId,
       quick_summary: `Validation failed: nodes [${failedNodes.join(', ')}] did not complete`,
-      failed_categories: failedNodes,
+      failed_categories: failedNodes.map((name) => ({
+        name,
+        method: 'executable' as const,
+        error_summary: `Node ${name} did not complete successfully`,
+      })),
       passed_categories: passedNodes as string[],
     };
     await this.runArtifacts.writeFailureReport(cycleNumber, iteration, failureReport);

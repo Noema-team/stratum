@@ -5,15 +5,14 @@ import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import { promises as realFs } from 'fs';
 import { SnapshotService } from '../src/snapshot-service.js';
+import { SummariseService } from '../src/summarise-service.js';
 import { DAGRunner, nextNode } from '../src/dag-runner.js';
 import { roleForNode } from '../src/agent-runner.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
 import type { CycleStateContext } from '../src/context-manager.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
-import type { ManifestNodeEntry, SnapshotMetadata } from '../src/run-artifacts.js';
-
-// Augment import — snapshot-service.ts exports SnapshotMetadata; run-artifacts.ts does not
-import type { SnapshotMetadata as SM } from '../src/snapshot-service.js';
+import type { ManifestNodeEntry, RunManifest } from '../src/run-artifacts.js';
+import type { SnapshotMetadata } from '../src/snapshot-service.js';
 
 console.log('# Running Phase K (EVALUATE + SUMMARISE + SNAPSHOT) tests...');
 
@@ -84,12 +83,20 @@ class InMemoryMapManager implements RuntimeMapManager {
 class MockRunArtifacts {
   public updates: Array<{ node: string; update: Partial<ManifestNodeEntry> }> = [];
   public finalizedOutcome: string | null = null;
+  public manifest: RunManifest = {
+    cycle_id: 'test-cycle-1', cycle_number: 1, iteration: 1,
+    planning_depth: 'standard', started_at: '2026-05-08T14:00:00Z',
+    outcome: 'in_progress', nodes: [],
+  };
 
   async updateNodeStatus(_cn: number, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>): Promise<void> {
     this.updates.push({ node: nodeId, update });
   }
   async finalizeManifest(_cn: number, _it: number, outcome: string): Promise<void> {
     this.finalizedOutcome = outcome;
+  }
+  async readManifest(_cn: number, _it: number): Promise<RunManifest> {
+    return JSON.parse(JSON.stringify(this.manifest));
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
@@ -112,8 +119,8 @@ test('roleForNode: EVALUATE → evaluator', () => {
   assert.strictEqual(roleForNode('EVALUATE'), 'evaluator');
 });
 
-test('roleForNode: SUMMARISE → historian', () => {
-  assert.strictEqual(roleForNode('SUMMARISE'), 'historian');
+test('roleForNode: SUMMARISE → undefined (daemon-generated, no LLM)', () => {
+  assert.strictEqual(roleForNode('SUMMARISE'), undefined);
 });
 
 test('roleForNode: SNAPSHOT → undefined (system node)', () => {
@@ -142,7 +149,7 @@ test('DAGRunner EVALUATE: advances to SUMMARISE', async () => {
   const artifacts = new MockRunArtifacts();
   const runner = new MockAgentRunner({
     success: true,
-    artifacts_written: ['docs/evaluation-criteria.md'],
+    artifacts_written: ['docs/evaluation.md'],
     tokens_used: 300, duration_ms: 600, raw_output_path: '',
   });
   const dag = new DAGRunner(runner as never, mgr, artifacts as never);
@@ -159,7 +166,7 @@ test('DAGRunner EVALUATE: artifact entries have generator=evaluator', async () =
   const artifacts = new MockRunArtifacts();
   const runner = new MockAgentRunner({
     success: true,
-    artifacts_written: ['docs/evaluation-criteria.md'],
+    artifacts_written: ['docs/evaluation.md'],
     tokens_used: 200, duration_ms: 400, raw_output_path: '',
   });
   const dag = new DAGRunner(runner as never, mgr, artifacts as never);
@@ -167,47 +174,77 @@ test('DAGRunner EVALUATE: artifact entries have generator=evaluator', async () =
   await dag.runNode('EVALUATE', makeCycleState({ current_node: 'EVALUATE' }));
 
   const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/evaluation-criteria.md');
+  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/evaluation.md');
   assert.ok(entry);
   assert.strictEqual((entry as Record<string, unknown>).generator, 'evaluator');
 });
 
-// ─── DAGRunner: SUMMARISE node ────────────────────────────────────────────────
+// ─── SummariseService tests ───────────────────────────────────────────────────
 
-test('DAGRunner SUMMARISE: advances to SNAPSHOT', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'SUMMARISE', completed_nodes: [] };
+test('SummariseService: returns success=true', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
   const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/cycle-summary.md'],
-    tokens_used: 250, duration_ms: 500, raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
+  const svc = new SummariseService(mgr, artifacts as never, root);
 
-  const result = await dag.runNode('SUMMARISE', makeCycleState({ current_node: 'SUMMARISE' }));
+  const result = await svc.run(1, 1);
 
   assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'SNAPSHOT');
 });
 
-test('DAGRunner SUMMARISE: artifact entries have generator=historian', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'SUMMARISE', completed_nodes: [] };
+test('SummariseService: writes docs/cycle-summary.md', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
   const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/cycle-summary.md'],
-    tokens_used: 200, duration_ms: 400, raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
+  const svc = new SummariseService(mgr, artifacts as never, root);
 
-  await dag.runNode('SUMMARISE', makeCycleState({ current_node: 'SUMMARISE' }));
+  const result = await svc.run(1, 1);
+
+  assert.strictEqual(result.summary_path, 'docs/cycle-summary.md');
+  const content = await realFs.readFile(join(root, 'docs/cycle-summary.md'), 'utf-8');
+  assert.ok(content.includes('Summary'));
+});
+
+test('SummariseService: summary includes cycle number and intent', async () => {
+  const root = makeTempDir();
+  const map = makeBaseMap([]);
+  (map.cycle as Record<string, unknown>).intent = 'Build a widget';
+  const mgr = new InMemoryMapManager(map);
+  const artifacts = new MockRunArtifacts();
+  const svc = new SummariseService(mgr, artifacts as never, root);
+
+  await svc.run(1, 1);
+
+  const content = await realFs.readFile(join(root, 'docs/cycle-summary.md'), 'utf-8');
+  assert.ok(content.includes('Cycle 1'));
+  assert.ok(content.includes('Build a widget'));
+});
+
+test('SummariseService: marks SUMMARISE running then complete in manifest', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
+  const artifacts = new MockRunArtifacts();
+  const svc = new SummariseService(mgr, artifacts as never, root);
+
+  await svc.run(1, 1);
+
+  const running = artifacts.updates.find((u) => u.node === 'SUMMARISE' && u.update.status === 'running');
+  const complete = artifacts.updates.find((u) => u.node === 'SUMMARISE' && u.update.status === 'complete');
+  assert.ok(running, 'SUMMARISE should be marked running');
+  assert.ok(complete, 'SUMMARISE should be marked complete');
+});
+
+test('SummariseService: advances dag current_node to SNAPSHOT', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
+  const artifacts = new MockRunArtifacts();
+  const svc = new SummariseService(mgr, artifacts as never, root);
+
+  await svc.run(1, 1);
 
   const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/cycle-summary.md');
-  assert.ok(entry);
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'historian');
+  const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag;
+  assert.strictEqual(dag?.current_node, 'SNAPSHOT');
 });
 
 // ─── SnapshotService tests ────────────────────────────────────────────────────
@@ -244,12 +281,54 @@ test('SnapshotService: writes snapshot.json metadata', async () => {
   const result = await svc.run(1, 1);
 
   const metaPath = join(result.snapshot_dir, 'snapshot.json');
-  const meta: SM = JSON.parse(await realFs.readFile(metaPath, 'utf-8'));
+  const meta: SnapshotMetadata = JSON.parse(await realFs.readFile(metaPath, 'utf-8'));
   assert.ok(meta.snapshot_id, 'snapshot_id should be set');
   assert.strictEqual(meta.cycle, 1);
   assert.strictEqual(meta.iteration, 1);
   assert.ok(meta.created_at, 'created_at should be set');
   assert.ok(Array.isArray(meta.artifacts));
+});
+
+test('SnapshotService: snapshot.json includes cycle_id', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
+  const artifacts = new MockRunArtifacts();
+  const svc = new SnapshotService(mgr, artifacts as never, root);
+
+  const result = await svc.run(1, 1);
+
+  const meta: SnapshotMetadata = JSON.parse(
+    await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')
+  );
+  assert.ok(meta.cycle_id, 'cycle_id should be set');
+});
+
+test('SnapshotService: snapshot.json includes locked=true and evaluation_verdict', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
+  const artifacts = new MockRunArtifacts();
+  const svc = new SnapshotService(mgr, artifacts as never, root);
+
+  const result = await svc.run(1, 1);
+
+  const meta: SnapshotMetadata = JSON.parse(
+    await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')
+  );
+  assert.strictEqual(meta.locked, true);
+  assert.ok(['PASS', 'PARTIAL', 'FAIL'].includes(meta.evaluation_verdict));
+});
+
+test('SnapshotService: writes .locked sentinel file', async () => {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager(makeBaseMap([]));
+  const artifacts = new MockRunArtifacts();
+  const svc = new SnapshotService(mgr, artifacts as never, root);
+
+  const result = await svc.run(1, 1);
+
+  const lockedPath = join(result.snapshot_dir, '.locked');
+  const stat = await realFs.stat(lockedPath);
+  assert.ok(stat.isFile(), '.locked sentinel should exist');
 });
 
 test('SnapshotService: copies artifact files to snapshot dir', async () => {
@@ -358,7 +437,7 @@ test('SnapshotService: returns unique snapshot_id per run', async () => {
   assert.notStrictEqual(r1.snapshot_id, r2.snapshot_id);
 });
 
-test('SnapshotService: snapshotDir uses correct path pattern', () => {
+test('SnapshotService: snapshotDir uses v{cycle}.{iteration} pattern', () => {
   const root = '/project';
   const svc = new SnapshotService(
     new InMemoryMapManager() as never,
@@ -368,7 +447,7 @@ test('SnapshotService: snapshotDir uses correct path pattern', () => {
   const dir = svc.snapshotDir(3, 2);
   assert.ok(dir.includes('.sle'));
   assert.ok(dir.includes('snapshots'));
-  assert.ok(dir.includes('3-2'));
+  assert.ok(dir.includes('v3.2'));
 });
 
 test('SnapshotService: snapshot.json lists only successfully copied files', async () => {
@@ -384,7 +463,7 @@ test('SnapshotService: snapshot.json lists only successfully copied files', asyn
 
   const result = await svc.run(1, 1);
 
-  const meta: SM = JSON.parse(
+  const meta: SnapshotMetadata = JSON.parse(
     await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')
   );
   assert.deepStrictEqual(meta.artifacts, ['docs/architecture.md']);

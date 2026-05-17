@@ -152,10 +152,11 @@ async function testPlannerCannotWriteRequirements() {
   assert.strictEqual(validateOutputPath('docs/architecture.md', 'planner'), false);
 }
 
-async function testBuilderAllowsAnyPath() {
+async function testBuilderAllowsSrcDeniesDocsAndSle() {
   assert.strictEqual(validateOutputPath('src/controller.ts', 'builder'), true);
   assert.strictEqual(validateOutputPath('src/deep/nested/file.ts', 'builder'), true);
-  assert.strictEqual(validateOutputPath('docs/anything.md', 'builder'), true);
+  assert.strictEqual(validateOutputPath('docs/anything.md', 'builder'), false);
+  assert.strictEqual(validateOutputPath('.sle/map.yaml', 'builder'), false);
 }
 
 async function testFacilitatorOnlyCharterPath() {
@@ -406,7 +407,7 @@ async function runAllTests() {
     { name: 'validateOutputPath: designer rejected paths', fn: testDesignerRejectedPaths },
     { name: 'validateOutputPath: planner allowed paths', fn: testPlannerAllowedPaths },
     { name: 'validateOutputPath: planner cannot write requirements', fn: testPlannerCannotWriteRequirements },
-    { name: 'validateOutputPath: builder allows any path', fn: testBuilderAllowsAnyPath },
+    { name: 'validateOutputPath: builder allows src/, denies docs/ and .sle/', fn: testBuilderAllowsSrcDeniesDocsAndSle },
     { name: 'validateOutputPath: facilitator only charter path', fn: testFacilitatorOnlyCharterPath },
     { name: 'nextNode: full sequence', fn: testNextNodeSequence },
     { name: 'nextNode: unknown node returns null', fn: testNextNodeUnknownReturnsNull },

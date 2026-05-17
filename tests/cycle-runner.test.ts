@@ -21,6 +21,7 @@ import { ContextManager } from '../src/context-manager.js';
 import { ConfirmService } from '../src/confirm-service.js';
 import { ExecService, ValidationGateService } from '../src/exec-gate.js';
 import { SnapshotService } from '../src/snapshot-service.js';
+import { SummariseService } from '../src/summarise-service.js';
 import { RunArtifactManager } from '../src/run-artifacts.js';
 import { RuntimeMapManagerImpl } from '../src/runtime-map.js';
 import { CycleService } from '../src/cycle-service.js';
@@ -132,7 +133,8 @@ class MockValidationGateService {
       passed: false, next_node: null as null, failed_nodes: ['BUILD'],
       failure_report: {
         cycle: 1, iteration: 1, run_dir: '.sle/runs/1-1',
-        run_id: 'c1', quick_summary: 'BUILD failed', failed_categories: ['BUILD'],
+        run_id: 'c1', quick_summary: 'BUILD failed',
+        failed_categories: [{ name: 'BUILD', method: 'executable' as const, error_summary: 'Node BUILD did not complete' }],
         passed_categories: ['EXEC'],
       },
     };
@@ -151,6 +153,23 @@ class MockSnapshotService {
   [key: string]: any;
 }
 
+class MockSummariseService {
+  public ran = false;
+  async run() {
+    this.ran = true;
+    return { success: true, summary_path: 'docs/cycle-summary.md' };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+class MockStateMachine {
+  public completeCycleCalls = 0;
+  async completeCycle() { this.completeCycleCalls++; return { success: true, from: 'cycling' as const, to: 'complete' as const }; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
 class MockRunArtifactsForRunner {
   async readManifest() {
     return { cycle_id: 'test-cycle-1', cycle_number: 1, iteration: 1, planning_depth: 'standard', started_at: '', outcome: 'in_progress' as const, nodes: [] };
@@ -165,6 +184,8 @@ function makeRunner(overrides: Partial<{
   execService: MockExecService;
   validationGateService: MockValidationGateService;
   snapshotService: MockSnapshotService;
+  summariseService: MockSummariseService;
+  stateMachine: MockStateMachine;
   mapManager: InMemoryMapManager;
 }> = {}) {
   const mgr = overrides.mapManager ?? new InMemoryMapManager();
@@ -175,6 +196,8 @@ function makeRunner(overrides: Partial<{
       execService: (overrides.execService ?? new MockExecService()) as never,
       validationGateService: (overrides.validationGateService ?? new MockValidationGateService()) as never,
       snapshotService: (overrides.snapshotService ?? new MockSnapshotService()) as never,
+      summariseService: (overrides.summariseService ?? new MockSummariseService()) as never,
+      stateMachine: (overrides.stateMachine ?? new MockStateMachine()) as never,
       mapManager: mgr,
       runArtifacts: new MockRunArtifactsForRunner() as never,
     }),
@@ -202,11 +225,11 @@ test('CycleRunner: LLM nodes called in correct order', async () => {
 
   await runner.run({ onConfirmGate: async () => 'approve' });
 
-  // After null start → DESIGN, should go DESIGN→PLAN→TEST→(CONFIRM auto-approve)→BUILD→HISTORY→(EXEC)→(VALIDATION_GATE)→EVALUATE→SUMMARISE→(SNAPSHOT)
+  // After null start → DESIGN, should go DESIGN→PLAN→TEST→(CONFIRM auto-approve)→BUILD→HISTORY→(EXEC)→(VALIDATION_GATE)→EVALUATE→(SUMMARISE system)→(SNAPSHOT)
   const llmNodes = dagRunner.calls.filter(c => !c.startsWith('skip:'));
   assert.deepStrictEqual(
     llmNodes,
-    ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'HISTORY', 'EVALUATE', 'SUMMARISE']
+    ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'HISTORY', 'EVALUATE']
   );
 });
 
@@ -269,7 +292,7 @@ test('CycleRunner: validation gate failure returns completed=false with report',
   assert.strictEqual(result.completed, false);
   assert.strictEqual(result.final_node, 'VALIDATION_GATE');
   assert.ok(result.failure_report, 'failure_report should be present');
-  assert.ok(result.failure_report!.failed_categories.includes('BUILD'));
+  assert.ok(result.failure_report!.failed_categories.some(c => c.name === 'BUILD'));
 });
 
 test('CycleRunner: snapshot_dir returned on success', async () => {
@@ -278,6 +301,15 @@ test('CycleRunner: snapshot_dir returned on success', async () => {
   const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
   assert.strictEqual(result.snapshot_dir, '/tmp/snap/1-1');
+});
+
+test('CycleRunner: T8 completeCycle fires after SNAPSHOT', async () => {
+  const stateMachine = new MockStateMachine();
+  const { runner } = makeRunner({ stateMachine });
+
+  await runner.run({ onConfirmGate: async () => 'approve' });
+
+  assert.strictEqual(stateMachine.completeCycleCalls, 1, 'completeCycle should be called once after SNAPSHOT');
 });
 
 test('CycleRunner: SCOPING skipped when dag starts at SCOPING', async () => {
@@ -406,10 +438,10 @@ class NodeAwareMockLLM implements ILLMProvider {
       'node: EVALUATE',
       'artifacts:',
       '  - id: criteria',
-      '    path: docs/evaluation-criteria.md',
+      '    path: docs/evaluation.md',
       '-->',
       '',
-      '## docs/evaluation-criteria.md',
+      '## docs/evaluation.md',
       '',
       '# Evaluation Criteria',
       '',
@@ -502,9 +534,10 @@ test('Integration: full cycle DESIGN→SNAPSHOT with mock LLM', async () => {
     const validationGateService = new ValidationGateService(mapManager, runArtifacts);
     const snapshotService = new SnapshotService(mapManager, runArtifacts, root);
 
+    const summariseService = new SummariseService(mapManager, runArtifacts, root);
     const cycleRunner = new CycleRunner({
       dagRunner, confirmService, execService, validationGateService,
-      snapshotService, mapManager, runArtifacts,
+      snapshotService, summariseService, stateMachine, mapManager, runArtifacts,
     });
 
     // 5. Run the full cycle (auto-approve CONFIRM gate)
@@ -527,8 +560,8 @@ test('Integration: full cycle DESIGN→SNAPSHOT with mock LLM', async () => {
     const srcIndex = await fs.readFile(join(root, 'src/index.ts'), 'utf-8');
     assert.ok(srcIndex.includes('task manager'), 'src/index.ts written by BUILD');
 
-    const evalMd = await fs.readFile(join(root, 'docs/evaluation-criteria.md'), 'utf-8');
-    assert.ok(evalMd.includes('Evaluation'), 'evaluation-criteria.md written by EVALUATE');
+    const evalMd = await fs.readFile(join(root, 'docs/evaluation.md'), 'utf-8');
+    assert.ok(evalMd.includes('Evaluation'), 'evaluation.md written by EVALUATE');
 
     const summaryMd = await fs.readFile(join(root, 'docs/cycle-summary.md'), 'utf-8');
     assert.ok(summaryMd.includes('Summary'), 'cycle-summary.md written by SUMMARISE');

@@ -386,6 +386,43 @@ export class DaemonServer {
       return;
     }
 
+    if (path === '/api/v2/cycles/current/approve' && method === 'POST') {
+      try {
+        const map = await this.deps.cycleService.getCurrent();
+        const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'approve_failed', error.message);
+      }
+      return;
+    }
+
+    if (path === '/api/v2/cycles/current/revise' && method === 'POST') {
+      try {
+        const body = (await this.parseBody(req)) as { note?: string };
+        const map = await this.deps.cycleService.getCurrent();
+        const result = await this.deps.confirmService.revise(
+          map.cycle_number,
+          map.iteration,
+          body.note
+        );
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'revise_failed', error.message);
+      }
+      return;
+    }
+
     if (path === '/api/v2/cycles/confirm' && method === 'POST') {
       try {
         const params = (await this.parseBody(req)) as { action?: string; note?: string };

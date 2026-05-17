@@ -186,7 +186,7 @@ export class ContextManager {
       '',
       `**Summary:** ${report.quick_summary}`,
       '',
-      `**Failed categories:** ${report.failed_categories.join(', ')}`,
+      `**Failed categories:** ${report.failed_categories.map((c) => c.name).join(', ')}`,
       `**Passed categories:** ${report.passed_categories.join(', ')}`,
     ];
     const text = lines.join('\n');

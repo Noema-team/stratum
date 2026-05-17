@@ -3,6 +3,8 @@ import { nextNode, shouldSkipAtDepth, buildCycleStateContext } from './dag-runne
 import type { ConfirmService } from './confirm-service.js';
 import type { ExecService, ValidationGateService } from './exec-gate.js';
 import type { SnapshotService } from './snapshot-service.js';
+import type { SummariseService } from './summarise-service.js';
+import type { StateMachine } from './state-machine.js';
 import type { RuntimeMapManager } from './runtime-map.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import type { CycleStateContext } from './context-manager.js';
@@ -24,6 +26,8 @@ export interface CycleRunnerDeps {
   execService: ExecService;
   validationGateService: ValidationGateService;
   snapshotService: SnapshotService;
+  summariseService: SummariseService;
+  stateMachine: StateMachine;
   mapManager: RuntimeMapManager;
   runArtifacts: RunArtifactManager;
 }
@@ -130,8 +134,19 @@ export class CycleRunner {
         continue;
       }
 
+      if (nodeId === 'SUMMARISE') {
+        const r = await this.deps.summariseService.run(cycleNumber, iteration);
+        if (!r.success) {
+          return { completed: false, final_node: 'SUMMARISE', error: 'Summarise failed' };
+        }
+        currentNode = 'SNAPSHOT';
+        continue;
+      }
+
       if (nodeId === 'SNAPSHOT') {
         const r = await this.deps.snapshotService.run(cycleNumber, iteration);
+        // T8: cycling → complete
+        await this.deps.stateMachine.completeCycle();
         return {
           completed: true,
           final_node: null,

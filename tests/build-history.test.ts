@@ -192,8 +192,9 @@ test('builder: allows src/ paths', () => {
   assert.strictEqual(validateOutputPath('src/lib/db.ts', 'builder'), true);
 });
 
-test('builder: allows any docs/ path', () => {
-  assert.strictEqual(validateOutputPath('docs/anything.md', 'builder'), true);
+test('builder: denies docs/ paths (deny-list)', () => {
+  assert.strictEqual(validateOutputPath('docs/anything.md', 'builder'), false);
+  assert.strictEqual(validateOutputPath('.sle/map.yaml', 'builder'), false);
 });
 
 test('builder: allows deep nested paths', () => {
