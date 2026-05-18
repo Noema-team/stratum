@@ -241,7 +241,7 @@ test('revise: increments revision count', async () => {
   assert.strictEqual(map.cycle.revision, 1);
 });
 
-test('revise: returns next_node=PLAN', async () => {
+test('revise: returns next_node=TEST', async () => {
   const base = makeBaseMap();
   (base.cycle as Record<string, unknown>).awaiting_confirmation = true;
   const mgr = new InMemoryMapManager(base);
@@ -249,7 +249,7 @@ test('revise: returns next_node=PLAN', async () => {
 
   const result = await svc.revise(1, 1);
 
-  assert.strictEqual(result.next_node, 'PLAN');
+  assert.strictEqual(result.next_node, 'TEST');
 });
 
 test('revise: stores revision note in map', async () => {
@@ -276,7 +276,7 @@ test('revise: clears awaiting_confirmation', async () => {
   assert.strictEqual(map.cycle.awaiting_confirmation, false);
 });
 
-test('revise: sets dag current_node back to PLAN', async () => {
+test('revise: sets dag current_node back to TEST', async () => {
   const base = makeBaseMap();
   (base.cycle as Record<string, unknown>).awaiting_confirmation = true;
   (base.meta as Record<string, unknown>).dag = { current_node: 'CONFIRM', completed_nodes: ['PLAN', 'TEST'] };
@@ -286,7 +286,7 @@ test('revise: sets dag current_node back to PLAN', async () => {
   await svc.revise(1, 1);
 
   const map = await mgr.read();
-  assert.strictEqual((map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag?.current_node, 'PLAN');
+  assert.strictEqual((map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag?.current_node, 'TEST');
 });
 
 test('revise: throws not_awaiting_confirmation when flag is false', async () => {
@@ -354,7 +354,7 @@ test('full confirm lifecycle: gate → revise → gate → approve', async () =>
   await svc.gate(1, 1);
   const reviseResult = await svc.revise(1, 1, 'Add more detail');
   assert.strictEqual(reviseResult.revision_count, 1);
-  assert.strictEqual(reviseResult.next_node, 'PLAN');
+  assert.strictEqual(reviseResult.next_node, 'TEST');
 
   // Second pass: gate → approve
   await svc.gate(1, 1);

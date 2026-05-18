@@ -10,7 +10,7 @@ export interface ConfirmApproveResult {
 
 export interface ConfirmReviseResult {
   revision_count: number;
-  next_node: 'PLAN';
+  next_node: 'TEST';
 }
 
 export class ConfirmServiceError extends Error {
@@ -97,10 +97,10 @@ export class ConfirmService {
       meta: {
         ...m.meta,
         dag: m.meta.dag
-          ? { ...m.meta.dag, current_node: 'PLAN' }
+          ? { ...m.meta.dag, current_node: 'TEST' }
           : undefined,
       },
     }));
-    return { revision_count: newRevision, next_node: 'PLAN' };
+    return { revision_count: newRevision, next_node: 'TEST' };
   }
 }

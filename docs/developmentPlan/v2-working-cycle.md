@@ -1486,3 +1486,25 @@ Phase L uses a single shared context (one temp dir, one daemon) running sequenti
 | UI Shell | Browser-based dashboard, graph, actions panel |
 | Obsidian plugin | Two-way sync, plugin architecture |
 | CI/CD integration | Post-snapshot hooks, deployable flag |
+
+---
+
+## Appendix: Post-completion spec corrections (audited 2026-05-18)
+
+After VS2 shipped, a spec audit against the canonical spec documents found six divergences. Three required immediate code fixes (risk of VS3 breakage); three are documented for VS5 cleanup.
+
+### Fixes applied to VS2 source (2026-05-18)
+
+| # | File | Issue | Fix |
+|---|---|---|---|
+| 1 | `types.ts`, `exec-gate.ts` | `FailureReport.failed_categories` was `FailureCategory[]` (objects with `name`, `method`, `error_summary`). `dag-node-reference.md` Node 12 specifies `failed_categories: string[]`. | Removed `FailureCategory` interface and `FailureCategorySchema`; changed field to `string[]`; updated `ValidationGateService` and tests. |
+| 2 | `confirm-service.ts` | `revise()` returned `{ next_node: 'PLAN' }` and set `dag.current_node: 'PLAN'`. Spec (`dag-node-reference.md` Node 7, CONFIRM) says plan step modification routes to TEST so tests can be re-derived. | Changed to `next_node: 'TEST'` and `current_node: 'TEST'` in source and all tests. |
+| 3 | `run-artifacts.ts` | `context-pack` was written as `context-pack.json` in the run root. `run-artifacts.md` specifies `ai/context-pack.md` (markdown, in `ai/` subdirectory). | Moved to `<runDir>/ai/context-pack.md`; added `ai/` subdir creation to `createRunDir()`; write/read use markdown with JSON code block. |
+
+### Known divergences (not fixed — documented for VS5)
+
+| # | File | Issue | Spec reference |
+|---|---|---|---|
+| 4 | `run-artifacts.ts` | `runDir()` produces `{cycle}-{iteration}`. Spec format is `c{cycle}-i{iteration}-{ISO8601}`. Changing this would make paths non-derivable from cycle/iteration alone — requires storing the path in manifest. | `run-artifacts.md` §Directory structure |
+| 5 | `run-artifacts.ts` | `RunManifest.outcome` uses `'in_progress' \| 'complete' \| 'halted'`. Spec describes `'passed' \| 'failed'` for final outcome. Current values are operationally sensible (lifecycle states vs. pass/fail), but diverge from spec. | `run-artifacts.md` §Manifest |
+| 6 | `v2-working-cycle.md` (this doc) | SHARDING_APPROVAL deferred to "VS3" in the deferral table. The correct deferral target is VS4 (per VS4 development plan). VS3 is hardened execution; SHARDING_APPROVAL is a gate feature. | `dag-node-reference.md` Node 6; VS4 plan |

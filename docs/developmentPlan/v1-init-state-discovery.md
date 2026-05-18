@@ -1945,3 +1945,15 @@ Questions from source specs that may affect this slice's implementation:
 - ID-009: No, defer to first LLM call (faster init)
 - API-006: Single payload for MVP (can add streaming later)
 - CONV-003: Use 20 (from spec default)
+
+---
+
+## Appendix: Post-completion spec notes (audited 2026-05-18)
+
+VS1 is largely clean. One deferred-approval note applies.
+
+### Known gap: discovery approval not enforced
+
+Phase L scope note reads: "synthesis/planning approval and docs/ artifact verification are deferred." This means the discovery gate does not enforce the spec constraint (SLE-003 §6: "no auto-approve mode for discovery — the user must read and confirm synthesis before a cycle can start"). The implementation accepts user-submitted discovery data without requiring a gate confirmation step.
+
+**Impact:** Low for VS1/VS2 (manual workflow; no user would auto-approve). Needs enforcement before any automated intake pipeline is added. Tracked for VS4 (intake pipeline phase).

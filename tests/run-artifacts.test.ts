@@ -164,6 +164,11 @@ async function testWriteAndReadContextPack() {
   };
   await mgr.writeContextPack(2, 3, pack);
 
+  // Written as markdown with JSON code block at ai/context-pack.md
+  const raw = await fs.readFile(join(root, '.sle', 'runs', '2-3', 'ai', 'context-pack.md'), 'utf-8');
+  assert.ok(raw.startsWith('# Context Pack'));
+  assert.ok(raw.includes('```json'));
+
   const read = await mgr.readContextPack(2, 3);
   assert.deepStrictEqual(read, pack);
 }

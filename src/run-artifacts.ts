@@ -72,6 +72,7 @@ export class RunArtifactManager {
     const dir = this.runDir(cycleNumber, iteration);
     await this.fs.mkdir(path.join(dir, 'validation'), { recursive: true });
     await this.fs.mkdir(path.join(dir, 'node-outputs'), { recursive: true });
+    await this.fs.mkdir(path.join(dir, 'ai'), { recursive: true });
     return dir;
   }
 
@@ -147,14 +148,17 @@ export class RunArtifactManager {
     pack: ContextPack
   ): Promise<void> {
     const dir = this.runDir(cycleNumber, iteration);
-    await this.fs.writeFile(path.join(dir, 'context-pack.json'), JSON.stringify(pack, null, 2));
+    const md = `# Context Pack\n\n\`\`\`json\n${JSON.stringify(pack, null, 2)}\n\`\`\`\n`;
+    await this.fs.writeFile(path.join(dir, 'ai', 'context-pack.md'), md);
   }
 
   async readContextPack(cycleNumber: number, iteration: number): Promise<ContextPack> {
-    const packPath = path.join(this.runDir(cycleNumber, iteration), 'context-pack.json');
+    const packPath = path.join(this.runDir(cycleNumber, iteration), 'ai', 'context-pack.md');
     try {
       const content = await this.fs.readFile(packPath, 'utf-8');
-      return JSON.parse(content) as ContextPack;
+      const match = content.match(/```json\n([\s\S]*?)\n```/);
+      if (!match) return {};
+      return JSON.parse(match[1]) as ContextPack;
     } catch {
       return {};
     }

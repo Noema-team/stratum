@@ -155,11 +155,7 @@ export class ValidationGateService {
       run_dir: runDir,
       run_id: cycleId,
       quick_summary: `Validation failed: nodes [${failedNodes.join(', ')}] did not complete`,
-      failed_categories: failedNodes.map((name) => ({
-        name,
-        method: 'executable' as const,
-        error_summary: `Node ${name} did not complete successfully`,
-      })),
+      failed_categories: failedNodes,
       passed_categories: passedNodes as string[],
     };
     await this.runArtifacts.writeFailureReport(cycleNumber, iteration, failureReport);
