@@ -29,8 +29,8 @@ export class ScopingService {
   }
 
   async begin(
-    cycleNumber: number,
-    iteration: number,
+    _cycleNumber: number,
+    _iteration: number,
     cycleState: CycleStateContext
   ): Promise<ScopingBeginResult> {
     this.pendingResponse = null;

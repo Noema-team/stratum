@@ -135,7 +135,7 @@ async function testBuildCycleStateContextWithFailureReport() {
     run_dir: '.sle/runs/1-1',
     run_id: '1-1',
     quick_summary: 'Tests failed on correctness.',
-    failed_categories: [{ name: 'correctness', method: 'executable' as const, error_summary: 'Correctness check failed' }],
+    failed_categories: ['correctness'],
     passed_categories: ['style'],
   };
   const ctx = buildCycleStateContext(map, 'PLAN', report);
@@ -305,7 +305,7 @@ async function testFailureContextInContextAssembly() {
   const cm = new ContextManager(root, DEFAULT_CONFIG, fsMock);
   const report: FailureReport = {
     cycle: 1, iteration: 1, run_dir: '.sle/runs/1-1', run_id: '1-1',
-    quick_summary: 'Correctness failed.', failed_categories: [{ name: 'correctness', method: 'executable' as const, error_summary: 'Correctness check failed' }], passed_categories: ['style'],
+    quick_summary: 'Correctness failed.', failed_categories: ['correctness'], passed_categories: ['style'],
   };
 
   const ctx = await cm.assemble('planner', {
@@ -329,7 +329,7 @@ async function testNoFailureContextOnIteration1() {
     intent: 'Build widgets', current_node: 'PLAN',
     failure_report: {
       cycle: 1, iteration: 0, run_dir: '', run_id: '',
-      quick_summary: 'X', failed_categories: [{ name: 'a', method: 'executable' as const, error_summary: 'a failed' }], passed_categories: [],
+      quick_summary: 'X', failed_categories: ['a'], passed_categories: [],
     },
   });
 

@@ -128,7 +128,7 @@ async function testFailureContextNotInjectedOnIteration1() {
       iteration: 1,
       failure_report: {
         iteration: 1,
-        failed_categories: [{ name: 'correctness', method: 'executable' as const, error_summary: 'Correctness check failed' }],
+        failed_categories: ['correctness'],
         passed_categories: ['style'],
         quick_summary: 'Tests failed.',
       },
@@ -148,8 +148,8 @@ async function testFailureContextInjectedOnIteration2() {
       failure_report: {
         iteration: 1,
         failed_categories: [
-          { name: 'correctness', method: 'executable' as const, error_summary: 'Correctness check failed' },
-          { name: 'coverage', method: 'executable' as const, error_summary: 'Coverage check failed' },
+          'correctness',
+          'coverage',
         ],
         passed_categories: ['style'],
         quick_summary: 'Two categories failed.',

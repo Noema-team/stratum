@@ -60,7 +60,7 @@ export class DaemonServer {
 
     await this.deps.pidFile.writePidFile('.sle/daemon.pid', process.pid);
 
-    this.server = createServer(async (req, res) => {
+    this.server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       try {
         await this.handleRequest(req, res);
       } catch (err) {
@@ -472,7 +472,7 @@ export class DaemonServer {
   private async parseBody(req: IncomingMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', (chunk) => {
+      req.on('data', (chunk: Buffer) => {
         data += chunk;
       });
       req.on('end', () => {

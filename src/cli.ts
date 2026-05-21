@@ -4,6 +4,11 @@ import { DaemonServer } from './daemon.js';
 import { InitService, type InitRequest } from './init-service.js';
 import { DiscoveryService } from './discovery-service.js';
 import { CycleService } from './cycle-service.js';
+import { ScopingService } from './scoping-service.js';
+import { ConfirmService } from './confirm-service.js';
+import { AgentRunner } from './agent-runner.js';
+import { ContextManager } from './context-manager.js';
+import { createLLMProvider, type ILLMProvider } from './llm-provider.js';
 import { RunArtifactManager } from './run-artifacts.js';
 import { readPidFile, removePidFile, isPidAlive, writePidFile } from './pid-file.js';
 import { parseCLIArgs, type DaemonCommand, type InitCommand, type StartCommand } from './daemon-config.js';
@@ -50,7 +55,7 @@ async function handleInit(cmd: InitCommand): Promise<void> {
       console.error('Error: --name is required for reset');
       process.exit(1);
     }
-    const result = await initService.reset({ confirm_name: cmd.name });
+    const result = await initService.reset({ confirm_name: cmd.name! });
     if (result.ok === true) {
       console.log('Reset completed. Removed:');
       result.data.removed.forEach((path) => console.log(`  ${path}`));
@@ -81,7 +86,7 @@ async function handleInit(cmd: InitCommand): Promise<void> {
   const projectType = cmd.type ? ProjectTypeEnum.parse(cmd.type) : 'api';
 
   const request: InitRequest = {
-    project_name: cmd.name,
+    project_name: cmd.name!,
     project_type: projectType,
     task_store: cmd.taskStore === 'local' ? 'local' : 'beads',
     daemon_port: 7700,
@@ -122,6 +127,22 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const runArtifacts = new RunArtifactManager({ projectRoot });
   const cycleService = new CycleService(stateMachine, mapManager, runArtifacts);
 
+  const contextManager = new ContextManager(projectRoot);
+  let llmProvider: ILLMProvider;
+  try {
+    llmProvider = createLLMProvider({
+      provider: 'openai_compatible',
+      base_url: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      api_key_env: 'OPENAI_API_KEY',
+    });
+  } catch {
+    llmProvider = { complete: () => Promise.reject(new Error('LLM not configured — set OPENAI_API_KEY or SLE_LLM_API_KEY')) };
+  }
+  const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
+  const scopingService = new ScopingService(agentRunner, mapManager, projectRoot);
+  const confirmService = new ConfirmService(mapManager, runArtifacts);
+
   const daemon = new DaemonServer();
 
   await daemon.start(
@@ -131,6 +152,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       initService,
       discoveryService,
       cycleService,
+      scopingService,
+      confirmService,
       pidFile: { writePidFile, removePidFile },
     }
   );
@@ -200,7 +223,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  let command: DaemonCommand;
+  let command!: DaemonCommand;
   try {
     command = parseCLIArgs(args);
   } catch (err) {

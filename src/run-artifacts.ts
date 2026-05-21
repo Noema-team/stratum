@@ -28,6 +28,7 @@ export interface ManifestNodeEntry {
   agent_role?: string;
   tokens_used?: number;
   artifacts_written: string[];
+  skip_reason?: string;
 }
 
 export interface RunManifest {
