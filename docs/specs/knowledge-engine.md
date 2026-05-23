@@ -1,8 +1,12 @@
 # Knowledge Engine
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-22
+**Type:** spec · **Status:** deprecated · **Updated:** 2026-05-23
 **Depends on:** DDR-005, DDR-025, [../reference/types.md](../reference/types.md) §1–§7, [context-manager.md](context-manager.md) §Assembly algorithm
 **Source material:** SLE-014 (Cognee knowledge engine integration)
+
+> [!IMPORTANT]
+> **Specification Status: Deprecated & Replaced**
+> The third-party Cognee FastAPI integration described in this specification is **deprecated** and will not be used. The system instead utilizes a custom, deterministic **Link Index DAG** (as specified in `document-linking.md`) to establish, track, and query code-to-specification traceability. This keeps the orchestrator completely local, fast, and free of external Docker container dependencies.
 
 ## Overview
 

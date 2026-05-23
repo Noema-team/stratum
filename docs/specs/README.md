@@ -17,7 +17,7 @@ Primary build reference — what to implement.
 | [job-dispatch.md](job-dispatch.md) | Worker pool, lifecycle, context passing |
 | [document-linking.md](document-linking.md) | Doc/node split, wikilinks, backlinks, link index |
 | [content-modules.md](content-modules.md) | Node content store, layer module system, triggers |
-| [knowledge-engine.md](knowledge-engine.md) | Cognee integration, vector search, metadata |
+| [knowledge-engine.md](knowledge-engine.md) | **(Deprecated)** Cognee integration, replaced by custom Link Index DAG |
 | [beads-integration.md](beads-integration.md) | Beads/Dolt bridge, task tracking, resolveExit |
 | [run-artifacts.md](run-artifacts.md) | Run directory, manifest.json, context-pack |
 | [prompt-templates.md](prompt-templates.md) | System prompts per role (all 10) |
