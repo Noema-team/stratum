@@ -5,6 +5,7 @@ import type { AgentRole, AssembledContext } from './types.js';
 import type { ContextManager, CycleStateContext } from './context-manager.js';
 import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
 import type { RunArtifactManager } from './run-artifacts.js';
+import { AgentLoop } from './agent-loop.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,8 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   historian:   ['docs/decisions.md', 'docs/cycle-summary.md'],
   evaluator:   ['docs/evaluation.md'],
   critic:      ['docs/critique.md'],
+  // Debugger can write source code (fixing implementation bugs)
+  debugger:    ['src/', 'tests/', 'scripts/', '.sle/runs/'],
 };
 
 // Builder can write anywhere except system dirs and docs (which belong to agent roles).
@@ -63,13 +66,14 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
 export const APPEND_ONLY_PATHS = new Set(['docs/decisions.md']);
 
 const NODE_TO_ROLE: Record<string, AgentRole> = {
-  SCOPING:  'facilitator',
-  DESIGN:   'designer',
-  PLAN:     'planner',
-  TEST:     'tester',
-  BUILD:    'builder',
-  HISTORY:  'historian',
-  EVALUATE: 'evaluator',
+  SCOPING:   'facilitator',
+  DESIGN:    'designer',
+  PLAN:      'planner',
+  TEST:      'tester',
+  BUILD:     'builder',
+  HISTORY:   'historian',
+  EVALUATE:  'evaluator',
+  DEBUGGER:  'debugger',
   // SUMMARISE is daemon-generated (no LLM call) — handled by SummariseService
 };
 
@@ -230,52 +234,96 @@ export class AgentRunner {
     // 1. Assemble context
     const context = await this.contextManager.assemble(role, cycleState);
 
-    // 2. Build LLM params
-    const params: LLMCompletionParams = {
-      model: this.runnerConfig.model,
-      messages: [
+    let parsed: { sections: Array<{ path: string; content: string }> };
+    let tokensUsed = 0;
+    let rawPath = '';
+
+    // Check if the provider supports native multi-turn execution (DDR-030 integration)
+    const isMultiTurn = typeof (this.llmProvider as any).completeMultiTurn === 'function';
+
+    if (isMultiTurn) {
+      const loop = new AgentLoop(
+        this.llmProvider as any,
         {
-          role: 'system',
-          content: context.system_prompt || 'You are a helpful software engineering assistant.',
-        },
-        { role: 'user', content: buildUserMessage(context) },
-      ],
-      temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
-      max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
-    };
+          model: this.runnerConfig.model,
+          max_tokens: this.runnerConfig.max_tokens,
+          projectRoot: this.projectRoot,
+          role,
+          cycleNumber: cycleState.cycle_number,
+          iteration: cycleState.iteration,
+          nodeId: node,
+          runArtifacts: this.runArtifacts,
+          fsModule: this.fs,
+        }
+      );
 
-    // 3. Call LLM
-    let llmResult;
-    try {
-      llmResult = await this.llmProvider.complete(params);
-    } catch (err) {
-      const rawPath = await this.writeRaw(cycleState, node, '');
-      return {
-        success: false,
-        artifacts_written: [],
-        tokens_used: 0,
-        duration_ms: Date.now() - start,
-        raw_output_path: rawPath,
-        error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+      const systemPrompt = context.system_prompt || 'You are a helpful software engineering assistant.';
+      const userMessage = buildUserMessage(context);
+
+      const loopResult = await loop.run(systemPrompt, userMessage);
+      tokensUsed = loopResult.tokens_used;
+
+      if (!loopResult.success) {
+        rawPath = await this.writeRaw(cycleState, node, '');
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: loopResult.error,
+        };
+      }
+
+      parsed = loopResult.parsedOutput!;
+      // Write the final text as raw output (always, even on multi-turn success)
+      rawPath = await this.writeRaw(cycleState, node, loopResult.rawText || '');
+
+    } else {
+      // Single-turn fallback (original logic)
+      const params: LLMCompletionParams = {
+        model: this.runnerConfig.model,
+        messages: [
+          {
+            role: 'system',
+            content: context.system_prompt || 'You are a helpful software engineering assistant.',
+          },
+          { role: 'user', content: buildUserMessage(context) },
+        ],
+        temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+        max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
       };
-    }
 
-    // 4. Write raw output (always, even on parse failure)
-    const rawPath = await this.writeRaw(cycleState, node, llmResult.content);
+      let llmResult;
+      try {
+        llmResult = await this.llmProvider.complete(params);
+      } catch (err) {
+        rawPath = await this.writeRaw(cycleState, node, '');
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
 
-    // 5. Parse output
-    let parsed: ParsedOutput;
-    try {
-      parsed = parseAgentOutput(llmResult.content, role);
-    } catch (err) {
-      return {
-        success: false,
-        artifacts_written: [],
-        tokens_used: llmResult.tokens_used,
-        duration_ms: Date.now() - start,
-        raw_output_path: rawPath,
-        error: `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
+      tokensUsed = llmResult.tokens_used;
+      rawPath = await this.writeRaw(cycleState, node, llmResult.content);
+
+      try {
+        parsed = parseAgentOutput(llmResult.content, role);
+      } catch (err) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     }
 
     // 6. Validate write paths (DDR-019)
@@ -284,7 +332,7 @@ export class AgentRunner {
         return {
           success: false,
           artifacts_written: [],
-          tokens_used: llmResult.tokens_used,
+          tokens_used: tokensUsed,
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
           error: `Role '${role}' is not permitted to write '${section.path}'`,
@@ -308,7 +356,7 @@ export class AgentRunner {
     return {
       success: true,
       artifacts_written: artifactsWritten,
-      tokens_used: llmResult.tokens_used,
+      tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
       raw_output_path: rawPath,
     };

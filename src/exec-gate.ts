@@ -103,6 +103,20 @@ export class ValidationGateService {
       const node = manifest.nodes.find((n) => n.id === nodeId);
       return !node || node.status !== 'complete';
     });
+
+    // Phase D hardening: check exec_result written by ExecServiceReal
+    const map2 = await this.mapManager.read();
+    const execResult = (map2.meta as Record<string, unknown> & {
+      dag?: { exec_result?: { exit_code?: number; timed_out?: boolean } };
+    }).dag?.exec_result;
+    if (execResult) {
+      if (execResult.timed_out) {
+        if (!failedNodes.includes('EXEC')) failedNodes.push('EXEC');
+      } else if (execResult.exit_code !== 0 && execResult.exit_code !== undefined) {
+        if (!failedNodes.includes('EXEC')) failedNodes.push('EXEC');
+      }
+    }
+
     const passedNodes = (VALIDATION_REQUIRED_NODES as readonly string[]).filter(
       (n) => !failedNodes.includes(n)
     );
@@ -155,7 +169,11 @@ export class ValidationGateService {
       run_dir: runDir,
       run_id: cycleId,
       quick_summary: `Validation failed: nodes [${failedNodes.join(', ')}] did not complete`,
-      failed_categories: failedNodes,
+      failed_categories: failedNodes.map((name) => ({
+        name,
+        method: 'executable' as const,
+        error_summary: `Node ${name} did not complete successfully`,
+      })),
       passed_categories: passedNodes as string[],
     };
     await this.runArtifacts.writeFailureReport(cycleNumber, iteration, failureReport);

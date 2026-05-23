@@ -294,7 +294,7 @@ test('ValidationGate: writes FailureReport on failure', async () => {
 
   assert.strictEqual(artifacts.failureReports.length, 1);
   assert.ok(result.failure_report, 'result should include failure_report');
-  assert.ok(result.failure_report!.failed_categories.includes('BUILD'));
+  assert.ok(result.failure_report!.failed_categories.some((c) => c.name === 'BUILD'));
   assert.strictEqual(result.failure_report!.cycle, 1);
   assert.strictEqual(result.failure_report!.iteration, 1);
 });
@@ -349,7 +349,7 @@ test('ValidationGate: FailureReport quick_summary mentions failed nodes', async 
   assert.ok(result.failure_report!.quick_summary.includes('BUILD'));
 });
 
-test('ValidationGate: failed_categories are plain strings', async () => {
+test('ValidationGate: failed_categories are FailureCategory objects', async () => {
   const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
   const mgr = new InMemoryMapManager();
   const artifacts = new MockRunArtifacts(manifest);
@@ -357,8 +357,9 @@ test('ValidationGate: failed_categories are plain strings', async () => {
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
-  assert.strictEqual(result.failure_report!.failed_categories[0], 'BUILD');
-  assert.ok(result.failure_report!.failed_categories.every((c) => typeof c === 'string'));
+  assert.strictEqual(result.failure_report!.failed_categories[0].name, 'BUILD');
+  assert.strictEqual(result.failure_report!.failed_categories[0].method, 'executable');
+  assert.ok(result.failure_report!.failed_categories.every((c) => typeof c === 'object' && c !== null));
 });
 
 test('ValidationGate: sets validation.gate.last_outcome=passed on pass', async () => {

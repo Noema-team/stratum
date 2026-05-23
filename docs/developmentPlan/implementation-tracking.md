@@ -1,6 +1,6 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-05-15
+**Updated:** 2026-05-23
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
 ---
@@ -134,16 +134,15 @@ Implements a **subset** of 3 source specs:
 
 ## Future Phases Outline
 
-| Group | Covers VS1 Phase(s) | Focus | Specs implemented | Approx. endpoints | Status |
-|---|---|---|---|---|---|---|
+| Group / Slice | Covers Phase(s) / Features | Focus | Specs implemented | Approx. endpoints | Status |
+|---|---|---|---|---|---|
 | **Daemon MVP** | VS1 A–H, J–K | Init + discover + daemon shell | daemon-api.md (subset), init-and-discovery.md (subset) | 10 | ✅ |
 | **Facilitator** | VS1 I | Facilitator LLM integration | prompt-templates.md, conversation.md | — | ✅ |
 | **Integration** | VS1 L | End-to-end integration test | — | — | ✅ |
-| **Full API** | VS2 (fremtidig) | 75 remaining endpoints | daemon-api-endpoints.md (remaining 75) | 85 | 📝 |
-| **WebSocket** | VS2 (fremtidig) | WebSocket events | websocket-events.md, daemon-api.md (WS) | — | 📝 |
-| **DAG Runner** | VS2 (fremtidig) | DAG execution engine | dag-execution.md, dag-node-reference.md | — | 📝 |
-| **Validation** | VS2 (fremtidig) | Validation gate & prompts | validation.md, prompt-templates.md | — | 📝 |
-| **Context** | VS2 (fremtidig) | Context manager | context-manager.md, reference/artifact-registry.md | — | 📝 |
-| **Dispatch** | VS2 (fremtidig) | Job dispatch & beads | job-dispatch.md, beads-integration.md | — | 📝 |
-| **Intake & Knowledge** | VS2 (fremtidig) | Intake, sharding, knowledge engine | intake-and-sharding.md, knowledge-engine.md | — | 📝 |
-| **UI Shell** | VS2 (fremtidig) | Dashboard & user flow | ui-shell.md, tasks-dashboard.md, user-flow.md | — | 📝 |
+| **VS2 — Working Cycle** | VS2 | Complete cycle: SCOPING to SNAPSHOT | dag-execution.md (core), validation.md (basic), context-manager.md (basic) | — | ✅ |
+| **VS3 — Hardened Execution** | VS3 | Real LLM, multi-turn, subprocess EXEC, Debugger & recovery | prompt-templates.md (caching), conversation.md (multi-turn), run-artifacts.md | — | ✅ |
+| **Full API** | VS4 (fremtidig) | 75 remaining endpoints | daemon-api-endpoints.md (remaining 75) | 85 | 📝 |
+| **WebSocket** | VS4 (fremtidig) | WebSocket events | websocket-events.md, daemon-api.md (WS) | — | 📝 |
+| **Docker Execution** | VS4 (fremtidig) | Docker sandbox execution | dag-execution.md (Docker) | — | 📝 |
+| **Intake & Knowledge** | VS5 (fremtidig) | Intake, sharding, knowledge engine | intake-and-sharding.md, knowledge-engine.md | — | 📝 |
+| **UI Shell** | VS4 (fremtidig) | Dashboard & user flow | ui-shell.md, tasks-dashboard.md, user-flow.md | — | 📝 |

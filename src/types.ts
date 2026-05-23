@@ -677,13 +677,27 @@ export const StaticAnalysisResultSchema = z.object({
   passed: z.boolean(),
 });
 
+export interface FailureCategory {
+  name: string;
+  method: ValidationMethod;
+  error_summary: string;
+  test_output?: string;
+}
+
+export const FailureCategorySchema = z.object({
+  name: z.string(),
+  method: ValidationMethodEnum,
+  error_summary: z.string(),
+  test_output: z.string().optional(),
+});
+
 export interface FailureReport {
   cycle: number;
   iteration: number;
   run_dir: string;
   run_id: string;
   quick_summary: string;
-  failed_categories: string[];
+  failed_categories: FailureCategory[];
   passed_categories: string[];
 }
 
@@ -693,7 +707,7 @@ export const FailureReportSchema = z.object({
   run_dir: z.string(),
   run_id: z.string(),
   quick_summary: z.string(),
-  failed_categories: z.array(z.string()),
+  failed_categories: z.array(FailureCategorySchema),
   passed_categories: z.array(z.string()),
 });
 

@@ -7,12 +7,13 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --import tsx --test tests/types.test.ts tests/runtime-map.test.ts tests/state-machine.test.ts",
-    "test:watch": "node --import tsx --watch --test tests/types.test.ts tests/runtime-map.test.ts tests/state-machine.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:watch": "node --import tsx --watch --test tests/*.test.ts",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "js-yaml": "^4.1.0",
     "zod": "^3.22.0"
   },

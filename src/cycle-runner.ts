@@ -10,6 +10,10 @@ import type { RunArtifactManager } from './run-artifacts.js';
 import type { CycleStateContext } from './context-manager.js';
 import type { FailureReport } from './types.js';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+export const MAX_DEBUG_ATTEMPTS = 3;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CycleRunResult {
@@ -18,6 +22,7 @@ export interface CycleRunResult {
   snapshot_dir?: string;
   failure_report?: FailureReport;
   error?: string;
+  debug_attempts_used?: number;
 }
 
 export interface CycleRunnerDeps {
@@ -33,7 +38,6 @@ export interface CycleRunnerDeps {
 }
 
 export interface CycleRunnerOptions {
-  // Called when CONFIRM gate is reached. Defaults to 'approve'.
   onConfirmGate?: (
     cycleNumber: number,
     iteration: number
@@ -52,7 +56,6 @@ export class CycleRunner {
 
     let cycleState: CycleStateContext = buildCycleStateContext(map, null);
 
-    // Resolve cycleId from manifest (set during cycle start)
     let cycleId = 'unknown';
     try {
       const manifest = await this.deps.runArtifacts.readManifest(cycleNumber, iteration);
@@ -66,21 +69,18 @@ export class CycleRunner {
       | undefined;
     let currentNode: string | null = dag?.current_node ?? 'DESIGN';
 
-    const onGate =
-      options?.onConfirmGate ?? (async () => 'approve' as const);
+    const onGate = options?.onConfirmGate ?? (async () => 'approve' as const);
+
+    // debug_attempt tracks how many DEBUGGER invocations have occurred.
+    // Reset to 0 at cycle start (fresh cycles don't inherit prior debug state).
+    let debugAttempt = 0;
 
     while (currentNode !== null) {
       const nodeId = currentNode;
       cycleState = { ...cycleState, current_node: nodeId };
 
-      // Depth-based skip (e.g. CRITIQUE at standard depth)
       if (shouldSkipAtDepth(nodeId, cycleState.planning_depth)) {
-        await this.deps.dagRunner.skipNode(
-          nodeId,
-          cycleNumber,
-          iteration,
-          'planning_depth'
-        );
+        await this.deps.dagRunner.skipNode(nodeId, cycleNumber, iteration, 'planning_depth');
         currentNode = nextNode(nodeId);
         continue;
       }
@@ -88,7 +88,6 @@ export class CycleRunner {
       // ── Gate / system nodes ──────────────────────────────────────────────
 
       if (nodeId === 'SCOPING') {
-        // SCOPING is handled at cycle start by ScopingService; skip here.
         currentNode = nextNode('SCOPING');
         continue;
       }
@@ -96,16 +95,12 @@ export class CycleRunner {
       if (nodeId === 'CONFIRM') {
         await this.deps.confirmService.gate(cycleNumber, iteration);
         const action = await onGate(cycleNumber, iteration);
-
-        if (action === 'halt') {
-          return { completed: false, final_node: 'CONFIRM' };
-        }
+        if (action === 'halt') return { completed: false, final_node: 'CONFIRM' };
         if (action === 'revise') {
           const r = await this.deps.confirmService.revise(cycleNumber, iteration);
-          currentNode = r.next_node; // returns to PLAN
+          currentNode = r.next_node;
           continue;
         }
-        // approve
         const r = await this.deps.confirmService.approve(cycleNumber, iteration);
         currentNode = r.next_node;
         continue;
@@ -118,19 +113,39 @@ export class CycleRunner {
       }
 
       if (nodeId === 'VALIDATION_GATE') {
-        const r = await this.deps.validationGateService.run(
-          cycleNumber,
-          iteration,
-          cycleId
-        );
+        const r = await this.deps.validationGateService.run(cycleNumber, iteration, cycleId);
         if (!r.passed) {
-          return {
-            completed: false,
-            final_node: 'VALIDATION_GATE',
-            failure_report: r.failure_report,
-          };
+          debugAttempt++;
+          if (debugAttempt > MAX_DEBUG_ATTEMPTS) {
+            return {
+              completed: false,
+              final_node: 'VALIDATION_GATE',
+              failure_report: r.failure_report,
+              error: `Validation failed after ${MAX_DEBUG_ATTEMPTS} debug attempt(s)`,
+              debug_attempts_used: debugAttempt - 1, // attempts actually run
+            };
+          }
+          // Route to Debugger with current failure context
+          cycleState = { ...cycleState, failure_report: r.failure_report };
+          currentNode = 'DEBUGGER';
+          continue;
         }
         currentNode = r.next_node;
+        continue;
+      }
+
+      if (nodeId === 'DEBUGGER') {
+        // Run Debugger agent; after it produces a fix, route back to EXEC
+        const result = await this.deps.dagRunner.runNode('DEBUGGER', cycleState);
+        if (!result.success) {
+          return {
+            completed: false,
+            final_node: 'DEBUGGER',
+            error: result.error,
+            debug_attempts_used: debugAttempt,
+          };
+        }
+        currentNode = 'EXEC'; // re-run execution after Debugger fix
         continue;
       }
 
@@ -145,12 +160,12 @@ export class CycleRunner {
 
       if (nodeId === 'SNAPSHOT') {
         const r = await this.deps.snapshotService.run(cycleNumber, iteration);
-        // T8: cycling → complete
         await this.deps.stateMachine.completeCycle();
         return {
           completed: true,
           final_node: null,
           snapshot_dir: r.snapshot_dir,
+          debug_attempts_used: debugAttempt,
         };
       }
 
@@ -162,11 +177,12 @@ export class CycleRunner {
           completed: false,
           final_node: nodeId,
           error: result.error,
+          debug_attempts_used: debugAttempt,
         };
       }
       currentNode = result.next_node;
     }
 
-    return { completed: true, final_node: null };
+    return { completed: true, final_node: null, debug_attempts_used: debugAttempt };
   }
 }
