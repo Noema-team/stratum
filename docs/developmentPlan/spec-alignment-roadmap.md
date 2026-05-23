@@ -3,17 +3,15 @@
 **Date:** 2026-05-23  
 **Status:** Approved Roadmap  
 **Prerequisites:** VS3 Complete (Real subprocess EXEC, multi-turn agents, debugger loop)  
-**Target:** 100% compliance with core Stratum architectural specifications.
+**Target Specs:** job-dispatch.md, validation.md, document-linking.md, context-manager.md, daemon-api.md, dag-node-reference.md, intake-and-sharding.md, ui-shell.md, tasks-dashboard.md
 
 ---
 
-## 🗺️ Executive Overview
+## 🗺️ Architectural Concept Realignment
 
-This roadmap re-orchestrates the remaining development phases of **Stratum v2** (formerly *SLE* / *sdk-orchestrator*). 
+To build the full system as specified, we must address the **Spec-to-Code Divergence** systematically. 
 
-Previously, Vertical Slice 4 (VS4) was designed to expand the agent roster (Critic, Sharding gates) while leaving the core engine running insecurely on the host machine. 
-
-To prevent compounding architectural debt, this plan **realigns and hardens the system first**. We prioritize secure Docker sandboxing and semantic link-indexing in a restructured **Vertical Slice 4**, ensuring a rock-solid, production-grade foundation before building concurrency, parallel sharding, and UI elements in **Vertical Slice 5**.
+Instead of adding more features on top of host-based, unsecured stubs and memory-only states, we reorganize the remaining development into two rigorous, spec-aligned vertical slices: **Vertical Slice 4 (VS4: Hardened Infrastructure)** and **Vertical Slice 5 (VS5: Concurrency & Graphical Interface)**.
 
 ```mermaid
 graph TD
@@ -23,92 +21,75 @@ graph TD
     classDef future fill:#6b7280,stroke:#374151,stroke-width:2px,color:#fff;
 
     %% Slices
-    VS3["✅ Vertical Slice 3: Hardened Core<br>(Complete - May 17, 2026)"]:::complete
-    VS4["🚀 Vertical Slice 4: Sandboxed & Schema-Aligned<br>(Active Phase)"]:::active
-    VS5["🔭 Vertical Slice 5: Parallelism & UI Surface<br>(Next Phase)"]:::future
+    VS3["✅ VS3: Hardened Execution<br>(Complete)"]:::complete
+    VS4["🚀 VS4: Hardened Infrastructure & APIs<br>(Active Phase)"]:::active
+    VS5["🔭 VS5: Concurrency & UI Surface<br>(Future Phase)"]:::future
 
-    %% Deliverables
+    %% Slices Mapping
     VS3 --> VS4
-    VS4 -->|Hardened Core| VS5
+    VS4 -->|Hardened & Secure| VS5
 ```
 
 ---
 
-## 🚀 Vertical Slice 4: Sandboxed & Schema-Aligned
+## 🚀 Vertical Slice 4: Hardened Infrastructure & APIs
 
-*   **Theme:** Erase critical security vectors, eliminate context overflows, and standardize API contracts.
-*   **Target Specs:** [validation.md](../specs/validation.md), [document-linking.md](../specs/document-linking.md), [daemon-api.md](../specs/daemon-api.md).
+*   **Theme:** Secure containerization, tri-phase category-cached validation, AST-less trace-link indices, token-budgeted context slices, and standardized HTTP responses.
+*   **Target Specs:** [job-dispatch.md](../specs/job-dispatch.md), [validation.md](../specs/validation.md), [document-linking.md](../specs/document-linking.md), [context-manager.md](../specs/context-manager.md), [daemon-api.md](../specs/daemon-api.md), [daemon-api-endpoints.md](../specs/daemon-api-endpoints.md).
 *   **Status:** **ACTIVE PHASE**
 
-### Phase A: Docker Sandbox Execution (`specs/validation.md`)
-*   **Core Objective:** Replace host subprocess execution with sandboxed Docker containers in the `EXEC` node.
-*   **Engineering Tasks:**
-    *   Create a base Docker image (`stratum-runner:latest`) pre-configured with active runtime runtimes (Node, Python).
-    *   Refactor `src/exec-service.ts` to spin up containers, mount the local workspace snapshot directory as a read-only or isolated volume, and run the validation scripts inside the container.
-    *   Implement volume streaming and secure output retrieval to capture lints, test runs, and compile errors.
-    *   *Security Constraint:* Unrestricted host terminal commands are blocked; network access inside the container is isolated.
+### Phase A: Job Dispatch & Worker Pools (`specs/job-dispatch.md`)
+*   **Core Objective:** Replace native subprocess execution with a containerized **Worker Pool** managing concurrent validation jobs inside Docker sandboxes.
+*   **Key Specs Alignment:**
+    *   Implement `Job` queue, state machine (`queued` -> `preparing` -> `running` -> `collecting` -> `completed/failed`), and scheduling based on `JobPriority` (0..3).
+    *   Create the `WorkerPool` interface handling `Worker` heartbeats, draining states, and dynamic container limits (CPU/Memory).
+    *   Enforce standard volume mounts mapping the run directory, project source (read-only), test scripts (read-only), and context pack.
 
-### Phase B: Local Link Index DAG (`specs/document-linking.md`)
-*   **Core Objective:** Implement a lightweight, zero-dependency, local **Link Index DAG** to compile file-to-file requirements, test references, and code dependencies, replacing the deprecated Cognee engine.
-*   **Engineering Tasks:**
-    *   Write a custom AST static dependency scanner in `src/discovery-service.ts` or `src/context-manager.ts` to map codebase relationships.
-    *   Construct the Link Index DAG inside `.sle/map.yaml` using the specified `UnifiedMetadata` schema.
-    *   Refactor `src/context-manager.ts` to query this local index, constructing a budget-tracked, semantic context slice (`AssembledContext`) for the Builder and Tester agents.
+### Phase B: Tri-Phase Validation Gate (`specs/validation.md`)
+*   **Core Objective:** Implement the tri-phase execution pass (`static-check` -> `llm-check` -> `exec-check`) across categories with caching.
+*   **Key Specs Alignment:**
+    *   Enforce sequential execution: if `static-check` fails globally, downstream checks are bypassed.
+    *   Validate the 10 built-in categories (such as static analysis, LLM semantic checks, and functional tests).
+    *   Compute deterministic `VALIDATION_GATE` verdicts using `CategoryRunResult` schema blocks, completely isolated from LLM decision making.
 
-### Phase C: Daemon API Schema Compliance (`specs/daemon-api.md`)
-*   **Core Objective:** Standardize the existing 18 active REST endpoints in `src/daemon.ts` to match the exact JSON payload shapes and response schemas detailed in the specifications.
-*   **Engineering Tasks:**
-    *   Ensure all endpoint outputs are strictly structured and validated using Zod models matching `specs/daemon-api-endpoints.md`.
-    *   Standardize the `FailureReport` format returned by the `VALIDATION_GATE` on test fail.
+### Phase C: Semantic Trace-Link Index (`specs/document-linking.md`)
+*   **Core Objective:** Build a persistent, traversable trace-link knowledge graph utilizing typed reference addressing (`doc:{key}`, `node:{group}:{key}`) and manual `[[wikilink]]` parsing.
+*   **Key Specs Alignment:**
+    *   Create forward link indexing and compute memory-only bidirectional backlinks.
+    *   Store indices in `.sle/link-index/` as `forward-links.json`, `file-index.json`, and `document-index.json`.
+    *   Implement Link Tiers (Tiers 1 and 2 structural and contextual linking).
 
-### 🧪 VS4 Integration Tests & Verification
-*   **Test Case 1 (Security Sandbox):** A cycle that attempts to run a malicious shell script on the host (e.g., `touch /tmp/hacked`) is safely blocked, executing only inside the sandboxed Docker volume.
-*   **Test Case 2 (Link Context):** A cycle where the Builder is fed a token-bounded context slice generated semantically from the local Link Index, successfully compiling a multi-file dependency change.
+### Phase D: Five-Component Context Manager (`specs/context-manager.md`)
+*   **Core Objective:** Assemble precise, budget-tracked LLM context slices under a hard 3,500-token cap.
+*   **Key Specs Alignment:**
+    *   Enforce the five-component order: System Prompt, Artifact Slices, State Summary, Task, and Failure Context.
+    *   Implement `SliceRule` processing (mode definitions and truncation weights) to prevent context overflows.
+
+### Phase E: API Contract Compliance (`specs/daemon-api-endpoints.md`)
+*   **Core Objective:** Map and refactor the active daemon endpoints to strictly match the request/response envelopes (`APIResponse<T>`, `APIError`) and Zod schemas.
 
 ---
 
-## 🔭 Vertical Slice 5: Parallelism & UI Surface
+## 🔭 Vertical Slice 5: Concurrency & UI Surface
 
-*   **Theme:** Advanced multi-agent concurrency, reactive user feedback, and the graphical desktop surface.
-*   **Target Specs:** [dag-node-reference.md](../specs/dag-node-reference.md), [intake-and-sharding.md](../specs/intake-and-sharding.md), [ui-shell.md](../specs/ui-shell.md).
+*   **Theme:** Critic advisories, multi-shard intake pipelines, real-time WebSocket state broadcasting, and the visual desktop interface.
+*   **Target Specs:** [dag-node-reference.md](../specs/dag-node-reference.md), [intake-and-sharding.md](../specs/intake-and-sharding.md), [ui-shell.md](../specs/ui-shell.md), [tasks-dashboard.md](../specs/tasks-dashboard.md), [daemon-api.md](../specs/daemon-api.md).
 *   **Status:** **FUTURE PHASE**
 
-### Phase A: Critic Agent (`specs/dag-node-reference.md`)
-*   **Core Objective:** Insert the `CRITIQUE` node (Node 3) into the active `DAG_SEQUENCE` running after the `DESIGN` node.
-*   **Engineering Tasks:**
-    *   Build the Critic agent prompt template (`prompt-templates.ts`) to review `architecture.md` and `requirements.md`.
-    *   Implement routing logic in `src/cycle-runner.ts` that loops back to `DESIGN` with structured critique files on `BLOCKING` reviews.
+### Phase A: Critic Agent Routing (`specs/dag-node-reference.md`)
+*   **Core Objective:** Insert the `CRITIQUE` node (Node 3) into the DAG sequence, running after `DESIGN` at deep/research depth.
+*   **Key Specs Alignment:**
+    *   Enforce advisory semantics (Critic reviews but never halts the DAG; Designer must address blockings).
+    *   Produce dual outputs: `doc:critique-feedback` (for Designer consumption) and `node:critic:critique` (ephemeral run log).
 
-### Phase B: Task Sharding & Gates (`specs/intake-and-sharding.md`)
-*   **Core Objective:** Decompose complex developer intents into distinct concurrent cycles (shards) executing in parallel.
-*   **Engineering Tasks:**
-    *   Implement the `SHARDING_APPROVAL` gate (Node 6) allowing user confirmation of the Planner's sharding proposal.
-    *   Build multi-cycle execution pipelines in `src/cycle-runner.ts`.
+### Phase B: 6-Step Intake & Sharding Pipeline (`specs/intake-and-sharding.md`)
+*   **Core Objective:** Decompose high-level intents into concurrent sub-tasks under a unified cycle execution plane.
+*   **Key Specs Alignment:**
+    *   Implement the 6-step sharding pipeline: document intake -> coherence gate -> sharding -> approval -> task creation -> link index update.
+    *   *Correction:* Sharding creates sub-tasks within a single cycle context, not parallel cycles.
 
-### Phase C: WebSocket Event Bus (`specs/daemon-api.md`)
-*   **Core Objective:** Broadcast real-time execution states using the canonical `SLE-005` event envelope.
-*   **Engineering Tasks:**
-    *   Refactor the active event system to use a standard `EventBus`.
-    *   Implement a persistent WebSocket server at `ws://localhost:7700/events` broadcasting dotted event formats (`cycle.started`, `node.completed`).
+### Phase C: WebSocket Event Bus (`specs/daemon-api.md` & `specs/daemon-api-endpoints.md`)
+*   **Core Objective:** Emit real-time lifecycle updates over a WebSocket event bus using dotted names (`cycle.started`) and flat envelopes.
 
-### Phase D: The UI Dashboard Shell (`specs/ui-shell.md`)
-*   **Core Objective:** Construct the web dashboard shell to visualize real-time run metrics, workspace diffs, and confirmation prompts.
-*   **Engineering Tasks:**
-    *   Develop a reactive Single Page Application (HTML/JS) running inside a local server.
-    *   Bind the UI directly to the WebSocket event bus and the hardened REST API endpoints built in VS4.
-
----
-
-## 📈 Spec Divergence Status (Tracked & Addressed)
-
-By executing this roadmap, the major divergences captured in your project audit will be systematically resolved:
-
-| Divergence Target | Original Status | Resolution Phase |
-| :--- | :--- | :--- |
-| **Docker Sandboxing** | 🔶 Partially Implemented (Host execution) | **VS4 Phase A** (Completed Compliance) |
-| **Knowledge Engine (Cognee)** | 🛑 Deprecated & Replaced | **VS4 Phase B** (Resolved via Local Link DAG) |
-| **API Schema Completeness** | 🔶 Partially Implemented (21% coverage) | **VS4 Phase C & VS5 Phase C** |
-| **Critic Routing** | 📝 Spec Only (Deferred) | **VS5 Phase A** |
-| **Task Sharding** | 📝 Spec Only (Deferred) | **VS5 Phase B** |
-| **WebSocket Event Bus** | 🔶 Partially Implemented (Stubbed) | **VS5 Phase C** |
-| **UI Dashboard Shell** | 📝 Spec Only (Deferred) | **VS5 Phase D** |
+### Phase D: UI Shell & Tasks Dashboard (`specs/ui-shell.md` & `specs/tasks-dashboard.md`)
+*   **Core Objective:** Construct the 3-page local HTML desktop interface (Overview with 6 panels, Chat, Graph) and dynamic widgets.
