@@ -81,9 +81,12 @@ This document serves as the canonical audit of every specification file in `spec
 * **Actual Implementation:** Unimplemented. Cycles are scheduled directly and block state machine updates until execution finishes.
 
 ### 12. Knowledge Engine (`specs/knowledge-engine.md`)
-* **Status:** 📝 **Spec Only (100% Deferred)**
-* **Spec Requirements:** An active background semantic crawler that vectorizes files, constructs import hierarchies, and updates a local repository knowledge graph.
-* **Actual Implementation:** Unimplemented.
+* **Status:** 🛑 **Deprecated & Replaced (with Preserved Concepts)**
+* **Spec Requirements:** An active background semantic crawler and knowledge graph database layer (Cognee FastAPI container over REST) to index files and run semantic similarity searches.
+* **Actual Implementation:** The external Cognee database container has been deprecated and will not be used in Stratum. It is replaced by a custom, completely local **Link Index DAG** (specified in `document-linking.md`). However, three core design concepts from the knowledge spec are **fully preserved and integrated** into active subsystems:
+  1. **`UnifiedMetadata` Schema**: Resolves Gap G32 by bridging files, links, and cycles into a shared query metadata model, enabling precise deterministic graph filtering.
+  2. **`AssembledContext` Integration**: Integrates the knowledge search outputs as a formatted, budget-tracked 6th context component inside the agent's LLM window.
+  3. **`CircuitBreaker` Pattern**: Stateful connection protection class (`open` / `closed` / `half-open` states) reused as an architectural design pattern to safeguard remote integrations (like the Anthropic API provider).
 
 ### 13. Project Overview (`specs/project-overview.md`)
 * **Status:** 📝 **Spec Only (100% Deferred)**
