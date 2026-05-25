@@ -185,7 +185,9 @@ export class ContextManager {
       .map(id => `- doc:${id}`)
       .join('\n');
     
-    const systemPrompt = rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.');
+    const systemPrompt = rawSystemPrompt
+      ? rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.')
+      : '';
 
     const totalTokens = this.estimateTotalTokens(systemPrompt, stateSummary, task, slices, failureContext);
 
@@ -205,12 +207,17 @@ export class ContextManager {
   private async loadSystemPrompt(role: AgentRole): Promise<string> {
     const agentMdPath = path.join(this.projectRoot, 'agent.md');
     const agentMd = await this.safeReadFile(agentMdPath);
+    const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
+    const rolePrompt = await this.safeReadFile(rolePromptPath);
+
+    if (!agentMd && !rolePrompt) {
+      return '';
+    }
+
     const agentHeader = agentMd 
       ? truncateContent(agentMd, tokensToChars(300)).text 
       : `You are the ${role} agent in an SLE cycle.`;
 
-    const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
-    const rolePrompt = await this.safeReadFile(rolePromptPath);
     const roleDetails = rolePrompt 
       ? truncateContent(rolePrompt, tokensToChars(200)).text 
       : 'Review constraints and proceed with your assigned task.';
@@ -340,8 +347,9 @@ export class ContextManager {
         }
       }
 
-      if (rule.max_tokens) {
-        const maxChars = tokensToChars(rule.max_tokens);
+      const maxTokens = rule.never_truncate ? undefined : (rule.max_tokens ?? this.config.artifact_slice_size);
+      if (maxTokens) {
+        const maxChars = tokensToChars(maxTokens);
         if (content.length > maxChars) {
           content = truncateContent(content, maxChars).text;
           truncated.push(path.basename(relPath, '.md'));
