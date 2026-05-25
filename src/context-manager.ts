@@ -34,8 +34,8 @@ export interface SliceRule {
 
 const ROLE_ARTIFACT_PATHS: Record<AgentRole, string[]> = {
   facilitator:  ['docs/discovery-summary.md', 'docs/cycle-charter.md'],
-  designer:     ['docs/cycle-charter.md', 'docs/discovery-summary.md'],
-  critic:       ['docs/requirements.md', 'docs/architecture.md'],
+  designer:     ['docs/cycle-charter.md', 'docs/discovery-summary.md', 'docs/cycle-critique.md', 'docs/critique-report.md'],
+  critic:       ['docs/requirements.md', 'docs/architecture.md', 'docs/cycle-charter.md', 'docs/discovery-summary.md'],
   planner:      ['docs/requirements.md', 'docs/architecture.md', 'docs/cycle-charter.md'],
   tester:       ['docs/requirements.md', 'docs/test-plan.md'],
   builder:      ['docs/requirements.md', 'docs/architecture.md', 'docs/plan.md', 'docs/test-plan.md'],
@@ -105,6 +105,8 @@ const SLICE_RULES: Record<string, SliceRule> = {
   'doc:discovery-summary': { artifact_id: 'doc:discovery-summary', mode: 'full', source_weight: 'inferred' },
   'doc:cycle-charter': { artifact_id: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
   'doc:research-findings': { artifact_id: 'doc:research-findings', mode: 'full', source_weight: 'user_defined' },
+  'doc:cycle-critique': { artifact_id: 'doc:cycle-critique', mode: 'full', never_truncate: true, source_weight: 'cycle_produced' },
+  'doc:critique-report': { artifact_id: 'doc:critique-report', mode: 'full', source_weight: 'project' },
 };
 
 function getSliceRule(ref: string): SliceRule {
