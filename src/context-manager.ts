@@ -19,7 +19,18 @@ export interface CycleStateContext {
   revision_note?: string;
 }
 
-// ─── Per-role artifact slice defaults ────────────────────────────────────────
+export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred';
+
+export interface SliceRule {
+  artifact_id: string;
+  mode: 'full' | 'last_n_entries' | 'last_cycle' | 'summary_only';
+  max_entries?: number;
+  max_tokens?: number;
+  never_truncate?: boolean;
+  source_weight?: SourceWeight;
+}
+
+// ─── Per-role artifact defaults ──────────────────────────────────────────────
 
 const ROLE_ARTIFACT_PATHS: Record<AgentRole, string[]> = {
   facilitator:  ['docs/discovery-summary.md', 'docs/cycle-charter.md'],
@@ -34,7 +45,7 @@ const ROLE_ARTIFACT_PATHS: Record<AgentRole, string[]> = {
   debugger:     ['docs/requirements.md', 'docs/test-plan.md'],
 };
 
-// ─── Task description inference ───────────────────────────────────────────────
+// ─── Task description defaults ───────────────────────────────────────────────
 
 const NODE_TASK_DESCRIPTIONS: Record<string, string> = {
   SCOPING:        'Lead a scoping discussion to refine the following intent into a detailed cycle charter.',
@@ -56,7 +67,7 @@ function inferTaskDescription(node: string | null, intent: string): string {
   return `${base}\n\nCycle intent: "${intent}"`;
 }
 
-// ─── Token counting (VS2: chars ÷ 4 approximation) ───────────────────────────
+// ─── Token counting (chars ÷ 4 approximation) ───────────────────────────
 
 const CHARS_PER_TOKEN = 4;
 
@@ -75,19 +86,56 @@ const TRUNCATION_MARKER = '[...earlier content truncated...]\n';
 function truncateContent(content: string, maxChars: number): { text: string; truncated: boolean } {
   if (content.length <= maxChars) return { text: content, truncated: false };
   const keepChars = maxChars - TRUNCATION_MARKER.length;
+  if (keepChars <= 0) return { text: '', truncated: true };
   return {
     text: TRUNCATION_MARKER + content.slice(content.length - keepChars),
     truncated: true,
   };
 }
 
+// ─── Default SliceRules by ref ───────────────────────────────────────────────
+
+const SLICE_RULES: Record<string, SliceRule> = {
+  'doc:requirements': { artifact_id: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  'doc:architecture': { artifact_id: 'doc:architecture', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  'doc:test-plan': { artifact_id: 'doc:test-plan', mode: 'full', source_weight: 'cycle_produced' },
+  'doc:plan': { artifact_id: 'doc:plan', mode: 'full', source_weight: 'cycle_produced' },
+  'doc:decisions': { artifact_id: 'doc:decisions', mode: 'last_n_entries', max_entries: 3, source_weight: 'cycle_produced' },
+  'doc:evaluation': { artifact_id: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  'doc:discovery-summary': { artifact_id: 'doc:discovery-summary', mode: 'full', source_weight: 'inferred' },
+  'doc:cycle-charter': { artifact_id: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
+  'doc:research-findings': { artifact_id: 'doc:research-findings', mode: 'full', source_weight: 'user_defined' },
+};
+
+function getSliceRule(ref: string): SliceRule {
+  if (SLICE_RULES[ref]) return SLICE_RULES[ref];
+  return {
+    artifact_id: ref,
+    mode: 'full',
+    source_weight: 'inferred',
+  };
+}
+
+function resolveArtifactPath(ref: string): string {
+  if (ref.startsWith('doc:')) {
+    const key = ref.substring(4);
+    return `docs/${key}.md`;
+  } else if (ref.startsWith('node:')) {
+    const parts = ref.substring(5).split(':');
+    const group = parts[0];
+    const key = parts[1];
+    return `docs/${group}/${key}.md`;
+  }
+  return ref;
+}
+
 // ─── ContextManager ───────────────────────────────────────────────────────────
 
 export const DEFAULT_CONFIG: ContextManagerConfig = {
-  artifact_slice_size: 8_000,
-  summary_max_tokens: 500,
-  system_prompt_max_tokens: 4_000,
-  hard_ceiling: 32_000,
+  artifact_slice_size: 2000,
+  summary_max_tokens: 300,
+  system_prompt_max_tokens: 500,
+  hard_ceiling: 3500,
 };
 
 export class ContextManager {
@@ -102,7 +150,7 @@ export class ContextManager {
   }
 
   async assemble(role: AgentRole, cycleState: CycleStateContext): Promise<AssembledContext> {
-    const systemPrompt = await this.loadSystemPrompt(role);
+    const rawSystemPrompt = await this.loadSystemPrompt(role);
     const stateSummary = this.buildStateSummary(cycleState);
     const task = inferTaskDescription(cycleState.current_node, cycleState.intent);
 
@@ -114,11 +162,18 @@ export class ContextManager {
     const { slices, truncated } = await this.loadArtifactSlices(
       role,
       cycleState,
-      systemPrompt,
+      rawSystemPrompt,
       stateSummary,
       task,
       failureContext
     );
+
+    // Format final system prompt including Component 2 artifact checklist
+    const artifactList = Object.keys(slices)
+      .map(id => `- doc:${id}`)
+      .join('\n');
+    
+    const systemPrompt = rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.');
 
     const totalTokens = this.estimateTotalTokens(systemPrompt, stateSummary, task, slices, failureContext);
 
@@ -133,31 +188,25 @@ export class ContextManager {
     };
   }
 
-  // ─── System prompt ──────────────────────────────────────────────────────────
+  // ─── System prompt (Component 1) ──────────────────────────────────────────
 
   private async loadSystemPrompt(role: AgentRole): Promise<string> {
-    const parts: string[] = [];
-
     const agentMdPath = path.join(this.projectRoot, 'agent.md');
     const agentMd = await this.safeReadFile(agentMdPath);
-    if (agentMd) {
-      const maxChars = tokensToChars(this.config.system_prompt_max_tokens);
-      const { text } = truncateContent(agentMd, Math.floor(maxChars * 0.6));
-      parts.push(text);
-    }
+    const agentHeader = agentMd 
+      ? truncateContent(agentMd, tokensToChars(300)).text 
+      : `You are the ${role} agent in an SLE cycle.`;
 
     const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
     const rolePrompt = await this.safeReadFile(rolePromptPath);
-    if (rolePrompt) {
-      const maxChars = tokensToChars(this.config.system_prompt_max_tokens);
-      const { text } = truncateContent(rolePrompt, Math.floor(maxChars * 0.4));
-      parts.push(text);
-    }
+    const roleDetails = rolePrompt 
+      ? truncateContent(rolePrompt, tokensToChars(200)).text 
+      : 'Review constraints and proceed with your assigned task.';
 
-    return parts.join('\n\n---\n\n');
+    return `${agentHeader}\n\n## Your role\n${roleDetails}\n\n## Artifacts in your context\n{artifact_list}`;
   }
 
-  // ─── State summary ──────────────────────────────────────────────────────────
+  // ─── State summary (Component 3) ──────────────────────────────────────────
 
   private buildStateSummary(cycleState: CycleStateContext): string {
     const lines = [
@@ -174,10 +223,11 @@ export class ContextManager {
         lines.push(`- Revision note: "${cycleState.revision_note}"`);
       }
     }
-    return lines.join('\n');
+    const text = lines.join('\n');
+    return truncateContent(text, tokensToChars(this.config.summary_max_tokens)).text;
   }
 
-  // ─── Failure context ─────────────────────────────────────────────────────────
+  // ─── Failure context (Component 5) ─────────────────────────────────────────
 
   private formatFailureContext(report: FailureReport): string {
     const lines = [
@@ -186,15 +236,14 @@ export class ContextManager {
       '',
       `**Summary:** ${report.quick_summary}`,
       '',
-      `**Failed categories:** ${report.failed_categories.join(', ')}`,
+      `**Failed categories:** ${report.failed_categories.map((c: any) => typeof c === 'string' ? c : c.name).join(', ')}`,
       `**Passed categories:** ${report.passed_categories.join(', ')}`,
     ];
     const text = lines.join('\n');
-    const maxChars = tokensToChars(2_000);
-    return truncateContent(text, maxChars).text;
+    return truncateContent(text, tokensToChars(400)).text;
   }
 
-  // ─── Artifact slices ─────────────────────────────────────────────────────────
+  // ─── Artifact slices (Component 2) ─────────────────────────────────────────
 
   private async loadArtifactSlices(
     role: AgentRole,
@@ -204,43 +253,116 @@ export class ContextManager {
     task: string,
     failureContext: string | undefined
   ): Promise<{ slices: Record<string, string>; truncated: string[] }> {
-    const usedTokens =
-      charsToTokens(systemPrompt.length) +
-      charsToTokens(stateSummary.length) +
-      charsToTokens(task.length) +
-      (failureContext ? charsToTokens(failureContext.length) : 0);
+    const systemPromptTokens = charsToTokens(systemPrompt.length);
+    const stateSummaryTokens = charsToTokens(stateSummary.length);
+    const taskTokens = charsToTokens(task.length);
+    const failureContextTokens = failureContext ? charsToTokens(failureContext.length) : 0;
 
-    let remainingTokens = this.config.hard_ceiling - usedTokens;
-    if (remainingTokens < 0) remainingTokens = 0;
-
-    const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
-    const slices: Record<string, string> = {};
-    const truncated: string[] = [];
-
-    for (const artifactPath of paths) {
-      if (remainingTokens <= 0) break;
-
-      const fullPath = path.join(this.projectRoot, artifactPath);
-      const content = await this.safeReadFile(fullPath);
-      if (!content) continue;
-
-      const artifactId = path.basename(artifactPath, '.md');
-      const maxChars = Math.min(
-        this.config.artifact_slice_size,
-        tokensToChars(remainingTokens)
-      );
-
-      const { text, truncated: wasTruncated } = truncateContent(content, maxChars);
-      slices[artifactId] = text;
-      remainingTokens -= charsToTokens(text.length);
-
-      if (wasTruncated) truncated.push(artifactId);
+    const nonArtifactTokens = systemPromptTokens + stateSummaryTokens + taskTokens + failureContextTokens;
+    let availableArtifactBudget = this.config.hard_ceiling - nonArtifactTokens;
+    if (availableArtifactBudget < 500) {
+      availableArtifactBudget = 500;
     }
 
-    return { slices, truncated };
+    const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
+    const refs = paths.map(p => {
+      const base = path.basename(p, '.md');
+      return `doc:${base}`;
+    });
+
+    const loadedSlices: Array<{
+      ref: string;
+      content: string;
+      tokens: number;
+      rule: SliceRule;
+    }> = [];
+
+    const truncated: string[] = [];
+
+    for (const ref of refs) {
+      const relPath = resolveArtifactPath(ref);
+      const fullPath = path.join(this.projectRoot, relPath);
+      let content = await this.safeReadFile(fullPath);
+      if (!content) continue;
+
+      const rule = getSliceRule(ref);
+
+      if (rule.mode === 'last_n_entries' && rule.max_entries) {
+        const entries = content.split(/(?=^##\s)/m);
+        if (entries.length > rule.max_entries) {
+          content = entries.slice(-rule.max_entries).join('');
+        }
+      } else if (rule.mode === 'last_cycle') {
+        const entries = content.split(/(?=^##\s*Cycle)/mi);
+        if (entries.length > 1) {
+          content = entries[entries.length - 1];
+        }
+      }
+
+      if (rule.max_tokens) {
+        const maxChars = tokensToChars(rule.max_tokens);
+        if (content.length > maxChars) {
+          content = truncateContent(content, maxChars).text;
+          truncated.push(path.basename(relPath, '.md'));
+        }
+      }
+
+      loadedSlices.push({
+        ref,
+        content,
+        tokens: charsToTokens(content.length),
+        rule,
+      });
+    }
+
+    let totalArtifactTokens = loadedSlices.reduce((acc, s) => acc + s.tokens, 0);
+
+    if (totalArtifactTokens > availableArtifactBudget) {
+      const inferred = loadedSlices.filter(s => s.rule.source_weight === 'inferred' && !s.rule.never_truncate);
+      const cycleProduced = loadedSlices.filter(s => s.rule.source_weight === 'cycle_produced' && !s.rule.never_truncate);
+      const userDefined = loadedSlices.filter(s => s.rule.source_weight === 'user_defined' && !s.rule.never_truncate);
+
+      const truncateList = (list: typeof loadedSlices, targetBudget: number) => {
+        let currentSum = loadedSlices.reduce((acc, s) => acc + s.tokens, 0);
+        if (currentSum <= targetBudget) return;
+
+        for (const item of list) {
+          if (currentSum <= targetBudget) break;
+          const over = currentSum - targetBudget;
+          if (item.tokens <= over) {
+            currentSum -= item.tokens;
+            item.content = '';
+            item.tokens = 0;
+            truncated.push(path.basename(resolveArtifactPath(item.ref), '.md'));
+          } else {
+            const keepTokens = item.tokens - over;
+            const keepChars = tokensToChars(keepTokens);
+            const { text } = truncateContent(item.content, keepChars);
+            currentSum -= (item.tokens - charsToTokens(text.length));
+            item.content = text;
+            item.tokens = charsToTokens(text.length);
+            truncated.push(path.basename(resolveArtifactPath(item.ref), '.md'));
+          }
+        }
+      };
+
+      truncateList(inferred, availableArtifactBudget);
+      truncateList(cycleProduced, availableArtifactBudget);
+      truncateList(userDefined, availableArtifactBudget);
+    }
+
+    const finalSlices: Record<string, string> = {};
+    for (const s of loadedSlices) {
+      if (s.content) {
+        const id = path.basename(resolveArtifactPath(s.ref), '.md');
+        finalSlices[id] = s.content;
+      }
+    }
+
+    return { slices: finalSlices, truncated };
   }
 
-  // ─── Token estimate ──────────────────────────────────────────────────────────
+  // ─── Token estimation ────────────────────────────────────────────────────────
 
   private estimateTotalTokens(
     systemPrompt: string,
