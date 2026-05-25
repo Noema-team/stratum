@@ -48,7 +48,6 @@ export class ValidationGateService {
     cycleId: string
   ): Promise<ValidationGateResult> {
     const startedAt = new Date().toISOString();
-    const runId = `${cycleNumber}-${iteration}`;
     const runDir = this.runArtifacts.runDir(cycleNumber, iteration);
 
     await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'VALIDATION_GATE', {
@@ -180,12 +179,16 @@ export class ValidationGateService {
 
     // 4. Update map.yaml validation status
     await this.mapManager.update((m) => {
+      const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+      if (gatePassed && !completed.includes('VALIDATION_GATE')) {
+        completed.push('VALIDATION_GATE');
+      }
       const updated = {
         ...m,
         meta: {
           ...m.meta,
           dag: m.meta.dag
-            ? { ...m.meta.dag, current_node: gatePassed ? 'EVALUATE' : null }
+            ? { ...m.meta.dag, current_node: gatePassed ? 'EVALUATE' : null, completed_nodes: completed }
             : undefined,
         },
       };

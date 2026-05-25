@@ -4,15 +4,12 @@ import type {
   LinkIndex, 
   ForwardLink, 
   Backlink, 
-  FileIndex, 
   FileEntry, 
-  DocumentIndex, 
   DocumentEntry, 
   LinkSource, 
-  LinkTarget,
-  RuntimeMap,
-  RuntimeMapManager
+  LinkTarget
 } from './types.js';
+import type { RuntimeMap, RuntimeMapManager } from './runtime-map.js';
 import { parseWikilinks } from './wikilink-parser.js';
 
 // Ignores for directory walking
@@ -120,7 +117,7 @@ export class LinkIndexManager {
 
       // Save to map.yaml metadata if available
       if (this.mapManager) {
-        await this.mapManager.update((m) => ({
+        await this.mapManager.update((m: RuntimeMap) => ({
           ...m,
           graph: {
             link_count: this.index.links.length,
@@ -166,7 +163,7 @@ export class LinkIndexManager {
             if ('kind' in wl.target && wl.target.kind === 'group') {
               // Resolve group:id to all group nodes
               const groupId = wl.target.id;
-              const groupArts = (map.artifacts || []).filter(a => a.scope === 'group' && a.path.includes(groupId));
+              const groupArts = (map.artifacts || []).filter((a: any) => a.scope === 'group' && a.path.includes(groupId));
               for (const ga of groupArts) {
                 const gaKey = path.basename(ga.path, path.extname(ga.path));
                 this.addForwardLink(
@@ -191,7 +188,6 @@ export class LinkIndexManager {
 
     // 2. Index Source & Test Files
     const srcDirs = ['src'];
-    const testDirs = ['tests', 'test'];
 
     for (const sDir of srcDirs) {
       const fullSrcDir = path.join(this.projectRoot, sDir);
@@ -226,6 +222,30 @@ export class LinkIndexManager {
 
     // 4. Save to disk
     await this.save();
+  }
+
+  async addLink(params: {
+    source: LinkSource;
+    target: LinkTarget;
+    link_type: 'structural_dag' | 'structural_declaration' | 'contextual_execution' | 'manual';
+    context: string;
+  }): Promise<void> {
+    const exists = this.index.links.some(
+      l => JSON.stringify(l.source) === JSON.stringify(params.source) && 
+           JSON.stringify(l.target) === JSON.stringify(params.target)
+    );
+
+    if (!exists) {
+      this.index.links.push({
+        source: params.source,
+        target: params.target,
+        link_type: params.link_type as any,
+        context: params.context,
+        created_at: new Date().toISOString()
+      });
+      this.computeBacklinks();
+      await this.save();
+    }
   }
 
   private addForwardLink(source: LinkSource, target: LinkTarget, context: string): void {

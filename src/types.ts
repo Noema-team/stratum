@@ -90,7 +90,7 @@ export const NodeStatusEnum = z.enum(['pending', 'running', 'complete', 'failed'
 export const ArtifactRefSchema = z.string().refine(
   (val) => /^(doc:[a-zA-Z0-9_-]+|node:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)$/.test(val),
   'ArtifactRef must be either doc:key or node:group:key'
-);
+) as unknown as z.ZodType<ArtifactRef, z.ZodTypeDef, string>;
 
 // OpenQuestionBlocking template literal validation
 export const OpenQuestionBlockingSchema = z.union([
@@ -1130,11 +1130,11 @@ export interface TaskContextDeclaration {
   intent: string;
 }
 
-export const TaskContextDeclarationSchema = z.object({
+export const TaskContextDeclarationSchema: z.ZodType<TaskContextDeclaration, any, any> = z.object({
   task_id: z.string().uuid(),
-  slices: z.array(ArtifactRefSchema),
+  slices: z.array(ArtifactRefSchema as any),
   intent: z.string(),
-});
+}) as any;
 
 export interface SLETask {
   id: string;
@@ -1350,7 +1350,7 @@ export const JobSchema: z.ZodSchema<Job> = z.lazy(() =>
     result: JobResultSchema.nullable(),
     error: JobErrorSchema.nullable(),
   })
-);
+) as any;
 
 export const WorkerSchema = z.object({
   id: z.string().uuid(),
@@ -1823,43 +1823,7 @@ export const CoherenceReportSchema = z.object({
   checked_at: z.string(),
 });
 
-export interface TaskContextDeclaration {
-  task_id: string;
-  slices: ArtifactRef[];
-  intent: string;
-}
 
-export const TaskContextDeclarationSchema = z.object({
-  task_id: z.string(),
-  slices: z.array(ArtifactRefSchema),
-  intent: z.string(),
-});
-
-export interface SLETask {
-  id: string;
-  title: string;
-  description: string;
-  status: 'open' | 'in_progress' | 'blocked' | 'closed';
-  priority: number;
-  dependencies: string[];
-  context_declarations?: TaskContextDeclaration[];
-  created_at: string;
-  updated_at: string;
-  stale?: boolean;
-}
-
-export const SLETaskSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  description: z.string(),
-  status: z.enum(['open', 'in_progress', 'blocked', 'closed']),
-  priority: z.number().int(),
-  dependencies: z.array(z.string()),
-  context_declarations: z.array(TaskContextDeclarationSchema).optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-  stale: z.boolean().optional(),
-});
 
 export interface ShardingProposal {
   tasks: SLETask[];
