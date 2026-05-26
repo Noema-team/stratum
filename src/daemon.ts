@@ -34,6 +34,7 @@ interface DaemonDeps {
   confirmService: ConfirmService;
   intakeService?: IntakeService;
   shardingService?: ShardingService;
+  llmProvider?: any;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
     removePidFile: (path: string) => Promise<void>;
@@ -991,19 +992,45 @@ export class DaemonServer {
             timestamp: new Date().toISOString()
           });
 
-          // 2. Derive state-grounded Facilitator response
+          // 2. Derive Facilitator response (LLM or state-grounded fallback)
           let currentState = 'idle';
+          let systemState: any = {};
           try {
-            const map = await this.loadMap();
-            currentState = map.meta?.status || 'idle';
+            systemState = await this.loadMap();
+            currentState = systemState.meta?.status || 'idle';
           } catch {}
-          
-          let reply = `Got it! I am processing your scoping request regarding "${userMessage}".`;
-          
-          if (currentState === 'idle') {
-            reply = `I am the Facilitator. The system is currently idle. We are fully set to start a new cycle. Just let me know when you want to execute a task proposal!`;
-          } else if (currentState === 'cycling') {
-            reply = `The system is actively executing a cycle right now. We are running containerized validation passes. I'll alert you as soon as confirmation checkpoints are hit!`;
+
+          let reply = '';
+          let llmSuccess = false;
+
+          if (this.deps.llmProvider) {
+            try {
+              const response = await this.deps.llmProvider.complete({
+                model: 'gpt-4o',
+                temperature: 0.7,
+                max_tokens: 500,
+                messages: [
+                  { 
+                    role: 'system', 
+                    content: `You are the Facilitator agent in Stratum. Answer the user's conversational message. Ground your answers in the active project context if possible. Current system state: ${JSON.stringify(systemState)}. Mode: chat.` 
+                  },
+                  { role: 'user', content: userMessage }
+                ]
+              });
+              reply = response.content;
+              llmSuccess = true;
+            } catch (err) {
+              // Fallback on LLM completion failure
+            }
+          }
+
+          if (!llmSuccess) {
+            reply = `Got it! I am processing your scoping request regarding "${userMessage}".`;
+            if (currentState === 'idle') {
+              reply = `I am the Facilitator. The system is currently idle. We are fully set to start a new cycle. Just let me know when you want to execute a task proposal!`;
+            } else if (currentState === 'cycling') {
+              reply = `The system is actively executing a cycle right now. We are running containerized validation passes. I'll alert you as soon as confirmation checkpoints are hit!`;
+            }
           }
 
           // Simulate slight typing latency
