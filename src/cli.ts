@@ -118,7 +118,7 @@ async function handleInit(cmd: InitCommand): Promise<void> {
   const request: InitRequest = {
     project_name: cmd.name!,
     project_type: projectType,
-    task_store: cmd.taskStore === 'local' ? 'local' : 'beads',
+    task_store: cmd.taskStore === 'beads' ? 'beads' : 'local',
     daemon_port: 7700,
     docs_remote: null,
     non_interactive: true,
@@ -131,6 +131,11 @@ async function handleInit(cmd: InitCommand): Promise<void> {
     console.log(`Message: ${result.data.message}`);
     if (result.data.files_created.length > 0) {
       console.log(`Files created: ${result.data.files_created.join(', ')}`);
+    }
+    // Step 10: auto-start daemon after a complete init unless --no-daemon was passed
+    if (result.data.status === 'complete' && !cmd.noDaemon) {
+      console.log('\nStarting Stratum daemon...');
+      await handleStart({ command: 'start', foreground: true });
     }
   } else {
     console.error(`Error: ${result.error.message}`);
