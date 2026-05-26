@@ -92,7 +92,7 @@ export class ValidationGateService {
       // If file doesn't exist, check if static job failed in Exec
       const map = await this.mapManager.read();
       const execResult = (map.meta as any).dag?.exec_result;
-      if (execResult && execResult.exit_code !== 0) {
+      if (execResult && (execResult.exit_code !== 0 || execResult.timed_out)) {
         staticAnalysisResult.passed = false;
         staticAnalysisResult.lint.errors = 1;
       }
@@ -100,9 +100,11 @@ export class ValidationGateService {
 
     // 3. Load category results and merge with cached ones
     const map = await this.mapManager.read();
-    const activeCategories = validationConfig?.categories?.map((c: any) => c.name) 
-      || map.validation?.categories?.map((c: any) => c.name) 
-      || ['correctness', 'performance', 'security'];
+    const activeCategories = (validationConfig?.categories && validationConfig.categories.length > 0)
+      ? validationConfig.categories.map((c: any) => c.name)
+      : (map.validation?.categories && map.validation.categories.length > 0)
+      ? map.validation.categories.map((c: any) => c.name)
+      : ['correctness', 'performance', 'security'];
 
     const categoryResults: any[] = [];
     const failedCategories: string[] = [];
@@ -241,6 +243,7 @@ export class ValidationGateService {
           ? `All ${passedCategories.length} validation categories passed successfully`
           : `Validation failed: static_check passed=${staticPassed}, ${failedCategories.length} categories failed`,
       };
+      await fs.mkdir(runDir, { recursive: true });
       await fs.writeFile(
         path.join(runDir, 'manifest.json'),
         JSON.stringify(updatedManifest, null, 2),
@@ -262,6 +265,7 @@ export class ValidationGateService {
           ? `All ${passedCategories.length} validation categories passed successfully`
           : `Validation failed: static_check passed=${staticPassed}, ${failedCategories.length} categories failed`,
       };
+      await fs.mkdir(runDir, { recursive: true });
       await fs.writeFile(
         path.join(runDir, 'manifest.json'),
         JSON.stringify(updatedManifest, null, 2),

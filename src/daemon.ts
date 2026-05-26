@@ -387,6 +387,25 @@ export class DaemonServer {
       }
     }
 
+    if (pathName === '/api/v2/discovery/status' && method === 'GET') {
+      const sessionId = url.searchParams.get('session_id') || '';
+      try {
+        const result = await this.deps.discoveryService.getStatus(sessionId);
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: {
+            request_id: randomUUID(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        const error = err as Error;
+        this.sendError(res, 404, 'not_found', error.message);
+      }
+      return;
+    }
+
     if (pathName === '/api/v2/cycles/start' && method === 'POST') {
       const body = await this.parseBody(req);
       const parsed = CyclesStartPayloadSchema.safeParse(body);

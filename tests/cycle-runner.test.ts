@@ -23,6 +23,48 @@ import { ExecService, ValidationGateService } from '../src/exec-gate.js';
 import { SnapshotService } from '../src/snapshot-service.js';
 import { SummariseService } from '../src/summarise-service.js';
 import { RunArtifactManager } from '../src/run-artifacts.js';
+import { ExecServiceReal } from '../src/exec-service.js';
+
+// Mock ExecServiceReal.prototype.run for fast, no-op execution in integration tests
+ExecServiceReal.prototype.run = async function(cycleNumber: number, iteration: number) {
+  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+    status: 'running',
+    started_at: new Date().toISOString(),
+  } as any);
+  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+    status: 'complete',
+    exit_code: 0,
+    timed_out: false,
+  } as any);
+  await this.mapManager.update((m: any) => {
+    const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+    if (!completed.includes('EXEC')) {
+      completed.push('EXEC');
+    }
+    return {
+      ...m,
+      meta: {
+        ...m.meta,
+        dag: m.meta.dag
+          ? {
+              ...m.meta.dag,
+              current_node: 'VALIDATION_GATE',
+              completed_nodes: completed,
+              exec_result: { exit_code: 0, timed_out: false },
+            }
+          : undefined,
+      },
+    };
+  });
+  return {
+    next_node: 'VALIDATION_GATE' as const,
+    exit_code: 0,
+    stdout: '',
+    stderr: '',
+    timed_out: false,
+    success: true,
+  };
+};
 import { RuntimeMapManagerImpl } from '../src/runtime-map.js';
 import { CycleService } from '../src/cycle-service.js';
 import { StateMachine } from '../src/state-machine.js';
@@ -463,6 +505,34 @@ class NodeAwareMockLLM implements ILLMProvider {
       '',
       'Task manager API implemented.',
     ].join('\n'),
+
+    DEBUGGER: [
+      '<!-- SLE-OUTPUT',
+      'role: debugger',
+      'node: DEBUGGER',
+      'artifacts:',
+      '  - id: fix',
+      '    path: src/index.ts',
+      '-->',
+      '',
+      '## File: src/index.ts',
+      '```typescript',
+      "export const app = () => 'task manager api fixed';",
+      '```',
+    ].join('\n'),
+
+    CRITIQUE: [
+      '<!-- SLE-OUTPUT',
+      'role: critic',
+      'node: CRITIQUE',
+      'artifacts:',
+      '  - id: critique',
+      '    path: docs/cycle-critique.md',
+      '-->',
+      '',
+      '# Critique',
+      'All good.',
+    ].join('\n'),
   };
 
   async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
@@ -521,6 +591,21 @@ test('Integration: full cycle DESIGN→SNAPSHOT with mock LLM', async () => {
     });
     assert.ok(cycleRecord.cycle_number > 0, 'cycle should have started');
     assert.ok(cycleRecord.cycle_id, 'cycle_id should be set');
+
+    // Cache categories as passed so they don't block the mock exec runs
+    await mapManager.update((m: any) => {
+      return {
+        ...m,
+        validation: {
+          categories: [
+            { name: 'correctness', method: 'executable', status: 'passed' },
+            { name: 'performance', method: 'executable', status: 'passed' },
+            { name: 'security', method: 'executable', status: 'passed' },
+          ],
+          gate: { mode: 'all_must_pass', last_outcome: 'passed', failed_categories: [] },
+        },
+      };
+    });
 
     // 4. Wire up cycle execution services
     const llm = new NodeAwareMockLLM();

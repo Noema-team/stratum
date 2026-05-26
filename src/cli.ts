@@ -8,6 +8,9 @@ import { ScopingService } from './scoping-service.js';
 import { ConfirmService } from './confirm-service.js';
 import { AgentRunner } from './agent-runner.js';
 import { ContextManager } from './context-manager.js';
+import { IntakeService } from './intake-service.js';
+import { ShardingService } from './sharding-service.js';
+import { LinkIndexManager } from './link-index.js';
 import { createLLMProvider, type ILLMProvider } from './llm-provider.js';
 import { RunArtifactManager } from './run-artifacts.js';
 import { readPidFile, removePidFile, isPidAlive, writePidFile } from './pid-file.js';
@@ -142,6 +145,10 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
   const scopingService = new ScopingService(agentRunner, mapManager, projectRoot);
   const confirmService = new ConfirmService(mapManager, runArtifacts);
+  
+  const linkIndex = new LinkIndexManager(projectRoot);
+  const intakeService = new IntakeService(projectRoot, mapManager, linkIndex);
+  const shardingService = new ShardingService(projectRoot, linkIndex);
 
   const daemon = new DaemonServer();
 
@@ -154,6 +161,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       cycleService,
       scopingService,
       confirmService,
+      intakeService,
+      shardingService,
       pidFile: { writePidFile, removePidFile },
     }
   );
