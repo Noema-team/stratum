@@ -58,6 +58,13 @@ const CyclesStartPayloadSchema = z.object({
   depth: z.enum(['minimal', 'standard', 'deep', 'research']).optional(),
 });
 
+const SettingsPayloadSchema = z.object({
+  provider: z.enum(['openai_compatible', 'anthropic', 'glm', 'openrouter']),
+  base_url: z.string().optional().nullable(),
+  model: z.string().min(1, 'model required'),
+  api_key: z.string().optional().nullable(),
+});
+
 const ConfirmPayloadSchema = z.object({
   action: z.enum(['approve', 'revise', 'halt']),
   note: z.string().optional(),
@@ -301,6 +308,145 @@ export class DaemonServer {
       this.sendResponse(res, {
         ok: true,
         data: body,
+        meta: {
+          request_id: randomUUID(),
+          timestamp: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/settings' && method === 'GET') {
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const settingsPath = path.join(projectRoot, '.sle', 'settings.json');
+      let data: any = {
+        provider: 'openai_compatible',
+        base_url: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        api_key: '',
+      };
+
+      let exists = false;
+      try {
+        await fs.access(settingsPath);
+        exists = true;
+      } catch {}
+
+      if (exists) {
+        try {
+          const content = await fs.readFile(settingsPath, 'utf8');
+          const saved = JSON.parse(content);
+          data = {
+            provider: saved.provider || 'openai_compatible',
+            base_url: saved.base_url || '',
+            model: saved.model || '',
+            api_key: saved.api_key ? '••••••••' : '',
+          };
+        } catch {}
+      } else {
+        const hasKey = !!(
+          process.env.OPENAI_API_KEY ||
+          process.env.SLE_LLM_API_KEY ||
+          process.env.ANTHROPIC_API_KEY ||
+          process.env.GLM_API_KEY ||
+          process.env.OPENROUTER_API_KEY
+        );
+        data.api_key = hasKey ? '••••••••' : '';
+      }
+
+      this.sendResponse(res, {
+        ok: true,
+        data,
+        meta: {
+          request_id: randomUUID(),
+          timestamp: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/settings' && method === 'POST') {
+      const body = await this.parseBody(req);
+      const parsed = SettingsPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const settingsPath = path.join(projectRoot, '.sle', 'settings.json');
+
+      let existingSettings: any = {};
+      try {
+        const content = await fs.readFile(settingsPath, 'utf8');
+        existingSettings = JSON.parse(content);
+      } catch {}
+
+      const { provider, base_url, model, api_key } = parsed.data;
+
+      let finalApiKey = api_key;
+      if (api_key === '••••••••') {
+        finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
+      }
+
+      const updatedSettings = {
+        provider,
+        base_url: base_url || '',
+        model,
+        api_key: finalApiKey || '',
+      };
+
+      try {
+        await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+        await fs.writeFile(settingsPath, JSON.stringify(updatedSettings, null, 2), 'utf8');
+      } catch (err) {
+        this.sendError(res, 500, 'save_settings_failed', (err as Error).message);
+        return;
+      }
+
+      if (this.deps.llmProvider) {
+        try {
+          if (finalApiKey) {
+            process.env.SLE_LLM_API_KEY = finalApiKey;
+          }
+
+          const api_key_env = (
+            provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
+            provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
+            provider === 'glm' ? 'GLM_API_KEY' : 'OPENROUTER_API_KEY'
+          );
+
+          if (finalApiKey) {
+            process.env[api_key_env] = finalApiKey;
+          }
+
+          const { createLLMProvider } = await import('./llm-provider.js');
+          const newInner = createLLMProvider({
+            provider,
+            base_url: base_url || undefined,
+            model,
+            api_key_env,
+          });
+
+          if (typeof this.deps.llmProvider.setProvider === 'function') {
+            this.deps.llmProvider.setProvider(newInner);
+          } else {
+            this.deps.llmProvider = newInner;
+          }
+        } catch (err) {
+          this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
+          return;
+        }
+      }
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          provider,
+          base_url,
+          model,
+          api_key: finalApiKey ? '••••••••' : '',
+        },
         meta: {
           request_id: randomUUID(),
           timestamp: new Date().toISOString(),

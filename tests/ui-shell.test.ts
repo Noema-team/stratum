@@ -73,6 +73,9 @@ async function startServer(): Promise<DaemonServer> {
   const scopingService = new MockScopingService() as unknown as any;
   const confirmService = new MockConfirmService() as unknown as any;
   const intakeService = new MockIntakeService() as unknown as any;
+  const llmProvider = {
+    setProvider: () => {}
+  };
   
   await server.start(
     { port: 0 },
@@ -84,6 +87,7 @@ async function startServer(): Promise<DaemonServer> {
       scopingService,
       confirmService,
       intakeService,
+      llmProvider,
       pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
     }
   );
@@ -197,6 +201,50 @@ async function testChatMessagePosting() {
   await server.stop();
 }
 
+async function testSettingsEndpoints() {
+  const server = await startServer();
+
+  // 1. Assert GET /api/v2/settings returns default settings with masked key
+  const getRes = await makeRequest(server, 'GET', '/api/v2/settings');
+  assert.strictEqual(getRes.statusCode, 200);
+  const getData = JSON.parse(getRes.body);
+  assert.strictEqual(getData.ok, true);
+  assert.strictEqual(getData.data.provider, 'openai_compatible');
+  assert.ok('api_key' in getData.data);
+
+  // 2. Assert POST /api/v2/settings successfully validates and saves configuration
+  const postRes = await makeRequest(server, 'POST', '/api/v2/settings', {
+    provider: 'openrouter',
+    base_url: 'https://openrouter.ai/api/v1',
+    model: 'google/gemini-2.5-pro',
+    api_key: 'my-secret-key-123'
+  });
+  assert.strictEqual(postRes.statusCode, 200);
+  const postData = JSON.parse(postRes.body);
+  assert.strictEqual(postData.ok, true);
+  assert.strictEqual(postData.data.provider, 'openrouter');
+  assert.strictEqual(postData.data.model, 'google/gemini-2.5-pro');
+  assert.strictEqual(postData.data.api_key, '••••••••');
+
+  // 3. Assert GET /api/v2/settings now returns the updated and masked settings
+  const getRes2 = await makeRequest(server, 'GET', '/api/v2/settings');
+  assert.strictEqual(getRes2.statusCode, 200);
+  const getData2 = JSON.parse(getRes2.body);
+  assert.strictEqual(getData2.data.provider, 'openrouter');
+  assert.strictEqual(getData2.data.model, 'google/gemini-2.5-pro');
+  assert.strictEqual(getData2.data.api_key, '••••••••');
+
+  await server.stop();
+
+  // Clean up settings.json so we leave the repository in pristine state
+  try {
+    const fsPromises = (await import('node:fs/promises'));
+    const path = (await import('node:path')).default;
+    const settingsFile = path.join(process.cwd(), '.sle', 'settings.json');
+    await fsPromises.unlink(settingsFile).catch(() => {});
+  } catch {}
+}
+
 // ─── Test Runner ────────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -210,6 +258,7 @@ async function runAllTests() {
     { name: 'GET /api/v2/intake/documents returns 200 with documents list', fn: testIntakeDocumentsServing },
     { name: 'GET /api/v2/intake/taskstore returns 200 with tasks list', fn: testIntakeTaskstoreServing },
     { name: 'POST /api/v2/chat/message returns 200 with queued status', fn: testChatMessagePosting },
+    { name: 'GET and POST /api/v2/settings works with key masking', fn: testSettingsEndpoints },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

@@ -156,7 +156,7 @@ function formatEventMessage(event) {
 function initRouter() {
   const handleRouting = () => {
     const hash = window.location.hash || '#overview';
-    const pages = ['overview', 'chat', 'graph'];
+    const pages = ['overview', 'chat', 'graph', 'settings'];
     
     pages.forEach(p => {
       const tab = document.getElementById(`tab-${p}`);
@@ -201,6 +201,8 @@ function triggerViewRender() {
     renderChat(mount);
   } else if (state.activePage === 'graph') {
     renderGraph(mount);
+  } else if (state.activePage === 'settings') {
+    renderSettings(mount);
   }
 }
 
@@ -619,6 +621,205 @@ function renderChat(mount) {
     input.onkeydown = (e) => {
       if (e.key === 'Enter') executeSend();
     };
+  }
+}
+
+// ─── Settings View Render ───
+async function renderSettings(mount) {
+  mount.innerHTML = `
+    <div class="settings-container">
+      <div class="settings-card">
+        <h2>System Settings</h2>
+        <div class="loader-container">
+          <div class="loader"></div>
+          <p style="margin-top: 12px; color: var(--text-secondary);">Loading settings...</p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const host = window.location.host || 'localhost:7700';
+    const res = await fetch(`http://${host}/api/v2/settings`);
+    if (!res.ok) throw new Error('Failed to load settings');
+    const responseData = await res.json();
+    const settings = responseData.data;
+
+    // Define provider model lists
+    const PROVIDER_MODELS = {
+      'openai_compatible': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+      'anthropic': ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-20240229'],
+      'glm': ['glm-4', 'glm-4-flash', 'glm-3-turbo'],
+      'openrouter': ['google/gemini-2.5-pro', 'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3-70b-instruct']
+    };
+
+    const providerNames = {
+      'openai_compatible': 'OpenAI Compatible',
+      'anthropic': 'Anthropic',
+      'glm': 'Zhipu GLM AI',
+      'openrouter': 'OpenRouter'
+    };
+
+    const currentProvider = settings.provider || 'openai_compatible';
+    const currentModel = settings.model || '';
+    const currentBaseUrl = settings.base_url || '';
+    const currentApiKey = settings.api_key || '';
+
+    // Check if current model is in standard list
+    const standardModels = PROVIDER_MODELS[currentProvider] || [];
+    const isCustomModel = currentModel && !standardModels.includes(currentModel);
+
+    mount.innerHTML = `
+      <div class="settings-container">
+        <form class="settings-card" id="settings-form" onsubmit="return false;">
+          <h2>System Settings</h2>
+          
+          <div class="form-group">
+            <label for="settings-provider">LLM Provider</label>
+            <select id="settings-provider">
+              ${Object.entries(providerNames).map(([key, name]) => `
+                <option value="${key}" ${key === currentProvider ? 'selected' : ''}>${name}</option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="settings-model">Model</label>
+            <select id="settings-model">
+              ${standardModels.map(m => `
+                <option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>
+              `).join('')}
+              <option value="custom" ${isCustomModel ? 'selected' : ''}>Custom...</option>
+            </select>
+          </div>
+
+          <div class="form-group ${isCustomModel ? '' : 'hidden'}" id="custom-model-group">
+            <label for="settings-custom-model">Custom Model Identifier</label>
+            <input type="text" id="settings-custom-model" placeholder="e.g. meta-llama/llama-3-8b" value="${isCustomModel ? currentModel : ''}" />
+          </div>
+
+          <div class="form-group">
+            <label for="settings-base-url">Base URL (Optional)</label>
+            <input type="text" id="settings-base-url" placeholder="Default for selected provider will be used if blank" value="${currentBaseUrl}" />
+          </div>
+
+          <div class="form-group">
+            <label for="settings-api-key">API Key</label>
+            <input type="password" id="settings-api-key" placeholder="${currentApiKey ? '••••••••' : 'Enter API key'}" value="${currentApiKey}" />
+          </div>
+
+          <div class="settings-actions">
+            <button type="submit" id="settings-save-btn" class="btn btn-primary">Save Settings</button>
+            <span id="settings-status-message"></span>
+          </div>
+        </form>
+      </div>
+    `;
+
+    const providerSelect = document.getElementById('settings-provider');
+    const modelSelect = document.getElementById('settings-model');
+    const customModelGroup = document.getElementById('custom-model-group');
+    const customModelInput = document.getElementById('settings-custom-model');
+    const baseUrlInput = document.getElementById('settings-base-url');
+    const apiKeyInput = document.getElementById('settings-api-key');
+    const saveBtn = document.getElementById('settings-save-btn');
+    const statusMsg = document.getElementById('settings-status-message');
+
+    // Handle provider change -> update models dropdown
+    providerSelect.onchange = () => {
+      const selectedProv = providerSelect.value;
+      const models = PROVIDER_MODELS[selectedProv] || [];
+      
+      modelSelect.innerHTML = `
+        ${models.map(m => `<option value="${m}">${m}</option>`).join('')}
+        <option value="custom">Custom...</option>
+      `;
+
+      // Trigger model change logic
+      modelSelect.onchange();
+    };
+
+    // Handle model change -> toggle custom text input
+    modelSelect.onchange = () => {
+      if (modelSelect.value === 'custom') {
+        customModelGroup.classList.remove('hidden');
+      } else {
+        customModelGroup.classList.add('hidden');
+      }
+    };
+
+    // Save action
+    saveBtn.onclick = async (e) => {
+      e.preventDefault();
+      
+      const provider = providerSelect.value;
+      let model = modelSelect.value;
+      if (model === 'custom') {
+        model = customModelInput.value.trim();
+        if (!model) {
+          statusMsg.className = 'settings-status error';
+          statusMsg.innerHTML = '✗ Custom model identifier is required';
+          return;
+        }
+      }
+
+      const base_url = baseUrlInput.value.trim();
+      const api_key = apiKeyInput.value;
+
+      statusMsg.className = 'settings-status';
+      statusMsg.innerHTML = '<span class="loader" style="display: inline-block; width: 14px; height: 14px; border-width: 2px; margin-right: 6px; vertical-align: middle;"></span> Saving...';
+      saveBtn.disabled = true;
+
+      try {
+        const postRes = await fetch(`http://${host}/api/v2/settings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider,
+            base_url: base_url || null,
+            model,
+            api_key: api_key || null
+          })
+        });
+
+        const postData = await postRes.json();
+        saveBtn.disabled = false;
+
+        if (!postRes.ok) {
+          throw new Error(postData.error?.message || 'Failed to save settings');
+        }
+
+        statusMsg.className = 'settings-status success';
+        statusMsg.innerHTML = '✓ Settings saved and hot-reloaded successfully!';
+        
+        if (postData.data.api_key) {
+          apiKeyInput.placeholder = '••••••••';
+          apiKeyInput.value = '••••••••';
+        }
+
+        setTimeout(() => {
+          if (statusMsg.innerHTML.includes('saved')) {
+            statusMsg.innerHTML = '';
+          }
+        }, 4000);
+
+      } catch (err) {
+        saveBtn.disabled = false;
+        statusMsg.className = 'settings-status error';
+        statusMsg.innerHTML = `✗ Error: ${err.message}`;
+      }
+    };
+
+  } catch (err) {
+    mount.innerHTML = `
+      <div class="settings-container">
+        <div class="settings-card">
+          <h2>System Settings</h2>
+          <p style="color: var(--status-red); font-size: 14px; margin-top: 12px;">✗ Error loading settings: ${err.message}</p>
+          <button class="btn btn-secondary" style="margin-top: 16px;" onclick="window.location.reload()">Retry</button>
+        </div>
+      </div>
+    `;
   }
 }
 

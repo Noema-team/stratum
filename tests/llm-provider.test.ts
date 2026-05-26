@@ -5,6 +5,8 @@ import {
   createLLMProvider,
   LLMCompletionParamsSchema,
   LLMCompletionResultSchema,
+  DynamicLLMProvider,
+  type ILLMProvider,
 } from '../src/llm-provider.js';
 import type { AgentLLMConfig } from '../src/types.js';
 
@@ -312,7 +314,52 @@ async function testCreateLLMProviderReturnsCorrectType() {
   const anthropic = createLLMProvider(ANTHROPIC_CONFIG);
   assert.ok(anthropic instanceof AnthropicProvider);
 
+  const glm = createLLMProvider({
+    provider: 'glm',
+    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4',
+    api_key_env: 'TEST_LLM_API_KEY'
+  });
+  assert.ok(glm instanceof OpenAICompatibleProvider);
+
+  const openrouter = createLLMProvider({
+    provider: 'openrouter',
+    base_url: 'https://openrouter.ai/api/v1',
+    model: 'google/gemini-2.5-pro',
+    api_key_env: 'TEST_LLM_API_KEY'
+  });
+  assert.ok(openrouter instanceof OpenAICompatibleProvider);
+
   delete process.env.TEST_LLM_API_KEY;
+}
+
+async function testDynamicLLMProviderDelegatesAndSwaps() {
+  const mock1: ILLMProvider = {
+    complete: async () => ({ content: 'response-1', tokens_used: 10, duration_ms: 50 })
+  };
+  const mock2: ILLMProvider = {
+    complete: async () => ({ content: 'response-2', tokens_used: 20, duration_ms: 100 })
+  };
+
+  const dynamicProvider = new DynamicLLMProvider(mock1);
+  const res1 = await dynamicProvider.complete({
+    model: 'test',
+    messages: [{ role: 'user', content: 'hello' }],
+    temperature: 0.5,
+    max_tokens: 10
+  });
+  assert.strictEqual(res1.content, 'response-1');
+  assert.strictEqual(dynamicProvider.getProvider(), mock1);
+
+  dynamicProvider.setProvider(mock2);
+  const res2 = await dynamicProvider.complete({
+    model: 'test',
+    messages: [{ role: 'user', content: 'hello' }],
+    temperature: 0.5,
+    max_tokens: 10
+  });
+  assert.strictEqual(res2.content, 'response-2');
+  assert.strictEqual(dynamicProvider.getProvider(), mock2);
 }
 
 async function testCreateLLMProviderThrowsOnUnknownProvider() {
@@ -379,6 +426,7 @@ async function runAllTests() {
     { name: 'createLLMProvider throws on unknown provider', fn: testCreateLLMProviderThrowsOnUnknownProvider },
     { name: 'LLMCompletionParamsSchema validates correctly', fn: testLLMCompletionParamsSchema },
     { name: 'LLMCompletionResultSchema validates correctly', fn: testLLMCompletionResultSchema },
+    { name: 'DynamicLLMProvider delegates and swaps correctly', fn: testDynamicLLMProviderDelegatesAndSwaps },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
