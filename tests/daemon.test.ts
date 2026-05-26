@@ -103,6 +103,11 @@ class MockScopingService {
     this._draft = '# Cycle Charter: 1\n\n## Intent\nTest intent\n\n## Scope\nScope here.';
     return { draft: this._draft, charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
   }
+  async generateDraft(_cn: number, _startedAt: string, _path: string) {
+    this._draft = '# Cycle Charter: 1\n\n## Intent\nTest intent\n\n## Scope\nScope here.';
+  }
+  async readScopingState() { return {}; }
+  async updateScopingState(_cn: number, _startedAt: string, _state: unknown) {}
   async getDraft() { return this._draft; }
   async submitResponse(text: string) { this._pendingResponse = text; }
   async approve(_cn: number, _it: number) {
@@ -134,18 +139,18 @@ class MockConfirmService {
 
 class MockDiscoveryService {
   private _complete = false;
-  async start(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', mode: 'solo', current_round: 1, round_status: 'collecting', total_rounds: 1, started_at: new Date().toISOString() }, meta: { request_id: 'r', timestamp: '' } };
+  async start(): Promise<any> {
+    return { session_id: 's1', mode: 'solo', current_round: 1, round_status: 'collecting', total_rounds: 1, started_at: new Date().toISOString() };
   }
-  async submitResponse(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', round: 1, status: 'drafting' }, meta: { request_id: 'r', timestamp: '' } };
+  async submitResponse(): Promise<any> {
+    return { session_id: 's1', round: 1, status: 'drafting' };
   }
-  async approveRound(): Promise<APIResponse<Record<string, unknown>>> {
+  async approveRound(): Promise<any> {
     this._complete = true;
-    return { ok: true, data: { round: 1, approved: true }, meta: { request_id: 'r', timestamp: '' } };
+    return { round: 1, approved: true };
   }
-  async getStatus(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', status: this._complete ? 'complete' : 'in_progress', mode: 'solo', current_round: 1, total_rounds: 1, artifacts: [], open_questions_count: 0, blocking_questions_count: 0 }, meta: { request_id: 'r', timestamp: '' } };
+  async getStatus(): Promise<any> {
+    return { session_id: 's1', status: this._complete ? 'complete' : 'in_progress', mode: 'solo', current_round: 1, total_rounds: 1, artifacts: [], open_questions_count: 0, blocking_questions_count: 0 };
   }
 }
 

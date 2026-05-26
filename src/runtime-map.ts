@@ -24,6 +24,7 @@ export interface RuntimeDAGState {
   revision: number;
   started_at: string;
   nodes: Record<string, { status: NodeStatus; started_at?: string; completed_at?: string }>;
+  exec_result?: { exit_code: number; timed_out: boolean };
 }
 
 const RuntimeDAGStateSchema = z.object({
@@ -40,6 +41,12 @@ const RuntimeDAGStateSchema = z.object({
       completed_at: z.string().datetime().optional(),
     })
   ),
+  exec_result: z
+    .object({
+      exit_code: z.number(),
+      timed_out: z.boolean(),
+    })
+    .optional(),
 });
 
 // ============================================================================

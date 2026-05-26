@@ -90,7 +90,7 @@ export const NodeStatusEnum = z.enum(['pending', 'running', 'complete', 'failed'
 export const ArtifactRefSchema = z.string().refine(
   (val) => /^(doc:[a-zA-Z0-9_-]+|node:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)$/.test(val),
   'ArtifactRef must be either doc:key or node:group:key'
-);
+) as unknown as z.ZodType<ArtifactRef, z.ZodTypeDef, string>;
 
 // OpenQuestionBlocking template literal validation
 export const OpenQuestionBlockingSchema = z.union([
@@ -1130,11 +1130,11 @@ export interface TaskContextDeclaration {
   intent: string;
 }
 
-export const TaskContextDeclarationSchema = z.object({
+export const TaskContextDeclarationSchema: z.ZodType<TaskContextDeclaration, any, any> = z.object({
   task_id: z.string().uuid(),
-  slices: z.array(ArtifactRefSchema),
+  slices: z.array(ArtifactRefSchema as any),
   intent: z.string(),
-});
+}) as any;
 
 export interface SLETask {
   id: string;
@@ -1350,7 +1350,7 @@ export const JobSchema: z.ZodSchema<Job> = z.lazy(() =>
     result: JobResultSchema.nullable(),
     error: JobErrorSchema.nullable(),
   })
-);
+) as any;
 
 export const WorkerSchema = z.object({
   id: z.string().uuid(),
@@ -1728,3 +1728,132 @@ export interface LinkIndex {
   file_index: FileIndex;
   document_index: DocumentIndex;
 }
+
+// ============================================================================
+// Vertical Slice 5 — Critic, Intake, Sharding & WebSocket Events
+// ============================================================================
+
+export interface CritiqueResult {
+  blocking_issues: string[];
+  warnings: string[];
+  suggestions: string[];
+  pass: boolean;
+}
+
+export const CritiqueResultSchema = z.object({
+  blocking_issues: z.array(z.string()),
+  warnings: z.array(z.string()),
+  suggestions: z.array(z.string()),
+  pass: z.boolean(),
+});
+
+export interface DocumentSection {
+  id: string;
+  heading: string;
+  tokens: number;
+  anchor: string;
+}
+
+export const DocumentSectionSchema = z.object({
+  id: z.string(),
+  heading: z.string(),
+  tokens: z.number().nonnegative(),
+  anchor: z.string(),
+});
+
+export interface IntakeDocument {
+  id: string;
+  filename: string;
+  title: string;
+  description: string;
+  tags: string[];
+  status: 'ungraphed' | 'promoted' | 'superseded';
+  source: 'user' | 'sle_suggested';
+  version: number;
+  sections: DocumentSection[];
+  last_modified: string;
+  promoted_to_node?: string;
+}
+
+export const IntakeDocumentSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  title: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+  status: z.enum(['ungraphed', 'promoted', 'superseded']),
+  source: z.enum(['user', 'sle_suggested']),
+  version: z.number().int().nonnegative(),
+  sections: z.array(DocumentSectionSchema),
+  last_modified: z.string(),
+  promoted_to_node: z.string().optional(),
+});
+
+export interface CoherenceFinding {
+  type: 'contradiction' | 'undefined_reference' | 'terminology_conflict' | 'missing_document';
+  severity: 'blocking' | 'warning';
+  document_a: string;
+  document_b?: string;
+  section_a?: string;
+  section_b?: string;
+  description: string;
+}
+
+export const CoherenceFindingSchema = z.object({
+  type: z.enum(['contradiction', 'undefined_reference', 'terminology_conflict', 'missing_document']),
+  severity: z.enum(['blocking', 'warning']),
+  document_a: z.string(),
+  document_b: z.string().optional(),
+  section_a: z.string().optional(),
+  section_b: z.string().optional(),
+  description: z.string(),
+});
+
+export interface CoherenceReport {
+  status: 'clean' | 'flagged' | 'blocked';
+  findings: CoherenceFinding[];
+  document_count: number;
+  checked_at: string;
+}
+
+export const CoherenceReportSchema = z.object({
+  status: z.enum(['clean', 'flagged', 'blocked']),
+  findings: z.array(CoherenceFindingSchema),
+  document_count: z.number().int().nonnegative(),
+  checked_at: z.string(),
+});
+
+
+
+export interface ShardingProposal {
+  tasks: SLETask[];
+  total_estimated_tokens: number;
+  coherence_report: CoherenceReport;
+  approved_by_user: boolean;
+  approved_at?: string;
+}
+
+export const ShardingProposalSchema = z.object({
+  tasks: z.array(SLETaskSchema),
+  total_estimated_tokens: z.number().nonnegative(),
+  coherence_report: CoherenceReportSchema,
+  approved_by_user: z.boolean(),
+  approved_at: z.string().optional(),
+});
+
+export interface SLEEvent<T = unknown> {
+  type: string;
+  cycle?: string;
+  iteration?: number;
+  timestamp: string;
+  payload: T;
+}
+
+export const SLEEventSchema = z.object({
+  type: z.string(),
+  cycle: z.string().optional(),
+  iteration: z.number().int().optional(),
+  timestamp: z.string(),
+  payload: z.any(),
+});
+

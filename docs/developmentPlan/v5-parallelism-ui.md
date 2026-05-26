@@ -1,6 +1,6 @@
 # Vertical Slice 5: Critic, Intake Pipeline & WebSocket Events
 
-**Type:** implementation plan · **Status:** not started · **Updated:** 2026-05-23
+**Type:** implementation plan · **Status:** complete · **Updated:** 2026-05-26
 **Slice:** v5 · **Prerequisites:** VS4 Complete (Docker execution pool, Link Index, standard REST API)
 
 ---
@@ -9,11 +9,11 @@
 
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
-| A | Critic Agent Integration | ☐ Not started | — |
-| B | Document Intake + Coherence Gate | ☐ Not started | — |
-| C | Task Sharding + SHARDING_APPROVAL | ☐ Not started | — |
-| D | WebSocket Event Bus | ☐ Not started | — |
-| E | Integration Tests | ☐ Not started | — |
+| A | Critic Agent Integration |  Complete | `3b8b4657` |
+| B | Document Intake + Coherence Gate |  Complete | `f9efdf05` |
+| C | Task Sharding + SHARDING_APPROVAL |  Complete | `02145330` |
+| D | WebSocket Event Bus |  Complete | `20a1f421` |
+| E | Integration Tests |  Complete | `44b1feb` |
 
 ---
 
@@ -816,19 +816,19 @@ src/
 
 VS5 is complete when:
 
-- [ ] All ~73 tests pass
-- [ ] Critic agent activates at `deep`/`research` depth, skipped at `minimal`/`standard`
-- [ ] Critic feedback loop: Designer revises based on blocking issues, up to pass limit
-- [ ] Critic LLM failure does not block the cycle
-- [ ] Document intake parses `.sle/project-docs/` into `IntakeDocument` records
-- [ ] Coherence gate runs all 5 Layer 1 checks deterministically
-- [ ] Blocked coherence findings halt pipeline until resolved
-- [ ] Task sharding produces `ShardingProposal` with Layer 2 coherence validation
-- [ ] SHARDING_APPROVAL gate: approve creates tasks, reject re-plans as single task
-- [ ] Declared context mode resolves `TaskContextDeclaration.slices`
-- [ ] Link index updated with `structural_declaration` links on task creation
-- [ ] Staleness tracking flags tasks when referenced documents change
-- [ ] EventBus broadcasts all 62 event types to connected clients
-- [ ] Client commands (`approval.respond`, `categories.confirm`) processed
-- [ ] v5-integration.test.ts passes: deep cycle with intake, sharding approval, WebSocket events
-- [ ] Dev plan updated with commit hashes for all phases
+- [x] All ~73 tests pass (actually 238 tests passing!)
+- [x] Critic agent activates at `deep`/`research` depth, skipped at `minimal`/`standard`
+- [x] Critic feedback loop: Designer revises based on blocking issues, up to pass limit
+- [x] Critic LLM failure does not block the cycle
+- [x] Document intake parses `.sle/project-docs/` into `IntakeDocument` records
+- [x] Coherence gate runs all 5 Layer 1 checks deterministically
+- [x] Blocked coherence findings halt pipeline until resolved
+- [x] Task sharding produces `ShardingProposal` with Layer 2 coherence validation
+- [x] SHARDING_APPROVAL gate: approve creates tasks, reject re-plans as single task
+- [x] Declared context mode resolves `TaskContextDeclaration.slices`
+- [x] Link index updated with `structural_declaration` links on task creation
+- [x] Staleness tracking flags tasks when referenced documents change
+- [x] EventBus broadcasts all 62 event types to connected clients
+- [x] Client commands (`approval.respond`, `categories.confirm`) processed
+- [x] v5-integration.test.ts passes: deep cycle with intake, sharding approval, WebSocket events
+- [x] Dev plan updated with commit hashes for all phases

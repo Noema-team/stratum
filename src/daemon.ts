@@ -5,15 +5,20 @@ import path from 'path';
 import { load as parseYAML } from 'js-yaml';
 import { z } from 'zod';
 import { writePidFile, removePidFile } from './pid-file.js';
-import type { StateAPI } from './state-api.js';
+import { type StateAPI, TransitionRequestSchema } from './state-api.js';
 import type { InitService } from './init-service.js';
 import type { DiscoveryService } from './discovery-service.js';
 import type { CycleService } from './cycle-service.js';
 import type { ScopingService } from './scoping-service.js';
 import type { ConfirmService } from './confirm-service.js';
-import type { APIResponse, APIError } from './types.js';
+import type { APIResponse, APIError, ShardingProposal } from './types.js';
 import { LinkIndexManager } from './link-index.js';
 import { LinkSourceSchema, LinkTargetSchema } from './types.js';
+import type { IntakeService } from './intake-service.js';
+import type { ShardingService } from './sharding-service.js';
+import { EventBus } from './event-bus.js';
+import { RuntimeMapManagerImpl, type RuntimeMap } from './runtime-map.js';
+import yaml from 'js-yaml';
 
 interface DaemonConfig {
   port?: number;
@@ -27,6 +32,8 @@ interface DaemonDeps {
   cycleService: CycleService;
   scopingService: ScopingService;
   confirmService: ConfirmService;
+  intakeService?: IntakeService;
+  shardingService?: ShardingService;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
     removePidFile: (path: string) => Promise<void>;
@@ -34,11 +41,6 @@ interface DaemonDeps {
 }
 
 // ─── Zod Payload Schemas ──────────────────────────────────────────────────────
-
-const TransitionPayloadSchema = z.object({
-  action: z.enum(['scoping_start', 'scoping_approve', 'confirm_approve', 'confirm_revise', 'confirm_halt', 'halt', 'resume']),
-  note: z.string().optional(),
-});
 
 const InitPayloadSchema = z.object({
   project_name: z.string(),
@@ -76,6 +78,8 @@ export class DaemonServer {
   private server: Server | null = null;
   private config: DaemonConfig;
   private deps: DaemonDeps;
+  private eventBus: EventBus | null = null;
+  private isProcessingStateCommand = false;
 
   getPort(): number {
     if (this.server) {
@@ -114,6 +118,79 @@ export class DaemonServer {
       }
     });
 
+    // Instantiate EventBus attached to the HTTP server
+    const projectRoot = this.config.projectRoot ?? process.cwd();
+    const mapPath = path.join(projectRoot, '.sle', 'map.yaml');
+    const mapManager = new RuntimeMapManagerImpl({ mapPath });
+    this.eventBus = new EventBus(this.server, mapManager);
+
+    // Forward state transitions to event bus
+    this.deps.stateAPI.onStateChanged((event) => {
+      if (this.eventBus) {
+        this.eventBus.emit('system.state_changed', {
+          previous: event.previous,
+          current: event.current,
+          reason: event.trigger,
+        });
+      }
+    });
+
+    // Wire up WebSocket client commands
+    this.eventBus.registerCallbacks({
+      onApprovalRespond: async (data) => {
+        const map = await this.deps.cycleService.getCurrent();
+        if (data.gate === 'CONFIRM') {
+          if (data.decision === 'approve') {
+            await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+          } else if (data.decision === 'revise') {
+            await this.deps.confirmService.revise(map.cycle_number, map.iteration, data.message);
+          } else {
+            await this.deps.cycleService.halt();
+          }
+        } else if (data.gate === 'SHARDING_APPROVAL') {
+          if (data.decision === 'approve') {
+            const proposalPath = path.join(projectRoot, '.sle', 'sharding-proposal.yaml');
+            try {
+              const proposalContent = await fs.readFile(proposalPath, 'utf8');
+              const proposal = yaml.load(proposalContent) as ShardingProposal;
+              if (this.deps.shardingService) {
+                await this.deps.shardingService.createTasksFromProposal(proposal);
+              }
+              try { await fs.unlink(proposalPath); } catch {}
+              await mapManager.update((m: RuntimeMap) => ({
+                ...m,
+                cycle: {
+                  ...m.cycle,
+                  awaiting_sharding_approval: false,
+                },
+              }));
+              if (this.eventBus) {
+                await this.eventBus.emit('intake.sharding_approved', { tasks_created: proposal.tasks.length });
+              }
+            } catch {}
+          } else {
+            const proposalPath = path.join(projectRoot, '.sle', 'sharding-proposal.yaml');
+            try { await fs.unlink(proposalPath); } catch {}
+            await mapManager.update((m: RuntimeMap) => ({
+              ...m,
+              cycle: {
+                ...m.cycle,
+                awaiting_sharding_approval: false,
+              },
+            }));
+            if (this.eventBus) {
+              await this.eventBus.emit('intake.sharding_rejected', {});
+            }
+          }
+        }
+      },
+      onCategoriesConfirm: async (data) => {
+        if (this.eventBus) {
+          await this.eventBus.emit('categories.confirmed', { categories: data.categories });
+        }
+      }
+    });
+
     await new Promise<void>((resolve, reject) => {
       this.server!.listen(port, resolve);
       this.server!.on('error', reject);
@@ -121,6 +198,11 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
+    if (this.eventBus) {
+      this.eventBus.close();
+      this.eventBus = null;
+    }
+
     if (!this.server) return;
 
     await new Promise<void>((resolve) => {
@@ -139,6 +221,30 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url || '', `http://${req.headers.host}`);
+    const method = req.method || 'GET';
+    const pathName = url.pathname;
+
+    const isStateCommand = method !== 'GET' && pathName.startsWith('/api/v2/');
+
+    if (isStateCommand) {
+      if (this.isProcessingStateCommand) {
+        this.sendError(res, 409, 'session_conflict', 'A state-changing operation is already in progress.');
+        return;
+      }
+      this.isProcessingStateCommand = true;
+    }
+
+    try {
+      await this.handleRequestInternal(req, res);
+    } finally {
+      if (isStateCommand) {
+        this.isProcessingStateCommand = false;
+      }
+    }
+  }
+
+  private async handleRequestInternal(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
     const method = req.method || 'GET';
     const pathName = url.pathname;
@@ -163,7 +269,7 @@ export class DaemonServer {
 
     if (pathName === '/api/v2/system/state/transition' && method === 'POST') {
       const body = await this.parseBody(req);
-      const parsed = TransitionPayloadSchema.safeParse(body);
+      const parsed = TransitionRequestSchema.safeParse(body);
       if (!parsed.success) {
         this.sendError(res, 422, 'validation_error', parsed.error.message);
         return;
@@ -263,7 +369,7 @@ export class DaemonServer {
       if (action === 'response') {
         const body = await this.parseBody(req);
         const params = body as { question_id: string; answer: string };
-        const result = await this.deps.discoveryService.submitResponse(
+        const result = await (this.deps.discoveryService as any).submitResponse(
           sessionId,
           round,
           params.question_id,
@@ -281,6 +387,25 @@ export class DaemonServer {
       }
     }
 
+    if (pathName === '/api/v2/discovery/status' && method === 'GET') {
+      const sessionId = url.searchParams.get('session_id') || '';
+      try {
+        const result = await this.deps.discoveryService.getStatus(sessionId);
+        this.sendResponse(res, {
+          ok: true,
+          data: result,
+          meta: {
+            request_id: randomUUID(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        const error = err as Error;
+        this.sendError(res, 404, 'not_found', error.message);
+      }
+      return;
+    }
+
     if (pathName === '/api/v2/cycles/start' && method === 'POST') {
       const body = await this.parseBody(req);
       const parsed = CyclesStartPayloadSchema.safeParse(body);
@@ -293,13 +418,13 @@ export class DaemonServer {
         const result = await this.deps.cycleService.start(parsed.data as any);
         const scopingDraftPath = path.join('.sle', 'scoping-draft.md');
         try {
-          await this.deps.scopingService.generateDraft(
+          await (this.deps.scopingService as any).generateDraft(
             result.cycle_number,
             result.started_at,
             scopingDraftPath
           );
-          const scopingState = await this.deps.scopingService.readScopingState();
-          await this.deps.scopingService.updateScopingState(
+          const scopingState = await (this.deps.scopingService as any).readScopingState();
+          await (this.deps.scopingService as any).updateScopingState(
             result.cycle_number,
             result.started_at,
             scopingState
@@ -483,6 +608,11 @@ export class DaemonServer {
         const body = await this.parseBody(req);
         const parsed = ConfirmPayloadSchema.safeParse(body);
         if (!parsed.success) {
+          const hasActionError = parsed.error.issues.some((issue) => issue.path.includes('action'));
+          if (hasActionError) {
+            this.sendError(res, 400, 'invalid_action', 'Invalid action');
+            return;
+          }
           this.sendError(res, 422, 'validation_error', parsed.error.message);
           return;
         }
@@ -777,7 +907,6 @@ export class DaemonServer {
       const linkIndex = new LinkIndexManager(projectRoot);
       await linkIndex.load();
 
-      const originalLen = linkIndex['index'].links.length;
       linkIndex['index'].links = linkIndex['index'].links.filter((l: any) => l.id !== linkIdParam);
       linkIndex['computeBacklinks']();
       await linkIndex.save();

@@ -168,13 +168,13 @@ async function testFacilitatorOnlyCharterPath() {
 
 async function testNextNodeSequence() {
   assert.strictEqual(nextNode('SCOPING'), 'DESIGN');
-  assert.strictEqual(nextNode('DESIGN'), 'PLAN');
+  assert.strictEqual(nextNode('DESIGN'), 'CRITIQUE');
+  assert.strictEqual(nextNode('CRITIQUE'), 'PLAN');
   assert.strictEqual(nextNode('PLAN'), 'TEST');
   assert.strictEqual(nextNode('SNAPSHOT'), null);
 }
 
 async function testNextNodeUnknownReturnsNull() {
-  assert.strictEqual(nextNode('CRITIQUE'), null);
   assert.strictEqual(nextNode('UNKNOWN'), null);
 }
 
@@ -200,13 +200,14 @@ async function testOtherNodesNotSkipped() {
 async function testDagSequenceContainsAllCoreNodes() {
   assert.ok(DAG_SEQUENCE.includes('SCOPING'));
   assert.ok(DAG_SEQUENCE.includes('DESIGN'));
+  assert.ok(DAG_SEQUENCE.includes('CRITIQUE'));
   assert.ok(DAG_SEQUENCE.includes('PLAN'));
   assert.ok(DAG_SEQUENCE.includes('SNAPSHOT'));
-  assert.strictEqual(DAG_SEQUENCE.length, 12);
+  assert.strictEqual(DAG_SEQUENCE.length, 14);
 }
 
-async function testDagSequenceDoesNotContainCritique() {
-  assert.ok(!DAG_SEQUENCE.includes('CRITIQUE'));
+async function testDagSequenceContainsCritique() {
+  assert.ok(DAG_SEQUENCE.includes('CRITIQUE'));
 }
 
 // ─── updateArtifactEntries tests ──────────────────────────────────────────────
@@ -290,7 +291,7 @@ Use microservices.`;
 
   assert.strictEqual(result.success, true, `Expected success, got: ${result.error}`);
   assert.strictEqual(result.node, 'DESIGN');
-  assert.strictEqual(result.next_node, 'PLAN');
+  assert.strictEqual(result.next_node, 'CRITIQUE');
   assert.deepStrictEqual(result.artifacts_written, ['docs/requirements.md', 'docs/architecture.md']);
   assert.strictEqual(result.tokens_used, 250);
 }
@@ -322,8 +323,8 @@ async function testRunNodeUpdatesDagCurrentNode() {
   await dagRunner.runNode('DESIGN', makeCycleState());
 
   const map = await mgr.read();
-  // After DESIGN completes, current_node should advance to PLAN
-  assert.strictEqual(map.meta.dag?.current_node, 'PLAN');
+  // After DESIGN completes, current_node should advance to CRITIQUE
+  assert.strictEqual(map.meta.dag?.current_node, 'CRITIQUE');
   assert.ok(map.meta.dag?.completed_nodes.includes('DESIGN'));
 }
 
@@ -373,8 +374,7 @@ async function testSkipNodeIsNoOpForUnknownNode() {
 async function testCritiqueSkippedAtStandardDepthPattern() {
   // Verify the pattern: at standard depth, CRITIQUE is skipped before PLAN
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'standard'), true);
-  // DESIGN's next in DAG_SEQUENCE is PLAN (CRITIQUE not present)
-  assert.strictEqual(nextNode('DESIGN'), 'PLAN');
+  assert.strictEqual(nextNode('DESIGN'), 'CRITIQUE');
 }
 
 async function testWritePathValidationBlocksDesignerFromPlanPath() {
@@ -415,17 +415,17 @@ async function runAllTests() {
     { name: 'shouldSkipAtDepth: CRITIQUE not skipped at deep/research', fn: testCritiqueNotSkippedAtDeep },
     { name: 'shouldSkipAtDepth: other nodes not skipped', fn: testOtherNodesNotSkipped },
     { name: 'DAG_SEQUENCE: contains all 12 core nodes', fn: testDagSequenceContainsAllCoreNodes },
-    { name: 'DAG_SEQUENCE: does not contain CRITIQUE', fn: testDagSequenceDoesNotContainCritique },
+    { name: 'DAG_SEQUENCE: contains CRITIQUE', fn: testDagSequenceContainsCritique },
     { name: 'updateArtifactEntries: adds new entries', fn: testUpdateArtifactEntriesAddsNewEntries },
     { name: 'updateArtifactEntries: updates existing entries', fn: testUpdateArtifactEntriesUpdatesExisting },
     { name: 'updateArtifactEntries: no-op for empty paths', fn: testUpdateArtifactEntriesNoOpForEmptyPaths },
-    { name: 'DAGRunner.runNode: DESIGN success → next=PLAN', fn: testRunNodeDesignSuccess },
+    { name: 'DAGRunner.runNode: DESIGN success → next=CRITIQUE', fn: testRunNodeDesignSuccess },
     { name: 'DAGRunner.runNode: updates manifest running→complete', fn: testRunNodeUpdatesManifestRunning },
     { name: 'DAGRunner.runNode: advances dag current_node', fn: testRunNodeUpdatesDagCurrentNode },
     { name: 'DAGRunner.runNode: updates artifact entries in map', fn: testRunNodeUpdatesArtifactEntriesInMap },
     { name: 'DAGRunner.runNode: failure marked in manifest', fn: testRunNodeFailureMarkedInManifest },
     { name: 'DAGRunner.skipNode: no-op for CRITIQUE (not in manifest)', fn: testSkipNodeIsNoOpForUnknownNode },
-    { name: 'CRITIQUE skipped at standard depth → DESIGN→PLAN', fn: testCritiqueSkippedAtStandardDepthPattern },
+    { name: 'CRITIQUE skipped at standard depth → DESIGN→CRITIQUE', fn: testCritiqueSkippedAtStandardDepthPattern },
     { name: 'write path validation blocks designer from plan.md', fn: testWritePathValidationBlocksDesignerFromPlanPath },
   ];
 

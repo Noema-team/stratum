@@ -5,8 +5,10 @@ import type { NodeStatus, PlanningDepth, FailureReport } from './types.js';
 export const CORE_DAG_NODES = [
   'SCOPING',
   'DESIGN',
+  'CRITIQUE',
   'PLAN',
   'TEST',
+  'SHARDING_APPROVAL',
   'CONFIRM',
   'BUILD',
   'HISTORY',

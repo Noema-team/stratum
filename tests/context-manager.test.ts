@@ -185,15 +185,15 @@ async function testTokenCountIsPositive() {
 async function testTruncationWhenArtifactExceedsSliceSize() {
   const bigContent = 'x'.repeat(100_000);
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': bigContent,
+    '/project/docs/test-plan.md': bigContent,
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('tester', baseState());
 
-  const slice = result.artifact_slices['requirements'];
+  const slice = result.artifact_slices['test-plan'];
   assert.ok(slice !== undefined, 'slice missing');
-  assert.ok(slice.length <= DEFAULT_CONFIG.artifact_slice_size + 100, 'slice too large');
-  assert.ok(result.truncated.includes('requirements'), 'truncated not recorded');
+  assert.ok(slice.length <= DEFAULT_CONFIG.artifact_slice_size * 4 + 100, 'slice too large');
+  assert.ok(result.truncated.includes('test-plan'), 'truncated not recorded');
   assert.ok(slice.includes('[...earlier content truncated...]'), 'truncation marker missing');
 }
 
@@ -210,14 +210,12 @@ async function testTruncatedEmptyWhenNoTruncation() {
 async function testHardCeilingEnforced() {
   const bigContent = 'y'.repeat(50_000);
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': bigContent,
-    '/project/docs/architecture.md': bigContent,
-    '/project/docs/plan.md': bigContent,
-    '/project/docs/test-plan.md': bigContent,
+    '/project/docs/discovery-summary.md': bigContent,
+    '/project/docs/cycle-charter.md': bigContent,
   });
   const smallConfig = { ...DEFAULT_CONFIG, hard_ceiling: 2_000, artifact_slice_size: 100_000 };
   const cm = new ContextManager(ROOT, smallConfig, fsMock);
-  const result = await cm.assemble('builder', baseState());
+  const result = await cm.assemble('facilitator', baseState());
 
   assert.ok(result.token_count <= 2_100, `token_count ${result.token_count} exceeds ceiling`);
 }

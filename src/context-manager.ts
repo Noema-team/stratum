@@ -6,6 +6,7 @@ import type {
   ContextManagerConfig,
   FailureReport,
   PlanningDepth,
+  SLETask,
 } from './types.js';
 
 export interface CycleStateContext {
@@ -17,6 +18,7 @@ export interface CycleStateContext {
   failure_report?: FailureReport;
   revision_count?: number;
   revision_note?: string;
+  task?: SLETask;
 }
 
 export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred';
@@ -34,8 +36,8 @@ export interface SliceRule {
 
 const ROLE_ARTIFACT_PATHS: Record<AgentRole, string[]> = {
   facilitator:  ['docs/discovery-summary.md', 'docs/cycle-charter.md'],
-  designer:     ['docs/cycle-charter.md', 'docs/discovery-summary.md'],
-  critic:       ['docs/requirements.md', 'docs/architecture.md'],
+  designer:     ['docs/cycle-charter.md', 'docs/discovery-summary.md', 'docs/cycle-critique.md', 'docs/critique-report.md'],
+  critic:       ['docs/requirements.md', 'docs/architecture.md', 'docs/cycle-charter.md', 'docs/discovery-summary.md'],
   planner:      ['docs/requirements.md', 'docs/architecture.md', 'docs/cycle-charter.md'],
   tester:       ['docs/requirements.md', 'docs/test-plan.md'],
   builder:      ['docs/requirements.md', 'docs/architecture.md', 'docs/plan.md', 'docs/test-plan.md'],
@@ -105,6 +107,8 @@ const SLICE_RULES: Record<string, SliceRule> = {
   'doc:discovery-summary': { artifact_id: 'doc:discovery-summary', mode: 'full', source_weight: 'inferred' },
   'doc:cycle-charter': { artifact_id: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
   'doc:research-findings': { artifact_id: 'doc:research-findings', mode: 'full', source_weight: 'user_defined' },
+  'doc:cycle-critique': { artifact_id: 'doc:cycle-critique', mode: 'full', never_truncate: true, source_weight: 'cycle_produced' },
+  'doc:critique-report': { artifact_id: 'doc:critique-report', mode: 'full', source_weight: 'inferred' },
 };
 
 function getSliceRule(ref: string): SliceRule {
@@ -116,17 +120,25 @@ function getSliceRule(ref: string): SliceRule {
   };
 }
 
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
 function resolveArtifactPath(ref: string): string {
-  if (ref.startsWith('doc:')) {
-    const key = ref.substring(4);
+  const [baseRef] = ref.split('#');
+  if (baseRef.startsWith('doc:')) {
+    const key = baseRef.substring(4);
     return `docs/${key}.md`;
-  } else if (ref.startsWith('node:')) {
-    const parts = ref.substring(5).split(':');
+  } else if (baseRef.startsWith('node:')) {
+    const parts = baseRef.substring(5).split(':');
     const group = parts[0];
     const key = parts[1];
     return `docs/${group}/${key}.md`;
   }
-  return ref;
+  return baseRef;
 }
 
 // ─── ContextManager ───────────────────────────────────────────────────────────
@@ -173,7 +185,9 @@ export class ContextManager {
       .map(id => `- doc:${id}`)
       .join('\n');
     
-    const systemPrompt = rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.');
+    const systemPrompt = rawSystemPrompt
+      ? rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.')
+      : '';
 
     const totalTokens = this.estimateTotalTokens(systemPrompt, stateSummary, task, slices, failureContext);
 
@@ -193,12 +207,17 @@ export class ContextManager {
   private async loadSystemPrompt(role: AgentRole): Promise<string> {
     const agentMdPath = path.join(this.projectRoot, 'agent.md');
     const agentMd = await this.safeReadFile(agentMdPath);
+    const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
+    const rolePrompt = await this.safeReadFile(rolePromptPath);
+
+    if (!agentMd && !rolePrompt) {
+      return '';
+    }
+
     const agentHeader = agentMd 
       ? truncateContent(agentMd, tokensToChars(300)).text 
       : `You are the ${role} agent in an SLE cycle.`;
 
-    const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
-    const rolePrompt = await this.safeReadFile(rolePromptPath);
     const roleDetails = rolePrompt 
       ? truncateContent(rolePrompt, tokensToChars(200)).text 
       : 'Review constraints and proceed with your assigned task.';
@@ -264,11 +283,21 @@ export class ContextManager {
       availableArtifactBudget = 500;
     }
 
-    const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
-    const refs = paths.map(p => {
-      const base = path.basename(p, '.md');
-      return `doc:${base}`;
-    });
+    let refs: string[] = [];
+    const activeTask = _cycleState.task;
+
+    if (activeTask && activeTask.context_declarations && activeTask.context_declarations.length > 0) {
+      // Declared mode
+      const decl = activeTask.context_declarations[0];
+      refs = decl.slices;
+    } else {
+      // Inferred mode
+      const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
+      refs = paths.map(p => {
+        const base = path.basename(p, '.md');
+        return `doc:${base}`;
+      });
+    }
 
     const loadedSlices: Array<{
       ref: string;
@@ -285,6 +314,25 @@ export class ContextManager {
       let content = await this.safeReadFile(fullPath);
       if (!content) continue;
 
+      // Extract section if anchor exists in reference
+      const [_, anchor] = ref.split('#');
+      if (anchor) {
+        const sections = content.split(/(?=^##\s)/m);
+        const matchedSection = sections.find(sec => {
+          const firstLine = sec.trim().split('\n')[0];
+          const headerMatch = firstLine.match(/^##\s+(.+)$/);
+          if (headerMatch) {
+            return slugify(headerMatch[1].trim()) === anchor;
+          }
+          return false;
+        });
+        if (matchedSection) {
+          content = matchedSection.trim();
+        } else {
+          content = '';
+        }
+      }
+
       const rule = getSliceRule(ref);
 
       if (rule.mode === 'last_n_entries' && rule.max_entries) {
@@ -299,8 +347,9 @@ export class ContextManager {
         }
       }
 
-      if (rule.max_tokens) {
-        const maxChars = tokensToChars(rule.max_tokens);
+      const maxTokens = rule.never_truncate ? undefined : (rule.max_tokens ?? this.config.artifact_slice_size);
+      if (maxTokens) {
+        const maxChars = tokensToChars(maxTokens);
         if (content.length > maxChars) {
           content = truncateContent(content, maxChars).text;
           truncated.push(path.basename(relPath, '.md'));

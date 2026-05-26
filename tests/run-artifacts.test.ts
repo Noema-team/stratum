@@ -52,7 +52,7 @@ async function testManifestInitializesAllNodesAsPending() {
   await mgr.createManifest({ cycleId: 'abc123de-0000-0000-0000-000000000001', cycleNumber: 1, iteration: 1, planningDepth: 'standard' });
 
   const manifest = await mgr.readManifest(1, 1);
-  assert.strictEqual(manifest.nodes.length, 12);
+  assert.strictEqual(manifest.nodes.length, 14);
   for (const node of manifest.nodes) {
     assert.strictEqual(node.status, 'pending');
     assert.deepStrictEqual(node.artifacts_written, []);
@@ -229,7 +229,7 @@ async function testMultipleIterations() {
 
 async function testInitialDAGNodesHelper() {
   const nodes = initialDAGNodes();
-  assert.strictEqual(Object.keys(nodes).length, 12);
+  assert.strictEqual(Object.keys(nodes).length, 14);
   assert.strictEqual(nodes['SCOPING'].status, 'pending');
   assert.strictEqual(nodes['SNAPSHOT'].status, 'pending');
   for (const v of Object.values(nodes)) {
@@ -245,7 +245,7 @@ async function runAllTests() {
   const tests: Array<{ name: string; fn: () => Promise<void> }> = [
     { name: 'createRunDir creates validation/ and node-outputs/', fn: testCreateRunDir },
     { name: 'createManifest writes valid JSON', fn: testCreateManifest },
-    { name: 'manifest initializes all 12 nodes as pending', fn: testManifestInitializesAllNodesAsPending },
+    { name: 'manifest initializes all 14 nodes as pending', fn: testManifestInitializesAllNodesAsPending },
     { name: 'updateNodeStatus: pending → running', fn: testUpdateNodeStatusRunning },
     { name: 'updateNodeStatus: running → complete with metadata', fn: testUpdateNodeStatusComplete },
     { name: 'updateNodeStatus: unknown node is no-op', fn: testUpdateNodeUnknownIdThrows },
@@ -257,7 +257,7 @@ async function runAllTests() {
     { name: 'dirExists: true when created', fn: testDirExistsTrue },
     { name: 'dirExists: false when not created', fn: testDirExistsFalse },
     { name: 'multiple iterations are independent', fn: testMultipleIterations },
-    { name: 'initialDAGNodes helper returns 12 pending nodes', fn: testInitialDAGNodesHelper },
+    { name: 'initialDAGNodes helper returns 14 pending nodes', fn: testInitialDAGNodesHelper },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
