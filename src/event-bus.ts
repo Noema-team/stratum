@@ -51,9 +51,13 @@ export class EventBus {
 
       // On connection, immediately broadcast `system.ready` state snapshot
       try {
-        const map = await this.mapManager.read();
-        const cycle = map.cycle?.number ?? 0;
-        const iteration = map.cycle?.iteration ?? 0;
+        let cycle = 0;
+        let iteration = 0;
+        try {
+          const map = await this.mapManager.read();
+          cycle = map.cycle?.number ?? 0;
+          iteration = map.cycle?.iteration ?? 0;
+        } catch {}
 
         const readyEvent: SLEEvent = {
           type: 'system.ready',
