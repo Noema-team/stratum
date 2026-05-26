@@ -939,6 +939,45 @@ export class DaemonServer {
       return;
     }
 
+    if (pathName === '/api/v2/intake/documents' && method === 'GET') {
+      if (!this.deps.intakeService) {
+        this.sendError(res, 501, 'not_implemented', 'Intake Service not available');
+        return;
+      }
+      try {
+        const docs = await this.deps.intakeService.runIntake();
+        this.sendResponse(res, {
+          ok: true,
+          data: { documents: docs },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        this.sendError(res, 500, 'intake_failed', (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathName === '/api/v2/intake/taskstore' && method === 'GET') {
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const tasksFile = path.join(projectRoot, '.sle', 'tasks.yaml');
+      try {
+        const content = await fs.readFile(tasksFile, 'utf8');
+        const data = yaml.load(content) as { tasks?: any[] };
+        this.sendResponse(res, {
+          ok: true,
+          data: { tasks: data?.tasks || [] },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch {
+        this.sendResponse(res, {
+          ok: true,
+          data: { tasks: [] },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      }
+      return;
+    }
+
     const fileIndexMatch = pathName.match(/^\/api\/v2\/links\/files\/(.+)$/);
     if (fileIndexMatch && method === 'GET') {
       const filePathParam = fileIndexMatch[1];
@@ -958,6 +997,54 @@ export class DaemonServer {
         meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
       });
       return;
+    }
+
+    // ─── Static Asset Serving Fallback ───
+    if (method === 'GET' && !pathName.startsWith('/api/')) {
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      
+      // Determine relative file path
+      let relativePath = pathName === '/' ? 'index.html' : pathName.slice(1);
+      
+      // Prevent directory traversal attacks
+      relativePath = path.normalize(relativePath).replace(/^(\.\.(\/|\\))+/, '');
+      
+      const fullPath = path.join(projectRoot, 'public', relativePath);
+      const publicRoot = path.join(projectRoot, 'public');
+      
+      if (!fullPath.startsWith(publicRoot)) {
+        this.sendError(res, 403, 'forbidden', 'Forbidden');
+        return;
+      }
+
+      try {
+        const content = await fs.readFile(fullPath);
+        let contentType = 'text/plain';
+        if (relativePath.endsWith('.html')) contentType = 'text/html';
+        else if (relativePath.endsWith('.css')) contentType = 'text/css';
+        else if (relativePath.endsWith('.js')) contentType = 'application/javascript';
+        else if (relativePath.endsWith('.json')) contentType = 'application/json';
+        else if (relativePath.endsWith('.png')) contentType = 'image/png';
+        else if (relativePath.endsWith('.svg')) contentType = 'image/svg+xml';
+        
+        res.setHeader('Content-Type', contentType);
+        res.statusCode = 200;
+        res.end(content);
+        return;
+      } catch {
+        // SPA Fallback: if route has no dot (extension), fallback to index.html
+        if (!relativePath.includes('.')) {
+          try {
+            const indexContent = await fs.readFile(path.join(publicRoot, 'index.html'));
+            res.setHeader('Content-Type', 'text/html');
+            res.statusCode = 200;
+            res.end(indexContent);
+            return;
+          } catch {}
+        }
+        this.sendError(res, 404, 'not_found', 'File not found');
+        return;
+      }
     }
 
     this.sendError(res, 404, 'not_found', 'Route not found');
