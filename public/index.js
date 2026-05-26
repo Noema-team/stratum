@@ -228,12 +228,9 @@ function renderOverview(mount) {
             </select>
           </div>
           
-          <div>
-            <label style="display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.5px;">Task Storage</label>
-            <select id="init-task-store" style="width: 100%; padding: 10px; background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px;">
-              <option value="local">Local YAML Taskstore (Recommended)</option>
-              <option value="beads">Beads Shared Taskstore</option>
-            </select>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="init-git-repo" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary); cursor: pointer;" />
+            <label for="init-git-repo" style="font-size: 13px; font-weight: 500; color: var(--text-primary); cursor: pointer;">Initialize Git repository if missing</label>
           </div>
         </div>
 
@@ -245,7 +242,7 @@ function renderOverview(mount) {
 
     document.getElementById('btn-init-workspace').onclick = async () => {
       const type = document.getElementById('init-project-type').value;
-      const store = document.getElementById('init-task-store').value;
+      const gitInit = document.getElementById('init-git-repo').checked;
       const name = state.project.name || 'stratum-project';
       
       const btn = document.getElementById('btn-init-workspace');
@@ -260,7 +257,8 @@ function renderOverview(mount) {
           body: JSON.stringify({
             project_name: name,
             project_type: type,
-            task_store: store,
+            task_store: 'local',
+            git_init: gitInit,
             non_interactive: true
           })
         });

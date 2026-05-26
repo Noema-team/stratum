@@ -12,7 +12,8 @@ import {
   type APIError,
   type ProjectType,
 } from './types.js';
-import { FACILITATOR_TEMPLATES } from './prompt-templates.js';
+import { FACILITATOR_TEMPLATES, DEFAULT_ROLE_TEMPLATES } from './prompt-templates.js';
+import { generateDefaults } from './rule-files.js';
 import { createInitialMap } from './runtime-map.js';
 
 export const InitRequestSchema = z.object({
@@ -24,6 +25,7 @@ export const InitRequestSchema = z.object({
   description_long: z.string().optional(),
   no_editor: z.boolean().optional(),
   non_interactive: z.boolean(),
+  git_init: z.boolean().optional(),
 });
 
 export type InitRequest = z.infer<typeof InitRequestSchema>;
@@ -330,7 +332,7 @@ export class InitService {
   ): Promise<{ files: string[] }> {
     switch (step) {
       case 0:
-        return await this.step0Prereqs();
+        return await this.step0Prereqs(request);
       case 1:
         return await this.step1ProjectIdentity(state, request);
       case 2:
@@ -338,7 +340,7 @@ export class InitService {
       case 3:
         return await this.step3Remotes(state, request);
       case 4:
-        return await this.step4RuleFiles();
+        return await this.step4RuleFiles(state);
       case 5:
         return await this.step5TaskStore(state);
       case 6:
@@ -356,7 +358,33 @@ export class InitService {
     }
   }
 
-  private async step0Prereqs(): Promise<{ files: string[] }> {
+  private async step0Prereqs(request: InitRequest): Promise<{ files: string[] }> {
+    const nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
+    if (nodeMajor < 20) {
+      throw new Error(`Node.js version 20 or higher is required. Found version: ${process.versions.node}`);
+    }
+
+    let inGit = false;
+    try {
+      execSync('git rev-parse --is-inside-work-tree', {
+        cwd: this.projectRoot,
+        stdio: 'ignore'
+      });
+      inGit = true;
+    } catch {}
+
+    if (!inGit) {
+      if (request.git_init) {
+        try {
+          execSync('git init', { cwd: this.projectRoot, stdio: 'ignore' });
+        } catch (err) {
+          throw new Error(`Failed to initialize Git repository: ${(err as Error).message}`);
+        }
+      } else {
+        throw new Error('Not inside a Git repository. Please check the "Initialize Git repository" option or initialize git in the folder manually.');
+      }
+    }
+
     return { files: [] };
   }
 
@@ -389,48 +417,46 @@ export class InitService {
     return { files: [] };
   }
 
-  private async step4RuleFiles(): Promise<{ files: string[] }> {
+  private async step4RuleFiles(state: InitState): Promise<{ files: string[] }> {
     const rulesDir = pathJoin(this.projectRoot, '.sle', 'rules');
     await fs.mkdir(rulesDir, { recursive: true });
 
-    const ruleFiles = [
-      'planning.yaml',
-      'validation.yaml',
-      'artifacts.yaml',
-      'exit.yaml',
-      'user_validation.yaml',
-      'summary.yaml',
-      'agents.yaml',
-    ];
+    const projectType = state.project.type || 'custom';
+    const defaults = generateDefaults(projectType);
 
-    for (const file of ruleFiles) {
+    const ruleFileMapping: Record<string, keyof typeof defaults> = {
+      'planning.yaml': 'planning',
+      'validation.yaml': 'validation',
+      'artifacts.yaml': 'artifacts',
+      'exit.yaml': 'exit',
+      'user_validation.yaml': 'user_validation',
+      'summary.yaml': 'summary',
+      'agents.yaml': 'agents',
+    };
+
+    for (const [file, key] of Object.entries(ruleFileMapping)) {
       const filePath = pathJoin(rulesDir, file);
-      await fs.writeFile(filePath, '', 'utf-8');
+      const yamlContent = dump(defaults[key]);
+      await fs.writeFile(filePath, yamlContent, 'utf-8');
     }
 
-    return { files: ruleFiles.map(f => pathJoin('.sle', 'rules', f)) };
+    return { files: Object.keys(ruleFileMapping).map(f => pathJoin('.sle', 'rules', f)) };
   }
 
   private async step5TaskStore(state: InitState): Promise<{ files: string[] }> {
-    if (state.task_store.provider === 'local') {
-      const tasksPath = pathJoin(this.projectRoot, '.sle', 'tasks.yaml');
-      await fs.writeFile(tasksPath, 'tasks: []\n', 'utf-8');
-      state.beads_initialised = false;
-      return { files: [tasksPath] };
-    }
-
-    state.beads_initialised = true;
-    return { files: [] };
+    const tasksPath = pathJoin(this.projectRoot, '.sle', 'tasks.yaml');
+    await fs.writeFile(tasksPath, 'tasks: []\n', 'utf-8');
+    state.beads_initialised = false;
+    return { files: [tasksPath] };
   }
 
   private async step6DocsClone(state: InitState): Promise<{ files: string[] }> {
-    if (!state.remotes.docs.url || state.remotes.docs.pending) {
-      state.docs_cloned = false;
-      return { files: [] };
-    }
-
+    const docsDir = pathJoin(this.projectRoot, 'docs');
+    try {
+      await fs.mkdir(docsDir, { recursive: true });
+    } catch {}
     state.docs_cloned = true;
-    return { files: [] };
+    return { files: [docsDir] };
   }
 
   private async step7AgentMdAndMap(state: InitState, request: InitRequest): Promise<{ files: string[] }> {
@@ -517,7 +543,15 @@ export class InitService {
 
     const files: string[] = [];
 
+    // 1. Write specialized facilitator templates
     for (const [filename, content] of Object.entries(FACILITATOR_TEMPLATES)) {
+      const filePath = pathJoin(promptsDir, filename);
+      await fs.writeFile(filePath, content, 'utf-8');
+      files.push(pathJoin('.sle', 'prompts', filename));
+    }
+
+    // 2. Write standard prompts for all 10 agent roles
+    for (const [filename, content] of Object.entries(DEFAULT_ROLE_TEMPLATES)) {
       const filePath = pathJoin(promptsDir, filename);
       await fs.writeFile(filePath, content, 'utf-8');
       files.push(pathJoin('.sle', 'prompts', filename));
@@ -527,6 +561,16 @@ export class InitService {
   }
 
   private async step9Commit(): Promise<{ files: string[] }> {
+    try {
+      execSync('git add .sle/ agent.md docs/', {
+        cwd: this.projectRoot,
+        stdio: 'ignore'
+      });
+      execSync('git commit -m "chore: initialise SLE project" --allow-empty', {
+        cwd: this.projectRoot,
+        stdio: 'ignore'
+      });
+    } catch {}
     return { files: [] };
   }
 

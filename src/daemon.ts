@@ -50,6 +50,7 @@ const InitPayloadSchema = z.object({
   daemon_port: z.number().optional(),
   docs_remote: z.string().nullable().optional(),
   non_interactive: z.boolean().optional(),
+  git_init: z.boolean().optional(),
 });
 
 const CyclesStartPayloadSchema = z.object({
