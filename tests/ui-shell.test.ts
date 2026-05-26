@@ -39,12 +39,13 @@ class MockIntakeService {
 function makeRequest(
   server: DaemonServer,
   method: string,
-  path: string
+  path: string,
+  body?: unknown
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   return new Promise((resolve, reject) => {
     const port = server.getPort();
     const req = httpRequest(
-      { hostname: '127.0.0.1', port, method, path },
+      { hostname: '127.0.0.1', port, method, path, headers: body ? { 'Content-Type': 'application/json' } : {} },
       (res) => {
         let data = '';
         res.on('data', (chunk: string) => { data += chunk; });
@@ -58,6 +59,7 @@ function makeRequest(
       }
     );
     req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
     req.end();
   });
 }
@@ -183,6 +185,18 @@ async function testIntakeTaskstoreServing() {
   await server.stop();
 }
 
+async function testChatMessagePosting() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'POST', '/api/v2/chat/message', { message: 'hello test' });
+  
+  assert.strictEqual(res.statusCode, 200);
+  const data = JSON.parse(res.body);
+  assert.strictEqual(data.ok, true);
+  assert.strictEqual(data.data.status, 'queued');
+  
+  await server.stop();
+}
+
 // ─── Test Runner ────────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -195,6 +209,7 @@ async function runAllTests() {
     { name: 'GET /non-existent-file.txt returns 404', fn: testNonExistentFileReturns404 },
     { name: 'GET /api/v2/intake/documents returns 200 with documents list', fn: testIntakeDocumentsServing },
     { name: 'GET /api/v2/intake/taskstore returns 200 with tasks list', fn: testIntakeTaskstoreServing },
+    { name: 'POST /api/v2/chat/message returns 200 with queued status', fn: testChatMessagePosting },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

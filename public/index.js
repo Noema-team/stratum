@@ -123,6 +123,12 @@ function handleIncomingEvent(event) {
     state.jobs = state.jobs.filter(j => j.node !== event.payload.node);
   } else if (event.type === 'intake.sharding_proposed') {
     state.proposal = event.payload.proposal;
+  } else if (event.type === 'chat.message') {
+    state.chatHistory.push({
+      sender: event.payload.sender,
+      text: event.payload.text
+    });
+    if (state.chatHistory.length > 50) state.chatHistory.shift();
   }
 
   // Reactive redraw of the current view
@@ -514,20 +520,22 @@ function renderChat(mount) {
   const sendBtn = document.getElementById('chat-send-btn');
   const input = document.getElementById('chat-user-input');
 
-  const executeSend = () => {
+  const executeSend = async () => {
     const text = input.value.trim();
     if (!text) return;
     
-    state.chatHistory.push({ sender: 'user', text });
     input.value = '';
     
-    // Simulate dynamic Facilitator reply
-    setTimeout(() => {
-      state.chatHistory.push({ sender: 'assistant', text: `Got it! I am processing your scoping request regarding "${text}".` });
-      triggerViewRender();
-    }, 1000);
-
-    triggerViewRender();
+    try {
+      const host = window.location.host || 'localhost:7700';
+      await fetch(`http://${host}/api/v2/chat/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      });
+    } catch (err) {
+      console.error('[Chat] Error sending message:', err);
+    }
   };
 
   if (sendBtn && input) {
@@ -755,6 +763,20 @@ async function fetchFreshStatus() {
   try {
     const host = window.location.host || 'localhost:7700';
     
+    // 0. Fetch project details from info
+    try {
+      const infoRes = await fetch(`http://${host}/api/v2/info`);
+      const infoData = await infoRes.json();
+      if (infoData.ok && infoData.data.project_root) {
+        const rootPath = infoData.data.project_root;
+        const parts = rootPath.split(/[/\\]/);
+        state.project.name = parts[parts.length - 1] || 'Stratum Project';
+        document.getElementById('project-title').textContent = state.project.name;
+      }
+    } catch (err) {
+      console.error('[REST] Error fetching project info:', err);
+    }
+
     // 1. Fetch system state
     const stateRes = await fetch(`http://${host}/api/v2/system/state`);
     const stateData = await stateRes.json();
