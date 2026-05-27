@@ -647,8 +647,23 @@ async function renderSettings(mount) {
     const PROVIDER_MODELS = {
       'openai_compatible': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
       'anthropic': ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-20240229'],
-      'glm': ['glm-4', 'glm-4-flash', 'glm-3-turbo'],
+      'glm': ['glm-4', 'glm-4-flash', 'glm-4.1v-thinking', 'glm-4-long', 'glm-4-airx'],
       'openrouter': ['google/gemini-2.5-pro', 'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3-70b-instruct']
+    };
+
+    // Default base URLs per provider
+    const PROVIDER_DEFAULTS = {
+      'openai_compatible': '',
+      'anthropic': '',
+      'glm': 'https://api.z.ai/api/paas/v4',
+      'openrouter': 'https://openrouter.ai/api/v1'
+    };
+
+    // Hint text shown below the Base URL field for specific providers
+    const PROVIDER_URL_HINTS = {
+      'glm': 'International (Z.AI): <code>https://api.z.ai/api/paas/v4</code> &nbsp;|&nbsp; ' +
+             'Coding Plan: <code>https://api.z.ai/api/coding/paas/v4</code> &nbsp;|&nbsp; ' +
+             'Mainland CN: <code>https://open.bigmodel.cn/api/paas/v4</code>'
     };
 
     const providerNames = {
@@ -697,8 +712,9 @@ async function renderSettings(mount) {
           </div>
 
           <div class="form-group">
-            <label for="settings-base-url">Base URL (Optional)</label>
-            <input type="text" id="settings-base-url" placeholder="Default for selected provider will be used if blank" value="${currentBaseUrl}" />
+            <label for="settings-base-url">Base URL</label>
+            <input type="text" id="settings-base-url" placeholder="Uses provider default if blank" value="${currentBaseUrl}" />
+            <span id="settings-url-hint" class="settings-url-hint">${PROVIDER_URL_HINTS[currentProvider] || ''}</span>
           </div>
 
           <div class="form-group">
@@ -723,7 +739,7 @@ async function renderSettings(mount) {
     const saveBtn = document.getElementById('settings-save-btn');
     const statusMsg = document.getElementById('settings-status-message');
 
-    // Handle provider change -> update models dropdown
+    // Handle provider change -> update models dropdown + auto-fill base URL
     providerSelect.onchange = () => {
       const selectedProv = providerSelect.value;
       const models = PROVIDER_MODELS[selectedProv] || [];
@@ -732,6 +748,15 @@ async function renderSettings(mount) {
         ${models.map(m => `<option value="${m}">${m}</option>`).join('')}
         <option value="custom">Custom...</option>
       `;
+
+      // Auto-fill base URL with provider default
+      const defaultUrl = PROVIDER_DEFAULTS[selectedProv] || '';
+      baseUrlInput.value = defaultUrl;
+      baseUrlInput.placeholder = defaultUrl ? defaultUrl : 'Uses provider default if blank';
+
+      // Show provider-specific URL hint
+      const urlHint = document.getElementById('settings-url-hint');
+      if (urlHint) urlHint.innerHTML = PROVIDER_URL_HINTS[selectedProv] || '';
 
       // Trigger model change logic
       modelSelect.onchange();
