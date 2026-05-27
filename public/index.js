@@ -655,14 +655,14 @@ async function renderSettings(mount) {
     const PROVIDER_DEFAULTS = {
       'openai_compatible': '',
       'anthropic': '',
-      'glm': 'https://api.z.ai/api/paas/v4',
+      'glm': 'https://api.z.ai/api/coding/paas/v4',
       'openrouter': 'https://openrouter.ai/api/v1'
     };
 
     // Hint text shown below the Base URL field for specific providers
     const PROVIDER_URL_HINTS = {
-      'glm': 'International (Z.AI): <code>https://api.z.ai/api/paas/v4</code> &nbsp;|&nbsp; ' +
-             'Coding Plan: <code>https://api.z.ai/api/coding/paas/v4</code> &nbsp;|&nbsp; ' +
+      'glm': 'Coding Plan (default): <code>https://api.z.ai/api/coding/paas/v4</code> &nbsp;|&nbsp; ' +
+             'Standard Z.AI: <code>https://api.z.ai/api/paas/v4</code> &nbsp;|&nbsp; ' +
              'Mainland CN: <code>https://open.bigmodel.cn/api/paas/v4</code>'
     };
 
