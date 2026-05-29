@@ -145,7 +145,26 @@ async function handleInit(cmd: InitCommand): Promise<void> {
 
 async function handleStart(cmd: StartCommand): Promise<void> {
   const port = cmd.port ?? 7700;
-  const mapPath = `${projectRoot}/.sle/map.yaml`;
+
+  const pidPath = `${projectRoot}/.sle/daemon.pid`;
+  const existingPid = await readPidFile(pidPath);
+  if (existingPid && isPidAlive(existingPid)) {
+    console.log(`Daemon already running (PID: ${existingPid}) on port ${port}`);
+    if (cmd.foreground && !cmd.noOpen) {
+      openBrowser(`http://localhost:${port}`);
+    }
+    return;
+  }
+  if (existingPid) {
+    await removePidFile(pidPath);
+  }
+
+  const sleDir = `${projectRoot}/.sle`;
+  if (!fs.existsSync(sleDir)) {
+    fs.mkdirSync(sleDir, { recursive: true });
+  }
+
+  const mapPath = `${sleDir}/map.yaml`;
 
   const mapManager = new RuntimeMapManagerImpl({ mapPath });
   const stateMachine = new StateMachine(mapManager);
@@ -294,7 +313,6 @@ async function main(): Promise<void> {
   const args = process.argv;
 
   if (args.length < 3) {
-    // Default to starting in foreground and opening the browser
     await handleStart({ command: 'start', foreground: true });
     return;
   }
