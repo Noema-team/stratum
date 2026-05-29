@@ -9,7 +9,7 @@
     "stratum": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r public dist/public",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:watch": "node --import tsx --watch --test tests/*.test.ts",
     "type-check": "tsc --noEmit",
