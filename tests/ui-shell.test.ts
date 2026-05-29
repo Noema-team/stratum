@@ -1,8 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { request as httpRequest } from 'node:http';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { DaemonServer } from '../src/daemon.js';
 import type { StateAPI } from '../src/state-api.js';
 import type { InitService } from '../src/init-service.js';
+import { createInitialMap } from '../src/runtime-map.js';
 
 // ─── Minimal Mock implementations for static serving tests ─────────────────
 
@@ -65,6 +68,27 @@ function makeRequest(
 }
 
 async function startServer(): Promise<DaemonServer> {
+  const sleDir = path.join(process.cwd(), '.sle');
+  await fs.mkdir(sleDir, { recursive: true });
+  const mapPath = path.join(sleDir, 'map.yaml');
+  const { dump: dumpYaml } = await import('js-yaml');
+  const initialMap = createInitialMap({
+    projectName: 'test-project',
+    projectType: 'api',
+    codeRemote: { url: 'https://github.com/test/test.git', branch: 'main' },
+    issuesRemote: { type: 'git', url: 'https://github.com/test/test/issues', branch: 'main' },
+    docsRemote: { url: 'https://docs.test.com', pending: false },
+    taskStore: { type: 'local' },
+    agents: {
+      facilitator: {
+        active: true,
+        node: null,
+        llm: { provider: 'openai_compatible', api_key_env: 'OPENAI_API_KEY', model: 'gpt-4o' },
+      },
+    },
+  });
+  await fs.writeFile(mapPath, dumpYaml(initialMap), 'utf8');
+
   const server = new DaemonServer();
   const stateAPI = new MockStateAPI() as unknown as StateAPI;
   const initService = new MockInitService() as unknown as InitService;
@@ -191,12 +215,25 @@ async function testIntakeTaskstoreServing() {
 
 async function testChatMessagePosting() {
   const server = await startServer();
-  const res = await makeRequest(server, 'POST', '/api/v2/chat/message', { message: 'hello test' });
+
+  const openRes = await makeRequest(server, 'POST', '/api/v2/chat/session/open', {});
+  if (openRes.statusCode !== 200 && openRes.statusCode !== 204) {
+    console.error('[Chat Test] Open session failed:', openRes.statusCode, openRes.body);
+  }
+  assert.ok(openRes.statusCode === 200 || openRes.statusCode === 204, `Expected 200 or 204, got ${openRes.statusCode}`);
+
+  if (openRes.statusCode === 200) {
+    const openData = JSON.parse(openRes.body);
+    assert.strictEqual(openData.ok, true);
+    assert.strictEqual(openData.data.session_open, true);
+  }
+
+  const res = await makeRequest(server, 'POST', '/api/v2/chat/message', { content: 'hello test' });
   
   assert.strictEqual(res.statusCode, 200);
   const data = JSON.parse(res.body);
   assert.strictEqual(data.ok, true);
-  assert.strictEqual(data.data.status, 'queued');
+  assert.strictEqual(data.data.role, 'user');
   
   await server.stop();
 }
@@ -257,7 +294,7 @@ async function runAllTests() {
     { name: 'GET /non-existent-file.txt returns 404', fn: testNonExistentFileReturns404 },
     { name: 'GET /api/v2/intake/documents returns 200 with documents list', fn: testIntakeDocumentsServing },
     { name: 'GET /api/v2/intake/taskstore returns 200 with tasks list', fn: testIntakeTaskstoreServing },
-    { name: 'POST /api/v2/chat/message returns 200 with queued status', fn: testChatMessagePosting },
+    { name: 'POST /api/v2/chat/session/open + /chat/message returns 200', fn: testChatMessagePosting },
     { name: 'GET and POST /api/v2/settings works with key masking', fn: testSettingsEndpoints },
   ];
 

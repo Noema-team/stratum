@@ -12,9 +12,8 @@ const state = {
   tasks: [],
   documents: [],
   proposal: null,
-  chatHistory: [
-    { sender: 'assistant', text: 'Hello! I am the Facilitator agent. How can I help you coordinate this cycle?' }
-  ]
+  chatSession: { open: false, sessionId: null },
+  chatHistory: []
 };
 
 // ─── Event Names Mapping (Dotted format) ───
@@ -126,10 +125,17 @@ function handleIncomingEvent(event) {
     state.proposal = event.payload.proposal;
   } else if (event.type === 'chat.message') {
     state.chatHistory.push({
-      sender: event.payload.sender,
-      text: event.payload.text
+      sender: event.payload.role === 'user' ? 'user' : 'assistant',
+      text: event.payload.content
     });
-    if (state.chatHistory.length > 50) state.chatHistory.shift();
+    if (state.chatHistory.length > 100) state.chatHistory.shift();
+  } else if (event.type === 'chat.session_changed') {
+    state.chatSession.open = event.payload.session_open;
+    if (event.payload.session_id) {
+      state.chatSession.sessionId = event.payload.session_id;
+    } else {
+      state.chatSession.sessionId = null;
+    }
   }
 
   // Reactive redraw of the current view
@@ -198,7 +204,7 @@ function triggerViewRender() {
   if (state.activePage === 'overview') {
     renderOverview(mount);
   } else if (state.activePage === 'chat') {
-    renderChat(mount);
+    renderChat(mount).catch(err => console.error('[Chat] Render error:', err));
   } else if (state.activePage === 'graph') {
     renderGraph(mount);
   } else if (state.activePage === 'settings') {
@@ -571,43 +577,73 @@ function renderOverlayModal(container) {
 }
 
 // ─── Chat View Render ───
-function renderChat(mount) {
+async function renderChat(mount) {
+  const host = window.location.host || 'localhost:7700';
+
+  if (!state.chatSession.open) {
+    try {
+      const res = await fetch(`http://${host}/api/v2/chat/session/open`, { method: 'POST' });
+      if (res.status === 200) {
+        const data = await res.json();
+        state.chatSession.open = true;
+        state.chatSession.sessionId = data.data.session_id;
+      } else if (res.status === 204) {
+        state.chatSession.open = true;
+      }
+    } catch (err) {
+      console.error('[Chat] Failed to open session:', err);
+    }
+  }
+
+  const sessionBadge = state.chatSession.open
+    ? '<span class="badge success">Session Active</span>'
+    : '<span class="badge default">Session Closed</span>';
+
   mount.innerHTML = `
     <div class="chat-container">
+      <div class="chat-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--border);">
+        <span style="font-weight:600;">Facilitator Chat</span>
+        <span>${sessionBadge}</span>
+      </div>
       <div class="chat-messages" id="chat-messages-box">
-        ${state.chatHistory.map(m => `
+        ${state.chatHistory.length === 0 ? `
+          <div class="chat-bubble assistant" style="background:var(--bg-secondary);color:var(--text-secondary);font-style:italic;">
+            Hello! I am the Facilitator agent. How can I help you coordinate this project?
+          </div>
+        ` : state.chatHistory.map(m => `
           <div class="chat-bubble ${m.sender}">
             ${m.text}
           </div>
         `).join('')}
       </div>
       <div class="chat-input-area">
-        <input type="text" id="chat-user-input" placeholder="Type message to Facilitator..." />
-        <button id="chat-send-btn" class="btn btn-primary">Send</button>
+        <input type="text" id="chat-user-input" placeholder="Type message to Facilitator..." ${!state.chatSession.open ? 'disabled' : ''} />
+        <button id="chat-send-btn" class="btn btn-primary" ${!state.chatSession.open ? 'disabled' : ''}>Send</button>
       </div>
     </div>
   `;
 
-  // Auto-scroll chat messages
   const box = document.getElementById('chat-messages-box');
   if (box) box.scrollTop = box.scrollHeight;
 
-  // Send trigger
   const sendBtn = document.getElementById('chat-send-btn');
   const input = document.getElementById('chat-user-input');
 
   const executeSend = async () => {
     const text = input.value.trim();
     if (!text) return;
-    
+
     input.value = '';
-    
+
+    state.chatHistory.push({ sender: 'user', text });
+    if (state.chatHistory.length > 100) state.chatHistory.shift();
+    triggerViewRender();
+
     try {
-      const host = window.location.host || 'localhost:7700';
       await fetch(`http://${host}/api/v2/chat/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({ content: text })
       });
     } catch (err) {
       console.error('[Chat] Error sending message:', err);
