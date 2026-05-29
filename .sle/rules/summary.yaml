@@ -1,0 +1,13 @@
+format: markdown
+sections:
+  - what_was_built
+  - what_changed
+  - category_results
+  - how_to_test
+  - next_steps
+test_command_format: shell
+show_confidence_scores: true
+show_failed_test_ids: true
+what_was_built_max_tokens: 300
+next_steps_max_count: 3
+output_path: reports/summary-{{version_id}}.md

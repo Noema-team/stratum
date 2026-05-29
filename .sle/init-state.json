@@ -1,0 +1,30 @@
+{
+  "last_completed_step": 8,
+  "project": {
+    "name": "stratum",
+    "description": "",
+    "type": "api",
+    "description_long": ""
+  },
+  "remotes": {
+    "code": {
+      "url": "git@github.com:Noema-team/stratum.git",
+      "branch": "feat/chat-session-and-persistence"
+    },
+    "issues": {
+      "url": "",
+      "prefix": "",
+      "local_only": true
+    },
+    "docs": {
+      "url": "",
+      "pending": true
+    }
+  },
+  "task_store": {
+    "provider": "local"
+  },
+  "beads_initialised": false,
+  "docs_cloned": true,
+  "committed": false
+}

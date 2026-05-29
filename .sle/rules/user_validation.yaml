@@ -1,0 +1,21 @@
+approval_required: true
+review_at:
+  - after_planning
+  - after_gate_pass
+prompts:
+  after_planning: |-
+    The Planner has recommended the following validation categories:
+    {{categories}}
+
+    You can accept, remove categories, or add new ones.
+    Respond with your confirmed list or type "accept" to use as-is.
+  after_gate_pass: |-
+    Cycle {{cycle}} has completed. All validation categories passed.
+
+    {{summary}}
+
+    Type "approve" to lock version {{version_id}}, or describe changes
+    you want before the snapshot is locked.
+timeout_minutes: 60
+on_timeout: auto_approve
+auto_approve_on_rerun: false

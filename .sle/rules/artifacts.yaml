@@ -1,0 +1,56 @@
+artifacts:
+  - id: requirements
+    path: docs/requirements.md
+    generator: designer
+    required: true
+    append_only: false
+    format: markdown
+  - id: architecture
+    path: docs/architecture.md
+    generator: designer
+    required: true
+    append_only: false
+    format: markdown
+  - id: test-plan
+    path: docs/test-plan.md
+    generator: planner
+    required: true
+    append_only: false
+    format: markdown
+  - id: plan
+    path: docs/plan.md
+    generator: planner
+    required: true
+    append_only: false
+    format: markdown
+  - id: decisions
+    path: docs/decisions.md
+    generator: historian
+    required: true
+    append_only: true
+    format: markdown
+  - id: evaluation
+    path: docs/evaluation.md
+    generator: evaluator
+    required: true
+    append_only: false
+    format: markdown
+  - id: build-plan
+    path: docs/build-plan.md
+    generator: planner
+    required: false
+    append_only: false
+    format: markdown
+generated_outputs:
+  - id: test_runner
+    path: scripts/run-tests.ts
+    type: executable
+    generated_at: gate_pass
+  - id: validation_report
+    path: reports/validation-latest.html
+    type: html
+    generated_at: gate_pass
+  - id: changelog
+    path: reports/changelog-{{version_id}}.md
+    type: markdown
+    generated_at: gate_pass

@@ -1,0 +1,238 @@
+defaults:
+  llm:
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+  temperature: 0.3
+  max_tokens: 8000
+  system_prompt_root: .sle/prompts
+providers:
+  openai:
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4o
+  openrouter:
+    provider: openai_compatible
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    model: gpt-4o
+  glm:
+    provider: openai_compatible
+    base_url: https://api.z.ai/api/coding/paas/v4
+    api_key_env: GLM_API_KEY
+    model: glm-4
+  zai:
+    provider: openai_compatible
+    base_url: https://api.zai.dev/v1
+    api_key_env: ZAI_API_KEY
+    model: gpt-4o
+  anthropic:
+    provider: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    model: claude-sonnet-4-20250514
+agents:
+  designer:
+    active: true
+    node: design
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.3
+    max_tokens: 8000
+    system_prompt: .sle/prompts/designer.md
+    artifact_slice:
+      - doc:requirements
+      - doc:architecture
+      - doc:decisions
+      - doc:evaluation
+    outputs:
+      - doc:requirements
+      - doc:architecture
+    conditional: false
+  explorer:
+    active: false
+    node: explore
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.5
+    max_tokens: 8000
+    system_prompt: .sle/prompts/explorer.md
+    artifact_slice:
+      - doc:requirements
+      - doc:evaluation
+      - doc:decisions
+    outputs:
+      - doc:research_findings
+    conditional: true
+    condition: user_initiated
+  planner:
+    active: true
+    node: plan
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.3
+    max_tokens: 8000
+    system_prompt: .sle/prompts/planner.md
+    artifact_slice:
+      - doc:requirements
+      - doc:architecture
+      - doc:decisions
+      - doc:evaluation
+    outputs:
+      - doc:test-plan
+      - doc:plan
+      - doc:build-plan
+    conditional: false
+  tester:
+    active: true
+    node: test
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    max_tokens: 8000
+    system_prompt: .sle/prompts/tester.md
+    artifact_slice:
+      - doc:requirements
+      - doc:test-plan
+    outputs:
+      - scripts/test_{category}.ts
+    conditional: false
+    constraints:
+      - never_sees_builder_output
+  builder:
+    active: true
+    node: build
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.2
+    max_tokens: 16000
+    system_prompt: .sle/prompts/builder.md
+    artifact_slice:
+      - doc:requirements
+      - doc:architecture
+      - doc:test-plan
+    outputs:
+      - src/**
+      - scripts/test_{category}.ts
+    conditional: false
+  debugger:
+    active: true
+    node: debug
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.2
+    max_tokens: 8000
+    system_prompt: .sle/prompts/debugger.md
+    artifact_slice:
+      - doc:requirements
+      - doc:test-plan
+    outputs:
+      - debug:diagnosis
+      - debug:fix_recommendation
+    conditional: true
+    condition: gate_failure
+  evaluator:
+    active: true
+    node: evaluate
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    max_tokens: 4000
+    system_prompt: .sle/prompts/evaluator.md
+    artifact_slice:
+      - doc:requirements
+      - doc:evaluation
+      - doc:test-plan
+    outputs:
+      - doc:evaluation
+    conditional: false
+  critic:
+    active: true
+    node: critique
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.5
+    max_tokens: 4000
+    system_prompt: .sle/prompts/critic.md
+    artifact_slice:
+      - doc:architecture
+      - doc:requirements
+      - doc:evaluation
+    outputs:
+      - critique:verdict
+      - critique:issues
+      - critique:suggestions
+    conditional: true
+    condition: depth_deep_or_research
+    trigger_node: design
+  historian:
+    active: true
+    node: history
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    max_tokens: 2000
+    system_prompt: .sle/prompts/historian.md
+    artifact_slice:
+      - doc:decisions
+    outputs:
+      - doc:decisions
+    conditional: false
+    append_only: true
+  facilitator:
+    active: true
+    node: null
+    llm:
+      provider: openai_compatible
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+    temperature: 0.4
+    max_tokens: 4000
+    system_prompt: .sle/prompts/facilitator.md
+    artifact_slice:
+      - doc:requirements
+      - doc:architecture
+      - doc:test-plan
+      - doc:decisions
+    outputs:
+      - discovery:product_brief
+      - discovery:success_definition
+      - discovery:constraints
+      - discovery:stakeholders
+      - discovery:system_description
+      - discovery:vision
+      - discovery:open_questions
+      - discovery:project_plan
+    conditional: false
+    session_types:
+      - discovery
+      - chat
