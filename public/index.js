@@ -3,6 +3,7 @@ const state = {
   activePage: 'overview',
   connected: false,
   systemState: 'idle',
+  initialised: true,
   awaitingConfirmation: false,
   awaitingShardingApproval: false,
   project: { name: 'Stratum Project', type: 'api' },
@@ -205,6 +206,81 @@ function triggerViewRender() {
 
 // ─── Overview View Render ───
 function renderOverview(mount) {
+  if (!state.initialised) {
+    mount.innerHTML = `
+      <div style="max-width: 600px; margin: 40px auto; background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 32px; box-shadow: var(--shadow-lg); text-align: center; border-left: 4px solid var(--accent-primary);">
+        <div style="font-size: 40px; margin-bottom: 16px;">🚀</div>
+        <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 8px; background: linear-gradient(135deg, var(--text-primary) 30%, var(--accent-primary) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Initialize Stratum Workspace</h1>
+        <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; line-height: 1.6;">
+          Your current folder is not yet initialized as a Stratum sustained learning environment. Initialize it now to unlock automated code generation, lint passes, and graph indexing.
+        </p>
+        
+        <div style="text-align: left; background-color: hsl(222, 12%, 9%); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 20px; margin-bottom: 24px;">
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.5px;">Project Type</label>
+            <select id="init-project-type" style="width: 100%; padding: 10px; background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px;">
+              <option value="api">API Server (Recommended)</option>
+              <option value="ui">UI Web Application</option>
+              <option value="library">Software Library</option>
+              <option value="research">Research Workspace</option>
+            </select>
+          </div>
+          
+          <div>
+            <label style="display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.5px;">Task Storage</label>
+            <select id="init-task-store" style="width: 100%; padding: 10px; background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px;">
+              <option value="local">Local YAML Taskstore (Recommended)</option>
+              <option value="beads">Beads Shared Taskstore</option>
+            </select>
+          </div>
+        </div>
+
+        <button id="btn-init-workspace" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 14px; border-radius: var(--radius-md);">
+          Bootstrap Workspace Environment
+        </button>
+      </div>
+    `;
+
+    document.getElementById('btn-init-workspace').onclick = async () => {
+      const type = document.getElementById('init-project-type').value;
+      const store = document.getElementById('init-task-store').value;
+      const name = state.project.name || 'stratum-project';
+      
+      const btn = document.getElementById('btn-init-workspace');
+      btn.textContent = 'Initializing Workspace...';
+      btn.disabled = true;
+
+      try {
+        const host = window.location.host || 'localhost:7700';
+        const res = await fetch(`http://${host}/api/v2/init`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_name: name,
+            project_type: type,
+            task_store: store,
+            non_interactive: true
+          })
+        });
+
+        const data = await res.json();
+        if (data.ok) {
+          state.initialised = true;
+          await fetchFreshStatus();
+        } else {
+          alert('Initialization failed: ' + (data.error?.message || 'Unknown error'));
+          btn.textContent = 'Bootstrap Workspace Environment';
+          btn.disabled = false;
+        }
+      } catch (err) {
+        alert('Connection error during initialization: ' + err.message);
+        btn.textContent = 'Bootstrap Workspace Environment';
+        btn.disabled = false;
+      }
+    };
+    return;
+  }
+
   mount.innerHTML = `
     <div class="dashboard-grid">
       <!-- Panel 1: Actions Required -->
@@ -775,6 +851,17 @@ async function fetchFreshStatus() {
       }
     } catch (err) {
       console.error('[REST] Error fetching project info:', err);
+    }
+
+    // 0b. Fetch initialization status
+    try {
+      const initStateRes = await fetch(`http://${host}/api/v2/init/state`);
+      const initStateData = await initStateRes.json();
+      if (initStateData.ok) {
+        state.initialised = initStateData.data.initialised;
+      }
+    } catch (err) {
+      console.error('[REST] Error fetching init status:', err);
     }
 
     // 1. Fetch system state

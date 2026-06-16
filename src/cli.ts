@@ -163,6 +163,7 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       confirmService,
       intakeService,
       shardingService,
+      llmProvider,
       pidFile: { writePidFile, removePidFile },
     }
   );
