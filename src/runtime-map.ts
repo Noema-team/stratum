@@ -133,6 +133,10 @@ export interface RuntimeMap {
       failed_categories: string[];
     };
   };
+  graph?: {
+    link_count: number;
+    last_rebuilt_at: string;
+  };
 }
 
 export const RuntimeMapSchema = z.object({
@@ -226,6 +230,10 @@ export const RuntimeMapSchema = z.object({
     categories: z.array(ValidationCategorySchema),
     gate: ValidationGateSchema,
   }),
+  graph: z.object({
+    link_count: z.number(),
+    last_rebuilt_at: z.string(),
+  }).optional(),
 });
 
 // ============================================================================

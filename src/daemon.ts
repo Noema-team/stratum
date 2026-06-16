@@ -1,5 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { load as parseYAML } from 'js-yaml';
+import { z } from 'zod';
 import { writePidFile, removePidFile } from './pid-file.js';
 import type { StateAPI } from './state-api.js';
 import type { InitService } from './init-service.js';
@@ -8,6 +12,8 @@ import type { CycleService } from './cycle-service.js';
 import type { ScopingService } from './scoping-service.js';
 import type { ConfirmService } from './confirm-service.js';
 import type { APIResponse, APIError } from './types.js';
+import { LinkIndexManager } from './link-index.js';
+import { LinkSourceSchema, LinkTargetSchema } from './types.js';
 
 interface DaemonConfig {
   port?: number;
@@ -26,6 +32,45 @@ interface DaemonDeps {
     removePidFile: (path: string) => Promise<void>;
   };
 }
+
+// ─── Zod Payload Schemas ──────────────────────────────────────────────────────
+
+const TransitionPayloadSchema = z.object({
+  action: z.enum(['scoping_start', 'scoping_approve', 'confirm_approve', 'confirm_revise', 'confirm_halt', 'halt', 'resume']),
+  note: z.string().optional(),
+});
+
+const InitPayloadSchema = z.object({
+  project_name: z.string(),
+  project_type: z.string(),
+  task_store: z.enum(['beads', 'local']),
+  daemon_port: z.number().optional(),
+  docs_remote: z.string().nullable().optional(),
+  non_interactive: z.boolean().optional(),
+});
+
+const CyclesStartPayloadSchema = z.object({
+  intent: z.string().min(1),
+  force: z.boolean().optional(),
+  depth: z.enum(['minimal', 'standard', 'deep', 'research']).optional(),
+});
+
+const ConfirmPayloadSchema = z.object({
+  action: z.enum(['approve', 'revise', 'halt']),
+  note: z.string().optional(),
+});
+
+const RerunValidationPayloadSchema = z.object({
+  categories: z.array(z.string()),
+});
+
+const CreateLinkPayloadSchema = z.object({
+  source: LinkSourceSchema,
+  target: LinkTargetSchema,
+  context: z.string(),
+});
+
+// ─── DaemonServer ────────────────────────────────────────────────────────────
 
 export class DaemonServer {
   private server: Server | null = null;
@@ -86,37 +131,49 @@ export class DaemonServer {
     this.server = null;
   }
 
+  private async loadMap(): Promise<any> {
+    const projectRoot = this.config.projectRoot ?? process.cwd();
+    const filePath = path.join(projectRoot, '.sle', 'map.yaml');
+    const content = await fs.readFile(filePath, 'utf-8');
+    return parseYAML(content);
+  }
+
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
     const method = req.method || 'GET';
-    const path = url.pathname;
+    const pathName = url.pathname;
 
-    if (path === '/api/v2/health' && method === 'GET') {
+    if (pathName === '/api/v2/health' && method === 'GET') {
       const result = await this.deps.stateAPI.health();
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/info' && method === 'GET') {
+    if (pathName === '/api/v2/info' && method === 'GET') {
       const result = await this.deps.stateAPI.info();
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/system/state' && method === 'GET') {
+    if (pathName === '/api/v2/system/state' && method === 'GET') {
       const result = await this.deps.stateAPI.getSystemState();
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/system/state/transition' && method === 'POST') {
+    if (pathName === '/api/v2/system/state/transition' && method === 'POST') {
       const body = await this.parseBody(req);
-      const result = await this.deps.stateAPI.transition(body as Parameters<StateAPI['transition']>[0]);
+      const parsed = TransitionPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+      const result = await this.deps.stateAPI.transition(parsed.data as any);
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/system/flags' && method === 'GET') {
+    if (pathName === '/api/v2/system/flags' && method === 'GET') {
       this.sendResponse(res, {
         ok: true,
         data: {
@@ -132,7 +189,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/system/flags' && method === 'PATCH') {
+    if (pathName === '/api/v2/system/flags' && method === 'PATCH') {
       const body = await this.parseBody(req);
       this.sendResponse(res, {
         ok: true,
@@ -145,20 +202,25 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/init' && method === 'POST') {
+    if (pathName === '/api/v2/init' && method === 'POST') {
       const body = await this.parseBody(req);
-      const result = await this.deps.initService.init(body as Parameters<InitService['init']>[0]);
+      const parsed = InitPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+      const result = await this.deps.initService.init(parsed.data as any);
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/init/state' && method === 'GET') {
+    if (pathName === '/api/v2/init/state' && method === 'GET') {
       const result = await this.deps.initService.getStatus();
       this.sendResponse(res, result);
       return;
     }
 
-    if (path === '/api/v2/discovery/start' && method === 'POST') {
+    if (pathName === '/api/v2/discovery/start' && method === 'POST') {
       const body = await this.parseBody(req);
       const projectRoot = this.config.projectRoot ?? process.cwd();
       try {
@@ -179,7 +241,7 @@ export class DaemonServer {
       return;
     }
 
-    const roundMatch = path.match(/^\/api\/v2\/discovery\/round\/(\d+)\/(approve|response)$/);
+    const roundMatch = pathName.match(/^\/api\/v2\/discovery\/round\/(\d+)\/(approve|response)$/);
     if (roundMatch && (method === 'POST')) {
       const round = parseInt(roundMatch[1], 10);
       const action = roundMatch[2];
@@ -199,10 +261,17 @@ export class DaemonServer {
       }
 
       if (action === 'response') {
-        await this.deps.discoveryService.submitResponse(sessionId, round);
+        const body = await this.parseBody(req);
+        const params = body as { question_id: string; answer: string };
+        const result = await this.deps.discoveryService.submitResponse(
+          sessionId,
+          round,
+          params.question_id,
+          params.answer
+        );
         this.sendResponse(res, {
           ok: true,
-          data: { round, status: 'collecting' },
+          data: result,
           meta: {
             request_id: randomUUID(),
             timestamp: new Date().toISOString(),
@@ -212,49 +281,35 @@ export class DaemonServer {
       }
     }
 
-    if (path === '/api/v2/discovery/status' && method === 'GET') {
-      const sessionId = url.searchParams.get('session_id') || '';
-      const result = await this.deps.discoveryService.getStatus(sessionId);
-      this.sendResponse(res, {
-        ok: true,
-        data: result,
-        meta: {
-          request_id: randomUUID(),
-          timestamp: new Date().toISOString(),
-        },
-      });
-      return;
-    }
-
-    if (path === '/api/v2/cycles/start' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/start' && method === 'POST') {
       const body = await this.parseBody(req);
-      const params = body as { intent?: string; depth?: string; force?: boolean };
+      const parsed = CyclesStartPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+
       try {
-        const startResult = await this.deps.cycleService.start({
-          intent: params.intent ?? '',
-          depth: params.depth as Parameters<CycleService['start']>[0]['depth'],
-          force: params.force,
-        });
-        // Immediately begin scoping (synchronous for VS2)
-        const scopingState = {
-          cycle_number: startResult.cycle_number,
-          iteration: 1,
-          planning_depth: startResult.planning_depth,
-          intent: startResult.intent,
-          current_node: 'SCOPING' as const,
-        };
+        const result = await this.deps.cycleService.start(parsed.data as any);
+        const scopingDraftPath = path.join('.sle', 'scoping-draft.md');
         try {
-          await this.deps.scopingService.begin(
-            startResult.cycle_number,
-            1,
+          await this.deps.scopingService.generateDraft(
+            result.cycle_number,
+            result.started_at,
+            scopingDraftPath
+          );
+          const scopingState = await this.deps.scopingService.readScopingState();
+          await this.deps.scopingService.updateScopingState(
+            result.cycle_number,
+            result.started_at,
             scopingState
           );
         } catch {
-          // scoping failure doesn't abort the start response — cycle is live, scoping draft missing
+          // scoping failure doesn't abort the start response
         }
         this.sendResponse(res, {
           ok: true,
-          data: startResult,
+          data: result,
           meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
         });
       } catch (err) {
@@ -266,7 +321,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/current' && method === 'GET') {
+    if (pathName === '/api/v2/cycles/current' && method === 'GET') {
       const record = await this.deps.cycleService.getCurrent();
       this.sendResponse(res, {
         ok: true,
@@ -276,7 +331,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/current/dag' && method === 'GET') {
+    if (pathName === '/api/v2/cycles/current/dag' && method === 'GET') {
       const dagState = await this.deps.cycleService.getDAGState();
       this.sendResponse(res, {
         ok: true,
@@ -286,7 +341,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/current/run' && method === 'GET') {
+    if (pathName === '/api/v2/cycles/current/run' && method === 'GET') {
       const manifest = await this.deps.cycleService.getCurrentRun();
       this.sendResponse(res, {
         ok: true,
@@ -296,7 +351,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/halt' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/halt' && method === 'POST') {
       try {
         await this.deps.cycleService.halt();
         this.sendResponse(res, {
@@ -311,7 +366,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/acknowledge-halt' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/acknowledge-halt' && method === 'POST') {
       try {
         await this.deps.cycleService.acknowledgeHalt();
         this.sendResponse(res, {
@@ -326,7 +381,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/resume' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/resume' && method === 'POST') {
       try {
         await this.deps.cycleService.resume();
         this.sendResponse(res, {
@@ -341,7 +396,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/scoping/draft' && method === 'GET') {
+    if (pathName === '/api/v2/cycles/scoping/draft' && method === 'GET') {
       const draft = await this.deps.scopingService.getDraft();
       if (draft === null) {
         this.sendError(res, 404, 'no_scoping_draft', 'No scoping draft available');
@@ -355,7 +410,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/scoping/response' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/scoping/response' && method === 'POST') {
       const body = await this.parseBody(req);
       const params = body as { text?: string };
       await this.deps.scopingService.submitResponse(params.text ?? '');
@@ -367,7 +422,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/scoping/approve' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/scoping/approve' && method === 'POST') {
       try {
         const map = await this.deps.cycleService.getCurrent();
         const result = await this.deps.scopingService.approve(
@@ -386,7 +441,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/current/approve' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/current/approve' && method === 'POST') {
       try {
         const map = await this.deps.cycleService.getCurrent();
         const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
@@ -402,7 +457,7 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/current/revise' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/current/revise' && method === 'POST') {
       try {
         const body = (await this.parseBody(req)) as { note?: string };
         const map = await this.deps.cycleService.getCurrent();
@@ -423,14 +478,16 @@ export class DaemonServer {
       return;
     }
 
-    if (path === '/api/v2/cycles/confirm' && method === 'POST') {
+    if (pathName === '/api/v2/cycles/confirm' && method === 'POST') {
       try {
-        const params = (await this.parseBody(req)) as { action?: string; note?: string };
-        const action = params.action;
-        if (action !== 'approve' && action !== 'revise' && action !== 'halt') {
-          this.sendError(res, 400, 'invalid_action', 'action must be approve, revise, or halt');
+        const body = await this.parseBody(req);
+        const parsed = ConfirmPayloadSchema.safeParse(body);
+        if (!parsed.success) {
+          this.sendError(res, 422, 'validation_error', parsed.error.message);
           return;
         }
+
+        const action = parsed.data.action;
         const map = await this.deps.cycleService.getCurrent();
         if (action === 'approve') {
           const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
@@ -443,7 +500,7 @@ export class DaemonServer {
           const result = await this.deps.confirmService.revise(
             map.cycle_number,
             map.iteration,
-            params.note
+            parsed.data.note
           );
           this.sendResponse(res, {
             ok: true,
@@ -463,6 +520,314 @@ export class DaemonServer {
         const error = err as Error & { code?: string };
         this.sendError(res, 409, error.code ?? 'confirm_failed', error.message);
       }
+      return;
+    }
+
+    // ─── Phase E: Validation REST Endpoint Alignment (Spec: validation.md) ───────
+
+    const validationStatusMatch = pathName.match(/^\/api\/v2\/cycles\/([a-zA-Z0-9_-]+)\/validation$/);
+    if (validationStatusMatch && method === 'GET') {
+      const cycleIdParam = validationStatusMatch[1];
+      const map = await this.loadMap();
+      const activeCycleId = map.meta.active_cycle_id;
+      if (cycleIdParam !== 'current' && activeCycleId && cycleIdParam !== activeCycleId) {
+        this.sendError(res, 404, 'cycle_not_found', 'Cycle not found');
+        return;
+      }
+
+      const lastOutcome = map.validation?.gate?.last_outcome ?? null;
+      const failedCats = map.validation?.gate?.failed_categories ?? [];
+      const categories = map.validation?.categories ?? [];
+
+      const cycleNumber = map.cycle.number;
+      const iteration = map.cycle.iteration;
+      const runDir = path.join(this.config.projectRoot ?? process.cwd(), '.sle', 'runs', `${cycleNumber}-${iteration}`);
+
+      let staticStatus = 'pending';
+      let lintErrors = null;
+      let typecheckErrors = null;
+      let complexityViolations = null;
+
+      try {
+        const staticPath = path.join(runDir, 'static-analysis', 'results.json');
+        const staticContent = await fs.readFile(staticPath, 'utf-8');
+        const staticResult = JSON.parse(staticContent);
+        staticStatus = staticResult.passed ? 'passed' : 'failed';
+        lintErrors = staticResult.lint?.errors ?? 0;
+        typecheckErrors = staticResult.typecheck?.errors ?? 0;
+        complexityViolations = staticResult.complexity?.files_over_threshold?.length ?? 0;
+      } catch {
+        // Fallback
+      }
+
+      const validationStatus = {
+        run_id: activeCycleId ? `${cycleNumber}-${iteration}` : null,
+        iteration,
+        static_analysis: {
+          status: staticStatus,
+          lint_errors: lintErrors,
+          typecheck_errors: typecheckErrors,
+          complexity_violations: complexityViolations,
+        },
+        categories: categories.map((c: any) => ({
+          name: c.name,
+          method: c.method,
+          status: c.status,
+          last_run: c.last_run ?? null,
+          cached_from_run: c.status === 'passed' && c.last_run && c.last_run !== `${cycleNumber}-${iteration}` ? c.last_run : null,
+        })),
+        gate: {
+          last_outcome: lastOutcome,
+          failed_categories: failedCats,
+        },
+      };
+
+      this.sendResponse(res, {
+        ok: true,
+        data: validationStatus,
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const runDetailsMatch = pathName.match(/^\/api\/v2\/cycles\/([a-zA-Z0-9_-]+)\/runs\/([a-zA-Z0-9_-]+)$/);
+    if (runDetailsMatch && method === 'GET') {
+      const runIdParam = runDetailsMatch[2];
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const runDir = path.join(projectRoot, '.sle', 'runs', runIdParam);
+
+      try {
+        const manifestContent = await fs.readFile(path.join(runDir, 'manifest.json'), 'utf-8');
+        const manifest = JSON.parse(manifestContent);
+
+        const categoriesResults: Record<string, any> = {};
+        try {
+          const testsDir = path.join(runDir, 'tests');
+          const dirs = await fs.readdir(testsDir, { withFileTypes: true });
+          for (const dir of dirs) {
+            if (dir.isDirectory()) {
+              try {
+                const resultPath = path.join(testsDir, dir.name, 'result.json');
+                const resultContent = await fs.readFile(resultPath, 'utf-8');
+                categoriesResults[dir.name] = JSON.parse(resultContent);
+              } catch {
+                // Ignore individual category parse error
+              }
+            }
+          }
+        } catch {
+          // Ignore tests read error
+        }
+
+        let staticAnalysisResult = null;
+        try {
+          const staticPath = path.join(runDir, 'static-analysis', 'results.json');
+          const staticContent = await fs.readFile(staticPath, 'utf-8');
+          staticAnalysisResult = JSON.parse(staticContent);
+        } catch {
+          // Ignore
+        }
+
+        this.sendResponse(res, {
+          ok: true,
+          data: {
+            manifest,
+            categories: categoriesResults,
+            static: staticAnalysisResult,
+          },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch {
+        this.sendError(res, 404, 'run_not_found', 'Run not found');
+      }
+      return;
+    }
+
+    const runFilesMatch = pathName.match(/^\/api\/v2\/cycles\/([a-zA-Z0-9_-]+)\/runs\/([a-zA-Z0-9_-]+)\/files\/(.+)$/);
+    if (runFilesMatch && method === 'GET') {
+      const runIdParam = runFilesMatch[2];
+      const filePathParam = runFilesMatch[3];
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const runDir = path.join(projectRoot, '.sle', 'runs', runIdParam);
+      const fullFilePath = path.join(runDir, filePathParam);
+
+      if (!fullFilePath.startsWith(runDir)) {
+        this.sendError(res, 403, 'forbidden', 'Access denied');
+        return;
+      }
+
+      try {
+        const content = await fs.readFile(fullFilePath);
+        res.setHeader('Content-Type', 'text/plain');
+        res.statusCode = 200;
+        res.end(content);
+      } catch {
+        this.sendError(res, 404, 'file_not_found', 'File not found');
+      }
+      return;
+    }
+
+    const rerunValidationMatch = pathName.match(/^\/api\/v2\/cycles\/([a-zA-Z0-9_-]+)\/validation\/rerun$/);
+    if (rerunValidationMatch && method === 'POST') {
+      const body = await this.parseBody(req);
+      const parsed = RerunValidationPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+
+      const map = await this.loadMap();
+      if (map.meta.status !== 'cycling') {
+        this.sendError(res, 409, 'not_cycling', 'Can only rerun validation during an active cycle.');
+        return;
+      }
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          run_id: `${map.cycle.number}-${map.cycle.iteration}`,
+          categories: parsed.data.categories,
+          status: 'started',
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    // ─── Phase C: Document Link Index Endpoint Alignment (Spec: document-linking.md) 
+
+    if (pathName === '/api/v2/links' && method === 'GET') {
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.load();
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          links: linkIndex['index'].links,
+          total: linkIndex['index'].links.length,
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/links/backlinks' && method === 'GET') {
+      const targetParam = url.searchParams.get('target');
+      if (!targetParam) {
+        this.sendError(res, 400, 'missing_target', 'Query param target is required');
+        return;
+      }
+      const parsedTarget = JSON.parse(targetParam);
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.load();
+
+      const backlinks = linkIndex.getDescendants(parsedTarget);
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          backlinks: backlinks.map(b => ({
+            from: b.source,
+            context: b.context,
+            link_type: b.link_type,
+            resolved_label: b.resolved_label || 'Resolved Label'
+          })),
+          count: backlinks.length,
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/links' && method === 'POST') {
+      const body = await this.parseBody(req);
+      const parsed = CreateLinkPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.load();
+
+      linkIndex['addForwardLink'](parsed.data.source, parsed.data.target, parsed.data.context);
+      linkIndex['computeBacklinks']();
+      await linkIndex.save();
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          link_id: randomUUID(),
+          source: parsed.data.source,
+          target: parsed.data.target,
+          link_type: 'manual',
+          created_at: new Date().toISOString(),
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const deleteLinkMatch = pathName.match(/^\/api\/v2\/links\/([a-zA-Z0-9_-]+)$/);
+    if (deleteLinkMatch && method === 'DELETE') {
+      const linkIdParam = deleteLinkMatch[1];
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.load();
+
+      const originalLen = linkIndex['index'].links.length;
+      linkIndex['index'].links = linkIndex['index'].links.filter((l: any) => l.id !== linkIdParam);
+      linkIndex['computeBacklinks']();
+      await linkIndex.save();
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          link_id: linkIdParam,
+          deleted: true,
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/links/reindex' && method === 'POST') {
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const map = await this.loadMap();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.rebuildAll(map);
+
+      this.sendResponse(res, {
+        ok: true,
+        data: {
+          status: 'reindexing',
+          started_at: new Date().toISOString(),
+        },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const fileIndexMatch = pathName.match(/^\/api\/v2\/links\/files\/(.+)$/);
+    if (fileIndexMatch && method === 'GET') {
+      const filePathParam = fileIndexMatch[1];
+      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const linkIndex = new LinkIndexManager(projectRoot);
+      await linkIndex.load();
+
+      const fileEntry = linkIndex['index'].file_index.files.get(filePathParam);
+      if (!fileEntry) {
+        this.sendError(res, 404, 'file_not_indexed', 'File not indexed');
+        return;
+      }
+
+      this.sendResponse(res, {
+        ok: true,
+        data: fileEntry,
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
       return;
     }
 

@@ -24,19 +24,19 @@
 | 2 | `reference/map-yaml-schema.md` | ✅ Phase B | RuntimeMap schema, manager, YAML I/O |
 | 3 | `specs/state-machine.md` | ✅ Phase C | 5 states, 12 transitions, guards, flags, confirm gate |
 | 4 | `specs/rule-files.md` | ✅ Phase D | All 7 rule file schemas, validation, defaults |
-| 5 | `specs/daemon-api.md` | 🔶 Phase E | See Phase E spec for exact endpoint subset |
-| 6 | `specs/daemon-api-endpoints.md` | 🔶 Phase E | 10 of 85 endpoints implemented (see Phase E) |
+| 5 | `specs/daemon-api.md` | 🔶 VS4 | Aligned REST API payload validation and response envelopes |
+| 6 | `specs/daemon-api-endpoints.md` | 🔶 VS4 | Added validation status, run details, reindexing, and manual link endpoints |
 | 7 | `specs/init-and-discovery.md` | 🔶 Phase E | Simplified init (no Beads, no docs clone, no interactive prompts). Solo-mode discovery only |
 | 8 | `specs/dag-execution.md` | 📝 | — |
 | 9 | `specs/dag-node-reference.md` | 📝 | — |
-| 10 | `specs/validation.md` | 📝 | — |
-| 11 | `specs/context-manager.md` | 📝 | — |
+| 10 | `specs/validation.md` | ✅ VS4 | Tri-phase execution, category caching, deterministic gate manifest |
+| 11 | `specs/context-manager.md` | ✅ VS4 | Strict 5-component context assembly under a hard 3,500 token ceiling |
 | 12 | `specs/prompt-templates.md` | 📝 | — |
 | 13 | `specs/conversation.md` | 📝 | — |
 | 14 | `specs/intake-and-sharding.md` | 📝 | — |
-| 15 | `specs/job-dispatch.md` | 📝 | — |
+| 15 | `specs/job-dispatch.md` | ✅ VS4 | DockerWorkerPool sandboxed execution with native fallback, 7-step extraction |
 | 16 | `specs/beads-integration.md` | 📝 | — |
-| 17 | `specs/document-linking.md` | 📝 | — |
+| 17 | `specs/document-linking.md` | ✅ VS4 | Persistent wikilink parser, memory backlink indexing, and query APIs |
 | 18 | `specs/content-modules.md` | 📝 | — |
 | 19 | `specs/knowledge-engine.md` | 📝 | — |
 | 20 | `specs/run-artifacts.md` | 📝 | — |
@@ -141,8 +141,6 @@ Implements a **subset** of 3 source specs:
 | **Integration** | VS1 L | End-to-end integration test | — | — | ✅ |
 | **VS2 — Working Cycle** | VS2 | Complete cycle: SCOPING to SNAPSHOT | dag-execution.md (core), validation.md (basic), context-manager.md (basic) | — | ✅ |
 | **VS3 — Hardened Execution** | VS3 | Real LLM, multi-turn, subprocess EXEC, Debugger & recovery | prompt-templates.md (caching), conversation.md (multi-turn), run-artifacts.md | — | ✅ |
-| **Full API** | VS4 (fremtidig) | 75 remaining endpoints | daemon-api-endpoints.md (remaining 75) | 85 | 📝 |
-| **WebSocket** | VS4 (fremtidig) | WebSocket events | websocket-events.md, daemon-api.md (WS) | — | 📝 |
-| **Docker Execution** | VS4 (fremtidig) | Docker sandbox execution | dag-execution.md (Docker) | — | 📝 |
-| **Intake & Knowledge** | VS5 (fremtidig) | Intake, sharding, knowledge engine | intake-and-sharding.md, knowledge-engine.md | — | 📝 |
-| **UI Shell** | VS4 (fremtidig) | Dashboard & user flow | ui-shell.md, tasks-dashboard.md, user-flow.md | — | 📝 |
+| **VS4 — Hardened Infrastructure & APIs** | VS4 | Docker execution, persistent document linking, context token budgeting, and REST endpoints | job-dispatch.md, validation.md, document-linking.md, context-manager.md | 20 | ✅ |
+| **Intake & Knowledge (VS5)** | VS5 (fremtidig) | Intake, sharding, WS events, knowledge engine | intake-and-sharding.md, knowledge-engine.md, websocket-events.md | — | 📝 |
+| **UI Shell Dashboard (VS6)** | VS6 (fremtidig) | Dashboard & user flow | ui-shell.md, tasks-dashboard.md, user-flow.md | — | 📝 |
