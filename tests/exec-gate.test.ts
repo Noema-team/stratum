@@ -173,8 +173,8 @@ test('nextNode: EXEC → VALIDATION_GATE', () => {
   assert.strictEqual(nextNode('EXEC'), 'VALIDATION_GATE');
 });
 
-test('nextNode: VALIDATION_GATE → EVALUATE', () => {
-  assert.strictEqual(nextNode('VALIDATION_GATE'), 'EVALUATE');
+test('nextNode: VALIDATION_GATE → DEBUG', () => {
+  assert.strictEqual(nextNode('VALIDATION_GATE'), 'DEBUG');
 });
 
 // ─── VALIDATION_REQUIRED_NODES ────────────────────────────────────────────────

@@ -208,6 +208,7 @@ class MockSummariseService {
 class MockStateMachine {
   public completeCycleCalls = 0;
   async completeCycle() { this.completeCycleCalls++; return { success: true, from: 'cycling' as const, to: 'complete' as const }; }
+  async halt(_reason: string) { return { success: true }; }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
@@ -332,7 +333,7 @@ test('CycleRunner: validation gate failure returns completed=false with report',
   const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
   assert.strictEqual(result.completed, false);
-  assert.strictEqual(result.final_node, 'VALIDATION_GATE');
+  assert.strictEqual(result.final_node, 'DEBUG');
   assert.ok(result.failure_report, 'failure_report should be present');
   assert.ok(result.failure_report!.failed_categories.some(c => c.name === 'BUILD'));
 });
@@ -506,10 +507,10 @@ class NodeAwareMockLLM implements ILLMProvider {
       'Task manager API implemented.',
     ].join('\n'),
 
-    DEBUGGER: [
+    DEBUG: [
       '<!-- SLE-OUTPUT',
       'role: debugger',
-      'node: DEBUGGER',
+      'node: DEBUG',
       'artifacts:',
       '  - id: fix',
       '    path: src/index.ts',

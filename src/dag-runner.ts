@@ -22,7 +22,7 @@ export interface DAGNodeRunResult {
 
 export const DAG_SEQUENCE: readonly DAGNodeId[] = [
   'SCOPING', 'DESIGN', 'CRITIQUE', 'PLAN', 'TEST', 'SHARDING_APPROVAL', 'CONFIRM', 'BUILD',
-  'HISTORY', 'EXEC', 'VALIDATION_GATE', 'EVALUATE', 'SUMMARISE', 'SNAPSHOT',
+  'HISTORY', 'EXEC', 'VALIDATION_GATE', 'DEBUG', 'EVALUATE', 'SUMMARISE', 'SNAPSHOT',
 ] as const;
 
 export function nextNode(current: DAGNodeId): DAGNodeId | null {

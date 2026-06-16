@@ -203,7 +203,7 @@ async function testDagSequenceContainsAllCoreNodes() {
   assert.ok(DAG_SEQUENCE.includes('CRITIQUE'));
   assert.ok(DAG_SEQUENCE.includes('PLAN'));
   assert.ok(DAG_SEQUENCE.includes('SNAPSHOT'));
-  assert.strictEqual(DAG_SEQUENCE.length, 14);
+  assert.strictEqual(DAG_SEQUENCE.length, 15);
 }
 
 async function testDagSequenceContainsCritique() {

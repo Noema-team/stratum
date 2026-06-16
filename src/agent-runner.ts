@@ -74,7 +74,7 @@ const NODE_TO_ROLE: Record<string, AgentRole> = {
   BUILD:     'builder',
   HISTORY:   'historian',
   EVALUATE:  'evaluator',
-  DEBUGGER:  'debugger',
+  DEBUG:     'debugger',
   // SUMMARISE is daemon-generated (no LLM call) — handled by SummariseService
 };
 

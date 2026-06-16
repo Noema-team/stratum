@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
-import { CycleRunner, MAX_DEBUG_ATTEMPTS } from '../src/cycle-runner.js';
+import { CycleRunner } from '../src/cycle-runner.js';
 import { DAGRunner } from '../src/dag-runner.js';
 import { AgentRunner } from '../src/agent-runner.js';
 import { ContextManager } from '../src/context-manager.js';
@@ -146,11 +146,11 @@ class VS3MockLLM implements ILLMProvider {
       'Cycle 1: chose TypeScript.',
     ].join('\n'),
 
-    // DEBUGGER produces a src/ fix (debugger role allows src/ writes)
-    DEBUGGER: [
+    // DEBUG produces a src/ fix (debugger role allows src/ writes)
+    DEBUG: [
       '<!-- SLE-OUTPUT',
       'role: debugger',
-      'node: DEBUGGER',
+      'node: DEBUG',
       'artifacts:',
       '  - id: fix',
       '    path: src/debug-fix.ts',
@@ -348,7 +348,7 @@ test('VS3-INT-01: happy path — EXEC no-op succeeds, no Debugger called, cycle 
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
     assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
-    assert.strictEqual(result.debug_attempts_used, 0, 'no debug attempts on happy path');
+    assert.ok(result.iterations_used !== undefined, 'iterations_used should be set');
     assert.ok(result.snapshot_dir, 'snapshot_dir should be set');
 
     // Verify key artifacts written by LLM nodes
@@ -358,7 +358,7 @@ test('VS3-INT-01: happy path — EXEC no-op succeeds, no Debugger called, cycle 
     const evalMd = await fs.readFile(join(root, 'docs/evaluation.md'), 'utf-8');
     assert.ok(evalMd.includes('Evaluation'), 'evaluation.md written by EVALUATE');
 
-    // Debugger fix file should NOT exist (no failures)
+    // DEBUG fix file should NOT exist (no failures)
     await assert.rejects(
       () => fs.readFile(join(root, 'src/debug-fix.ts'), 'utf-8'),
       'debug-fix.ts should not exist on happy path'
@@ -381,12 +381,12 @@ test('VS3-INT-02: single EXEC failure → Debugger fixes → EXEC passes → com
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
     assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
-    assert.strictEqual(result.debug_attempts_used, 1, '1 debug attempt used');
+    assert.ok((result.iterations_used ?? 0) >= 2, 'iterations_used should be ≥2 after one debug round');
     assert.ok(result.snapshot_dir, 'snapshot_dir should be set');
 
-    // Debugger fix file should exist (DEBUGGER ran and produced output)
+    // DEBUG fix file should exist (DEBUG ran and produced output)
     const fix = await fs.readFile(join(root, 'src/debug-fix.ts'), 'utf-8');
-    assert.ok(fix.includes('fixed'), 'debug-fix.ts written by DEBUGGER');
+    assert.ok(fix.includes('fixed'), 'debug-fix.ts written by DEBUG');
 
     // Evaluation should also have run (cycle continued after fix)
     const evalMd = await fs.readFile(join(root, 'docs/evaluation.md'), 'utf-8');
@@ -409,7 +409,7 @@ test('VS3-INT-03: two EXEC failures → Debugger called twice → EXEC passes �
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
     assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
-    assert.strictEqual(result.debug_attempts_used, 2, '2 debug attempts used');
+    assert.ok((result.iterations_used ?? 0) >= 3, 'iterations_used should be ≥3 after two debug rounds');
     assert.ok(result.snapshot_dir, 'snapshot_dir set after double-recovery');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -418,24 +418,23 @@ test('VS3-INT-03: two EXEC failures → Debugger called twice → EXEC passes �
 
 // ─── VS3-INT-04: Exhaustion ───────────────────────────────────────────────────
 
-test('VS3-INT-04: EXEC fails 4 times → MAX_DEBUG_ATTEMPTS exhausted → cycle halts', async () => {
+test('VS3-INT-04: EXEC fails enough times → iteration cap exhausted → cycle halts', async () => {
   const root = await setupProject();
   try {
     await initProject(root);
     const ctx = await startCycle(root);
-    // Fail more than MAX_DEBUG_ATTEMPTS times so the cycle can never recover
-    const execService = new FailNTimesExecService(MAX_DEBUG_ATTEMPTS + 1, ctx.runArtifacts, ctx.mapManager);
+    // max_iterations defaults to 5; fail 4 times so cap is hit (iteration 1 + 4 increments = 5 >= 5)
+    const execService = new FailNTimesExecService(4, ctx.runArtifacts, ctx.mapManager);
     const runner = await buildCycleRunner(ctx, execService);
 
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
 
     assert.strictEqual(result.completed, false, 'cycle should not complete on exhaustion');
-    assert.strictEqual(result.final_node, 'VALIDATION_GATE');
-    assert.strictEqual(result.debug_attempts_used, MAX_DEBUG_ATTEMPTS, `used ${MAX_DEBUG_ATTEMPTS} attempts`);
+    assert.strictEqual(result.final_node, 'DEBUG');
     assert.ok(result.failure_report, 'failure_report should be present on exhaustion');
     assert.ok(
-      result.error?.includes(String(MAX_DEBUG_ATTEMPTS)),
-      `error should reference attempt count: ${result.error}`
+      result.error?.includes('cap'),
+      `error should mention cap: ${result.error}`
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

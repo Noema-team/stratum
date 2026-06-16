@@ -761,6 +761,7 @@ export interface FailureCategory {
   method: ValidationMethod;
   error_summary: string;
   test_output?: string;
+  structural?: boolean;
 }
 
 export const FailureCategorySchema = z.object({
@@ -768,6 +769,7 @@ export const FailureCategorySchema = z.object({
   method: ValidationMethodEnum,
   error_summary: z.string(),
   test_output: z.string().optional(),
+  structural: z.boolean().optional(),
 });
 
 export interface FailureReport {

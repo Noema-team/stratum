@@ -16,9 +16,17 @@ import type { ShardingService } from './sharding-service.js';
 import yaml from 'js-yaml';
 import type { ShardingProposal } from './types.js';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export const MAX_DEBUG_ATTEMPTS = 3;
+async function readOnCapHit(projectRoot: string): Promise<'halt_with_report' | 'user_prompt' | 'force_pass'> {
+  try {
+    const content = await fs.readFile(path.join(projectRoot, '.sle', 'rules', 'exit.yaml'), 'utf-8');
+    const cfg = yaml.load(content) as any;
+    return cfg?.on_cap_hit ?? 'halt_with_report';
+  } catch {
+    return 'halt_with_report';
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +36,7 @@ export interface CycleRunResult {
   snapshot_dir?: string;
   failure_report?: FailureReport;
   error?: string;
-  debug_attempts_used?: number;
+  iterations_used?: number;
 }
 
 export interface CycleRunnerDeps {
@@ -81,14 +89,10 @@ export class CycleRunner {
     const dag = map.meta.dag as
       | { current_node?: string | null; completed_nodes?: string[] }
       | undefined;
-    let currentNode: string | null = dag?.current_node ?? 'DESIGN';
+    let currentNode: string | null = dag?.current_node ?? 'SCOPING';
 
     const onGate = options?.onConfirmGate ?? (async () => 'approve' as const);
     const onShard = options?.onShardingApproval ?? (async () => 'approve' as const);
-
-    // debug_attempt tracks how many DEBUGGER invocations have occurred.
-    // Reset to 0 at cycle start (fresh cycles don't inherit prior debug state).
-    let debugAttempt = 0;
 
     let criticPasses = 0;
 
@@ -275,37 +279,76 @@ ${critiqueResult.suggestions.map(s => `- ${s}`).join('\n') || 'None'}`;
       if (nodeId === 'VALIDATION_GATE') {
         const r = await this.deps.validationGateService.run(cycleNumber, iteration, cycleId);
         if (!r.passed) {
-          debugAttempt++;
-          if (debugAttempt > MAX_DEBUG_ATTEMPTS) {
-            return {
-              completed: false,
-              final_node: 'VALIDATION_GATE',
-              failure_report: r.failure_report,
-              error: `Validation failed after ${MAX_DEBUG_ATTEMPTS} debug attempt(s)`,
-              debug_attempts_used: debugAttempt - 1, // attempts actually run
-            };
-          }
-          // Route to Debugger with current failure context
           cycleState = { ...cycleState, failure_report: r.failure_report };
-          currentNode = 'DEBUGGER';
+          currentNode = 'DEBUG';
           continue;
         }
         currentNode = r.next_node;
         continue;
       }
 
-      if (nodeId === 'DEBUGGER') {
-        // Run Debugger agent; after it produces a fix, route back to EXEC
-        const result = await this.deps.dagRunner.runNode('DEBUGGER', cycleState);
-        if (!result.success) {
+      if (nodeId === 'DEBUG') {
+        // Debugger diagnoses the failure; output feeds next PLAN invocation.
+        const debugResult = await this.deps.dagRunner.runNode('DEBUG', cycleState);
+        if (!debugResult.success) {
           return {
             completed: false,
-            final_node: 'DEBUGGER',
-            error: result.error,
-            debug_attempts_used: debugAttempt,
+            final_node: 'DEBUG',
+            error: debugResult.error,
+            iterations_used: cycleState.iteration,
           };
         }
-        currentNode = 'EXEC'; // re-run execution after Debugger fix
+
+        // Increment iteration counter in map.yaml (spec: increment after DEBUG, before PLAN)
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, iteration: m.cycle.iteration + 1 },
+        }));
+        const updatedMap = await this.deps.mapManager.read();
+        const newIteration = updatedMap.cycle.iteration;
+        cycleState = { ...cycleState, iteration: newIteration };
+
+        // Create run artifacts dir + manifest for the new iteration
+        try {
+          await this.deps.runArtifacts.createRunDir(cycleNumber, newIteration);
+          await this.deps.runArtifacts.createManifest({
+            cycleId,
+            cycleNumber,
+            iteration: newIteration,
+            planningDepth: cycleState.planning_depth,
+          });
+        } catch {
+          // If manifest creation fails, continue — updateNodeStatus will just silently fail
+        }
+
+        // Check cap (spec: cap check before routing to PLAN)
+        const maxIterations = updatedMap.cycle.max_iterations;
+        if (newIteration >= maxIterations) {
+          const onCapHit = await readOnCapHit(projectRoot);
+          if (onCapHit === 'force_pass') {
+            // Proceed despite failures (not recommended — caller decides)
+            currentNode = 'EVALUATE';
+            continue;
+          }
+          if (onCapHit === 'user_prompt') {
+            // For now treat user_prompt as halt (UI handles re-prompt via WebSocket events)
+            await this.deps.stateMachine.halt('cap_exceeded');
+          }
+          // halt_with_report (default)
+          await this.deps.stateMachine.halt('cap_exceeded');
+          return {
+            completed: false,
+            final_node: 'DEBUG',
+            failure_report: cycleState.failure_report,
+            error: `Iteration cap (${maxIterations}) reached`,
+            iterations_used: newIteration,
+          };
+        }
+
+        // Structural failure escalation: if any failed category is structural, loop back to DESIGN
+        const failureReport = cycleState.failure_report;
+        const hasStructural = failureReport?.failed_categories?.some((c) => c.structural === true) ?? false;
+        currentNode = hasStructural ? 'DESIGN' : 'PLAN';
         continue;
       }
 
@@ -325,7 +368,7 @@ ${critiqueResult.suggestions.map(s => `- ${s}`).join('\n') || 'None'}`;
           completed: true,
           final_node: null,
           snapshot_dir: r.snapshot_dir,
-          debug_attempts_used: debugAttempt,
+          iterations_used: cycleState.iteration,
         };
       }
 
@@ -337,13 +380,13 @@ ${critiqueResult.suggestions.map(s => `- ${s}`).join('\n') || 'None'}`;
           completed: false,
           final_node: nodeId,
           error: result.error,
-          debug_attempts_used: debugAttempt,
+          iterations_used: cycleState.iteration,
         };
       }
       currentNode = result.next_node;
     }
 
-    return { completed: true, final_node: null, debug_attempts_used: debugAttempt };
+    return { completed: true, final_node: null, iterations_used: cycleState.iteration };
   }
 
   private async safeReadFile(filePath: string): Promise<string> {
