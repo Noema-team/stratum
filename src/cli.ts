@@ -25,7 +25,7 @@ const projectRoot = process.cwd();
 
 function showHelp(): void {
   console.log(`
-Usage: sle <command> [options]
+Usage: stratum <command> [options]
 
 Commands:
   init              Initialize a new SLE project
