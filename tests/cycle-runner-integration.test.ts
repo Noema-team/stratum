@@ -206,7 +206,8 @@ class FailNTimesExecService {
 
   constructor(
     private failTimes: number,
-    private runArtifacts: RunArtifactManager
+    private runArtifacts: RunArtifactManager,
+    private mapManager: RuntimeMapManager
   ) {}
 
   async run(cycleNumber: number, iteration: number): Promise<{ next_node: 'VALIDATION_GATE' }> {
@@ -218,6 +219,26 @@ class FailNTimesExecService {
       completed_at: new Date().toISOString(),
       duration_ms: 0,
     });
+    
+    // Write exit code to map so ValidationGateService can read it
+    await this.mapManager.update((m: any) => {
+      const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+      if (!fails && !completed.includes('EXEC')) {
+        completed.push('EXEC');
+      }
+      return {
+        ...m,
+        meta: {
+          ...m.meta,
+          dag: m.meta.dag ? {
+            ...m.meta.dag,
+            completed_nodes: completed,
+            exec_result: { exit_code: fails ? 1 : 0, timed_out: false },
+          } : undefined,
+        },
+      };
+    });
+
     return { next_node: 'VALIDATION_GATE' };
   }
 }
@@ -265,6 +286,21 @@ async function startCycle(root: string): Promise<CycleContext> {
     force: true,
   });
   assert.ok(cycleRecord.cycle_number > 0);
+
+  // Cache categories as passed so they don't block the mock exec runs
+  await mapManager.update((m: any) => {
+    return {
+      ...m,
+      validation: {
+        categories: [
+          { name: 'correctness', method: 'executable', status: 'passed' },
+          { name: 'performance', method: 'executable', status: 'passed' },
+          { name: 'security', method: 'executable', status: 'passed' },
+        ],
+        gate: { mode: 'all_must_pass', last_outcome: 'passed', failed_categories: [] },
+      },
+    };
+  });
 
   return { root, cycleNumber: cycleRecord.cycle_number, mapManager, runArtifacts, stateMachine };
 }
@@ -339,7 +375,7 @@ test('VS3-INT-02: single EXEC failure → Debugger fixes → EXEC passes → com
   try {
     await initProject(root);
     const ctx = await startCycle(root);
-    const execService = new FailNTimesExecService(1, ctx.runArtifacts);
+    const execService = new FailNTimesExecService(1, ctx.runArtifacts, ctx.mapManager);
     const runner = await buildCycleRunner(ctx, execService);
 
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
@@ -367,7 +403,7 @@ test('VS3-INT-03: two EXEC failures → Debugger called twice → EXEC passes �
   try {
     await initProject(root);
     const ctx = await startCycle(root);
-    const execService = new FailNTimesExecService(2, ctx.runArtifacts);
+    const execService = new FailNTimesExecService(2, ctx.runArtifacts, ctx.mapManager);
     const runner = await buildCycleRunner(ctx, execService);
 
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
@@ -388,7 +424,7 @@ test('VS3-INT-04: EXEC fails 4 times → MAX_DEBUG_ATTEMPTS exhausted → cycle 
     await initProject(root);
     const ctx = await startCycle(root);
     // Fail more than MAX_DEBUG_ATTEMPTS times so the cycle can never recover
-    const execService = new FailNTimesExecService(MAX_DEBUG_ATTEMPTS + 1, ctx.runArtifacts);
+    const execService = new FailNTimesExecService(MAX_DEBUG_ATTEMPTS + 1, ctx.runArtifacts, ctx.mapManager);
     const runner = await buildCycleRunner(ctx, execService);
 
     const result = await runner.run({ onConfirmGate: async () => 'approve' });
