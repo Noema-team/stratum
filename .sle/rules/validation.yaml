@@ -1,0 +1,79 @@
+static_analysis:
+  lint:
+    command: npx eslint src/ --format json
+    enabled: true
+    pass_criteria:
+      max_errors: 0
+      max_warnings: 50
+  typecheck:
+    command: npx tsc --noEmit
+    enabled: true
+    pass_criteria:
+      max_errors: 0
+  complexity:
+    command: npx complexity-report --format json --threshold 15 src/
+    enabled: true
+    pass_criteria:
+      max_complexity: 15
+container:
+  base_image: node:20-slim
+  install_command: npm install
+  timeout_ms: 120000
+categories:
+  - name: correctness
+    method: both
+    executable:
+      runner: scripts/test_correctness.ts
+      timeout_ms: 30000
+      output_format: json
+    llm:
+      artifact_slice:
+        - doc:requirements
+        - doc:src
+      prompt_template: .sle/prompts/correctness_check.md
+      pass_threshold: 0.85
+    pass_criteria:
+      executable: all_pass
+      llm: verdict_pass
+    on_fail:
+      feed_to: planner
+      include:
+        - failed_tests
+        - llm_issues
+  - name: performance
+    method: both
+    executable:
+      runner: scripts/bench.ts
+      timeout_ms: 60000
+      output_format: json
+    llm:
+      artifact_slice:
+        - doc:requirements
+        - doc:architecture
+      prompt_template: .sle/prompts/performance_check.md
+      pass_threshold: 0.8
+    pass_criteria:
+      executable:
+        p95_ms: 200
+        error_rate: 0.001
+      llm: verdict_pass
+    on_fail:
+      feed_to: planner
+      include:
+        - metrics
+        - llm_issues
+  - name: security
+    method: llm
+    llm:
+      artifact_slice:
+        - doc:requirements
+        - doc:architecture
+        - doc:src
+      prompt_template: .sle/prompts/security_check.md
+      pass_threshold: 0.9
+    pass_criteria:
+      llm: verdict_pass
+    on_fail:
+      feed_to: planner
+      include:
+        - llm_issues

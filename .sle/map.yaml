@@ -1,0 +1,58 @@
+meta:
+  status: idle
+  cycle: 0
+  version_id: 49f35052-8fa8-41ca-870c-9622a8b96318
+  initialized_at: '2026-05-29T10:14:29.432Z'
+  updated_at: '2026-05-29T10:14:29.432Z'
+project:
+  name: stratum
+  description: Initialized stratum project
+  type: api
+remotes:
+  code:
+    type: git
+    url: git@github.com:Noema-team/stratum.git
+    branch: feat/chat-session-and-persistence
+  issues:
+    type: git
+    url: git@github.com:Noema-team/stratum.git
+    branch: feat/chat-session-and-persistence
+  docs:
+    url: git@github.com:Noema-team/stratum.git
+    pending: true
+task_store:
+  type: local
+agents: {}
+discovery:
+  status: not_started
+  mode: full
+  artifacts: []
+  current_round: 0
+  total_rounds: 4
+  current_phase: 0
+  total_phases: 0
+  open_questions_count: 0
+  blocking_questions_count: 0
+cycle:
+  number: 0
+  iteration: 0
+  revision: 0
+  max_iterations: 5
+  planning_depth: standard
+  started_at: '2026-05-29T10:14:29.432Z'
+  outcome: cycling
+  approval_gate: null
+  awaiting_scoping: false
+  awaiting_confirmation: false
+  awaiting_sharding_approval: false
+chat:
+  session_open: false
+  total_exchanges: 0
+  pending_decisions: 0
+artifacts: []
+validation:
+  categories: []
+  gate:
+    mode: all_must_pass
+    last_outcome: halted
+    failed_categories: []
