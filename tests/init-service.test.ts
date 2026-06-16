@@ -230,6 +230,72 @@ async function testInitGeneratesValidRulesAndPrompts() {
   await fs.rm(tmpDir, { recursive: true, force: true });
 }
 
+async function testInitRejectsNoOriginRemote() {
+  // Simulate an existing repo (git_init: false) with no origin remote
+  const { execSync } = await import('node:child_process');
+  const tmpDir = makeTempDir();
+  // Set up a real git repo but without any remote
+  execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+  execSync('git commit --allow-empty -m "initial" --author="Test <t@t.com>"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_COMMITTER_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@t.com', GIT_COMMITTER_EMAIL: 't@t.com' } });
+
+  const service = new InitService({ projectRoot: tmpDir });
+  const req = makeDefaultRequest(tmpDir);
+  req.git_init = false; // Don't re-init, treat existing repo
+
+  const result = await service.init(req);
+
+  // Should fail at step 0 with origin error
+  assert.ok((result as APIResponse<InitResponseData>).ok === true, 'result is ok (partial)');  
+  assert.strictEqual((result as APIResponse<InitResponseData>).data.status, 'partial');
+  assert.ok(
+    (result as APIResponse<InitResponseData>).data.message.toLowerCase().includes('origin'),
+    'error should mention origin remote'
+  );
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+}
+
+async function testInitBranchIsDetectedFromGit() {
+  const { execSync } = await import('node:child_process');
+
+  // Create a bare "remote" repo to satisfy the origin check in step 0
+  const remoteDir = makeTempDir();
+  execSync('git init --bare', { cwd: remoteDir, stdio: 'ignore' });
+
+  // Create the project repo on a custom branch with a commit + origin pointing to remote
+  const tmpDir = makeTempDir();
+  execSync('git init -b staging', { cwd: tmpDir, stdio: 'ignore' });
+  execSync('git commit --allow-empty -m "init" --author="Test <t@t.com>"', {
+    cwd: tmpDir,
+    stdio: 'ignore',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_COMMITTER_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@t.com', GIT_COMMITTER_EMAIL: 't@t.com' },
+  });
+  execSync(`git remote add origin file://${remoteDir}`, { cwd: tmpDir, stdio: 'ignore' });
+
+  const service = new InitService({ projectRoot: tmpDir });
+  const req = makeDefaultRequest(tmpDir);
+  req.git_init = false; // repo already exists
+  const result = await service.init(req);
+
+  assert.strictEqual((result as APIResponse<InitResponseData>).data.status, 'complete', `Init should complete. Got: ${(result as any)?.data?.message}`);
+
+  // Check map.yaml for the correct branch name
+  const { load: parseYAML } = await import('js-yaml');
+  const mapContent = await fs.readFile(join(tmpDir, '.sle', 'map.yaml'), 'utf-8');
+  const map = parseYAML(mapContent) as any;
+
+  assert.strictEqual(
+    map.remotes?.code?.branch,
+    'staging',
+    `Expected branch 'staging', got '${map.remotes?.code?.branch}'`
+  );
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.rm(remoteDir, { recursive: true, force: true });
+}
+
+
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -243,6 +309,8 @@ async function runAllTests() {
     { name: 'Init generates agent.md with map reference', fn: testInitGeneratesAgentMd },
     { name: 'Init installs facilitator prompt templates', fn: testInitInstallsPromptTemplates },
     { name: 'Init generates valid populated YAML rules and agent prompts', fn: testInitGeneratesValidRulesAndPrompts },
+    { name: 'Init rejects existing repo with no origin remote', fn: testInitRejectsNoOriginRemote },
+    { name: 'Init detects actual branch from git (not hardcoded main)', fn: testInitBranchIsDetectedFromGit },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];

@@ -365,6 +365,7 @@ export class InitService {
     }
 
     let inGit = false;
+    let freshlyInited = false;
     try {
       execSync('git rev-parse --is-inside-work-tree', {
         cwd: this.projectRoot,
@@ -377,11 +378,24 @@ export class InitService {
       if (request.git_init) {
         try {
           execSync('git init', { cwd: this.projectRoot, stdio: 'ignore' });
+          freshlyInited = true;
         } catch (err) {
           throw new Error(`Failed to initialize Git repository: ${(err as Error).message}`);
         }
       } else {
         throw new Error('Not inside a Git repository. Please check the "Initialize Git repository" option or initialize git in the folder manually.');
+      }
+    }
+
+    // Check for origin remote — skip if we just ran git init (no remote exists yet)
+    if (!freshlyInited) {
+      try {
+        execSync('git remote get-url origin', { cwd: this.projectRoot, stdio: 'ignore' });
+      } catch {
+        throw new Error(
+          'No git remote named "origin" found. Add one with: git remote add origin <url>\n' +
+          'Or run stratum init again with "Initialize Git repository" to start fresh.'
+        );
       }
     }
 
@@ -407,11 +421,21 @@ export class InitService {
         stdio: ['ignore', 'pipe', 'ignore'],
       }).toString().trim();
       state.remotes.code.url = originUrl;
-      state.remotes.code.branch = 'main';
     } catch {
       state.remotes.code.url = 'https://github.com/placeholder/project.git';
-      state.remotes.code.branch = 'main';
     }
+
+    // Read actual current branch instead of assuming 'main'
+    let branch = 'main';
+    try {
+      const detected = execSync('git branch --show-current', {
+        cwd: this.projectRoot,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
+      if (detected) branch = detected;
+    } catch {}
+    state.remotes.code.branch = branch;
+
     state.remotes.docs.url = request.docs_remote || '';
     state.remotes.docs.pending = !request.docs_remote;
     return { files: [] };
@@ -571,6 +595,19 @@ export class InitService {
         stdio: 'ignore'
       });
     } catch {}
+
+    // Attempt push — non-fatal, local state is valid without it
+    try {
+      execSync('git push origin HEAD', {
+        cwd: this.projectRoot,
+        stdio: 'ignore',
+        timeout: 15000,
+      });
+    } catch {
+      // E106 init_push_failure — warning only, not an error
+      console.warn('[stratum] Warning: git push failed. Local init state is valid. Push manually when ready.');
+    }
+
     return { files: [] };
   }
 
