@@ -647,7 +647,7 @@ async function renderSettings(mount) {
     const PROVIDER_MODELS = {
       'openai_compatible': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
       'anthropic': ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-20240229'],
-      'glm': ['glm-4', 'glm-4-flash', 'glm-4.1v-thinking', 'glm-4-long', 'glm-4-airx'],
+      'glm': ['glm-5', 'glm-z1-rumination', 'glm-4', 'glm-4-flash', 'glm-4.1v-thinking', 'glm-4-long', 'glm-4-airx'],
       'openrouter': ['google/gemini-2.5-pro', 'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3-70b-instruct']
     };
 
