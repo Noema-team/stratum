@@ -1,28 +1,35 @@
 meta:
   status: idle
   cycle: 0
-  version_id: 49f35052-8fa8-41ca-870c-9622a8b96318
-  initialized_at: '2026-05-29T10:14:29.432Z'
-  updated_at: '2026-05-29T10:14:29.432Z'
+  version_id: 78977f8e-69ec-44fa-a91f-6d82ca02a004
+  initialized_at: '2026-06-16T16:08:39.108Z'
+  updated_at: '2026-06-16T16:08:39.108Z'
 project:
-  name: stratum
-  description: Initialized stratum project
+  name: test-project
+  description: Initialized test-project project
   type: api
 remotes:
   code:
     type: git
-    url: git@github.com:Noema-team/stratum.git
-    branch: feat/chat-session-and-persistence
+    url: https://github.com/test/test.git
+    branch: main
   issues:
     type: git
-    url: git@github.com:Noema-team/stratum.git
-    branch: feat/chat-session-and-persistence
+    url: https://github.com/test/test/issues
+    branch: main
   docs:
-    url: git@github.com:Noema-team/stratum.git
-    pending: true
+    url: https://docs.test.com
+    pending: false
 task_store:
   type: local
-agents: {}
+agents:
+  facilitator:
+    active: true
+    node: null
+    llm:
+      provider: openai_compatible
+      api_key_env: OPENAI_API_KEY
+      model: gpt-4o
 discovery:
   status: not_started
   mode: full
@@ -39,7 +46,7 @@ cycle:
   revision: 0
   max_iterations: 5
   planning_depth: standard
-  started_at: '2026-05-29T10:14:29.432Z'
+  started_at: '2026-06-16T16:08:39.108Z'
   outcome: cycling
   approval_gate: null
   awaiting_scoping: false
