@@ -762,3 +762,20 @@ button, input, textarea {
 .settings-status.error {
   color: var(--status-red);
 }
+
+.settings-url-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.settings-url-hint code {
+  background: var(--surface-2, rgba(255,255,255,0.06));
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10.5px;
+  color: var(--accent-primary, #7c6ef5);
+}

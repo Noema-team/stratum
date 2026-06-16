@@ -208,7 +208,10 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
     case 'glm': {
       const glmConfig: AgentLLMConfig = {
         ...config,
-        base_url: config.base_url || 'https://open.bigmodel.cn/api/paas/v4',
+        // Default to Z.AI international endpoint.
+        // For the Coding Plan use: https://api.z.ai/api/coding/paas/v4
+        // For mainland CN use: https://open.bigmodel.cn/api/paas/v4
+        base_url: config.base_url || 'https://api.z.ai/api/paas/v4',
         model: config.model || 'glm-4',
         api_key_env: config.api_key_env || 'GLM_API_KEY',
       };
