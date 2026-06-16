@@ -6,6 +6,7 @@ import type {
   ContextManagerConfig,
   FailureReport,
   PlanningDepth,
+  SLETask,
 } from './types.js';
 
 export interface CycleStateContext {
@@ -17,6 +18,7 @@ export interface CycleStateContext {
   failure_report?: FailureReport;
   revision_count?: number;
   revision_note?: string;
+  task?: SLETask;
 }
 
 export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred';
@@ -106,7 +108,7 @@ const SLICE_RULES: Record<string, SliceRule> = {
   'doc:cycle-charter': { artifact_id: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
   'doc:research-findings': { artifact_id: 'doc:research-findings', mode: 'full', source_weight: 'user_defined' },
   'doc:cycle-critique': { artifact_id: 'doc:cycle-critique', mode: 'full', never_truncate: true, source_weight: 'cycle_produced' },
-  'doc:critique-report': { artifact_id: 'doc:critique-report', mode: 'full', source_weight: 'project' },
+  'doc:critique-report': { artifact_id: 'doc:critique-report', mode: 'full', source_weight: 'inferred' },
 };
 
 function getSliceRule(ref: string): SliceRule {
@@ -118,17 +120,25 @@ function getSliceRule(ref: string): SliceRule {
   };
 }
 
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
 function resolveArtifactPath(ref: string): string {
-  if (ref.startsWith('doc:')) {
-    const key = ref.substring(4);
+  const [baseRef] = ref.split('#');
+  if (baseRef.startsWith('doc:')) {
+    const key = baseRef.substring(4);
     return `docs/${key}.md`;
-  } else if (ref.startsWith('node:')) {
-    const parts = ref.substring(5).split(':');
+  } else if (baseRef.startsWith('node:')) {
+    const parts = baseRef.substring(5).split(':');
     const group = parts[0];
     const key = parts[1];
     return `docs/${group}/${key}.md`;
   }
-  return ref;
+  return baseRef;
 }
 
 // ─── ContextManager ───────────────────────────────────────────────────────────
@@ -266,11 +276,21 @@ export class ContextManager {
       availableArtifactBudget = 500;
     }
 
-    const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
-    const refs = paths.map(p => {
-      const base = path.basename(p, '.md');
-      return `doc:${base}`;
-    });
+    let refs: string[] = [];
+    const activeTask = _cycleState.task;
+
+    if (activeTask && activeTask.context_declarations && activeTask.context_declarations.length > 0) {
+      // Declared mode
+      const decl = activeTask.context_declarations[0];
+      refs = decl.slices;
+    } else {
+      // Inferred mode
+      const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
+      refs = paths.map(p => {
+        const base = path.basename(p, '.md');
+        return `doc:${base}`;
+      });
+    }
 
     const loadedSlices: Array<{
       ref: string;
@@ -286,6 +306,25 @@ export class ContextManager {
       const fullPath = path.join(this.projectRoot, relPath);
       let content = await this.safeReadFile(fullPath);
       if (!content) continue;
+
+      // Extract section if anchor exists in reference
+      const [_, anchor] = ref.split('#');
+      if (anchor) {
+        const sections = content.split(/(?=^##\s)/m);
+        const matchedSection = sections.find(sec => {
+          const firstLine = sec.trim().split('\n')[0];
+          const headerMatch = firstLine.match(/^##\s+(.+)$/);
+          if (headerMatch) {
+            return slugify(headerMatch[1].trim()) === anchor;
+          }
+          return false;
+        });
+        if (matchedSection) {
+          content = matchedSection.trim();
+        } else {
+          content = '';
+        }
+      }
 
       const rule = getSliceRule(ref);
 

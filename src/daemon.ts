@@ -263,7 +263,7 @@ export class DaemonServer {
       if (action === 'response') {
         const body = await this.parseBody(req);
         const params = body as { question_id: string; answer: string };
-        const result = await this.deps.discoveryService.submitResponse(
+        const result = await (this.deps.discoveryService as any).submitResponse(
           sessionId,
           round,
           params.question_id,
@@ -293,13 +293,13 @@ export class DaemonServer {
         const result = await this.deps.cycleService.start(parsed.data as any);
         const scopingDraftPath = path.join('.sle', 'scoping-draft.md');
         try {
-          await this.deps.scopingService.generateDraft(
+          await (this.deps.scopingService as any).generateDraft(
             result.cycle_number,
             result.started_at,
             scopingDraftPath
           );
-          const scopingState = await this.deps.scopingService.readScopingState();
-          await this.deps.scopingService.updateScopingState(
+          const scopingState = await (this.deps.scopingService as any).readScopingState();
+          await (this.deps.scopingService as any).updateScopingState(
             result.cycle_number,
             result.started_at,
             scopingState
@@ -777,7 +777,6 @@ export class DaemonServer {
       const linkIndex = new LinkIndexManager(projectRoot);
       await linkIndex.load();
 
-      const originalLen = linkIndex['index'].links.length;
       linkIndex['index'].links = linkIndex['index'].links.filter((l: any) => l.id !== linkIdParam);
       linkIndex['computeBacklinks']();
       await linkIndex.save();

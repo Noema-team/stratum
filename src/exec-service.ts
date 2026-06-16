@@ -14,12 +14,10 @@ import type {
   DispatchPlan,
   DispatchPlanJob,
   Worker,
-  WorkerStatus,
   WorkerPoolConfig,
   ContainerSpec,
   JobResult,
   JobError,
-  JobErrorCode,
   JobDispatchState
 } from './types.js';
 import path from 'path';
@@ -840,19 +838,30 @@ export class ExecServiceReal {
         exit_code: 0,
         timed_out: false,
       } as never);
-      await this.mapManager.update((m) => ({
-        ...m,
-        meta: {
-          ...m.meta,
-          dag: m.meta.dag
-            ? { ...m.meta.dag, exec_result: { exit_code: 0, timed_out: false } }
-            : undefined,
-        },
-      }));
+      await this.mapManager.update((m) => {
+        const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+        if (!completed.includes('EXEC')) {
+          completed.push('EXEC');
+        }
+        return {
+          ...m,
+          meta: {
+            ...m.meta,
+            dag: m.meta.dag
+              ? {
+                  ...m.meta.dag,
+                  current_node: 'VALIDATION_GATE',
+                  completed_nodes: completed,
+                  exec_result: { exit_code: 0, timed_out: false },
+                }
+              : undefined,
+          },
+        };
+      });
       return { next_node: 'VALIDATION_GATE', exit_code: 0, stdout: '', stderr: '', timed_out: false, success: true };
     }
 
-    const timeoutMs = execConfig?.timeout_ms ?? 120_000;
+
 
     await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
       status: 'running',
@@ -959,15 +968,26 @@ export class ExecServiceReal {
 
     const success = staticJob.status === 'completed' && failedCategories.length === 0;
 
-    await this.mapManager.update((m) => ({
-      ...m,
-      meta: {
-        ...m.meta,
-        dag: m.meta.dag
-          ? { ...m.meta.dag, exec_result: { exit_code: success ? 0 : 1, timed_out: staticJob.status === 'timed_out' } }
-          : undefined,
-      },
-    }));
+    await this.mapManager.update((m) => {
+      const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+      if (success && !completed.includes('EXEC')) {
+        completed.push('EXEC');
+      }
+      return {
+        ...m,
+        meta: {
+          ...m.meta,
+          dag: m.meta.dag
+            ? {
+                ...m.meta.dag,
+                current_node: 'VALIDATION_GATE',
+                completed_nodes: completed,
+                exec_result: { exit_code: success ? 0 : 1, timed_out: staticJob.status === 'timed_out' },
+              }
+            : undefined,
+        },
+      };
+    });
 
     if (!success) {
       const failedCats: FailureCategory[] = [];
