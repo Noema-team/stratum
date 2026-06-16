@@ -1287,16 +1287,13 @@ export class DaemonServer {
 
     // ─── Static Asset Serving Fallback ───
     if (method === 'GET' && !pathName.startsWith('/api/')) {
-      const projectRoot = this.config.projectRoot ?? process.cwd();
+      const packageRoot = path.dirname(new URL(import.meta.url).pathname);
+      const publicRoot = path.join(packageRoot, 'public');
       
-      // Determine relative file path
       let relativePath = pathName === '/' ? 'index.html' : pathName.slice(1);
-      
-      // Prevent directory traversal attacks
       relativePath = path.normalize(relativePath).replace(/^(\.\.(\/|\\))+/, '');
       
-      const fullPath = path.join(projectRoot, 'public', relativePath);
-      const publicRoot = path.join(projectRoot, 'public');
+      const fullPath = path.join(publicRoot, relativePath);
       
       if (!fullPath.startsWith(publicRoot)) {
         this.sendError(res, 403, 'forbidden', 'Forbidden');
