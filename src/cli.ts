@@ -20,8 +20,33 @@ import { RuntimeMapManagerImpl } from './runtime-map.js';
 import { StateAPI } from './state-api.js';
 import { StateMachine } from './state-machine.js';
 import { ProjectTypeEnum } from './types.js';
+import { exec } from 'node:child_process';
 
 const projectRoot = process.cwd();
+
+function openBrowser(url: string): void {
+  const platform = process.platform;
+  let cmd = '';
+
+  switch (platform) {
+    case 'darwin':
+      cmd = `open "${url}"`;
+      break;
+    case 'win32':
+      cmd = `start "" "${url}"`;
+      break;
+    default:
+      cmd = `xdg-open "${url}"`;
+      break;
+  }
+
+  exec(cmd, (error) => {
+    if (error) {
+      console.warn(`\n[Warning] Could not open browser automatically: ${error.message}`);
+      console.log(`Please open the UI manually at: ${url}\n`);
+    }
+  });
+}
 
 function showHelp(): void {
   console.log(`
@@ -29,7 +54,7 @@ Usage: stratum <command> [options]
 
 Commands:
   init              Initialize a new SLE project
-  start             Start the daemon server
+  start             Start the daemon server (Default when running 'stratum' with no arguments)
   stop              Stop the daemon server
   status            Show daemon status
   discover          Start a discovery session
@@ -45,6 +70,7 @@ Init options:
 Start options:
   --port <port>             Daemon port (default: 7700)
   --foreground              Run in foreground
+  --no-open                 Don't open the browser automatically
 
 Global options:
   -h, --help                Show this help message
@@ -199,6 +225,10 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   );
 
   console.log(`SLE daemon started on port ${port}`);
+
+  if (cmd.foreground && !cmd.noOpen) {
+    openBrowser(`http://localhost:${port}`);
+  }
 }
 
 async function handleStop(): Promise<void> {
@@ -258,7 +288,13 @@ async function handleDiscover(): Promise<void> {
 async function main(): Promise<void> {
   const args = process.argv;
 
-  if (args.length < 3 || args[2] === '-h' || args[2] === '--help') {
+  if (args.length < 3) {
+    // Default to starting in foreground and opening the browser
+    await handleStart({ command: 'start', foreground: true });
+    return;
+  }
+
+  if (args[2] === '-h' || args[2] === '--help') {
     showHelp();
     process.exit(0);
   }
