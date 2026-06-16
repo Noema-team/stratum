@@ -1,0 +1,31 @@
+{
+  "cycle_id": "test",
+  "cycle_number": 1,
+  "iteration": 1,
+  "planning_depth": "standard",
+  "started_at": "",
+  "outcome": "halted",
+  "nodes": [
+    {
+      "id": "BUILD",
+      "status": "complete",
+      "started_at": "",
+      "completed_at": ""
+    },
+    {
+      "id": "EXEC",
+      "status": "complete",
+      "started_at": "",
+      "completed_at": ""
+    }
+  ],
+  "completed_at": "2026-05-26T16:17:05.448Z",
+  "failed_categories": [],
+  "passed_categories": [
+    "correctness",
+    "performance",
+    "security"
+  ],
+  "static_analysis": "failed",
+  "quick_summary": "Validation failed: static_check passed=false, 0 categories failed"
+}

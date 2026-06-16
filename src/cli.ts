@@ -11,8 +11,9 @@ import { ContextManager } from './context-manager.js';
 import { IntakeService } from './intake-service.js';
 import { ShardingService } from './sharding-service.js';
 import { LinkIndexManager } from './link-index.js';
-import { createLLMProvider, type ILLMProvider } from './llm-provider.js';
+import { createLLMProvider, DynamicLLMProvider, type ILLMProvider } from './llm-provider.js';
 import { RunArtifactManager } from './run-artifacts.js';
+import fs from 'node:fs';
 import { readPidFile, removePidFile, isPidAlive, writePidFile } from './pid-file.js';
 import { parseCLIArgs, type DaemonCommand, type InitCommand, type StartCommand } from './daemon-config.js';
 import { RuntimeMapManagerImpl } from './runtime-map.js';
@@ -131,16 +132,45 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const cycleService = new CycleService(stateMachine, mapManager, runArtifacts);
 
   const contextManager = new ContextManager(projectRoot);
+  const settingsPath = `${projectRoot}/.sle/settings.json`;
+  let initialLLMConfig: any = {
+    provider: 'openai_compatible',
+    base_url: 'https://api.openai.com/v1',
+    model: 'gpt-4o',
+    api_key_env: 'OPENAI_API_KEY',
+  };
+
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const savedSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      if (savedSettings.provider) {
+        initialLLMConfig = {
+          provider: savedSettings.provider,
+          base_url: savedSettings.base_url,
+          model: savedSettings.model,
+          api_key_env: savedSettings.api_key_env || (
+            savedSettings.provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
+            savedSettings.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
+            savedSettings.provider === 'glm' ? 'GLM_API_KEY' :
+            savedSettings.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'
+          )
+        };
+        if (savedSettings.api_key) {
+          process.env.SLE_LLM_API_KEY = savedSettings.api_key;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to parse .sle/settings.json, falling back to default:', err);
+    }
+  }
+
   let llmProvider: ILLMProvider;
   try {
-    llmProvider = createLLMProvider({
-      provider: 'openai_compatible',
-      base_url: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
-      api_key_env: 'OPENAI_API_KEY',
-    });
-  } catch {
-    llmProvider = { complete: () => Promise.reject(new Error('LLM not configured — set OPENAI_API_KEY or SLE_LLM_API_KEY')) };
+    const rawProvider = createLLMProvider(initialLLMConfig);
+    llmProvider = new DynamicLLMProvider(rawProvider);
+  } catch (err) {
+    const fallbackProvider = { complete: () => Promise.reject(new Error('LLM not configured — set OPENAI_API_KEY or SLE_LLM_API_KEY')) };
+    llmProvider = new DynamicLLMProvider(fallbackProvider);
   }
   const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
   const scopingService = new ScopingService(agentRunner, mapManager, projectRoot);
