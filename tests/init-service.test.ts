@@ -20,6 +20,7 @@ function makeDefaultRequest(projectRoot: string): InitRequest {
     daemon_port: 7700,
     docs_remote: null,
     non_interactive: true,
+    git_init: true,
   };
 }
 
@@ -204,6 +205,31 @@ async function testInitInstallsPromptTemplates() {
   await fs.rm(tmpDir, { recursive: true, force: true });
 }
 
+async function testInitGeneratesValidRulesAndPrompts() {
+  const tmpDir = makeTempDir();
+  const service = new InitService({ projectRoot: tmpDir });
+
+  await service.init(makeDefaultRequest(tmpDir));
+
+  // 1. Verify agents.yaml is valid YAML and has 10 roles
+  const agentsPath = join(tmpDir, '.sle', 'rules', 'agents.yaml');
+  const agentsContent = await fs.readFile(agentsPath, 'utf8');
+  assert.ok(agentsContent.length > 0, 'agents.yaml should not be empty');
+  
+  const { load: parseYAML } = await import('js-yaml');
+  const parsedAgents = parseYAML(agentsContent) as any;
+  assert.ok(parsedAgents && typeof parsedAgents === 'object', 'agents.yaml should parse as object');
+  assert.ok(parsedAgents.agents && 'designer' in parsedAgents.agents, 'agents.yaml should contain designer role config');
+  assert.strictEqual(parsedAgents.agents.designer.node, 'design');
+
+  // 2. Verify prompts directory has role prompts with role identity header
+  const designerPromptPath = join(tmpDir, '.sle', 'prompts', 'designer.md');
+  const designerPrompt = await fs.readFile(designerPromptPath, 'utf8');
+  assert.match(designerPrompt, /## Role identity/, 'designer.md should contain role identity header');
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -216,6 +242,7 @@ async function runAllTests() {
     { name: 'Resume skips completed steps', fn: testInitResumeSkipsCompletedSteps },
     { name: 'Init generates agent.md with map reference', fn: testInitGeneratesAgentMd },
     { name: 'Init installs facilitator prompt templates', fn: testInitInstallsPromptTemplates },
+    { name: 'Init generates valid populated YAML rules and agent prompts', fn: testInitGeneratesValidRulesAndPrompts },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
