@@ -1,6 +1,6 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-05-23
+**Updated:** 2026-06-16
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
 ---
@@ -30,26 +30,26 @@
 | 8 | `specs/dag-execution.md` | 📝 | — |
 | 9 | `specs/dag-node-reference.md` | 📝 | — |
 | 10 | `specs/validation.md` | ✅ VS4 | Tri-phase execution, category caching, deterministic gate manifest |
-| 11 | `specs/context-manager.md` | ✅ VS4 | Strict 5-component context assembly under a hard 3,500 token ceiling |
+| 11 | `specs/context-manager.md` | ✅ VS5 | Strict 5-component context assembly under a hard 3,500 token ceiling; declared context mode added in VS5 |
 | 12 | `specs/prompt-templates.md` | 📝 | — |
-| 13 | `specs/conversation.md` | 📝 | — |
-| 14 | `specs/intake-and-sharding.md` | 📝 | — |
+| 13 | `specs/conversation.md` | 🔶 VS5 | Facilitator chat with session persistence, mode switching (chat/scoping/decision), action pattern detection |
+| 14 | `specs/intake-and-sharding.md` | ✅ VS5 | Document intake pipeline, 5-layer coherence gate, task sharding with SHARDING_APPROVAL gate |
 | 15 | `specs/job-dispatch.md` | ✅ VS4 | DockerWorkerPool sandboxed execution with native fallback, 7-step extraction |
 | 16 | `specs/beads-integration.md` | 📝 | — |
 | 17 | `specs/document-linking.md` | ✅ VS4 | Persistent wikilink parser, memory backlink indexing, and query APIs |
 | 18 | `specs/content-modules.md` | 📝 | — |
 | 19 | `specs/knowledge-engine.md` | 📝 | — |
 | 20 | `specs/run-artifacts.md` | 📝 | — |
-| 21 | `specs/ui-shell.md` | 📝 | — |
-| 22 | `specs/tasks-dashboard.md` | 📝 | — |
-| 23 | `specs/project-overview.md` | 📝 | — |
+| 21 | `specs/ui-shell.md` | ✅ VS6 | 3-page SPA (Overview, Chat, Graph), auto-reconnecting WebSocket client, gate overlays |
+| 22 | `specs/tasks-dashboard.md` | 🔶 VS6 | Tasks panel and sharding review panel in Overview page; full task management UI deferred |
+| 23 | `specs/project-overview.md` | 🔶 VS6 | Overview page with 6 panels (Actions Required, Active Jobs, Tasks, Sharding Review, Activity, Documents) |
 | 24 | `specs/backlog-system.md` | 📝 | — |
-| 25 | `specs/user-flow.md` | 📝 | — |
+| 25 | `specs/user-flow.md` | 🔶 VS6 | Core navigation flows, init wizard, and facilitator conversation implemented |
 | 26 | `reference/error-codes.md` | 📝 | — |
 | 27 | `reference/agents-yaml-schema.md` | 📝 | — |
 | 28 | `reference/rule-file-defaults.md` | 📝 | — |
 | 29 | `reference/artifact-registry.md` | 📝 | — |
-| 30 | `reference/websocket-events.md` | 📝 | — |
+| 30 | `reference/websocket-events.md` | 🔶 VS5 | Event bus broadcasting 62+ event types; reference doc not yet written |
 
 ---
 
@@ -82,7 +82,7 @@ Implements a **subset** of 3 source specs:
 | System state | ✅ | `GET /system/state`, `POST /system/state/transition`, `GET /system/flags`, `PATCH /system/flags` |
 | Init | ✅ | `POST /init`, `GET /init/state` |
 | Discovery | ✅ | `POST /discovery/start`, `POST /discovery/round/{n}/response`, `POST /discovery/round/{n}/approve`, `GET /discovery/status` |
-| Cycles | 📝 | 0 of many |
+| Cycles | ✅ | `POST /cycles/start`, `GET /cycles/current`, `GET /cycles/current/dag`, `GET /cycles/current/run`, `POST /cycles/halt`, `POST /cycles/acknowledge-halt`, `POST /cycles/resume`, `GET /cycles/scoping/draft`, `POST /cycles/scoping/response`, `POST /cycles/scoping/approve`, `POST /cycles/current/approve`, `POST /cycles/current/revise`, `POST /cycles/confirm`, `GET /cycles/{id}/validation`, `GET /cycles/{id}/runs/{runId}`, `GET /cycles/{id}/runs/{runId}/files/{path}`, `POST /cycles/{id}/validation/rerun` |
 | Sharding | 📝 | 0 |
 | Tags | 📝 | 0 |
 | Scoping | 📝 | 0 |
@@ -90,16 +90,17 @@ Implements a **subset** of 3 source specs:
 | Artifacts | 📝 | 0 |
 | Map & rules | 📝 | 0 |
 | Reports | 📝 | 0 |
-| Chat | 📝 | 0 |
+| Chat | ✅ | `POST /chat/session/open`, `DELETE /chat/session`, `POST /chat/message` |
 | Context | 📝 | 0 |
 | Tasks | 📝 | 0 |
-| Intake & sharding | 📝 | 0 |
+| Intake & sharding | ✅ | `GET /intake/documents`, `GET /intake/taskstore` |
 | Knowledge engine | 📝 | 0 |
 | Content store | 📝 | 0 |
 | Modules | 📝 | 0 |
-| Document linking | 📝 | 0 |
+| Document linking | ✅ | `GET /links`, `GET /links/backlinks`, `POST /links`, `DELETE /links/{id}`, `POST /links/reindex`, `GET /links/files/{path}` |
+| Settings | ✅ | `GET /settings`, `POST /settings` |
 
-**Total:** 11 of 85 endpoints implemented (~13%)
+**Total:** ~41 of 85 endpoints implemented (~48%)
 
 #### From `specs/init-and-discovery.md`
 
@@ -132,6 +133,77 @@ Implements a **subset** of 3 source specs:
 
 ---
 
+### VS5 — Intake, Critic Agent & WebSocket Events
+
+#### Critic Agent (`src/critic-agent.ts`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| LLM-backed design critique | ✅ | Runs at `deep`/`research` planning depth |
+| Structured `CritiqueResult` output | ✅ | Blocking issues, warnings, suggestions |
+| Revision feedback loop | ✅ | Multi-turn critic/revise cycle |
+
+#### Document Intake Pipeline (`src/intake-service.ts`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Parse `.sle/project-docs/` | ✅ | Sections with token counts |
+| Layer 1 — cross-ref integrity | ✅ | |
+| Layer 2 — terminology consistency | ✅ | |
+| Layer 3 — contradiction detection | ✅ | |
+| Layer 4 — completeness check | ✅ | |
+| Layer 5 — dangling refs | ✅ | |
+| `GET /intake/documents` | ✅ | |
+| `GET /intake/taskstore` | ✅ | |
+
+#### Task Sharding (`src/sharding-service.ts`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Collaborative task decomposition | ✅ | |
+| Layer 2 coherence validation | ✅ | |
+| `SHARDING_APPROVAL` DAG gate | ✅ | Human approval required before tasks are committed |
+| `TaskContextDeclaration` support | ✅ | Declared context slices in context manager |
+
+#### WebSocket Event Bus (`src/event-bus.ts`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Real-time broadcast to UI clients | ✅ | |
+| 62+ event types | ✅ | System, DAG, validation, gates, chat, artifacts, intake/sharding, linking |
+| Auto-reconnect on client side | ✅ | Implemented in UI shell |
+
+#### Chat Service (`src/chat-service.ts`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Session persistence | ✅ | `.sle/chat-history.jsonl` |
+| Mode switching (chat/scoping/decision) | ✅ | |
+| Action pattern detection | ✅ | |
+| `POST /chat/session/open` | ✅ | |
+| `DELETE /chat/session` | ✅ | |
+| `POST /chat/message` | ✅ | |
+
+---
+
+### VS6 — Web Dashboard UI Shell
+
+| Feature | Status | Notes |
+|---|---|---|
+| 3-page SPA (Overview, Chat, Graph) | ✅ | Hash-based routing |
+| Auto-reconnecting WebSocket client | ✅ | |
+| Overview page — 6 panels | ✅ | Actions Required, Active Jobs, Tasks, Sharding Review, Recent Activity, Documents |
+| Chat page — Facilitator conversation | ✅ | Persistent across cycle state; mode switching |
+| Graph page — force-directed artifact graph | ✅ | Color-coded node/edge types from link index |
+| Gate overlay — CONFIRM | ✅ | |
+| Gate overlay — SHARDING_APPROVAL | ✅ | |
+| Gate overlay — Scoping | ✅ | |
+| In-browser project initialization wizard | ✅ | |
+| Settings page | ✅ | LLM provider hot-reloading |
+| `stratum` CLI binary | ✅ | Foreground daemon with browser auto-open |
+
+---
+
 ## Future Phases Outline
 
 | Group / Slice | Covers Phase(s) / Features | Focus | Specs implemented | Approx. endpoints | Status |
@@ -142,5 +214,5 @@ Implements a **subset** of 3 source specs:
 | **VS2 — Working Cycle** | VS2 | Complete cycle: SCOPING to SNAPSHOT | dag-execution.md (core), validation.md (basic), context-manager.md (basic) | — | ✅ |
 | **VS3 — Hardened Execution** | VS3 | Real LLM, multi-turn, subprocess EXEC, Debugger & recovery | prompt-templates.md (caching), conversation.md (multi-turn), run-artifacts.md | — | ✅ |
 | **VS4 — Hardened Infrastructure & APIs** | VS4 | Docker execution, persistent document linking, context token budgeting, and REST endpoints | job-dispatch.md, validation.md, document-linking.md, context-manager.md | 20 | ✅ |
-| **Intake & Knowledge (VS5)** | VS5 (fremtidig) | Intake, sharding, WS events, knowledge engine | intake-and-sharding.md, knowledge-engine.md, websocket-events.md | — | 📝 |
-| **UI Shell Dashboard (VS6)** | VS6 (fremtidig) | Dashboard & user flow | ui-shell.md, tasks-dashboard.md, user-flow.md | — | 📝 |
+| **Intake & Knowledge (VS5)** | VS5 | Intake, sharding, WS events, critic agent, chat service | intake-and-sharding.md, conversation.md, websocket-events.md (partial) | 5 | ✅ |
+| **UI Shell Dashboard (VS6)** | VS6 | Dashboard SPA, Overview/Chat/Graph pages, gate overlays | ui-shell.md, project-overview.md, tasks-dashboard.md (partial), user-flow.md (partial) | 0 new REST | ✅ |
