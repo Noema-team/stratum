@@ -978,6 +978,57 @@ export class DaemonServer {
       return;
     }
 
+    if (pathName === '/api/v2/chat/message' && method === 'POST') {
+      try {
+        const body = await this.parseBody(req) as { message: string };
+        const userMessage = body.message;
+        
+        if (this.eventBus) {
+          // 1. Broadcast user's message
+          await this.eventBus.emit('chat.message', {
+            sender: 'user',
+            text: userMessage,
+            timestamp: new Date().toISOString()
+          });
+
+          // 2. Derive state-grounded Facilitator response
+          let currentState = 'idle';
+          try {
+            const map = await this.loadMap();
+            currentState = map.meta?.status || 'idle';
+          } catch {}
+          
+          let reply = `Got it! I am processing your scoping request regarding "${userMessage}".`;
+          
+          if (currentState === 'idle') {
+            reply = `I am the Facilitator. The system is currently idle. We are fully set to start a new cycle. Just let me know when you want to execute a task proposal!`;
+          } else if (currentState === 'cycling') {
+            reply = `The system is actively executing a cycle right now. We are running containerized validation passes. I'll alert you as soon as confirmation checkpoints are hit!`;
+          }
+
+          // Simulate slight typing latency
+          setTimeout(async () => {
+            if (this.eventBus) {
+              await this.eventBus.emit('chat.message', {
+                sender: 'assistant',
+                text: reply,
+                timestamp: new Date().toISOString()
+              });
+            }
+          }, 800);
+        }
+
+        this.sendResponse(res, {
+          ok: true,
+          data: { status: 'queued' },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        this.sendError(res, 500, 'chat_failed', (err as Error).message);
+      }
+      return;
+    }
+
     const fileIndexMatch = pathName.match(/^\/api\/v2\/links\/files\/(.+)$/);
     if (fileIndexMatch && method === 'GET') {
       const filePathParam = fileIndexMatch[1];
