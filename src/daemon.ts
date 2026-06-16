@@ -287,8 +287,27 @@ export class DaemonServer {
     }
 
     if (pathName === '/api/v2/system/state' && method === 'GET') {
-      const result = await this.deps.stateAPI.getSystemState();
-      this.sendResponse(res, result);
+      try {
+        const result = await this.deps.stateAPI.getSystemState();
+        this.sendResponse(res, result);
+      } catch {
+        this.sendResponse(res, {
+          ok: true,
+          data: {
+            state: 'idle',
+            active_session_id: null,
+            active_cycle_id: null,
+            discovery_status: 'not_started',
+            iteration: 0,
+            revision: 0,
+            awaiting_scoping: false,
+            awaiting_confirmation: false,
+            awaiting_sharding_approval: false,
+            chat: { session_open: false },
+          },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      }
       return;
     }
 
