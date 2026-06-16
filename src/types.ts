@@ -102,17 +102,96 @@ export const OpenQuestionBlockingSchema = z.union([
 // 2 — System State
 // ============================================================================
 
-export interface ChatState {
+export interface ChatSession {
   session_open: boolean;
   session_id?: string;
   started_at?: string;
+  last_active_at?: string;
+  total_exchanges: number;
+  pending_decisions: number;
+  last_consumed_by_cycle?: number;
 }
 
-export const ChatStateSchema = z.object({
+export const ChatSessionSchema = z.object({
   session_open: z.boolean(),
   session_id: z.string().optional(),
   started_at: z.string().datetime().optional(),
+  last_active_at: z.string().datetime().optional(),
+  total_exchanges: z.number().nonnegative().default(0),
+  pending_decisions: z.number().nonnegative().default(0),
+  last_consumed_by_cycle: z.number().nonnegative().optional(),
 });
+
+export interface ChatMessage {
+  ts: string;
+  role: 'user' | 'facilitator' | 'system';
+  content: string;
+  sources?: string[];
+  decision_detected?: DecisionCandidate;
+  decision_captured?: boolean;
+}
+
+export const ChatMessageSchema = z.object({
+  ts: z.string().datetime(),
+  role: z.enum(['user', 'facilitator', 'system']),
+  content: z.string(),
+  sources: z.array(z.string()).optional(),
+  decision_detected: z.lazy(() => DecisionCandidateSchema).optional(),
+  decision_captured: z.boolean().optional(),
+});
+
+export interface DecisionCandidate {
+  id: string;
+  summary: string;
+  rationale: string;
+  scope: string;
+  confidence: 'high' | 'medium';
+}
+
+export const DecisionCandidateSchema = z.object({
+  id: z.string(),
+  summary: z.string(),
+  rationale: z.string(),
+  scope: z.string(),
+  confidence: z.enum(['high', 'medium']),
+});
+
+export type FacilitatorMode = 'chat' | 'decision' | 'scoping';
+
+export interface ChatContext {
+  session_id: string;
+  exchanges_consumed: number;
+  summary: string;
+  key_decisions: Array<{
+    summary: string;
+    rationale: string;
+    scope: string;
+  }>;
+  open_questions: string[];
+  preferences: Array<{
+    topic: string;
+    preference: string;
+    confidence: 'strong' | 'mild' | 'mentioned';
+  }>;
+}
+
+export interface ConversationConfig {
+  max_history_exchanges: number;
+  context_window_exchanges: number;
+  session_timeout_minutes: number;
+  auto_summarize_after: number;
+}
+
+export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
+  max_history_exchanges: 100,
+  context_window_exchanges: 20,
+  session_timeout_minutes: 60,
+  auto_summarize_after: 50,
+};
+
+export type ChatSessionAlias = ChatSession;
+
+export const ChatStateSchema = ChatSessionSchema;
 
 export interface CycleFlags {
   awaiting_scoping: boolean;

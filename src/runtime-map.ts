@@ -113,6 +113,10 @@ export interface RuntimeMap {
     session_open: boolean;
     session_id?: string;
     started_at?: string;
+    last_active_at?: string;
+    total_exchanges: number;
+    pending_decisions: number;
+    last_consumed_by_cycle?: number;
   };
   artifacts: Array<{
     path: string;
@@ -491,6 +495,8 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
     },
     chat: {
       session_open: false,
+      total_exchanges: 0,
+      pending_decisions: 0,
     },
     artifacts: [],
     validation: {

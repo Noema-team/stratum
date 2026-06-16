@@ -403,15 +403,27 @@ export function testChatState() {
     session_open: true,
     session_id: 'session-123',
     started_at: '2026-05-08T12:00:00Z',
+    total_exchanges: 5,
+    pending_decisions: 0,
   };
   const result = ChatStateSchema.safeParse(validOpen);
   assert(result.success, 'Valid ChatState should pass');
 
   const validClosed = {
     session_open: false,
+    total_exchanges: 0,
+    pending_decisions: 0,
   };
   const result2 = ChatStateSchema.safeParse(validClosed);
   assert(result2.success, 'ChatState with session_open: false should pass');
+
+  const minimalClosed = {
+    session_open: false,
+  };
+  const result3 = ChatStateSchema.safeParse(minimalClosed);
+  assert(result3.success, 'ChatState with defaults should pass');
+  assert.strictEqual(result3.data.total_exchanges, 0);
+  assert.strictEqual(result3.data.pending_decisions, 0);
 }
 
 export function testCycleFlags() {

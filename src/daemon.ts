@@ -16,6 +16,7 @@ import { LinkIndexManager } from './link-index.js';
 import { LinkSourceSchema, LinkTargetSchema } from './types.js';
 import type { IntakeService } from './intake-service.js';
 import type { ShardingService } from './sharding-service.js';
+import { ChatService } from './chat-service.js';
 import { EventBus } from './event-bus.js';
 import { RuntimeMapManagerImpl, type RuntimeMap } from './runtime-map.js';
 import yaml from 'js-yaml';
@@ -34,6 +35,7 @@ interface DaemonDeps {
   confirmService: ConfirmService;
   intakeService?: IntakeService;
   shardingService?: ShardingService;
+  chatService?: ChatService;
   llmProvider?: any;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
@@ -227,6 +229,20 @@ export class DaemonServer {
     const filePath = path.join(projectRoot, '.sle', 'map.yaml');
     const content = await fs.readFile(filePath, 'utf-8');
     return parseYAML(content);
+  }
+
+  private getChatService(): ChatService {
+    if (this.deps.chatService) return this.deps.chatService;
+    const projectRoot = this.config.projectRoot ?? process.cwd();
+    const mapPath = path.join(projectRoot, '.sle', 'map.yaml');
+    const mapManager = new RuntimeMapManagerImpl({ mapPath });
+    const service = new ChatService(
+      projectRoot,
+      mapManager,
+      this.deps.llmProvider ?? null,
+    );
+    this.deps.chatService = service;
+    return service;
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1126,79 +1142,124 @@ export class DaemonServer {
       return;
     }
 
+    if (pathName === '/api/v2/chat/session/open' && method === 'POST') {
+      try {
+        const chatService = this.getChatService();
+        const result = await chatService.openSession();
+
+        if (!result.resumed) {
+          if (this.eventBus) {
+            await this.eventBus.emit('chat.session_changed', {
+              session_open: true,
+              session_id: result.session_id,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          this.sendResponse(res, {
+            ok: true,
+            data: { session_open: true, session_id: result.session_id },
+            meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+          });
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+      } catch (err) {
+        this.sendError(res, 500, 'session_open_failed', (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathName === '/api/v2/chat/session' && method === 'DELETE') {
+      try {
+        const chatService = this.getChatService();
+        const map = await this.loadMap();
+        const wasOpen = map.chat?.session_open === true;
+
+        await chatService.closeSession();
+
+        if (wasOpen) {
+          if (this.eventBus) {
+            await this.eventBus.emit('chat.session_changed', {
+              session_open: false,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          this.sendResponse(res, {
+            ok: true,
+            data: { session_open: false },
+            meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+          });
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+      } catch (err) {
+        this.sendError(res, 500, 'session_close_failed', (err as Error).message);
+      }
+      return;
+    }
+
     if (pathName === '/api/v2/chat/message' && method === 'POST') {
       try {
-        const body = await this.parseBody(req) as { message: string };
-        const userMessage = body.message;
-        
+        const body = await this.parseBody(req) as { content: string };
+        const content = body.content;
+
+        if (!content || typeof content !== 'string') {
+          this.sendError(res, 422, 'validation_error', 'content is required');
+          return;
+        }
+
+        const chatService = this.getChatService();
+
+        let systemStatus = 'idle';
+        let cycleFlags = {
+          awaiting_scoping: false,
+          awaiting_confirmation: false,
+          awaiting_sharding_approval: false,
+        };
+        try {
+          const map = await this.loadMap();
+          systemStatus = map.meta?.status || 'idle';
+          cycleFlags = {
+            awaiting_scoping: map.cycle?.awaiting_scoping ?? false,
+            awaiting_confirmation: map.cycle?.awaiting_confirmation ?? false,
+            awaiting_sharding_approval: map.cycle?.awaiting_sharding_approval ?? false,
+          };
+        } catch {}
+
+        const result = await chatService.handleMessage(content, systemStatus, cycleFlags);
+
         if (this.eventBus) {
-          // 1. Broadcast user's message
           await this.eventBus.emit('chat.message', {
-            sender: 'user',
-            text: userMessage,
-            timestamp: new Date().toISOString()
+            role: result.userMessage.role,
+            content: result.userMessage.content,
+            timestamp: result.userMessage.ts,
           });
 
-          // 2. Derive Facilitator response (LLM or state-grounded fallback)
-          let currentState = 'idle';
-          let systemState: any = {};
-          try {
-            systemState = await this.loadMap();
-            currentState = systemState.meta?.status || 'idle';
-          } catch {}
-
-          let reply = '';
-          let llmSuccess = false;
-
-          if (this.deps.llmProvider) {
-            try {
-              const response = await this.deps.llmProvider.complete({
-                model: 'gpt-4o',
-                temperature: 0.7,
-                max_tokens: 500,
-                messages: [
-                  { 
-                    role: 'system', 
-                    content: `You are the Facilitator agent in Stratum. Answer the user's conversational message. Ground your answers in the active project context if possible. Current system state: ${JSON.stringify(systemState)}. Mode: chat.` 
-                  },
-                  { role: 'user', content: userMessage }
-                ]
-              });
-              reply = response.content;
-              llmSuccess = true;
-            } catch (err) {
-              // Fallback on LLM completion failure
-            }
-          }
-
-          if (!llmSuccess) {
-            reply = `Got it! I am processing your scoping request regarding "${userMessage}".`;
-            if (currentState === 'idle') {
-              reply = `I am the Facilitator. The system is currently idle. We are fully set to start a new cycle. Just let me know when you want to execute a task proposal!`;
-            } else if (currentState === 'cycling') {
-              reply = `The system is actively executing a cycle right now. We are running containerized validation passes. I'll alert you as soon as confirmation checkpoints are hit!`;
-            }
-          }
-
-          // Simulate slight typing latency
-          setTimeout(async () => {
-            if (this.eventBus) {
-              await this.eventBus.emit('chat.message', {
-                sender: 'assistant',
-                text: reply,
-                timestamp: new Date().toISOString()
-              });
-            }
-          }, 800);
+          await this.eventBus.emit('chat.message', {
+            role: result.facilitatorMessage.role,
+            content: result.facilitatorMessage.content,
+            timestamp: result.facilitatorMessage.ts,
+          });
         }
 
         this.sendResponse(res, {
           ok: true,
-          data: { status: 'queued' },
+          data: {
+            message_id: randomUUID(),
+            role: result.userMessage.role,
+            timestamp: result.userMessage.ts,
+          },
           meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
         });
       } catch (err) {
-        this.sendError(res, 500, 'chat_failed', (err as Error).message);
+        const errMsg = (err as Error).message;
+        if (errMsg === 'chat_not_open') {
+          this.sendError(res, 409, 'chat_not_open', 'Open a chat session first.');
+          return;
+        }
+        this.sendError(res, 500, 'chat_failed', errMsg);
       }
       return;
     }
