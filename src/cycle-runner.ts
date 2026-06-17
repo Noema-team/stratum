@@ -13,6 +13,7 @@ import type { CycleStateContext } from './context-manager.js';
 import type { FailureReport } from './types.js';
 import type { CriticAgent } from './critic-agent.js';
 import type { ShardingService } from './sharding-service.js';
+import type { ScopingService } from './scoping-service.js';
 import yaml from 'js-yaml';
 import type { ShardingProposal } from './types.js';
 
@@ -52,6 +53,7 @@ export interface CycleRunnerDeps {
   projectRoot?: string;
   criticAgent?: CriticAgent;
   shardingService?: ShardingService;
+  scopingService?: ScopingService;
 }
 
 export interface CycleRunnerOptions {
@@ -63,6 +65,10 @@ export interface CycleRunnerOptions {
     cycleNumber: number,
     iteration: number
   ) => Promise<'approve' | 'reject' | 'modify'>;
+  onScopingApproval?: (
+    cycleNumber: number,
+    iteration: number
+  ) => Promise<'approve' | 'halt'>;
 }
 
 // ─── CycleRunner ──────────────────────────────────────────────────────────────
@@ -109,6 +115,34 @@ export class CycleRunner {
       // ── Gate / system nodes ──────────────────────────────────────────────
 
       if (nodeId === 'SCOPING') {
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, awaiting_scoping: true },
+        }));
+        cycleState = { ...cycleState, facilitator_mode: 'scoping' };
+
+        if (this.deps.scopingService) {
+          await this.deps.scopingService.begin(cycleNumber, cycleState.iteration, cycleState);
+        }
+
+        const onScope = options?.onScopingApproval ?? (async () => 'approve' as const);
+        const action = await onScope(cycleNumber, cycleState.iteration);
+
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, awaiting_scoping: false },
+        }));
+
+        if (action === 'halt') {
+          await this.deps.stateMachine.halt('scoping_timeout');
+          return {
+            completed: false,
+            final_node: 'SCOPING',
+            error: 'Scoping timed out or was halted',
+            iterations_used: cycleState.iteration,
+          };
+        }
+
         currentNode = nextNode('SCOPING');
         continue;
       }

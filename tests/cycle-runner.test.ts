@@ -276,6 +276,44 @@ test('CycleRunner: LLM nodes called in correct order', async () => {
   );
 });
 
+test('CycleRunner: SCOPING sets awaiting_scoping=true then clears it on approve', async () => {
+  const mgr = new InMemoryMapManager();
+  const { runner } = makeRunner({ mapManager: mgr });
+  const seenFlags: boolean[] = [];
+
+  await runner.run({
+    onConfirmGate: async () => 'approve',
+    onScopingApproval: async () => {
+      seenFlags.push(mgr.map.cycle.awaiting_scoping);
+      return 'approve';
+    },
+  });
+
+  assert.deepStrictEqual(seenFlags, [true], 'flag should be true while gate is pending');
+  assert.strictEqual(mgr.map.cycle.awaiting_scoping, false, 'flag should be cleared after approval');
+});
+
+test('CycleRunner: SCOPING halt stops the cycle and sets final_node=SCOPING', async () => {
+  const { runner } = makeRunner();
+
+  const result = await runner.run({
+    onConfirmGate: async () => 'approve',
+    onScopingApproval: async () => 'halt',
+  });
+
+  assert.strictEqual(result.completed, false);
+  assert.strictEqual(result.final_node, 'SCOPING');
+  assert.ok(result.error?.includes('Scoping'), `error should mention scoping: ${result.error}`);
+});
+
+test('CycleRunner: SCOPING defaults to approve when no onScopingApproval is given', async () => {
+  const { runner } = makeRunner();
+
+  const result = await runner.run({ onConfirmGate: async () => 'approve' });
+
+  assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
+});
+
 test('CycleRunner: CONFIRM gate is called', async () => {
   const confirmService = new MockConfirmService();
   const { runner } = makeRunner({ confirmService });

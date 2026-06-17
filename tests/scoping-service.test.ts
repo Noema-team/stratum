@@ -248,7 +248,11 @@ async function testSubmitResponseStoresPendingResponse() {
 async function testApproveClearsAwaitingScopingFlag() {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(
+    join(root, 'docs', 'cycle-charter.md'),
+    '# Charter\n\n## Scope\nWidgets.\n\n## Purpose\nShip widgets.',
+    'utf-8'
+  );
 
   const mgr = new InMemoryMapManager();
   mgr.map.cycle.awaiting_scoping = true;
@@ -278,7 +282,11 @@ async function testApproveThrowsWhenNoDraftExists() {
 async function testApproveClearsPendingResponse() {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(
+    join(root, 'docs', 'cycle-charter.md'),
+    '# Charter\n\n## Scope\nWidgets.\n\n## Purpose\nShip widgets.',
+    'utf-8'
+  );
 
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -301,6 +309,9 @@ Build a widget system
 
 ## Scope
 Widgets only — no admin UI in this cycle.
+
+## Purpose
+Ship a working widget CRUD flow.
 
 ## Success criteria
 All widget CRUD operations working.`;
@@ -337,6 +348,65 @@ All widget CRUD operations working.`;
   assert.strictEqual(svc.getPendingResponse(), null);
 }
 
+async function testApproveThrowsWhenCharterMissingSections() {
+  const root = makeTempDir();
+  await fs.mkdir(join(root, 'docs'), { recursive: true });
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter\n\nSome unstructured text.', 'utf-8');
+
+  const mgr = new InMemoryMapManager();
+  const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
+  const svc = new ScopingService(runner, mgr, root);
+
+  await assert.rejects(
+    () => svc.approve(1, 1),
+    /Scope and\/or Purpose/
+  );
+}
+
+async function testProcessResponseIncrementsRoundCount() {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager();
+  const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
+  const svc = new ScopingService(runner, mgr, root);
+
+  assert.strictEqual(svc.getRoundCount(), 0);
+  await svc.processResponse('Round 1 answer', makeCycleState());
+  assert.strictEqual(svc.getRoundCount(), 1);
+  await svc.processResponse('Round 2 answer', makeCycleState());
+  assert.strictEqual(svc.getRoundCount(), 2);
+}
+
+async function testProcessResponseThrowsWhenMaxRoundsExceeded() {
+  const root = makeTempDir();
+  await fs.mkdir(join(root, '.sle', 'rules'), { recursive: true });
+  await fs.writeFile(join(root, '.sle', 'rules', 'planning.yaml'), 'scoping:\n  max_rounds: 2\n', 'utf-8');
+
+  const mgr = new InMemoryMapManager();
+  const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
+  const svc = new ScopingService(runner, mgr, root);
+
+  await svc.processResponse('Round 1', makeCycleState());
+  await svc.processResponse('Round 2', makeCycleState());
+
+  await assert.rejects(
+    () => svc.processResponse('Round 3', makeCycleState()),
+    /max rounds/
+  );
+}
+
+async function testSubmitResponseWithCycleStateRunsFacilitator() {
+  const root = makeTempDir();
+  const mgr = new InMemoryMapManager();
+  const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
+  const svc = new ScopingService(runner, mgr, root);
+
+  await svc.submitResponse('Add auth.', 1, 1, makeCycleState());
+
+  assert.strictEqual(runner.calls.length, 1);
+  assert.strictEqual(runner.calls[0].node, 'SCOPING');
+  assert.strictEqual(runner.calls[0].state.ephemeral?.scoping_response, 'Add auth.');
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 
 async function runAllTests() {
@@ -353,6 +423,10 @@ async function runAllTests() {
     { name: 'approve: clears awaiting_scoping flag', fn: testApproveClearsAwaitingScopingFlag },
     { name: 'approve: throws when no draft exists', fn: testApproveThrowsWhenNoDraftExists },
     { name: 'approve: clears pending response', fn: testApproveClearsPendingResponse },
+    { name: 'approve: throws when charter missing Scope/Purpose sections', fn: testApproveThrowsWhenCharterMissingSections },
+    { name: 'processResponse: increments round count', fn: testProcessResponseIncrementsRoundCount },
+    { name: 'processResponse: throws scoping_timeout when max rounds exceeded', fn: testProcessResponseThrowsWhenMaxRoundsExceeded },
+    { name: 'submitResponse: with cycleState runs facilitator with response in ephemeral context', fn: testSubmitResponseWithCycleStateRunsFacilitator },
     { name: 'full scoping lifecycle: begin → getDraft → response → approve', fn: testFullScopingLifecycle },
   ];
 

@@ -599,21 +599,16 @@ export class DaemonServer {
 
       try {
         const result = await this.deps.cycleService.start(parsed.data as any);
-        const scopingDraftPath = path.join('.sle', 'scoping-draft.md');
         try {
-          await (this.deps.scopingService as any).generateDraft(
-            result.cycle_number,
-            result.started_at,
-            scopingDraftPath
-          );
-          const scopingState = await (this.deps.scopingService as any).readScopingState();
-          await (this.deps.scopingService as any).updateScopingState(
-            result.cycle_number,
-            result.started_at,
-            scopingState
-          );
+          await this.deps.scopingService.begin(result.cycle_number, 1, {
+            cycle_number: result.cycle_number,
+            iteration: 1,
+            planning_depth: result.planning_depth,
+            intent: result.intent,
+            current_node: 'SCOPING',
+          });
         } catch {
-          // scoping failure doesn't abort the start response
+          // scoping draft generation failure doesn't abort the start response
         }
         this.sendResponse(res, {
           ok: true,
@@ -721,12 +716,31 @@ export class DaemonServer {
     if (pathName === '/api/v2/cycles/scoping/response' && method === 'POST') {
       const body = await this.parseBody(req);
       const params = body as { text?: string };
-      await this.deps.scopingService.submitResponse(params.text ?? '');
-      this.sendResponse(res, {
-        ok: true,
-        data: { recorded: true },
-        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
-      });
+      try {
+        const cycle = await this.deps.cycleService.getCurrent();
+        const cycleState = {
+          cycle_number: cycle.cycle_number,
+          iteration: cycle.iteration,
+          planning_depth: cycle.planning_depth,
+          intent: cycle.intent ?? '',
+          current_node: 'SCOPING',
+          facilitator_mode: 'scoping' as const,
+        };
+        await this.deps.scopingService.submitResponse(
+          params.text ?? '',
+          cycle.cycle_number,
+          cycle.iteration,
+          cycleState
+        );
+        this.sendResponse(res, {
+          ok: true,
+          data: { recorded: true },
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 409, error.code ?? 'scoping_response_failed', error.message);
+      }
       return;
     }
 

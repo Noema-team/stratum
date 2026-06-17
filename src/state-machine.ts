@@ -437,7 +437,7 @@ export class StateMachine {
     return this.transition('T4');
   }
 
-  async halt(reason: 'user' | 'cap_exceeded' | 'error'): Promise<TransitionResult> {
+  async halt(reason: 'user' | 'cap_exceeded' | 'error' | 'scoping_timeout'): Promise<TransitionResult> {
     const id: TransitionId =
       reason === 'user' ? 'T5' : reason === 'cap_exceeded' ? 'T6' : 'T7';
     return this.transition(id);

@@ -10,3 +10,5 @@ reasoning_passes:
   research: 4
 critic_enabled: null
 on_depth_change: re_plan
+scoping:
+  max_rounds: 5
