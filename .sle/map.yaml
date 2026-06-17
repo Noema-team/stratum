@@ -1,9 +1,9 @@
 meta:
   status: idle
   cycle: 0
-  version_id: 78977f8e-69ec-44fa-a91f-6d82ca02a004
-  initialized_at: '2026-06-16T16:08:39.108Z'
-  updated_at: '2026-06-16T16:08:39.108Z'
+  version_id: f669f130-847b-4234-8c4e-d5745dbd1b4e
+  initialized_at: '2026-06-17T05:05:01.098Z'
+  updated_at: '2026-06-17T05:05:01.098Z'
 project:
   name: test-project
   description: Initialized test-project project
@@ -46,7 +46,7 @@ cycle:
   revision: 0
   max_iterations: 5
   planning_depth: standard
-  started_at: '2026-06-16T16:08:39.108Z'
+  started_at: '2026-06-17T05:05:01.098Z'
   outcome: cycling
   approval_gate: null
   awaiting_scoping: false
