@@ -17,7 +17,7 @@ architecture is preserved, but no implementation is planned for the initial
 release.
 
 The backlog is distinct from Beads (beads-integration.md). Beads tracks active
-work through a DAG-driven cycle; the backlog captures latent work that has not
+work through a workflow run; the backlog captures latent work that has not
 yet been promoted. The relationship is: **Beads is the engine; backlog is the
 fuel tank.**
 

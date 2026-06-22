@@ -16,7 +16,7 @@ pipeline (defaults → `.sle/rules/agents.yaml` → `.sle/overrides/agents.yaml`
 |---|---|
 | DDR-003 | LLM provider config: `provider`, `base_url`, `model`, `api_key_env` |
 | DDR-019 | Designer owns `requirements.md` + `architecture.md`; Planner owns `test-plan.md` + `plan.md` + `build-plan` (deep/research) |
-| DDR-022 | Critic runs at DESIGN node, reviews architecture + requirements |
+| DDR-022 | Critic runs at DESIGN step, reviews architecture + requirements |
 | DDR-023 | Explorer is user-initiated only; not auto-triggered by `planning.depth` |
 
 ---
@@ -65,7 +65,7 @@ providers:
 agents:
   designer:
     active: true
-    node: design
+    step_id: design
     llm:
       model: gpt-4o
     temperature: 0.3
@@ -83,7 +83,7 @@ agents:
 
   explorer:
     active: false
-    node: explore
+    step_id: explore
     llm:
       model: gpt-4o
     temperature: 0.5
@@ -100,7 +100,7 @@ agents:
 
   planner:
     active: true
-    node: plan
+    step_id: plan
     llm:
       model: gpt-4o
     temperature: 0.3
@@ -119,7 +119,7 @@ agents:
 
   tester:
     active: true
-    node: test
+    step_id: test
     llm:
       model: gpt-4o
     temperature: 0.1
@@ -136,7 +136,7 @@ agents:
 
   builder:
     active: true
-    node: build
+    step_id: build
     llm:
       model: gpt-4o
     temperature: 0.2
@@ -153,7 +153,7 @@ agents:
 
   debugger:
     active: true
-    node: debug
+    step_id: debug
     llm:
       model: gpt-4o
     temperature: 0.2
@@ -170,7 +170,7 @@ agents:
 
   evaluator:
     active: true
-    node: evaluate
+    step_id: evaluate
     llm:
       model: gpt-4o
     temperature: 0.1
@@ -186,7 +186,7 @@ agents:
 
   critic:
     active: true
-    node: critique
+    step_id: critique
     llm:
       model: gpt-4o
     temperature: 0.5
@@ -202,11 +202,11 @@ agents:
       - critique:suggestions
     conditional: true
     condition: depth_deep_or_research
-    trigger_node: design
+    trigger_step_id: design
 
   historian:
     active: true
-    node: history
+    step_id: history
     llm:
       model: gpt-4o
     temperature: 0.1
@@ -221,7 +221,7 @@ agents:
 
   facilitator:
     active: true
-    node: null
+    step_id: null
     session_types:
       - discovery
       - chat
@@ -302,8 +302,8 @@ Per-role configuration. Each key is one of the 10 agent roles.
 
 | Field | Type | Description |
 |---|---|---|
-| `active` | boolean | Whether the role participates in cycles |
-| `node` | string \| null | DAG node where the role executes (null for non-cycle roles) |
+| `active` | boolean | Whether the role participates in workflow runs |
+| `step_id` | string \| null | Step where the role executes (null for roles that don't run within a workflow run) |
 | `llm.provider` | enum? | Provider override (falls back to `defaults.llm.provider`) |
 | `llm.base_url` | string? | Base URL override |
 | `llm.model` | string? | Model override (falls back to `defaults.llm.model`) |
@@ -317,14 +317,14 @@ Per-role configuration. Each key is one of the 10 agent roles.
 | `condition` | string? | Trigger condition (only when `conditional: true`) |
 | `constraints` | string[]? | Behavioral constraints enforced at runtime |
 | `append_only` | boolean? | System only appends to the output artifact, never overwrites |
-| `session_types` | string[]? | Sessions this role operates in (default: cycle) |
-| `trigger_node` | string? | DAG node that triggers this conditional role |
+| `session_types` | string[]? | Sessions this role operates in (default: workflow_run) |
+| `trigger_step_id` | string? | Step that triggers this conditional role |
 
 ---
 
 ### Per-role reference
 
-| Role | Node | Temp | Tokens | Slice in | Outputs | Notes |
+| Role | Step | Temp | Tokens | Slice in | Outputs | Notes |
 |---|---|---|---|---|---|---|
 | **Designer** | `design` | 0.3 | 8000 | requirements, architecture, decisions, evaluation | requirements, architecture | Owns architecture + requirements (DDR-019). Critic reviews output (DDR-022). |
 | **Explorer** | `explore` | 0.5 | 8000 | requirements, evaluation, decisions | research_findings | User-initiated only (DDR-023). Disabled by default. |
@@ -333,7 +333,7 @@ Per-role configuration. Each key is one of the 10 agent roles.
 | **Builder** | `build` | 0.2 | 16000 | requirements, architecture, test-plan | implementation, test scripts | Highest token budget. Test scripts as contract. |
 | **Debugger** | `debug` | 0.2 | 8000 | requirements, test-plan | diagnosis, fix_recommendation | Only on gate failure. Diagnoses only — never plans or builds. |
 | **Evaluator** | `evaluate` | 0.1 | 4000 | requirements, evaluation, test-plan | evaluation | Structured verdict post-execution. |
-| **Critic** | `critique` | 0.5 | 4000 | architecture, requirements, evaluation | verdict, issues, suggestions | At DESIGN node (DDR-022). Only at deep/research depth. |
+| **Critic** | `critique` | 0.5 | 4000 | architecture, requirements, evaluation | verdict, issues, suggestions | At DESIGN step (DDR-022), modeled as a review step. Only at deep/research depth. |
 | **Historian** | `history` | 0.1 | 2000 | decisions | decisions | Append-only. Runs after every agent turn. |
 | **Facilitator** | null | 0.4 | 4000 | requirements, architecture, test-plan, decisions | 8 discovery docs | Discovery + chat only. Never builds. |
 

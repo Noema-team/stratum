@@ -34,3 +34,4 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-028-cycle-scoping-redesign.md](ddr-028-cycle-scoping-redesign.md) | Pre-cycle discussion + guided Phase 1, replaces INTENT/CONTEXT_ASSEMBLY/EXPLORE with SCOPING |
 | [ddr-029-agent-output-contracts.md](ddr-029-agent-output-contracts.md) | Typed AgentOutput discriminated union, BuilderOutput declarative file operations schema, per-role output schemas |
 | [ddr-030-agent-runtime-environment.md](ddr-030-agent-runtime-environment.md) | Agent runner, LLM provider interface, multi-turn read-request mechanism, per-role read permissions, turn budgets |
+| [ddr-031-workflow-generalization.md](ddr-031-workflow-generalization.md) | Cycle → workflow run: 6 generic step kinds, concurrent runs via artifact-level claims, chat-router workflow selection, full-build/draft-artifact built-in presets |

@@ -39,9 +39,9 @@ The governing decisions:
 ### 1. The daemon is the centre
 
 The SDK daemon (`@sle/sdk`, port 7700) is the only component that knows about
-the DAG, rule files, agents, and the artifact store. Everything else — CLI,
-web UI, Obsidian plugin — is a thin client that talks to the daemon over
-REST + WebSocket. No system logic exists outside the daemon.
+workflow definitions, rule files, agents, and the artifact store. Everything
+else — CLI, web UI, Obsidian plugin — is a thin client that talks to the
+daemon over REST + WebSocket. No system logic exists outside the daemon.
 
 ### 2. Layers are strict
 
@@ -52,9 +52,9 @@ logic. Infrastructure (Layer 1) provides storage and messaging, nothing more.
 
 ### 3. Rules as config, not code
 
-All system behaviour is governed by seven YAML files. Agents, the DAG runner,
-and the context manager read these files at runtime. Changing how the system
-behaves means changing a rule file, not editing application code.
+All system behaviour is governed by seven YAML files. Agents, the workflow
+runner, and the context manager read these files at runtime. Changing how
+the system behaves means changing a rule file, not editing application code.
 
 ### 4. Provider interfaces for optional capabilities
 
@@ -88,11 +88,11 @@ operates exactly as if the capability never existed.
 │  │  SDK daemon  (@sle/sdk)                                        │    │
 │  │                                                                 │    │
 │  │  ┌──────────────┐ ┌──────────────┐ ┌────────────────────────┐  │    │
-│  │  │ DAG runner   │ │ Rule loader  │ │ Context manager        │  │    │
-│  │  │              │ │              │ │                        │  │    │
-│  │  │ Cycle state  │ │ 7 YAML files │ │ Artifact slice assembly│  │    │
+│  │  │ Workflow     │ │ Rule loader  │ │ Context manager        │  │    │
+│  │  │ runner       │ │              │ │                        │  │    │
+│  │  │ Run state    │ │ 7 YAML files │ │ Artifact slice assembly│  │    │
 │  │  │ Iteration    │ │ → Runtime-   │ │ Token budget mgmt      │  │    │
-│  │  │ Node dispatch│ │   Config     │ │ Failure context        │  │    │
+│  │  │ Step dispatch│ │   Config     │ │ Failure context        │  │    │
 │  │  └──────────────┘ └──────────────┘ └────────────────────────┘  │    │
 │  │                                                                 │    │
 │  │  ┌──────────────────────────────────────────────────────────┐   │    │
@@ -134,7 +134,7 @@ operates exactly as if the capability never existed.
 │  │  PostgreSQL   │  │  Redis     │  │  MinIO       │                   │
 │  │               │  │            │  │              │                   │
 │  │ sle_* tables  │  │ pub/sub    │  │ artifact     │                   │
-│  │ cycle/task    │  │ approval   │  │ snapshots    │                   │
+│  │ run/task      │  │ approval   │  │ snapshots    │                   │
 │  │ metadata      │  │ gates      │  │ reports      │                   │
 │  │ pgvector ext  │  │ event      │  │ docs remote  │                   │
 │  │               │  │ streaming  │  │ contents     │                   │
@@ -148,7 +148,7 @@ operates exactly as if the capability never existed.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data flow through a cycle
+### Data flow through a workflow run
 
 ```
                     ┌─────────┐
@@ -173,8 +173,9 @@ operates exactly as if the capability never existed.
          │     loads artifact slices    │
          │     per-role token budgets   │
          │                              │
-         │  3. DAG runner dispatches    │
-         │     nodes in sequence:       │
+         │  3. Workflow runner          │
+         │     dispatches steps in     │
+         │     sequence (full-build):   │
          │                              │
          │     DESIGN ──► PLAN ──► TEST ──► CONFIRM ──► BUILD ──► EXEC
          │        │                                            │
@@ -201,7 +202,7 @@ operates exactly as if the capability never existed.
                    │
                    ▼
          ┌────────────────┐
-         │  PostgreSQL    │   Layer 1 — cycle metadata, iteration history
+         │  PostgreSQL    │   Layer 1 — run metadata, iteration history
          │  Redis         │   Layer 1 — event stream, approval signals
          │  MinIO         │   Layer 1 — versioned artifact snapshots
          └────────────────┘
@@ -213,27 +214,27 @@ operates exactly as if the capability never existed.
 
 SLE uses distinct agent roles. Each role receives a specific artifact slice
 from the context manager — it never sees the full artifact store. Roles are
-configured in `agents.yaml` and dispatched by the DAG runner.
+configured in `agents.yaml` and dispatched by the workflow runner.
 
-| Role | DAG node | Reads | Writes | Conditional? |
+| Role | Step (full-build) | Reads | Writes | Conditional? |
 |---|---|---|---|---|
-| **Designer** | `DESIGN` | requirements, architecture, decisions, evaluation | `requirements.md`, `architecture.md` | No |
-| **Explorer** | triggered by `SCOPING` | requirements, evaluation, decisions | research findings | Yes — conditional, daemon heuristic |
-| **Planner** | `PLAN` | requirements, architecture, decisions, evaluation | `test-plan.md`, `plan.md` | No |
-| **Tester** | `TEST` | requirements, test-plan | executable test scripts | No |
-| **Builder** | `BUILD` | requirements, architecture, test-plan | implementation, instrumented test scripts | No |
-| **Debugger** | `DEBUG` | run artifacts, failed category slices | diagnosis, fix recommendation | Yes — gate failure only |
-| **Evaluator** | `EVALUATE` | requirements, evaluation, test-plan | structured verdict | No |
+| **Designer** | `DESIGN` (produce) | requirements, architecture, decisions, evaluation | `requirements.md`, `architecture.md` | No |
+| **Explorer** | triggered by `SCOPING`'s gather step | requirements, evaluation, decisions | research findings | Yes — conditional, daemon heuristic |
+| **Planner** | `PLAN` (produce) | requirements, architecture, decisions, evaluation | `test-plan.md`, `plan.md` | No |
+| **Tester** | `TEST` (produce) | requirements, test-plan | executable test scripts | No |
+| **Builder** | `BUILD` (produce) | requirements, architecture, test-plan | implementation, instrumented test scripts | No |
+| **Debugger** | `VALIDATION_GATE`'s `on_fail` produce step | run artifacts, failed category slices | diagnosis, fix recommendation | Yes — gate failure only |
+| **Evaluator** | `EVALUATE` (produce) | requirements, evaluation, test-plan | structured verdict | No |
 | **Critic** | triggered at `DESIGN` | architecture, requirements, evaluation | verdict, issues, suggestions | Yes — deep/research depth |
-| **Historian** | `HISTORY` | decisions (full, append target) | audit entry appended to `decisions.md` | No |
-| **Facilitator** | null (session-based) | project context, cycle context | discovery docs, captured decisions | No |
+| **Historian** | `SNAPSHOT`'s `logs_decision: true` commit | decisions (full, append target) | audit entry appended to `decisions.md` | No |
+| **Facilitator** | null (session-based) | project context, run context | discovery docs, captured decisions | No |
 
 **Conditional roles** only activate under specific conditions:
 
 - **Explorer** — user explicitly requests research; disabled by default
 - **Debugger** — only when the validation gate produces a failure report
 - **Critic** — only at `deep` or `research` planning depth; runs at the
-  `DESIGN` node, reviewing Designer output before it reaches the Planner
+  `DESIGN` step, reviewing Designer output before it reaches the Planner
 
 **TDD separation:** The Tester never sees Builder output. Test scripts are
 written against the plan and requirements, not the implementation. The Builder
@@ -250,7 +251,7 @@ All system behaviour is governed by seven YAML files in `.sle/rules/`:
 | `planning.yaml` | Reasoning depth, iteration cap, slice sizes | `depth`, `max_iterations`, `artifact_slice_size`, `reasoning_passes` |
 | `validation.yaml` | Validation categories, methods, pass criteria | `categories[]` with `method`, `executable`, `llm`, `pass_criteria`, `on_fail` |
 | `artifacts.yaml` | Which documents to generate, format, required flag | `artifacts[]`, `generated_outputs[]` |
-| `exit.yaml` | Cycle exit conditions, cap behaviour, halt policy | `conditions`, `on_cap_hit`, `halt_behavior`, `on_error` |
+| `exit.yaml` | Workflow-run exit conditions, cap behaviour, halt policy | `conditions`, `on_cap_hit`, `halt_behavior`, `on_error` |
 | `user_validation.yaml` | When to pause for human approval | `approval_required`, `review_at`, `timeout_minutes`, `on_timeout` |
 | `summary.yaml` | User-facing summary format and sections | `format`, `sections`, `test_command_format` |
 | `agents.yaml` | Agent roles, system prompts, LLM provider config | `defaults`, `providers`, 10 role entries |
@@ -363,23 +364,23 @@ behavioural difference.
 The daemon exposes two protocols:
 
 **REST (port 7700):**
-- `POST /api/cycle/start` — begin a cycle with intent and depth
-- `GET /api/cycle/status` — current cycle state, DAG position, iteration
-- `POST /api/cycle/approve` — approve at an approval gate
-- `POST /api/cycle/halt` — halt the running cycle
+- `POST /api/v2/workflow-runs` — begin a workflow run with target and depth
+- `GET /api/v2/workflow-runs/:id` — current run state, step position, iteration
+- `POST /api/v2/workflow-runs/:id/approve` — approve at a checkpoint
+- `POST /api/v2/workflow-runs/:id/halt` — halt the running workflow run
 - `GET /api/config` — current merged `RuntimeConfig`
 - `GET /api/artifacts` — artifact registry with dirty flags
 
 **WebSocket (port 7700):**
-- `cycle:started` — cycle begins
-- `node:entered` / `node:exited` — DAG node transitions
+- `workflow_run.started` — run begins
+- `step.started` / `step.completed` — workflow step transitions
 - `agent:invoked` / `agent:completed` — agent lifecycle events
-- `validation:category_result` — individual category pass/fail
-- `gate:result` — gate outcome
-- `cycle:summary` — user-facing summary ready
-- `approval:needed` — pause for human review
+- `validation.category.completed` — individual category pass/fail
+- `gate.result` — gate outcome
+- `workflow_run.completed` — user-facing summary ready
+- `approval.required` — pause for human review
 
-All events carry the cycle ID and timestamp. Clients subscribe to a cycle's
+All events carry the run ID and timestamp. Clients subscribe to a run's
 event stream and render progress in real time.
 
 ---
@@ -435,8 +436,8 @@ All script execution goes through the AI Executor (Layer 2). The daemon
 submits jobs, receives exit codes and logs. It never runs `docker` commands.
 
 **2. Daemon never owns schemas it does not control.**
-Cycle metadata goes in `sle_*` tables in the shared PostgreSQL instance.
-The daemon does not create its own sidecar database.
+Workflow-run metadata goes in `sle_*` tables in the shared PostgreSQL
+instance. The daemon does not create its own sidecar database.
 
 **3. Clients contain zero business logic.**
 CLI, web UI, and Obsidian plugin are thin wrappers over REST + WebSocket.
@@ -479,19 +480,19 @@ Every agent session starts by reading two files in order:
 
 ```
 1. agent.md   → intent, conventions, constraints (human-authored, never touched by system)
-2. map.yaml   → current system state (auto-generated after every cycle, never touched by human)
+2. map.yaml   → current system state (auto-generated after every workflow step, never touched by human)
 ```
 
 Together they answer every question an agent needs: what the project is, what
-the current cycle state is, where everything lives, which rules are active,
-and which tasks are available.
+the active workflow runs' state is, where everything lives, which rules are
+active, and which tasks are available.
 
 ---
 
 ### Planning depth and quality tradeoff
 
 Planning depth is the primary knob for trading speed against quality. Set in
-`planning.yaml`, overridable per-cycle.
+`planning.yaml`, overridable per workflow run.
 
 | Depth | Reasoning passes | Critic active | Artifact slice size | Use case |
 |---|---|---|---|---|
@@ -502,7 +503,7 @@ Planning depth is the primary knob for trading speed against quality. Set in
 
 Deeper passes get larger context windows (`artifact_slice_size` in tokens).
 The Critic only runs at `deep` and `research` depth, triggered at the
-`DESIGN` node.
+`DESIGN` step.
 
 ---
 
@@ -513,7 +514,7 @@ The Critic only runs at `deep` and `research` depth, triggered at the
 | Platform service | How SLE uses it |
 |---|---|
 | AI Executor | Submits generated test scripts as jobs. Executor does not know about SLE. |
-| PostgreSQL | New `sle_*` tables on the shared instance. Cycle metadata, iteration history. |
+| PostgreSQL | New `sle_*` tables on the shared instance. Workflow-run metadata, iteration history. |
 | Redis | pub/sub for daemon ↔ client event streaming and approval gate signals. |
 | MinIO | Versioned artifact snapshots, reports, docs remote contents. |
 | Docker network | Daemon joins `ai-network`, reaches services by name. |
@@ -522,8 +523,8 @@ The Critic only runs at `deep` and `research` depth, triggered at the
 
 | Component | Layer | Notes |
 |---|---|---|
-| SDK daemon container | 3 | Fastify server + DAG engine alongside BMAD |
-| `packages/sle/` | 3 | TypeScript implementation: types, config, DAG, agents |
+| SDK daemon container | 3 | Fastify server + workflow engine alongside BMAD |
+| `packages/sle/` | 3 | TypeScript implementation: types, config, workflow runner, agents |
 | `.sle/rules/` | 3 | Per-project YAML rule files |
 | `.sle/tasks.yaml` | 3 | Local task store fallback (DDR-024) |
 | Beads/Dolt remote | — | Issue tracking, agent memory — not a platform service |
@@ -537,7 +538,7 @@ The Critic only runs at `deep` and `research` depth, triggered at the
 | Document | What it covers |
 |---|---|
 | [what-is-sle.md](what-is-sle.md) | Core concept, principles, intent-to-validated flow |
-| [cycle-model.md](cycle-model.md) | Conceptual walkthrough of a single cycle |
+| [workflow-model.md](workflow-model.md) | Conceptual walkthrough of a single workflow run |
 | [agent-roles.md](agent-roles.md) | All 10 roles, artifact ownership, conditional activation |
 | [glossary.md](glossary.md) | Terms and definitions |
 | [../reference/types.md](../reference/types.md) | Authoritative TypeScript types |

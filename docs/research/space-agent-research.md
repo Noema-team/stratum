@@ -337,4 +337,4 @@ This creates a **project-specific institutional memory** that improves with ever
 | [hermes-agent-architecture.md](hermes-agent-architecture.md) | Hermes skill system (alternative approach to prompt includes) |
 | [../overview/what-is-sle.md](../overview/what-is-sle.md) | SLE core concepts |
 | [../overview/agent-roles.md](../overview/agent-roles.md) | All 10 agent roles with artifact ownership |
-| [../overview/cycle-model.md](../overview/cycle-model.md) | DAG execution model |
+| [../overview/workflow-model.md](../overview/workflow-model.md) | Workflow-run execution model |

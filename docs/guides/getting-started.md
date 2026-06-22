@@ -1,11 +1,11 @@
 # Getting Started
 
 **Type:** guide · **Updated:** 2026-05-02
-**Source:** SLE-009 (daemon interfaces), specs/init-and-discovery, specs/dag-execution
+**Source:** SLE-009 (daemon interfaces), specs/init-and-discovery, specs/workflow-execution
 
 This guide walks you through installing SLE, initializing a project, running
-discovery, and completing your first development cycle. By the end you will
-understand the core workflow: `sle init` → `sle discover` → (discuss scope with Facilitator) → `sle start`.
+discovery, and completing your first workflow run. By the end you will
+understand the core workflow: `sle init` → `sle discover` → (discuss scope with Facilitator) → `sle run`.
 
 ---
 
@@ -27,7 +27,7 @@ Optional but recommended:
 
 - **Dolt** — if you plan to use the Beads task store for cross-device issue
   tracking, install the `dolt` CLI and authenticate with DoltHub.
-- **Docker** — the EXEC node runs validation scripts inside containers. Without
+- **Docker** — the EXEC step runs validation scripts inside containers. Without
   Docker, EXEC falls back to local script execution.
 
 > The daemon binds to `localhost` only on port 7700. There is no
@@ -51,7 +51,7 @@ sle --version
 # 0.1.0
 ```
 
-The `sle` binary provides all user-facing commands: `init`, `discover`, `start`,
+The `sle` binary provides all user-facing commands: `init`, `discover`, `run`,
 `status`, `halt`, `resume`, `chat`, and `daemon`. Additional subcommands are
 covered in their respective guides.
 
@@ -119,7 +119,8 @@ These are plain YAML files that you can edit after init. SLE never overwrites
 them. The `agents.yaml` file configures all ten agent roles with sensible
 defaults — for instance, Explorer is disabled by default and Critic only
 activates for deep/research planning depth (init-and-discovery.md §agents.yaml
-defaults).
+defaults). Each role's `step_id` maps it to a step in the `full-build`
+workflow (see [step-kind-reference.md](../specs/step-kind-reference.md)).
 
 **Step 5 — Task store initialization.** For `local`, SLE writes
 `.sle/tasks.yaml` with an empty task list. For `beads`, it runs `bd init` and
@@ -133,8 +134,8 @@ creates a `docs` symlink pointing to `.server/docs`.
 - `agent.md` — a human-readable project manifest. Written once, never touched
   by the system again.
 - `.sle/map.yaml` — the machine-readable runtime state. Regenerated after every
-  cycle. Contains project metadata, remotes, agent configuration, discovery
-  state, and cycle history.
+  workflow run. Contains project metadata, remotes, agent configuration,
+  discovery state, and run history.
 
 Both files open in your `$EDITOR` if that variable is set.
 
@@ -217,9 +218,11 @@ daemon-api.md §Startup sequence):
 5. Check required artifacts exist or are marked as not-yet-generated.
 6. Verify task store is reachable (Beads remote or local `.sle/tasks.yaml`).
 7. Verify docs remote is reachable (or `pending: true`).
-8. Restore state — if `meta.status` was `cycling`, resume from the last DAG
-   node. If `halted`, stay halted. If `idle` or `complete`, transition to
-   `idle`.
+8. Restore state — the project-wide state resolves to `idle` or
+   `discovering`. Separately, for every entry in `workflow_runs` with
+   `status: active`, resume from `current_step_id`. Entries with
+   `status: halted` stay halted; entries with `status: complete` are left
+   as historical records.
 9. Bind HTTP and WebSocket servers on port 7700.
 10. Emit `system.ready` event.
 
@@ -250,7 +253,7 @@ Expected response:
 ### WebSocket events
 
 The daemon pushes real-time events over WebSocket at `ws://localhost:7700/events`.
-Connect with any WebSocket client to receive lifecycle updates, DAG node
+Connect with any WebSocket client to receive lifecycle updates, step
 transitions, validation results, and gate decisions. See daemon-api.md §WebSocket
 lifecycle for the connection protocol.
 
@@ -258,12 +261,13 @@ lifecycle for the connection protocol.
 
 ## Running discovery
 
-Before your first development cycle, SLE requires a discovery phase. Discovery
+Before your first workflow run, SLE requires a discovery phase. Discovery
 produces foundational documents — product brief, constraints, vision, project
 plan — that give the agent roles the context they need to produce useful output.
 
-The daemon enforces this guard: it rejects `POST /api/v2/cycles` until
-`map.yaml → discovery.status` is `complete`, unless you pass `--force` (see
+The daemon enforces this guard: it rejects `POST /api/v2/workflow-runs` for
+any workflow that requires discovery (e.g. `full-build`) until `map.yaml →
+discovery.status` is `complete`, unless you pass `--force` (see
 state-machine.md §Discovery guard).
 
 ### Starting discovery
@@ -329,13 +333,13 @@ Once the plan is approved, discovery finalization:
 5. Deletes `.sle/discovery-session.json`.
 
 The system transitions from `discovering` to `idle` and is ready for its first
-cycle.
+workflow run.
 
 ---
 
-## Your first cycle
+## Your first workflow run
 
-With discovery complete, you have two ways to start a development cycle. The
+With discovery complete, you have two ways to start a workflow run. The
 recommended flow is to discuss scope with the Facilitator first:
 
 1. Open a chat session and describe what you want to build:
@@ -343,107 +347,112 @@ recommended flow is to discuss scope with the Facilitator first:
    sle chat
    ```
    The Facilitator helps you identify relevant nodes, tag them with
-   `#next-cycle`, and draft a scope document.
+   `#next-run`, and draft a scope document.
 
-2. Start the cycle with the scope draft:
+2. Start the run with the scope draft:
    ```bash
-   sle start --scope my-draft-id
+   sle run full-build --scope my-draft-id
    ```
 
 For a quick start, you can pass a goal string directly and SLE will create a
 scope draft automatically:
 
 ```bash
-sle start "Add rate limiting to the API"
+sle run full-build "Add rate limiting to the API"
 # or with a pre-created scope draft:
-sle start --scope my-draft-id
+sle run full-build --scope my-draft-id
 ```
 
-Either form triggers transition T3 in the state machine (state-machine.md
-§Transition table): `idle` → `cycling`. The daemon creates a cycle record, sets
-the iteration counter to 1, and begins walking the DAG — starting with the
-SCOPING node.
+Either form calls `POST /api/v2/workflow-runs` (state-machine.md §Transition
+table, transition R1): `(none)` → `active`. The daemon creates a `WorkflowRun`
+record, claims the target artifacts, sets the iteration counter to 1, and
+begins walking the workflow's step graph — starting with the SCOPING group.
 
-### The DAG at a glance
+### The step graph at a glance
 
-A cycle walks through a series of 15 DAG nodes (dag-execution.md §DAG flow
-diagram). On the happy path — no conditionals triggered — the sequence is:
+A `full-build` run walks through 14 step instances spanning the six generic
+`StepKind` values (step-kind-reference.md §Part 2). On the happy path — no
+conditionals triggered — the sequence is:
 
 ```
-SCOPING → DESIGN → PLAN → TEST → CONFIRM → BUILD → HISTORY → EXEC
-→ VALIDATION_GATE → EVALUATE → SUMMARISE → SNAPSHOT
+SCOPING → DESIGN → PLAN → TEST → CONFIRM → BUILD
+→ EXEC → VALIDATION_GATE → EVALUATE → SUMMARISE → SNAPSHOT
 ```
 
-Here is what each node does:
+Here is what each step does:
 
-**SCOPING.** The Facilitator guides you through a structured discussion.
-Together you define the cycle's scope, purpose, requirements, and boundaries.
-This produces a cycle-charter document that feeds into the rest of the DAG.
-If you started with `sle start --scope`, the existing draft is refined; if you
-passed a goal string, the Facilitator generates the charter from scratch.
+**SCOPING** (`gather` → `produce` → `checkpoint`). The Facilitator guides you
+through a structured discussion. Together you define the run's scope,
+purpose, requirements, and boundaries. This produces a `doc:cycle-charter`
+document that feeds into the rest of the step graph. If you started with
+`sle run --scope`, the existing draft is refined; if you passed a goal
+string, the Facilitator generates the charter from scratch.
 
-**DESIGN.** The Designer agent receives the cycle-charter from SCOPING and
-produces `architecture.md` and `requirements.md`. These are the canonical
-design artifacts — only the Designer writes them (DDR-019).
+**DESIGN** (`produce`). The Designer agent receives the charter from SCOPING
+and produces `architecture.md` and `requirements.md`. These are the
+canonical design artifacts — only the Designer writes them (DDR-019).
 
-**CRITIQUE** (conditional). Only runs at deep or research planning depth. The
-Critic reviews the Designer's output for blind spots. Blocking issues trigger a
-Designer revision loop. Non-blocking issues are noted for the Planner.
+**CRITIQUE** (`review`, conditional). Only runs at deep or research planning
+depth. The Critic reviews the Designer's output for blind spots. Blocking
+issues route back to DESIGN via `on_fail`. Non-blocking issues are noted for
+the Planner.
 
-**PLAN.** The Planner agent produces `plan.md` and `test-plan.md`. At deep or
-research depth it also produces `build-plan.md`. If the Planner identifies work
-that should be sharded, it produces a sharding proposal.
+**PLAN** (`produce`). The Planner agent produces `plan.md` and
+`test-plan.md`. At deep or research depth it also produces `build-plan.md`.
+If the Planner identifies work that should be sharded, it produces a
+sharding proposal.
 
-**TEST.** The Tester agent writes test scripts from requirements only. It never
-sees the architecture or the implementation — this is the TDD separation
-constraint (dag-execution.md §TDD separation).
+**TEST** (`produce`). The Tester agent writes test scripts from requirements
+only. It never sees the architecture or the implementation — this is the TDD
+separation constraint (workflow-execution.md §TDD separation).
 
-**SHARDING_APPROVAL** (conditional). Only if the Planner produced a sharding
-proposal. The cycle pauses, `cycle.awaiting_sharding_approval` is set to
-`true`, and the Facilitator presents the proposal for your approval, rejection,
-or modification.
+**SHARDING_APPROVAL** (`checkpoint`, conditional). Only if the Planner
+produced a sharding proposal. The run pauses, `awaiting_checkpoint` is set to
+this step's id, and the Facilitator presents the proposal for your approval,
+rejection, or modification.
 
-**CONFIRM.** The cycle pauses before building. The flag
-`cycle.awaiting_confirmation` is set to `true`. The Facilitator presents the
-plan and test coverage for your review. You can approve, modify plan steps, or
-halt. Modifying the plan increments the revision counter and loops back through
-TEST.
+**CONFIRM** (`checkpoint`). The run pauses before building.
+`awaiting_checkpoint` is set to this step's id. The Facilitator presents the
+plan and test coverage for your review. You can approve, modify plan steps,
+or halt. Modifying the plan increments the revision counter and loops back
+through TEST.
 
-**BUILD.** The Builder agent produces the implementation plus instrumented test
-scripts. The Builder never sees the Tester's internal reasoning — only the
-final test scripts as a contract to satisfy.
+**BUILD** (`produce`). The Builder agent produces the implementation plus
+instrumented test scripts. The Builder never sees the Tester's internal
+reasoning — only the final test scripts as a contract to satisfy.
 
-**HISTORY.** The Historian agent appends an entry to `decisions.md`. This file
-is append-only and preserved across all iterations and cycles.
+**EXEC** (`execute`). The validation fan-out. For each validation category
+(for example, `correctness`, `performance`, `security`), EXEC runs three
+sub-phases in sequence: static-check, llm-check, exec-check. A static-check
+failure skips the remaining sub-phases for that category. All categories run
+in parallel.
 
-**EXEC.** The validation fan-out. For each validation category (for example,
-`correctness`, `performance`, `security`), EXEC runs three sub-phases in
-sequence: static-check, llm-check, exec-check. A static-check failure skips
-the remaining sub-phases for that category. All categories run in parallel.
+**VALIDATION_GATE** (`review`). A deterministic gate — no LLM, no user
+input. Passes if all category results are green. Fails if any category
+reports errors.
 
-**VALIDATION_GATE.** A deterministic gate — no LLM, no user input. Passes if
-all category results are green. Fails if any category reports errors.
+- **Pass** → EVALUATE → SUMMARISE → SNAPSHOT → run complete.
+- **Fail** → `on_fail` routes to the Debug step → iteration increments →
+  back to PLAN (or DESIGN on structural failure).
 
-- **Pass** → EVALUATE → SUMMARISE → SNAPSHOT → cycle complete.
-- **Fail** → DEBUG → iteration increments → back to PLAN (or DESIGN on
-  structural failure).
+**DEBUG** (`produce`, the failure path of VALIDATION_GATE). The Debugger
+agent reads run artifacts and failed category slices, then produces a
+FailureReport with root causes. Only activates on validation failure.
 
-**DEBUG.** The Debugger agent reads run artifacts and failed category slices,
-then produces a FailureReport with root causes. Only activates on validation
-failure.
+**EVALUATE** (`produce`). The Evaluator checks whether the implementation
+actually satisfies the original intent.
 
-**EVALUATE.** The Evaluator checks whether the implementation actually
-satisfies the original intent.
+**SUMMARISE** (`produce`). Produces a user-facing summary of what was built,
+changed, and tested.
 
-**SUMMARISE.** Produces a user-facing summary of what was built, changed, and
-tested.
-
-**SNAPSHOT.** Locks the version, commits artifacts, increments the version ID.
-The cycle transitions `cycling` → `complete` → `idle`.
+**SNAPSHOT** (`commit`, `logs_decision: true`). Locks the version, commits
+artifacts, releases the run's artifact claims, increments the version ID, and
+appends an entry to `decisions.md`. The run transitions `active` →
+`complete`.
 
 ### Monitoring with sle status
 
-While a cycle is running, check progress from another terminal:
+While a workflow run is running, check progress from another terminal:
 
 ```bash
 sle status
@@ -452,11 +461,23 @@ sle status
 Sample output:
 
 ```
-State:      cycling
-Cycle:      c-20260502-001
+State:      idle
+Active runs: 1 (full-build-5-i1-20260502T143200Z)
+```
+
+For per-run detail:
+
+```bash
+sle status full-build-5-i1-20260502T143200Z
+```
+
+```
+Run:        full-build-5-i1-20260502T143200Z
+Workflow:   full-build
+Status:     active
 Iteration:  1 / 3
 Revision:   0
-Current:    BUILD
+Current:    build
 Started:    2026-05-02T14:32:00Z
 ```
 
@@ -472,13 +493,11 @@ Response:
 {
   "ok": true,
   "data": {
-    "state": "cycling",
-    "active_cycle_id": "c-20260502-001",
+    "state": "idle",
+    "active_session_id": null,
     "discovery_status": "complete",
-    "iteration": 1,
-    "revision": 0,
-    "awaiting_confirmation": false,
-    "awaiting_sharding_approval": false,
+    "active_workflow_run_count": 1,
+    "active_workflow_run_ids": ["full-build-5-i1-20260502T143200Z"],
     "chat": {
       "session_open": false
     }
@@ -486,12 +505,38 @@ Response:
 }
 ```
 
+Per-run detail (`iteration`, `revision`, `awaiting_checkpoint`, etc.) is
+fetched separately:
+
+```bash
+curl http://localhost:7700/api/v2/workflow-runs/full-build-5-i1-20260502T143200Z
+```
+
+```json
+{
+  "ok": true,
+  "data": {
+    "run_id": "full-build-5-i1-20260502T143200Z",
+    "workflow_id": "full-build",
+    "iteration": 1,
+    "revision": 0,
+    "status": "active",
+    "current_step_id": "build",
+    "awaiting_checkpoint": null,
+    "claimed_artifacts": [],
+    "started_at": "2026-05-02T14:32:00Z",
+    "completed_at": null
+  }
+}
+```
+
 ### What happens on validation failure
 
-If the VALIDATION_GATE node fails, the system does not halt immediately. It
-runs the DEBUG node to diagnose the failure, then loops back to PLAN for
-another iteration. The Planner receives the FailureReport alongside only the
-failed category slices — passing categories are cached and not re-tested.
+If the VALIDATION_GATE step fails, the run does not halt immediately. Its
+`on_fail` routes to the Debug step to diagnose the failure, then loops back
+to PLAN for another iteration. The Planner receives the FailureReport
+alongside only the failed category slices — passing categories are cached
+and not re-tested.
 
 This iteration loop continues until either the gate passes or the iteration cap
 is reached. The cap is configured in `planning.yaml → max_iterations` and
@@ -500,25 +545,25 @@ defaults to 3. When the cap is hit, the behavior depends on
 
 | Behavior | Effect |
 |---|---|
-| `halt_with_report` | Halt with a partial report. No snapshot. |
+| `halt_with_report` | Halt with a partial report. No commit. |
 | `user_prompt` | Pause and ask whether to continue or halt. |
-| `force_pass` | Lock the snapshot despite failures. Not recommended. |
+| `force_pass` | Commit despite failures. Not recommended. |
 
-### The CONFIRM gate in practice
+### The CONFIRM checkpoint in practice
 
-When the CONFIRM gate is reached, the daemon pauses execution and waits for
-your decision. You see a summary of the plan and test coverage:
+When the CONFIRM checkpoint is reached, the daemon pauses that run and waits
+for your decision. You see a summary of the plan and test coverage:
 
 ```bash
-sle status
+sle status full-build-5-i1-20260502T143200Z
 ```
 
 ```
-State:      cycling
-Cycle:      c-20260502-001
+Run:        full-build-5-i1-20260502T143200Z
+Status:     active
 Iteration:  1 / 3
 Revision:   0
-Awaiting:   confirmation
+Awaiting:   confirm
 
 Plan summary:
   5 build steps
@@ -526,56 +571,59 @@ Plan summary:
   87% requirement coverage
 ```
 
-Your options at the CONFIRM gate:
+Your options at the CONFIRM checkpoint:
 
 - **Approve** — execution proceeds to BUILD.
 - **Modify plan steps** — revision counter increments, TEST re-runs for
   affected categories, then CONFIRM re-presents the updated plan.
 - **Modify test criteria** — update acceptance criteria without re-running
   TEST, then CONFIRM re-presents.
-- **Halt** — the cycle halts with a partial report.
+- **Halt** — the run halts with a partial report.
 
 You can respond via the REST API or the WebSocket:
 
 ```bash
-curl -X POST http://localhost:7700/api/v2/cycles/{cycle_id}/approve
+curl -X POST http://localhost:7700/api/v2/workflow-runs/{run_id}/approve
 ```
 
 ### Halting and resuming
 
-To stop a cycle at any point:
+To stop a workflow run at any point:
 
 ```bash
-sle halt
+sle halt {run_id}
 ```
 
-This transitions `cycling` → `halted`. The daemon writes a partial report,
-preserves all artifacts, and waits for your acknowledgement.
+This transitions that run's `status` to `halted` (`POST
+/api/v2/workflow-runs/{run_id}/halt`). The daemon writes a partial report,
+preserves all artifacts, and waits for your acknowledgement. Other active
+runs are unaffected.
 
 To resume from a halted state:
 
 ```bash
-sle resume
+sle resume {run_id}
 ```
 
-This transitions `halted` → `cycling` (transition T12). The iteration count is
-preserved, and the cycle picks up where it left off.
+This transitions `halted` → `active`. The iteration count is preserved, and
+the run picks up where it left off.
 
-> The daemon recovers from crashes automatically. On restart, if `map.yaml →
-> meta.status` is `cycling`, it resumes from the last committed DAG node. If
-> an awaiting flag was set, it re-enters decision mode at the correct gate.
-> No data is lost (daemon-api.md §Crash recovery).
+> The daemon recovers from crashes automatically. On restart, every
+> `workflow_runs` entry with `status: active` resumes from its
+> `current_step_id`. If a run had `awaiting_checkpoint` set, it re-enters
+> decision mode at that checkpoint. No data is lost (daemon-api.md §Crash
+> recovery).
 
 ---
 
 ## Understanding the output
 
-After a cycle completes, the project contains new and updated files. Here is
-where to find everything.
+After a workflow run completes, the project contains new and updated files.
+Here is where to find everything.
 
 ### Artifacts directory
 
-Cycle artifacts are organized under `.sle/` and the project root:
+Workflow-run artifacts are organized under `.sle/` and the project root:
 
 ```
 project-root/
@@ -586,9 +634,9 @@ project-root/
     project-plan.md            (from discovery)
     open-questions.md          (from discovery)
   .sle/
-    map.yaml                   (updated after every cycle)
+    map.yaml                   (updated after every workflow run)
     runs/
-      {cycle-id}/
+      {run-id}/
         manifest.json          (run manifest)
         ai/
           context-pack.md      (assembled context for agents)
@@ -610,12 +658,12 @@ atomically after every state change — the daemon writes to a temp file and
 renames, so it is never in a partial state (daemon-api.md §Atomic map.yaml
 writes).
 
-Key sections after a completed cycle:
+Key sections after a completed workflow run:
 
 ```yaml
 meta:
   status: idle
-  cycle: 3
+  completed_run_count: 3
   version_id: v0.3.0
 
 project:
@@ -629,61 +677,68 @@ discovery:
   current_phase: 1
   total_phases: 4
 
-cycle:
-  iteration: 1
-  revision: 0
+workflow_runs:
+  full-build-3-i1-20260502T143200Z:
+    workflow_id: full-build
+    status: complete
+    iteration: 1
+    revision: 0
 ```
 
-The `meta.version_id` increments with each successful snapshot. The
-`meta.cycle` count tracks total completed cycles across the project lifetime.
+The `meta.version_id` increments with each successful commit. The
+`meta.completed_run_count` tracks total completed workflow runs across the
+project lifetime.
 
-### Reading the cycle log
+### Reading the run history
 
-The DAG event history is recorded in `map.yaml → cycle.dag.history`. Each
-entry captures the node, event type, and timestamp:
+Per-step event history is recorded in `map.yaml → workflow_runs.{run_id}.steps_completed`
+(an ordered list of step ids) plus the project-wide `history[]` array. For a
+detailed event trace, each step's enter/exit timestamps are in
+`.sle/runs/{run_id}/manifest.json`:
 
 ```json
 [
-  { "node": "SCOPING", "type": "enter", "timestamp": "2026-05-02T14:32:00Z" },
-  { "node": "SCOPING", "type": "exit", "timestamp": "2026-05-02T14:32:02Z" },
-  { "node": "DESIGN", "type": "enter", "timestamp": "2026-05-02T14:32:03Z" },
-  { "node": "DESIGN", "type": "exit", "timestamp": "2026-05-02T14:33:15Z" },
-  { "node": "PLAN", "type": "enter", "timestamp": "2026-05-02T14:33:15Z" },
-  { "node": "PLAN", "type": "exit", "timestamp": "2026-05-02T14:34:40Z" }
+  { "step_id": "scoping_gather", "type": "enter", "timestamp": "2026-05-02T14:32:00Z" },
+  { "step_id": "scoping_gather", "type": "exit", "timestamp": "2026-05-02T14:32:02Z" },
+  { "step_id": "design", "type": "enter", "timestamp": "2026-05-02T14:32:03Z" },
+  { "step_id": "design", "type": "exit", "timestamp": "2026-05-02T14:33:15Z" },
+  { "step_id": "plan", "type": "enter", "timestamp": "2026-05-02T14:33:15Z" },
+  { "step_id": "plan", "type": "exit", "timestamp": "2026-05-02T14:34:40Z" }
 ]
 ```
 
-This history is the complete execution trace of the cycle. It is not pruned
-within a cycle. For a high-level view, use `sle status` or the REST API.
+This history is the complete execution trace of the run. It is not pruned
+within a run. For a high-level view, use `sle status` or the REST API.
 
 ### The decisions log
 
 `decisions.md` is an append-only record of architectural and planning decisions
-made across all cycles. The Historian agent adds entries at the HISTORY node.
-Entries from failed iterations and halted cycles are preserved — nothing is
-deleted.
+made across all workflow runs. The Historian agent appends entries at the
+SNAPSHOT step's `logs_decision: true` commit. Entries from failed iterations
+and halted runs are preserved — nothing is deleted.
 
 ---
 
 ## System state reference
 
-The SLE state machine has five states (state-machine.md §System state):
+The SLE state machine has two project-wide states (state-machine.md §System
+state):
 
 | State | Meaning |
 |---|---|
-| `idle` | No active session or cycle. Ready for commands. |
+| `idle` | No discovery session in progress. There may or may not be active workflow runs. |
 | `discovering` | A discovery session is in progress. |
-| `cycling` | A development cycle is running through the DAG. |
-| `halted` | A cycle was paused or hit the iteration cap. Awaiting user action. |
-| `complete` | A cycle finished successfully. Snapshot locked. About to transition to `idle`. |
 
-Transitions are atomic and enforced by the daemon. Only one session or cycle
-may be active at a time. The `idle` state is the gateway — the system must
-return to `idle` before starting a new discovery session or cycle.
+Project-wide transitions are atomic and enforced by the daemon. The `idle`
+state is the gateway for discovery only — it no longer gates workflow runs.
+Multiple `WorkflowRun`s may be `active` at once, as long as they don't claim
+the same artifact (DDR-031).
 
-Two boolean flags on the cycle record — `awaiting_confirmation` and
-`awaiting_sharding_approval` — create pause points within the `cycling` state
-without changing the machine state. At most one flag is `true` at a time.
+Per-run progress lives entirely on each entry in `workflow_runs`, not on the
+project-wide state: each run has its own `status` (`active` | `halted` |
+`complete`), `current_step_id`, `iteration`, `revision`, and
+`awaiting_checkpoint` (a single nullable pointer to the id of the
+checkpoint step currently paused, or `null`).
 
 Chat is an orthogonal layer. You can open a chat session in any state via
 `sle chat`, and it never blocks or affects state transitions.
@@ -694,34 +749,35 @@ Chat is an orthogonal layer. You can open a chat session in any state via
 
 ### Quick prototype (skip discovery)
 
-If you want to skip discovery and jump straight into a cycle:
+If you want to skip discovery and jump straight into a workflow run:
 
 ```bash
-sle start "Prototype the auth flow" --force
+sle run full-build "Prototype the auth flow" --force
 # or with a pre-created scope draft:
-sle start --scope my-draft-id --force
+sle run full-build --scope my-draft-id --force
 ```
 
-The `--force` flag bypasses the discovery guard (transition T11 in
-state-machine.md §Transition table). The cycle runs without discovery artifacts
-in context, which may reduce output quality. Useful for experimentation.
+The `--force` flag bypasses the discovery guard (state-machine.md §Discovery
+guard). The run proceeds without discovery artifacts in context, which may
+reduce output quality. Useful for experimentation.
 
 ### Multiple iterations
 
-A single cycle may run multiple iterations before the VALIDATION_GATE passes.
-Each iteration is a full PLAN → TEST → CONFIRM → BUILD → HISTORY → EXEC →
-VALIDATION_GATE arc. The iteration cap in `planning.yaml` limits retries.
+A single workflow run may run multiple iterations before the
+VALIDATION_GATE passes. Each iteration is a full PLAN → TEST → CONFIRM →
+BUILD → EXEC → VALIDATION_GATE arc. The iteration cap in `planning.yaml`
+limits retries.
 
 To monitor iteration progress:
 
 ```bash
-sle status
+sle status {run_id}
 ```
 
 The output shows the current iteration against the cap:
 
 ```
-State:      cycling
+Status:     active
 Iteration:  2 / 3
 ```
 
@@ -771,7 +827,7 @@ sle daemon start
 
 > SLE does not validate LLM key reachability at init time (init-and-discovery.md
 > §ID-009). An invalid key surfaces as an agent error when the first LLM call
-> is made during discovery or a cycle.
+> is made during discovery or a workflow run.
 
 ---
 
@@ -801,7 +857,7 @@ Check the error code:
 | E010 | Rule file invalid | Check YAML syntax in `.sle/rules/` |
 | E011 | Required artifact missing | Run `sle discover` or check `artifacts.yaml` |
 
-### Cycle rejected with `discovery_required`
+### Workflow run rejected with `discovery_required`
 
 Run `sle discover` first, or use `--force` to bypass. The guard exists because
 agent roles produce better output when they have discovery context. See
@@ -837,8 +893,9 @@ events.
 
 ## Next steps
 
-- **[running-a-cycle.md](running-a-cycle.md)** — deeper control over cycles:
-  category hints, intake modes, planning depth overrides, and sharding.
+- **[running-a-workflow.md](running-a-workflow.md)** — deeper control over
+  workflow runs: category hints, intake modes, planning depth overrides, and
+  sharding.
 - **[configuring-validation.md](configuring-validation.md)** — customizing
   validation categories, adding custom check scripts, and tuning gate
   behavior.

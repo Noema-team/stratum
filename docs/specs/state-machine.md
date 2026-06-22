@@ -1,24 +1,36 @@
 # State Machine
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-17
-**Depends on:** DDR-020, DDR-021, DDR-026
+**Type:** spec · **Status:** draft · **Updated:** 2026-06-21
+**Depends on:** DDR-020, DDR-021, DDR-026, DDR-031
 **Source material:** SLE-024 §2
 
 ## Overview
 
-The SLE system maintains exactly one machine state at all times. States are
-mutually exclusive and exhaustive. The state machine governs the lifecycle of
-discovery sessions and development cycles — the two units of work the daemon
-tracks.
+The Stratum system maintains exactly one **project-wide** machine state at
+all times, plus any number of independent **per-run** states — one per
+active `WorkflowRun`. The two are tracked separately and never conflated
+(DDR-031): project-wide state answers "is discovery in progress," per-run
+state answers "where is this particular workflow run in its own step
+graph."
 
-Chat and confirmation pauses are **not** machine states. Chat is an orthogonal
-layer tracked by a boolean flag on the chat record. Confirmation pauses are
-boolean flags on the cycle record. Neither consumes a state slot. This keeps
-the state machine simple (5 states) while allowing chat and confirmation to
-overlap freely with the active state.
+Project-wide states are mutually exclusive and exhaustive, and govern only
+the lifecycle of discovery sessions — the one piece of work that is
+inherently singular and project-wide, because it bootstraps the project
+graph everything else depends on (DDR-031, "Discovery stays outside the
+workflow model"). Workflow runs are not part of this state machine; each
+carries its own `WorkflowRun.status` and progresses independently of every
+other run.
 
-The machine starts in `idle` and must return to `idle` before a different
-session type can begin.
+Chat and checkpoint pauses are **not** project-wide machine states, and were
+never modeled as full machine states even before this generalization. Chat
+is an orthogonal layer tracked by a boolean flag on the chat record.
+Checkpoint pauses are a single nullable pointer (`awaiting_checkpoint`) on
+each `WorkflowRun` record. Neither consumes a project-wide state slot, and
+neither is shared across runs.
+
+The machine starts in `idle`. Unlike before, it does **not** need to return
+to `idle` before workflow runs can begin or proceed — only discovery itself
+is gated by `idle`.
 
 ## Data model
 
@@ -28,29 +40,43 @@ session type can begin.
 type SystemStatus =
   | "idle"
   | "discovering"
-  | "cycling"
-  | "halted"
-  | "complete"
 ```
 
 Stored in `map.yaml → meta.status`. Updated atomically on every transition.
+`cycling`, `halted`, and `complete` are **removed** as project-wide values
+(DDR-031, WG-001) — those concepts now live exclusively on
+`WorkflowRun.status`, scoped to one run, never to the project as a whole.
+Clients derive "is work in progress" from a count of active runs
+(`active_workflow_run_count`, see §API contract), not from `meta.status`.
 
-### Cycle record flags
+### Workflow run status
 
-Cycle flags are boolean fields on the active cycle record in `map.yaml`. They
-represent pause points where the system waits for an external response. They do
-**not** change the machine state — the state remains `cycling` while any flag
-is set.
+```
+type WorkflowRunStatus = "active" | "halted" | "complete"
+```
 
-| Flag | Field | Set when | Cleared when |
-|---|---|---|---|
-| `awaiting_scoping` | `cycle.awaiting_scoping` | SCOPING node active and waiting for user input | User confirms scope |
-| `awaiting_confirmation` | `cycle.awaiting_confirmation` | CONFIRM gate reached (post-TEST, pre-BUILD) | User approves, modifies, or halts |
-| `awaiting_sharding_approval` | `cycle.awaiting_sharding_approval` | Planner proposes sharding split | User approves or rejects the split |
+Stored per-run in `map.yaml → workflow_runs.{run_id}.status`. Each
+`WorkflowRun` transitions through this independently of every other run and
+independently of `meta.status`. See §Per-run transitions below. Full type:
+`WorkflowRun` in [../reference/types.md](../reference/types.md) §4.
 
-All flags may be `false` simultaneously (normal execution within `cycling`).
-At most one flag is `true` at a time — the system does not prompt for
-scoping, confirmation, and sharding approval concurrently.
+### Checkpoint pointer (per run)
+
+`WorkflowRun.awaiting_checkpoint` is a single nullable pointer to the
+`step_id` of the `checkpoint` step currently pausing that run, or `null`.
+It represents a pause point where that run waits for an external response.
+It does **not** change `meta.status` — project-wide state stays
+`idle | discovering` regardless of how many runs are paused, and it does
+not change any *other* run's state either.
+
+| Field | Set when | Cleared when |
+|---|---|---|
+| `awaiting_checkpoint` | A `checkpoint` step in this run's graph becomes active and waits for user input | User responds (approve/modify/halt) for that checkpoint |
+
+At most one checkpoint per run is active at a time — guaranteed by
+construction, since the field is a single pointer rather than a set of
+flags (DDR-031). Different runs may each have their own `awaiting_checkpoint`
+set concurrently; they are entirely independent.
 
 ### Chat session layer
 
@@ -61,112 +87,117 @@ type ChatSession = {
 }
 ```
 
-Stored in `map.yaml → chat`. The `session_open` boolean is entirely independent
-of `system.state`. Chat can be open in any machine state. Chat never blocks,
-interrupts, or otherwise affects state transitions.
+Stored in `map.yaml → chat`. The `session_open` boolean is entirely
+independent of `system.state` and of every `WorkflowRun.status`. Chat can be
+open regardless of project-wide state or how many runs are active. Chat
+never blocks, interrupts, or otherwise affects state transitions at either
+level.
 
 When `session_open` is `true`, the Facilitator operates in **chat mode**
-(freeform Q&A). When any of `awaiting_scoping`, `awaiting_confirmation`, or
-`awaiting_sharding_approval` is `true`, the Facilitator simultaneously operates
-in **decision mode** (structured gate actions). These two modes coexist — chat
-mode does not replace decision mode.
+(freeform Q&A). When any active run has `awaiting_checkpoint` set, the
+Facilitator simultaneously operates in **decision mode** (structured gate
+actions) **for that run**. These two modes coexist — chat mode does not
+replace decision mode, and decision mode for one run does not preclude
+chat mode about an entirely different run.
 
 ### State context
 
 ```
 type StateContext = {
-  state:                SystemStatus
-  active_session_id:    string | null
-  active_cycle_id:      string | null
-  discovery_status:     "not_started" | "in_progress" | "complete"
-  iteration:            number
-  revision:             number
+  state:                      SystemStatus
+  active_session_id:          string | null
+  discovery_status:           "not_started" | "in_progress" | "complete"
+  active_workflow_run_count:  number
+  active_workflow_run_ids:    string[]
 }
 ```
 
 Populated from `map.yaml` on every daemon tick. Exposed via the status API.
+Replaces the former singular `active_cycle_id` / `iteration` / `revision`
+fields — those now live per-run on each `WorkflowRun`, fetched via
+`GET /api/v2/workflow-runs/{run_id}` (see
+[workflow-execution.md](workflow-execution.md)), not on project-wide state.
 
 ## Behavior
 
-### State diagram
+### Project-wide state diagram
 
 ```
-                        ┌─────────┐
-                        │  idle   │◄──────────────────────────────┐
-                        └────┬────┘                               │
-                             │                                    │
-                 ┌───────────┼───────────┐                        │
-                 │           │           │                        │
-                 ▼           ▼           ▼                        │
-          ┌────────────┐          ┌────────────┐                  │
-          │discovering │          │  cycling   │◄─┐               │
-          └─────┬──────┘          └──┬─┬─┬─────┘  │ T12 (resume)  │
-                │                    │ │ │        │               │
-                │           ┌────────┘ │ └──────────┐             │
-                │           │          │            │             │
-                │           ▼          ▼            ▼             │
-                │    ┌──────────┐ ┌────────┐ ┌──────────┐        │
-                │    │ halted   │ │complete│ │(remains   │        │
-                │    └────┬─────┘ └───┬────┘ │ cycling)  │        │
-                │         │  T12        │      │ via flag   │      │
-                │         └──► cycling  │      └───────────┘       │
-                │              (see ↑)  │                          │
-                └─────────┴────────────┴──────────────────────────┘
-
-   Flag-based pauses (state stays "cycling"):
-    ┌────────────────────────────┬──────────────────────────────────┐
-    │ Flag                       │ Effect                           │
-    ├────────────────────────────┼──────────────────────────────────┤
-    │ awaiting_scoping           │ DAG pauses at SCOPING node       │
-    │ awaiting_confirmation      │ DAG pauses pre-BUILD             │
-    │ awaiting_sharding_approval │ DAG pauses pre-shard-split       │
-    └────────────────────────────┴──────────────────────────────────┘
-
-   Orthogonal chat layer:
-   ┌────────────────────────────┬──────────────────────────────────┐
-   │ chat.session_open          │ Facilitator in chat mode         │
-   │ + any awaiting_* flag      │ Facilitator also in decision mode│
-   └────────────────────────────┴──────────────────────────────────┘
+        ┌─────────┐
+   ┌───►│  idle   │◄───┐
+   │    └────┬────┘    │
+   │         │ T1       │ T2
+   │         ▼          │
+   │  ┌─────────────┐   │
+   └──┤ discovering │───┘
+      └─────────────┘
 ```
 
-### Transition table
+Two states, two transitions. Workflow runs are not nodes in this diagram —
+any number of them may be active while the system sits in `idle`, and a new
+run may start without changing `meta.status` at all.
+
+### Per-run state diagram (one instance per `WorkflowRun`)
+
+```
+                    ┌──────────┐
+              ┌────►│  active  │◄────┐
+              │     └─┬───┬────┘     │
+       resume │       │   │          │ (no transition;
+   (re-enter   │       │   │          │  checkpoint pause
+    active)    │  halt │   │ commit   │  is awaiting_checkpoint,
+              │       ▼   ▼          │  not a status change)
+          ┌────┴───┐ ┌─────────┐     │
+          │ halted │ │complete │     │
+          └────────┘ └─────────┘     │
+                                      │
+          (awaiting_checkpoint set/cleared while status stays "active") ──┘
+```
+
+Each `WorkflowRun` walks this independently. A `checkpoint` step pausing the
+run does **not** change `WorkflowRun.status` — it stays `active` with
+`awaiting_checkpoint` set to the paused step's id. `status` only changes on
+halt or terminal commit.
+
+### Project-wide transition table
 
 | # | From | To | Trigger | Precondition | Side effects |
 |---|---|---|---|---|---|
 | T1 | `idle` | `discovering` | `sle discover` | `discovery_status ≠ complete` | Create discovery session, set `active_session_id` |
 | T2 | `discovering` | `idle` | Discovery session ends (synthesis + planning complete) | Discovery session is in terminal round | Write discovery artifacts, set `discovery_status := complete`, clear `active_session_id` |
-| T3 | `idle` | `cycling` | `sle start "goal"` | `discovery_status = complete` | Create cycle record, set `active_cycle_id`, set `iteration := 1`, `revision := 0` |
-| T4 | `cycling` | `cycling` | VALIDATION gate fails, iteration cap not reached | `iteration < iteration_cap` | `iteration++`, inject FailureReport into next PLAN context, clear run artifacts |
-| T5 | `cycling` | `halted` | User issues `sle halt` | `system.state = cycling` | Write partial report, preserve run artifacts |
-| T6 | `cycling` | `halted` | VALIDATION gate fails, iteration cap reached | `iteration ≥ iteration_cap` | Write partial report with cap-exceeded notice |
-| T7 | `cycling` | `halted` | Unrecoverable error | Any node | Write error report, preserve artifacts produced so far |
-| T8 | `cycling` | `complete` | SNAPSHOT node finishes | All validation categories pass, EVALUATE done | Lock snapshot, write changelog, increment version |
-| T9 | `complete` | `idle` | Snapshot acknowledgement (automatic after lock) | Snapshot is locked | Clear `active_cycle_id`, persist versioned artifacts |
-| T10 | `halted` | `idle` | User acknowledges halt report | Halt report has been read | Clear `active_cycle_id` |
-| T11 | `idle` | `cycling` | `sle start "goal"` with `--force` | None (skips discovery check) | Same as T3 but no discovery guard |
-| T12 | `halted` | `cycling` | `sle resume` | Halted state, user confirmation | Resume keeps cycle context. Iteration count preserved. |
 
-### Intra-cycle transitions (flag-based, state stays `cycling`)
+That is the entire project-wide table. Discovery is the one mechanism this
+state machine governs (DDR-031). Everything formerly modeled as T3–T12
+(cycle start, retry, halt, complete, resume) is now per-run behavior — see
+§Per-run transitions and [workflow-execution.md](workflow-execution.md).
 
-These are not state machine transitions. They are flag mutations on the cycle
-record that pause or resume DAG execution.
+### Per-run transitions
 
-| Flag transition | Trigger | Effect on DAG |
-|---|---|---|
-| `awaiting_scoping := true` | SCOPING node active, needs user input | DAG pauses at SCOPING node |
-| `awaiting_scoping := false` (confirm) | User confirms scope | DAG resumes past SCOPING to DESIGN node |
-| `awaiting_confirmation := true` | CONFIRM gate reached (post-TEST) | DAG pauses before BUILD node |
-| `awaiting_confirmation := false` (approve) | User approves plan + tests | DAG resumes at BUILD node |
-| `awaiting_confirmation := false` (modify) | User modifies plan or tests | `revision++`, DAG resumes at TEST node for re-derivation |
-| `awaiting_confirmation := false` (halt) | User rejects at CONFIRM gate | Triggers T5 (→ halted) |
-| `awaiting_sharding_approval := true` | Planner proposes sharding | DAG pauses before sharding execution |
-| `awaiting_sharding_approval := false` (approve) | User approves sharding | DAG resumes sharding execution |
-| `awaiting_sharding_approval := false` (reject) | User rejects sharding | DAG resumes without sharding, Planner re-plans without split |
+These transitions apply independently to each `WorkflowRun` and never touch
+`meta.status`.
+
+| # | From | To | Trigger | Precondition | Side effects |
+|---|---|---|---|---|---|
+| R1 | *(none)* | `active` | `POST /api/v2/workflow-runs` | No conflicting artifact claim (else `claim_conflict`); discovery complete if the workflow requires it | Create `WorkflowRun` record, claim target artifacts, set `iteration := 1`, `revision := 0` |
+| R2 | `active` | `active` | A `review` step fails, iteration cap not reached | `iteration < max_iterations` | `iteration++`, route to `on_fail.target_step_id`, inject FailureReport, clear run artifacts |
+| R3 | `active` | `halted` | User issues halt for this run | `WorkflowRun.status = active` | Write partial report, preserve run artifacts, release claims |
+| R4 | `active` | `halted` | A `review` step fails, iteration cap reached | `iteration ≥ max_iterations` | Write partial report with cap-exceeded notice, release claims |
+| R5 | `active` | `halted` | Unrecoverable error | Any step | Write error report, preserve artifacts produced so far, release claims |
+| R6 | `active` | `complete` | The terminal `commit` step finishes | All validation categories pass (for workflows that declare a validation review step) | Write artifact(s), bump version, release claims, optionally append decision log |
+| R7 | `halted` | `active` | User resumes this run | Halted state, user confirmation | Resume keeps run context (iteration count preserved); re-claims artifacts (fails with `claim_conflict` if another run claimed them meanwhile) |
+
+`awaiting_checkpoint` mutations (a `checkpoint` step pausing or resuming)
+are **not** rows in this table — the run's `status` stays `active`
+throughout. They are documented as their own mechanism in
+[workflow-execution.md](workflow-execution.md) §Human checkpoints, since
+their specifics (what's reviewed, what actions are available) are
+workflow-specific, not generic to every run.
 
 ### Chat session transitions
 
-Chat is orthogonal to the state machine. These transitions can occur in any
-system state.
+Chat is orthogonal to both the project-wide and per-run state machines.
+These transitions can occur regardless of `meta.status` or any run's
+status.
 
 | Chat transition | Trigger | Precondition |
 |---|---|---|
@@ -177,14 +208,14 @@ Chat availability matrix:
 
 | System state | Chat available | Chat mode | Decision mode |
 |---|---|---|---|
-| `idle` | Yes | Freeform Q&A | No |
+| `idle` | Yes | Freeform Q&A | No (unless some active run has `awaiting_checkpoint` set) |
 | `discovering` | Yes | Freeform Q&A | No |
-| `cycling` (no flags) | Yes | Freeform Q&A | No |
-| `cycling` (`awaiting_scoping`) | Yes | Freeform Q&A | Yes — confirm scope |
-| `cycling` (`awaiting_confirmation`) | Yes | Freeform Q&A | Yes — approve/modify/halt |
-| `cycling` (`awaiting_sharding_approval`) | Yes | Freeform Q&A | Yes — approve/reject split |
-| `halted` | Yes | Freeform Q&A | No |
-| `complete` | Yes | Freeform Q&A | No |
+| Any state, ≥1 run with `awaiting_checkpoint` set | Yes | Freeform Q&A | Yes — decision mode scoped to that run |
+
+Decision mode is per-run, not per-project: with two concurrent runs, one
+paused at a checkpoint and one not, the user can simultaneously chat freely
+and resolve the one paused checkpoint — there is no project-wide "decision
+mode" flag to coordinate.
 
 ## API contract
 
@@ -195,22 +226,23 @@ GET /api/v2/system/state
 
 Response 200:
 {
-  "state":               SystemStatus,
-  "active_session_id":   string | null,
-  "active_cycle_id":     string | null,
-  "discovery_status":    "not_started" | "in_progress" | "complete",
-  "iteration":           number,
-  "revision":            number,
-  "awaiting_scoping":             boolean,
-  "awaiting_confirmation":      boolean,
-  "awaiting_sharding_approval": boolean,
+  "state":                       SystemStatus,
+  "active_session_id":           string | null,
+  "discovery_status":            "not_started" | "in_progress" | "complete",
+  "active_workflow_run_count":   number,
+  "active_workflow_run_ids":     string[],
   "chat": {
     "session_open": boolean
   }
 }
 ```
 
-### Transition state
+Per-run detail (`iteration`, `revision`, `awaiting_checkpoint`, etc.) is
+fetched per run via `GET /api/v2/workflow-runs/{run_id}`
+([workflow-execution.md](workflow-execution.md)), not bundled into this
+project-wide response.
+
+### Transition project-wide state
 
 ```
 POST /api/v2/system/state/transition
@@ -225,8 +257,7 @@ Request:
 Response 200:
 {
   "previous":  SystemStatus,
-  "current":   SystemStatus,
-  "cycle_id":  string | null
+  "current":   SystemStatus
 }
 
 Response 409:
@@ -238,28 +269,11 @@ Response 409:
 }
 ```
 
-### Set cycle flag
-
-```
-PATCH /api/v2/cycles/{cycle_id}/flags
-
-Request:
-{
-  "awaiting_scoping":             boolean | null,
-  "awaiting_confirmation":      boolean | null,
-  "awaiting_sharding_approval": boolean | null
-}
-
-Response 200:
-{
-  "cycle_id": string,
-  "flags": {
-    "awaiting_scoping":             boolean,
-    "awaiting_confirmation":      boolean,
-    "awaiting_sharding_approval": boolean
-  }
-}
-```
+This endpoint now only ever transitions between `idle` and `discovering`
+(T1/T2). Starting, retrying, halting, resuming, or completing a workflow
+run uses the per-run endpoints in
+[workflow-execution.md](workflow-execution.md) (`POST /api/v2/workflow-runs`,
+`/halt`, `/approve`, `/revise`), never this one.
 
 ### Open / close chat session
 
@@ -284,19 +298,11 @@ event: system.state_changed
   "timestamp":     string
 }
 
-event: cycle.flag_changed
+event: workflow_run.checkpoint_changed
 {
-  "cycle_id": string,
-  "flag":     "awaiting_scoping" | "awaiting_confirmation" | "awaiting_sharding_approval",
-  "value":    boolean,
-  "timestamp": string
-}
-
-event: cycle.scoping_input_requested
-{
-  "cycle_id": string,
-  "scope_draft_id": string,
-  "timestamp":       string
+  "run_id":            string,
+  "awaiting_checkpoint": string | null,
+  "timestamp":         string
 }
 
 event: chat.session_changed
@@ -306,80 +312,103 @@ event: chat.session_changed
 }
 ```
 
+Per-run lifecycle events (`step.started`, `step.completed`,
+`workflow_run.checkpoint_requested`, `workflow_run.committed`, etc.) are
+catalogued in [workflow-execution.md](workflow-execution.md) §WebSocket
+events, not here — this file only owns the two project-wide events plus the
+generic checkpoint-pointer-changed event, since checkpoint behavior is the
+one per-run concept that still has a structural analog to the old project-
+wide flags.
+
 ## Error cases
 
 | Error | Condition | Response |
 |---|---|---|
-| `invalid_transition` | Transition not in the transition table for current state | 409 with allowed targets |
-| `discovery_required` | `sle start` when `discovery_status ≠ complete` and `--force` not set | 403 with message suggesting `sle discover` |
-| `session_conflict` | `sle discover` or `sle start` when state is not `idle` | 409 with current state |
-| `flag_conflict` | Attempting to set more than one of `awaiting_scoping`, `awaiting_confirmation`, and `awaiting_sharding_approval` to `true` simultaneously | 409 |
-| `stale_flag` | PATCH to a flag that is already the requested value | 204 (idempotent, no-op) |
-| `cycle_not_found` | PATCH flags for a cycle_id that does not exist | 404 |
+| `invalid_transition` | Transition not in the project-wide transition table for current state | 409 with allowed targets |
+| `discovery_required` | A workflow that requires discovery is dispatched when `discovery_status ≠ complete` and `--force` not set | 403 with message suggesting `sle discover` |
+| `session_conflict` | `sle discover` issued when state is not `idle` | 409 with current state |
+| `claim_conflict` | A new run's target artifact is already claimed by a different active run | 409, rejected immediately at dispatch, not retried |
+| `stale_claim_commit` | A run's artifact version changed since its claim was acquired | Halt that run, no auto-retry |
+| `not_awaiting_checkpoint` | Action submitted for a checkpoint that isn't this run's current pause point | 409 |
+| `run_not_found` | Action submitted for a `run_id` that does not exist | 404 |
 | `chat_already_open` | POST open when `session_open = true` | 204 (idempotent, no-op) |
 | `chat_not_open` | DELETE session when `session_open = false` | 204 (idempotent, no-op) |
-| `halt_not_cycling` | `sle halt` when state is not `cycling` | 409 with current state |
+| `halt_not_active` | Halt requested for a run that is not `active` | 409 with current run status |
 | `iteration_cap_invalid` | `iteration_cap ≤ 0` in configuration | 500 (configuration error) |
 
 ## Constraints
 
-1. **Single state invariant.** The system is in exactly one of the five states
-   at all times. There is no "between states" condition. Every transition is
-   atomic — `map.yaml` is updated in a single write.
+1. **Single project-wide state invariant.** The system is in exactly one of
+   the two project-wide states at all times. There is no "between states"
+   condition. Every project-wide transition is atomic — `map.yaml` is
+   updated in a single write.
 
-2. **Idle gateway.** Only `idle` can transition to `discovering`. Only `idle`
-   or `halted` can transition to `cycling`. A session or cycle must fully
-   resolve (reach `complete`, `halted`, or `idle`) before a new one can start.
+2. **Idle gateway, discovery only.** Only `idle` can transition to
+   `discovering`. A discovery session must fully resolve (reach `idle`)
+   before a new one can start. This gateway applies to discovery alone —
+   it no longer gates workflow runs.
 
-3. **Discovery guard.** Transition T3 (`idle` → `cycling`) requires
-   `discovery_status = complete` unless `--force` is set. Transition T11
-   bypasses this guard.
+3. **Discovery guard.** Dispatching a workflow that requires discovery
+   (e.g. `full-build`) requires `discovery_status = complete` unless
+   `--force` is set on that dispatch.
 
-4. **Chat independence.** `chat.session_open` may be `true` in any state.
-   Transitions T1–T12 proceed regardless of chat state. Chat never blocks,
-   delays, or cancels a state transition.
+4. **Chat independence.** `chat.session_open` may be `true` regardless of
+   project-wide state or any run's status. Project-wide and per-run
+   transitions proceed regardless of chat state. Chat never blocks,
+   delays, or cancels a transition at either level.
 
-5. **Flag exclusivity.** At most one of `awaiting_scoping`, `awaiting_confirmation`, and
-   `awaiting_sharding_approval` may be `true` at any time. Setting one to
-   `true` implicitly sets the others to `false`.
+5. **Checkpoint exclusivity, per run.** At most one checkpoint may be active
+   per `WorkflowRun` at any time — guaranteed by `awaiting_checkpoint` being
+   a single nullable pointer, not a set of flags. This constraint is local
+   to each run; it says nothing about other concurrently active runs.
 
-6. **Flag scope.** All flags are scoped to the active cycle. When the cycle
-   ends (transition to `halted`, `complete`, or `idle`), all flags are reset
-   to `false`.
+6. **Checkpoint scope.** `awaiting_checkpoint` is scoped to its own run.
+   When that run ends (transitions to `halted` or `complete`), its pointer
+   resets to `null`. It never affects any other run's pointer.
 
-7. **Iteration cap enforcement.** Transition T4 (retry) is only valid when
-   `iteration < iteration_cap`. When the cap is reached, the system must take
-   T6 (→ halted) instead. `iteration_cap` is read from
-   `.sle/rules/planning.yaml` at cycle start.
+7. **Iteration cap enforcement.** Per-run transition R2 (retry) is only
+   valid when `iteration < max_iterations` for that run. When the cap is
+   reached, that run must take R4 (→ halted) instead. `max_iterations` is
+   read from `.sle/rules/planning.yaml` at run start, per run.
 
-8. **Revision counter scope.** The revision counter resets to 0 at the start
-   of each iteration. It increments only on CONFIRM gate modification, not on
-   VALIDATION gate failure.
+8. **Revision counter scope.** Each run's revision counter resets to 0 at
+   the start of each of its own iterations. It increments only on that
+   run's CONFIRM-equivalent checkpoint modification, not on review-step
+   failure.
 
-9. **No concurrent sessions.** Only one discovery session or one cycle may be
-   active at a time. The `active_session_id` / `active_cycle_id` fields are
-   singular, not arrays.
+9. **Concurrent runs are the default, not an exception.** Any number of
+   `WorkflowRun`s may be `active` simultaneously, scoped only by artifact
+   claims (DDR-031) — there is no `active_session_id`-style singular
+   pointer for workflow runs the way there is for discovery. Two runs
+   contend only if they claim the same artifact ref.
 
-10. **Terminal state liveness.** `halted` and `complete` are terminal only for
-    the active cycle — they must transition to `idle` (T9, T10) or resume to
-    `cycling` (T12) before new work can begin. The daemon does not stay in
-    `halted` or `complete` indefinitely.
+10. **Terminal state liveness, per run.** `halted` and `complete` are
+    terminal only for that specific run — that run must resume (R7) before
+    it can progress further, or stay terminal indefinitely without
+    blocking any other run. Unlike the old project-wide model, a halted or
+    complete run never blocks the daemon from starting other runs.
 
-11. **Deterministic validation gate.** The VALIDATION gate is a pure function
-    of category results. It does not consult LLM, user input, or external
-    services. The decision to pass (T4/T8) or fail (T4/T6) is deterministic.
+11. **Deterministic validation gate.** Any `review` step a workflow declares
+    for its terminal pass/fail decision (e.g. `full-build`'s
+    VALIDATION_GATE) is a pure function of its inputs where the workflow
+    specifies a deterministic check. It does not consult LLM, user input,
+    or external services for that determination. The decision to retry
+    (R2) or halt (R4) follows deterministically from that result.
 
-12. **CONFIRM gate configurability.** The CONFIRM gate is optional. When
-    `user_validation.yaml` disables it, the DAG proceeds directly from TEST
-    to BUILD without setting `awaiting_confirmation`.
+12. **Checkpoint configurability, per workflow.** Whether a given workflow
+    declares a `checkpoint` step at all (e.g. `full-build`'s CONFIRM
+    equivalent) is configurable per `user_validation.yaml` for `full-build`
+    specifically; other workflows declare their own checkpoints
+    independently in their `WorkflowDefinition`.
 
 ## Open questions
 
 | ID | Question | Impact | Status |
 |---|---|---|---|
 | SM-001 | Should `discovering` allow resumption after daemon restart, or does it always restart from scratch? | Recovery behavior, state persistence | Open |
-| SM-002 | What is the maximum time the system may remain in `cycling` with a flag set before auto-timeout? | Resource management, user experience | Open |
-| SM-003 | Should `halted` → `idle` be automatic (with acknowledgment timeout) or require explicit user action? | UX flow, daemon behavior | Open |
-| SM-004 | Can `sle start --force` produce a valid cycle without any discovery artifacts, or does it only skip the status check? | Context assembly behavior, artifact availability | Open |
-| SM-005 | Is there a maximum number of concurrent WebSocket subscribers that should receive state change events? | Scalability, event delivery guarantees | Open |
-| SM-006 | Should flag mutations (`PATCH /flags`) be audited in `decisions.md` or only in the cycle record? | Traceability, artifact coupling | Open |
+| SM-002 | What is the maximum time a run may remain `active` with `awaiting_checkpoint` set before auto-timeout? | Resource management, user experience | Open |
+| SM-003 | Should `halted` → resumed be automatic (with acknowledgment timeout) or require explicit user action, per run? | UX flow, daemon behavior | Open |
+| SM-004 | Can a workflow run started with `--force` produce a valid result without any discovery artifacts, or does it only skip the status check? | Context assembly behavior, artifact availability | Open |
+| SM-005 | Is there a maximum number of concurrent WebSocket subscribers that should receive state change events, now that events can originate from N concurrent runs? | Scalability, event delivery guarantees | Open |
+| SM-006 | Should checkpoint mutations be audited in `decisions.md` or only in the run record? | Traceability, artifact coupling | Open |
+| SM-007 | Is there a cap on the number of concurrently active workflow runs project-wide, or is the only limit artifact-claim contention? | Resource management under DDR-031's concurrency model | Open |

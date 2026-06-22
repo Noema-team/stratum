@@ -142,7 +142,7 @@ Each trigger has a `type` and optional `filter`:
 | `on_node_created` | New node added to the layer |
 | `on_content_written` | Content written to a node |
 | `on_node_state_changed` | Node state transition |
-| `on_cycle_complete` | A cycle finishes |
+| `on_workflow_run_complete` | A workflow run finishes |
 | `on_user_action` | User clicks a toolbar button |
 | `on_schedule` | Cron-like interval |
 | `on_demand` | Explicit API call (`POST /api/v2/graph/modules/{id}/trigger`) |

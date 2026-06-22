@@ -11,19 +11,21 @@ coordination point for all SLE operations. Every interface — CLI, web UI,
 Obsidian plugin — connects to the daemon over REST (commands) and WebSocket
 (live events). No interface reimplements system logic.
 
-The daemon owns the DAG runner, rule loader, context manager, artifact store,
-Beads bridge, and `map.yaml` writer. It validates configuration on startup,
-restores state after crashes, and enforces the state machine across all
-connections.
+The daemon owns the workflow run engine, rule loader, context manager,
+artifact store, Beads bridge, and `map.yaml` writer. It validates
+configuration on startup, restores state after crashes, and enforces the
+state machine across all connections.
 
 **Transport:** HTTP REST + WebSocket on a single port (default 7700).
 
-**System states:** `idle | discovering | cycling | halted | complete`
-(see [state-machine.md](state-machine.md)).
+**System states:** `idle | discovering` project-wide (DDR-031). Per-run
+progress (`active | halted | complete`) lives on `WorkflowRun.status`, not on
+system-wide state — see [state-machine.md](state-machine.md).
 
-**Cycle flags:** `cycle.awaiting_confirmation` (DDR-021),
-`cycle.awaiting_sharding_approval` (DDR-026). These are boolean fields on the
-cycle record, not machine states.
+**Checkpoint pointer:** `WorkflowRun.awaiting_checkpoint: string | null`
+(DDR-031) replaces the former per-flag booleans (`cycle.awaiting_confirmation`
+DDR-021, `cycle.awaiting_sharding_approval` DDR-026) with a single nullable
+pointer to the `step_id` of the checkpoint currently pausing that run.
 
 **Canonical types:** [../reference/types.md](../reference/types.md).
 **State machine:** [state-machine.md](state-machine.md).
@@ -127,10 +129,13 @@ itself — there is no plan to serve multiple API versions concurrently.
 7. Check docs remote reachable (git -C .server status)
 8. If any check fails → exit with descriptive error
 9. Restore state from map.yaml
-   - If meta.status is cycling and awaiting flag is set → resume at gate
-   - If meta.status is cycling with no flag → resume from last DAG node
-   - If halted → stay halted, await user acknowledgement
-   - If idle or complete → transition to idle
+   - For each WorkflowRun with status active and awaiting_checkpoint set →
+     resume at that checkpoint
+   - For each WorkflowRun with status active and no awaiting_checkpoint →
+     resume from its last committed step
+   - For each WorkflowRun with status halted → stay halted, await user
+     acknowledgement
+   - If no active runs remain → system state is idle
 10. Bind HTTP server on configured port (default 7700)
 11. Bind WebSocket server on same port
 12. Emit system.ready event
@@ -185,7 +190,7 @@ are emitted as `error` events (event §8.1 in websocket-events.md).
 |---------|-------------|--------------|
 | REST 4xx | `APIError` with `code` and `message` | Client corrects and retries |
 | REST 5xx | `APIError` with `code` and `message` | Daemon bug or infrastructure failure |
-| WebSocket | `ErrorPayload` with `recoverable` flag | `true` → cycle continues; `false` → user action required |
+| WebSocket | `ErrorPayload` with `recoverable` flag | `true` → workflow run continues; `false` → user action required |
 
 ---
 
@@ -195,7 +200,7 @@ All REST endpoint definitions (request/response schemas, status codes, error
 codes) are documented in [daemon-api-endpoints.md](daemon-api-endpoints.md).
 
 The daemon exposes 85 endpoints across 18 groups covering health checks, system
-state, init, discovery, cycles, sharding, dispatch, artifacts, map/rules,
+state, init, discovery, workflow runs, sharding, dispatch, artifacts, map/rules,
 reports, chat, context, tasks, intake, knowledge engine, content store,
 modules, and document linking.
 
@@ -238,7 +243,7 @@ The groups are:
 | Group | Events | Count |
 |-------|--------|-------|
 | System lifecycle | `system.state_changed`, `system.ready`, `system.shutdown` | 3 |
-| DAG execution | `cycle.started`, `cycle.completed`, `cycle.halted`, `cycle.iteration_started`, `node.started`, `node.completed` | 6 |
+| Workflow run execution | `workflow_run.started`, `workflow_run.completed`, `workflow_run.halted`, `workflow_run.iteration_started`, `step.started`, `step.completed` | 6 |
 | Validation | `validation.category.started`, `validation.category.completed`, `gate.result` | 3 |
 | Gates & actions | `approval.required`, `action.required` | 2 |
 | Chat | `chat.message`, `chat.decision_captured`, `chat.session_changed` | 3 |
@@ -266,18 +271,18 @@ canonical error catalogue in [../reference/error-codes.md](../reference/error-co
 | 400 | `invalid_role` | Agent role not in the AgentRole enum |
 | 400 | `invalid_ref` | Artifact reference does not match typed prefix format |
 | 400 | `schema_validation` | Request body fails schema validation |
-| 403 | `discovery_required` | Cycle start without discovery and no `--force` |
-| 404 | `cycle_not_found` | Cycle ID does not exist |
+| 403 | `discovery_required` | Workflow run start without discovery and no `--force`, for runs that require it |
+| 404 | `run_not_found` | Run ID does not exist |
 | 404 | `artifact_not_found` | Artifact ID does not exist |
 | 404 | `task_not_found` | Task ID does not exist |
 | 404 | `report_not_found` | No report has been generated yet |
 | 404 | `version_not_found` | Requested version does not exist |
 | 409 | `session_conflict` | Operation requires `idle` but state is not idle |
 | 409 | `invalid_transition` | State transition not in the transition table |
-| 409 | `flag_conflict` | Both awaiting flags set to true simultaneously |
-| 409 | `not_awaiting_confirmation` | Revise or approve when no CONFIRM gate active |
-| 409 | `not_awaiting_sharding_approval` | Sharding action when no proposal pending |
-| 409 | `halt_not_cycling` | Halt when system state is not `cycling` |
+| 409 | `claim_conflict` | A different active run already claims the target artifact (rejected immediately, not retried) |
+| 409 | `stale_claim_commit` | Artifact version changed since the claim was acquired — halts the run, no auto-retry |
+| 409 | `not_awaiting_checkpoint` | Revise or approve when no checkpoint is active for this run |
+| 409 | `halt_not_active` | Halt when the run's status is not `active` |
 | 409 | `halt_not_discovering` | Halt discovery when not `discovering` |
 | 409 | `chat_not_open` | Send message when no chat session |
 | 409 | `task_already_claimed` | Claim task that is already in_progress |
@@ -296,7 +301,7 @@ canonical error catalogue in [../reference/error-codes.md](../reference/error-co
 WebSocket errors are emitted as `error` events with the `ErrorPayload`
 structure defined in [../reference/websocket-events.md](../reference/websocket-events.md) §8.
 Recoverable errors (`recoverable: true`) emit a warning event and continue.
-Unrecoverable errors (`recoverable: false`) emit the event and halt the cycle.
+Unrecoverable errors (`recoverable: false`) emit the event and halt the workflow run.
 
 ### Startup validation failures
 
@@ -309,9 +314,9 @@ state — all checks must pass.
 ### Recovery behavior
 
 REST 4xx errors return `APIError` with no side effects. REST 5xx errors log the
-full stack trace and halt the cycle if active and critical. Connection loss
-during a command triggers rollback — `map.yaml` is never left in a partial-write
-state (atomic writes via temp file + rename).
+full stack trace and halt the workflow run if active and critical. Connection
+loss during a command triggers rollback — `map.yaml` is never left in a
+partial-write state (atomic writes via temp file + rename).
 
 ---
 
@@ -338,12 +343,12 @@ state (atomic writes via temp file + rename).
    state. Interfaces never compute state locally — they query the daemon.
    The daemon's `map.yaml` is the source of truth.
 
-7. **Flag exclusivity.** At most one of `awaiting_confirmation` and
-   `awaiting_sharding_approval` may be `true` at any time. The daemon
-   enforces this on `PATCH /flags` and on internal flag mutations.
+7. **Checkpoint exclusivity.** A run can be paused at most one checkpoint at
+   a time — `WorkflowRun.awaiting_checkpoint` is a single nullable pointer,
+   not a set of flags, so exclusivity holds by construction (DDR-031).
 
-8. **Flag scope.** Both flags are scoped to the active cycle. They reset to
-   `false` when the cycle ends (transition to `halted`, `complete`, or `idle`).
+8. **Checkpoint scope.** `awaiting_checkpoint` is scoped to the run. It
+   resets to `null` when the run ends (transition to `halted` or `complete`).
 
 9. **Chat independence.** Chat session lifecycle is independent of system
    state. Opening, using, and closing chat never blocks, delays, or cancels
@@ -367,12 +372,13 @@ state (atomic writes via temp file + rename).
 
 14. **Graceful shutdown.** `SIGTERM` triggers graceful shutdown: the daemon
     stops accepting new connections, completes in-flight requests, emits
-    `system.shutdown` event, and exits. In-flight cycle state is preserved
-    in `map.yaml` for crash recovery.
+    `system.shutdown` event, and exits. In-flight workflow run state is
+    preserved in `map.yaml` for crash recovery.
 
-15. **Crash recovery.** On restart, if `map.yaml → meta.status` is `cycling`,
-    the daemon resumes from the last committed DAG node. If an awaiting flag
-    is set, it re-enters decision mode at the correct gate. No data is lost.
+15. **Crash recovery.** On restart, every `WorkflowRun` with `status: active`
+    resumes from its last committed step. If `awaiting_checkpoint` is set on
+    a run, the daemon re-enters decision mode at that checkpoint. No data is
+    lost.
 
 ---
 

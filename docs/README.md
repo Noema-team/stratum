@@ -17,7 +17,7 @@ Post-vision architecture docs. These refine, override, and prepare-for-implement
 
 ## Reading order
 
-1. `overview/` — build mental models (`what-is-sle.md` → `architecture.md` → `cycle-model.md` → `agent-roles.md`)
+1. `overview/` — build mental models (`what-is-sle.md` → `architecture.md` → `workflow-model.md` → `agent-roles.md`)
 2. `decisions/DECISION-BRIEFS.md` — understand key decisions (archival pre-session material)
 3. `specs/` — implementation reference
 4. `research/` — external system architecture deep dives (Hermes, browser-harness, Space Agent)

@@ -1,14 +1,14 @@
 # Run Artifacts
 
 **Type:** spec · **Status:** draft · **Updated:** 2026-04-22
-**Depends on:** DDR-025, types.md §5–6, dag-execution.md §Run artifacts, validation.md §Sub-phases
+**Depends on:** DDR-025, DDR-031, types.md §5–6, workflow-execution.md §Run artifacts, validation.md §Sub-phases
 **Source material:** SLE-022 (run artifacts & AI context pack)
 
 ## Overview
 
 Every validation run produces a structured output directory containing per-category
 results, metrics, traces, service logs, and a machine-generated narrative called
-`context-pack.md`. The gate node assembles the narrative deterministically from
+`context-pack.md`. The validation review step assembles the narrative deterministically from
 structured outputs — no LLM call, no latency. On retry iterations the context
 manager injects the narrative as Component 5 so the Planner and Debugger
 understand *why* something failed and *where* to look.
@@ -26,7 +26,7 @@ for historical execution traces.
 
 **Canonical types:** [../reference/types.md](../reference/types.md) §5–6.
 **Artifact registry:** [../reference/artifact-registry.md](../reference/artifact-registry.md) §Execution phase.
-**DAG integration:** [dag-execution.md](dag-execution.md) §Run artifacts.
+**Workflow run integration:** [workflow-execution.md](workflow-execution.md) §Run artifacts.
 **Context manager:** [context-manager.md](context-manager.md) §Component 5.
 
 ---
@@ -55,9 +55,12 @@ for historical execution traces.
       {service}.log                ← service logs captured during execution
 ```
 
-Run ID format: `c{cycle}-i{iteration}-{ISO8601}` — e.g.
-`c4-i2-2026-04-07T18-42-10Z`. ISO timestamps replace `:` with `-` for
-filesystem safety.
+Run ID format: `{workflow_run_id}-i{iteration}-{ISO8601}` — e.g.
+`full-build-3-i2-2026-04-07T18-42-10Z`, where `full-build-3` is the parent
+`WorkflowRun.run_id` (DDR-031). ISO timestamps replace `:` with `-` for
+filesystem safety. This per-iteration validation-run id is distinct from the
+stable `WorkflowRun.run_id` used for API addressing across the run's whole
+lifetime — see [workflow-execution.md](workflow-execution.md) §Data model.
 
 Runs are retained for the lifetime of the project. The context manager reads
 only the most recent run (via `map.yaml → last_run.run_dir`). Old runs are
@@ -68,7 +71,7 @@ available for the graph dashboard and historical queries.
 ```typescript
 interface RunManifest {
   run_id: string
-  cycle: number
+  workflow_run_id: string
   iteration: number
   timestamp: string
   outcome: 'passed' | 'failed'
@@ -94,7 +97,7 @@ Component 5. It is a complete index of everything the run produced.
 | Field | Always present | Description |
 |---|---|---|
 | `run_id` | Yes | Unique run identifier matching directory name |
-| `cycle` / `iteration` | Yes | Position in cycle lifecycle |
+| `workflow_run_id` / `iteration` | Yes | Parent `WorkflowRun.run_id` and position within its iteration lifecycle |
 | `outcome` | Yes | `passed` or `failed` |
 | `failed_categories` | Yes | Empty array on pass |
 | `passed_categories` | Yes | All categories on pass |
@@ -164,7 +167,7 @@ task constraints.
 
 ```typescript
 interface FailureReport {
-  cycle: number
+  workflow_run_id: string
   iteration: number
   run_dir: string
   run_id: string
@@ -182,8 +185,8 @@ manager reads the run directory directly via `run_dir`.
 
 ```yaml
 last_run:
-  run_id: "c4-i2-2026-04-07T18-42-10Z"
-  run_dir: ".sle/runs/c4-i2-2026-04-07T18-42-10Z"
+  run_id: "full-build-3-i2-2026-04-07T18-42-10Z"
+  run_dir: ".sle/runs/full-build-3-i2-2026-04-07T18-42-10Z"
   outcome: "failed"
   failed_categories: ["performance", "security"]
   quick_summary: "2/3 categories passed. Performance: p95=340ms..."
@@ -218,7 +221,7 @@ path from `map.yaml → last_run`.
 ### Run lifecycle
 
 ```
-1. EXEC node starts
+1. execute step starts
    │
    ▼
 2. Docker container created with $RUN_DIR env var
@@ -236,43 +239,43 @@ path from `map.yaml → last_run`.
    │    c. Scripts write to $RUN_DIR per RunArtifactSchema
    │
    ▼
-5. Gate node collects all outputs
+5. Validation review step collects all outputs
    │
    ▼
-6. Gate generates manifest.json
+6. Review step generates manifest.json
    │  - Enumerate all files written to run directory
    │  - Build artifact path map
    │  - Compute quick_summary from structured results
    │  - Set outcome based on category pass/fail
    │
    ▼
-7. Gate generates context-pack.md
+7. Review step generates context-pack.md
    │  - Section by section from manifest + raw content
    │  - Failed categories first (detailed), then passed (summary)
    │  - Deterministic — no LLM call
    │
    ▼
-8. Gate evaluates pass/fail (pure function)
+8. Review step evaluates pass/fail (pure function)
    │
    ├── PASS → FailureReport not needed
    │          Update map.yaml → last_run
-   │          Proceed to EVALUATE node
+   │          Proceed to the produce step that generates the verdict (EVALUATE)
    │
    └── FAIL → Construct FailureReport with run_dir pointer
               Update map.yaml → last_run
-              Proceed to DEBUG node
+              Proceed to the failure-path produce step (DEBUG), per on_fail routing
 ```
 
 ### context-pack.md generation
 
-The gate node generates `context-pack.md` section by section. It is always
-present even if the run had errors.
+The validation review step generates `context-pack.md` section by section. It
+is always present even if the run had errors.
 
 **Section order and content:**
 
 | Section | Content | When present |
 |---|---|---|
-| Summary header | Cycle/iteration, timestamp, outcome, category counts | Always |
+| Summary header | Workflow run/iteration, timestamp, outcome, category counts | Always |
 | Per-category — failed | Test results, metrics, trace excerpt, log excerpt | Failed categories first |
 | Per-category — passed | Single line: test count only | Passed categories second |
 | Static analysis | Lint errors/warnings, typecheck status, complexity | Always |
@@ -292,7 +295,7 @@ about what is already working.
 **Example (2 failed, 1 passed):**
 
 ```markdown
-# Run context — Cycle 4, Iteration 2
+# Run context — full-build-3, Iteration 2
 Generated: 2026-04-07T18:42:10Z | Outcome: FAILED
 
 ## Summary
@@ -446,16 +449,16 @@ WebSocket events as artifacts are produced:
 The Overview panel and graph dashboard listen to these events for live
 progress updates during execution.
 
-### DAG node impact
+### Step impact
 
-| DAG node | Change from SLE-022 |
+| Step (kind) | Change from SLE-022 |
 |---|---|
-| **BUILD** | Receives run_artifact schema for active categories in task component; generates scripts that write to `$RUN_DIR` |
-| **EXEC** | Scripts execute with `RUN_DIR` env var set; write artifacts to run directory during execution |
-| **VALIDATION_GATE** | After evaluating results, generates `manifest.json` and `context-pack.md`; `FailureReport` carries `run_dir` instead of inline content |
-| **SNAPSHOT** | Run directory path included in version snapshot; previous run dirs preserved; `map.yaml → last_run` updated |
+| **BUILD** (produce) | Receives run_artifact schema for active categories in task component; generates scripts that write to `$RUN_DIR` |
+| **EXEC** (execute) | Scripts execute with `RUN_DIR` env var set; write artifacts to run directory during execution |
+| **VALIDATION_GATE** (review) | After evaluating results, generates `manifest.json` and `context-pack.md`; `FailureReport` carries `run_dir` instead of inline content |
+| **SNAPSHOT** (commit) | Run directory path included in version snapshot; previous run dirs preserved; `map.yaml → last_run` updated |
 
-The context manager changes are in the assembly path only — no DAG node
+The context manager changes are in the assembly path only — no step kind
 change is required for context assembly.
 
 ---
@@ -473,9 +476,9 @@ existing endpoints:
 
 | Endpoint | Run artifact usage |
 |---|---|
-| `GET /api/v2/system/state` | `last_run` summary in response when cycle is active |
-| `GET /api/v2/cycles/{cycle_id}` | Iteration count and gate result reference run data |
-| `GET /api/v2/cycles/{cycle_id}/dispatch` | `category_progress` reflects current run state |
+| `GET /api/v2/system/state` | `last_run` summary in response when a workflow run is active |
+| `GET /api/v2/workflow-runs/{run_id}` | Iteration count and gate result reference run data |
+| `GET /api/v2/workflow-runs/{run_id}/dispatch` | `category_progress` reflects current run state |
 | `GET /api/v2/reports/latest` | Report includes gate result from latest run |
 | `GET /api/v2/artifacts/{id}` | Run-scoped artifacts accessible if promoted to project scope |
 
@@ -498,9 +501,9 @@ Full event schema: [../reference/websocket-events.md](../reference/websocket-eve
 | Error | Condition | Response |
 |---|---|---|
 | `required_artifact_missing` | A `required: true` artifact not produced by EXEC scripts | Category treated as failed. Manifest records missing path. |
-| `manifest_write_failed` | Filesystem error writing `manifest.json` | Halt cycle. Preserve partial run directory. |
-| `context_pack_write_failed` | Filesystem error writing `context-pack.md` | Halt cycle. Manifest still valid. |
-| `run_dir_creation_failed` | Cannot create `.sle/runs/{run_id}/` | Halt cycle. EXEC cannot run without run directory. |
+| `manifest_write_failed` | Filesystem error writing `manifest.json` | Halt the workflow run. Preserve partial run directory. |
+| `context_pack_write_failed` | Filesystem error writing `context-pack.md` | Halt the workflow run. Manifest still valid. |
+| `run_dir_creation_failed` | Cannot create `.sle/runs/{run_id}/` | Halt the workflow run. EXEC cannot run without run directory. |
 | `static_analysis_timeout` | Static analysis exceeds timeout | Skip remaining sub-phases. Write partial manifest. |
 | `script_output_invalid` | EXEC output does not conform to `CategoryRunResult` | Synthetic failure entry. Log schema errors. |
 
@@ -510,14 +513,14 @@ Full event schema: [../reference/websocket-events.md](../reference/websocket-eve
 |---|---|---|
 | `run_artifact_missing` | Referenced run artifact does not exist | Load what is available. Log warning. |
 | `context_pack_parse_error` | `context-pack.md` is malformed or empty | Fall back to `quick_summary`. Log warning. |
-| `run_dir_not_found` | `last_run.run_dir` points to non-existent directory | Halt cycle. State inconsistent. Log critical. |
+| `run_dir_not_found` | `last_run.run_dir` points to non-existent directory | Halt the workflow run. State inconsistent. Log critical. |
 | `manifest_corrupt` | `manifest.json` fails to parse | Fall back to directory listing. Log warning. |
 
 ### Gate evaluation errors
 
 | Error | Condition | Response |
 |---|---|---|
-| `gate_evaluation_error` | Unexpected schema in category results | Halt cycle. Log full category result. |
+| `gate_evaluation_error` | Unexpected schema in category results | Halt the workflow run. Log full category result. |
 | `partial_run` | EXEC interrupted before all categories completed | Evaluate completed categories only. Incomplete treated as failed. |
 
 ### Recovery behavior
@@ -532,7 +535,7 @@ raw outputs are preserved. On daemon restart, if `last_run` exists but
 ## Constraints
 
 1. **Deterministic narrative.** `context-pack.md` is generated by code (the
-   gate node), not by an LLM call. It is consumed *before* the next LLM call
+   validation review step), not by an LLM call. It is consumed *before* the next LLM call
    — making it an LLM artifact would add latency and create a circular
    dependency on the failure path.
 
@@ -558,12 +561,13 @@ raw outputs are preserved. On daemon restart, if `last_run` exists but
    test failures and metrics over traces and logs.
 
 7. **Single run per iteration.** Each iteration produces exactly one run
-   directory. The run ID encodes cycle and iteration numbers. There are no
-   partial or intermediate runs within an iteration.
+   directory. The run ID encodes the parent `WorkflowRun.run_id` and the
+   iteration number. There are no partial or intermediate runs within an
+   iteration.
 
-8. **Run ID encoding.** Run IDs use the format `c{cycle}-i{iteration}-{ISO}`
-   with colons replaced by hyphens. The ID is filesystem-safe and
-   human-sortable.
+8. **Run ID encoding.** Run IDs use the format
+   `{workflow_run_id}-i{iteration}-{ISO}` with colons replaced by hyphens.
+   The ID is filesystem-safe and human-sortable.
 
 9. **Artifact references (G25).** All artifact slice references in context
    assembly use typed prefixes: `doc:{key}` or `node:{group}:{key}` per
