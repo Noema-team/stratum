@@ -4,6 +4,17 @@ import type { RunArtifactManager } from './run-artifacts.js';
 import type { FailureCategory } from './types.js';
 import path from 'path';
 import { promises as fs } from 'fs';
+import {
+  type Sandbox,
+  type SandboxKind,
+  type SandboxRunResult,
+  type SpawnFn,
+  HostSandbox,
+  defaultSandboxConfig,
+  resolveSandbox,
+} from './sandbox.js';
+
+export type { SpawnFn };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,9 +25,22 @@ export interface ExecResult {
   stderr: string;
   timed_out: boolean;
   success: boolean;
+  isolation?: 'docker' | 'host';
+  oom_killed?: boolean;
 }
 
-export type SpawnFn = typeof nodeSpawn;
+/** EXEC configuration read from `map.exec`. */
+interface ExecConfig {
+  command?: string;
+  timeout_ms?: number;
+  sandbox?: SandboxKind;
+  image?: string;
+  network?: 'none' | 'bridge';
+  read_only_project?: boolean;
+  memory_mb?: number;
+  cpu_cores?: number;
+  pids_max?: number;
+}
 
 // ─── Truncation limit for failure reports (not artifact files) ─────────────────
 
@@ -30,18 +54,30 @@ function truncate(s: string): string {
 // ─── ExecServiceReal ──────────────────────────────────────────────────────────
 
 export class ExecServiceReal {
+  private injectedSandbox?: Sandbox;
+  private legacySpawn?: SpawnFn;
+
+  /**
+   * @param runner Optional execution override:
+   *   - a {@link SpawnFn} → forces host execution with that spawn (legacy/tests);
+   *   - a {@link Sandbox} → runs through it directly;
+   *   - omitted → the sandbox is resolved from `map.exec` config (docker by
+   *     default when an image is available, else host).
+   */
   constructor(
     private mapManager: RuntimeMapManager,
     private runArtifacts: RunArtifactManager,
     private projectRoot: string,
-    private spawnFn: SpawnFn = nodeSpawn
-  ) {}
+    runner?: SpawnFn | Sandbox
+  ) {
+    if (typeof runner === 'function') this.legacySpawn = runner as SpawnFn;
+    else if (runner) this.injectedSandbox = runner;
+  }
 
   async run(cycleNumber: number, iteration: number): Promise<ExecResult> {
     const map = await this.mapManager.read();
-    const execConfig = (map as unknown as Record<string, unknown>).exec as { command?: string; timeout_ms?: number } | undefined;
-    const command = execConfig?.command
-      ?? (map.meta as { exec_command?: string }).exec_command;
+    const execConfig = ((map as unknown as Record<string, unknown>).exec ?? {}) as ExecConfig;
+    const command = execConfig.command ?? (map.meta as { exec_command?: string }).exec_command;
 
     // No command configured → no-op success
     if (!command) {
@@ -50,42 +86,27 @@ export class ExecServiceReal {
         exit_code: 0,
         timed_out: false,
       } as never);
-      await this.mapManager.update((m) => ({
-        ...m,
-        meta: {
-          ...m.meta,
-          dag: m.meta.dag
-            ? { ...m.meta.dag, exec_result: { exit_code: 0, timed_out: false } }
-            : undefined,
-        },
-      }));
+      await this.writeExecResult(0, false);
       return { next_node: 'VALIDATION_GATE', exit_code: 0, stdout: '', stderr: '', timed_out: false, success: true };
     }
 
-    const timeoutMs = execConfig?.timeout_ms ?? 120_000;
+    const timeoutMs = execConfig.timeout_ms ?? 120_000;
 
     await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
       status: 'running',
       started_at: new Date().toISOString(),
     } as never);
 
-    let exitCode = 0;
-    let timedOut = false;
-    let stdout = '';
-    let stderr = '';
+    // ── Resolve the execution sandbox ────────────────────────────────────────
+    const { sandbox, fallbackReason } = await this.resolveExecSandbox(execConfig);
 
-    try {
-      const result = await this.spawnCommand(command, this.projectRoot, timeoutMs, this.spawnFn);
-      exitCode = result.exitCode;
-      timedOut = result.timedOut;
-      stdout = result.stdout;
-      stderr = result.stderr;
-    } catch (err) {
-      // Spawn error (e.g. ENOENT binary not found)
-      stderr = err instanceof Error ? err.message : String(err);
-      exitCode = 1;
+    // Strict docker mode: fail closed rather than silently running on the host.
+    if (this.usesConfig() && execConfig.sandbox === 'docker' && fallbackReason) {
+      return this.failStrictDocker(cycleNumber, iteration, fallbackReason);
     }
 
+    const outcome: SandboxRunResult = await sandbox.run({ command, cwd: this.projectRoot, timeoutMs });
+    const { exitCode, stdout, stderr, timedOut, oomKilled, isolation } = outcome;
     const success = exitCode === 0 && !timedOut;
 
     // Write stdout/stderr artifacts
@@ -96,25 +117,19 @@ export class ExecServiceReal {
     await fs.writeFile(path.join(execDir, 'stdout.txt'), stdout, 'utf-8');
     await fs.writeFile(path.join(execDir, 'stderr.txt'), stderr, 'utf-8');
 
-    // Update map with exec result for ValidationGate to read
-    await this.mapManager.update((m) => ({
-      ...m,
-      meta: {
-        ...m.meta,
-        dag: m.meta.dag
-          ? { ...m.meta.dag, exec_result: { exit_code: exitCode, timed_out: timedOut } }
-          : undefined,
-      },
-    }));
+    await this.writeExecResult(exitCode, timedOut, isolation, oomKilled);
 
     if (!success) {
+      const reason = timedOut
+        ? `Command timed out after ${timeoutMs}ms`
+        : oomKilled
+          ? `Command killed (out of memory) with code ${exitCode}`
+          : `Command exited with code ${exitCode}`;
       const failedCategories: FailureCategory[] = [
         {
           name: 'exec_failure',
           method: 'executable' as const,
-          error_summary: timedOut
-            ? `Command timed out after ${timeoutMs}ms`
-            : `Command exited with code ${exitCode}`,
+          error_summary: reason,
           test_output: truncate(stdout + (stderr ? `\nSTDERR:\n${stderr}` : '')),
         },
       ];
@@ -123,7 +138,7 @@ export class ExecServiceReal {
         iteration,
         run_dir: `.sle/runs/${cycleNumber}-${iteration}`,
         run_id: `${cycleNumber}-${iteration}`,
-        quick_summary: timedOut ? 'EXEC timed out' : `EXEC failed with exit code ${exitCode}`,
+        quick_summary: `${timedOut ? 'EXEC timed out' : `EXEC failed with exit code ${exitCode}`} (isolation: ${isolation})`,
         failed_categories: failedCategories,
         passed_categories: [],
       });
@@ -147,44 +162,96 @@ export class ExecServiceReal {
       stderr,
       timed_out: timedOut,
       success,
+      isolation,
+      oom_killed: oomKilled,
     };
   }
 
-  private spawnCommand(
-    command: string,
-    cwd: string,
-    timeoutMs: number,
-    spawnFn: SpawnFn
-  ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
-    return new Promise((resolve, reject) => {
-      const [cmd, ...args] = command.split(/\s+/);
-      const child = spawnFn(cmd, args, {
-        cwd,
-        env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
-        shell: false,
-      });
+  // ─── Sandbox resolution ───────────────────────────────────────────────────
 
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
+  private usesConfig(): boolean {
+    return !this.injectedSandbox && !this.legacySpawn;
+  }
 
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGTERM');
-      }, timeoutMs);
+  private async resolveExecSandbox(
+    execConfig: ExecConfig
+  ): Promise<{ sandbox: Sandbox; fallbackReason?: string }> {
+    if (this.injectedSandbox) return { sandbox: this.injectedSandbox };
+    if (this.legacySpawn) return { sandbox: new HostSandbox(this.legacySpawn) };
 
-      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        resolve({ exitCode: code ?? 1, stdout, stderr, timedOut });
-      });
+    const config = defaultSandboxConfig({
+      kind: execConfig.sandbox ?? 'auto',
+      image: execConfig.image,
+      network: execConfig.network,
+      read_only_project: execConfig.read_only_project,
+      limits: {
+        memory_mb: execConfig.memory_mb ?? 512,
+        cpu_cores: execConfig.cpu_cores ?? 1.0,
+        pids_max: execConfig.pids_max ?? 256,
+      },
     });
+    return resolveSandbox(config, nodeSpawn);
+  }
+
+  private async failStrictDocker(
+    cycleNumber: number,
+    iteration: number,
+    reason: string
+  ): Promise<ExecResult> {
+    await this.writeExecResult(1, false);
+    await this.runArtifacts.writeFailureReport(cycleNumber, iteration, {
+      cycle: cycleNumber,
+      iteration,
+      run_dir: `.sle/runs/${cycleNumber}-${iteration}`,
+      run_id: `${cycleNumber}-${iteration}`,
+      quick_summary: `EXEC halted: docker sandbox required but unavailable (${reason})`,
+      failed_categories: [
+        {
+          name: 'exec_environment',
+          method: 'executable' as const,
+          error_summary: `docker_unavailable: ${reason}`,
+        },
+      ],
+      passed_categories: [],
+    });
+    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+      status: 'failed',
+      exit_code: 1,
+      timed_out: false,
+    } as never);
+    return {
+      next_node: 'VALIDATION_GATE',
+      exit_code: 1,
+      stdout: '',
+      stderr: `docker sandbox unavailable: ${reason}`,
+      timed_out: false,
+      success: false,
+      isolation: 'docker',
+    };
+  }
+
+  private async writeExecResult(
+    exitCode: number,
+    timedOut: boolean,
+    isolation?: 'docker' | 'host',
+    oomKilled?: boolean
+  ): Promise<void> {
+    await this.mapManager.update((m) => ({
+      ...m,
+      meta: {
+        ...m.meta,
+        dag: m.meta.dag
+          ? {
+              ...m.meta.dag,
+              exec_result: {
+                exit_code: exitCode,
+                timed_out: timedOut,
+                ...(isolation ? { isolation } : {}),
+                ...(oomKilled ? { oom_killed: oomKilled } : {}),
+              },
+            }
+          : undefined,
+      },
+    }));
   }
 }
