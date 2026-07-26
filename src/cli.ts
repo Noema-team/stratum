@@ -6,6 +6,7 @@ import { DiscoveryService } from './discovery-service.js';
 import { CycleService } from './cycle-service.js';
 import { ScopingService } from './scoping-service.js';
 import { ConfirmService } from './confirm-service.js';
+import { TagService } from './tag-service.js';
 import { AgentRunner } from './agent-runner.js';
 import { ContextManager } from './context-manager.js';
 import { IntakeService } from './intake-service.js';
@@ -223,7 +224,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
     llmProvider = new DynamicLLMProvider(fallbackProvider);
   }
   const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
-  const scopingService = new ScopingService(agentRunner, mapManager, projectRoot);
+  const tagService = new TagService(mapManager);
+  const scopingService = new ScopingService(agentRunner, mapManager, projectRoot, undefined, tagService);
   const confirmService = new ConfirmService(mapManager, runArtifacts);
   
   const linkIndex = new LinkIndexManager(projectRoot);
@@ -241,6 +243,7 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       cycleService,
       scopingService,
       confirmService,
+      tagService,
       intakeService,
       shardingService,
       llmProvider,

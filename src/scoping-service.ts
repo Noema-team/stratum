@@ -4,6 +4,7 @@ import yaml from 'js-yaml';
 import type { AgentRunner } from './agent-runner.js';
 import type { CycleStateContext } from './context-manager.js';
 import type { RuntimeMapManager } from './runtime-map.js';
+import type { TagService } from './tag-service.js';
 
 export interface ScopingBeginResult {
   draft: string;
@@ -27,7 +28,8 @@ export class ScopingService {
     private agentRunner: AgentRunner,
     private mapManager: RuntimeMapManager,
     private projectRoot: string,
-    fsModule?: typeof import('fs').promises
+    fsModule?: typeof import('fs').promises,
+    private tagService?: TagService
   ) {
     this.fs = fsModule ?? nodeFsPromises;
   }
@@ -40,10 +42,17 @@ export class ScopingService {
     this.pendingResponse = null;
     this.roundCount = 0;
 
+    const taggedRefs = this.tagService
+      ? (await this.tagService.getTagged('next-cycle')).map((t) => t.target_ref)
+      : [];
+
     const scopingState: CycleStateContext = {
       ...cycleState,
       current_node: 'SCOPING',
       facilitator_mode: 'scoping',
+      ...(taggedRefs.length > 0
+        ? { ephemeral: { ...cycleState.ephemeral, next_cycle_tagged_refs: taggedRefs.join(', ') } }
+        : {}),
     };
     const result = await this.agentRunner.run('SCOPING', scopingState);
 
@@ -137,6 +146,10 @@ export class ScopingService {
       ...m,
       cycle: { ...m.cycle, awaiting_scoping: false },
     }));
+
+    if (this.tagService) {
+      await this.tagService.clearTag('next-cycle');
+    }
 
     this.pendingResponse = null;
     this.roundCount = 0;

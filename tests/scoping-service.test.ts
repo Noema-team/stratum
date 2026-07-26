@@ -4,6 +4,7 @@ import { mkdtempSync } from 'fs';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { ScopingService } from '../src/scoping-service.js';
+import { TagService } from '../src/tag-service.js';
 import type { AgentRunner, AgentRunResult } from '../src/agent-runner.js';
 import type { CycleStateContext } from '../src/context-manager.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
@@ -299,6 +300,70 @@ async function testApproveClearsPendingResponse() {
   assert.strictEqual(svc.getPendingResponse(), null);
 }
 
+async function testBeginLoadsNextCycleTaggedRefsIntoEphemeral() {
+  const root = makeTempDir();
+  await fs.mkdir(join(root, 'docs'), { recursive: true });
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+
+  const mgr = new InMemoryMapManager();
+  const tagService = new TagService(mgr);
+  await tagService.addTag({ prefix: 'next-cycle', target_ref: 'node:rate-limiting' });
+  await tagService.addTag({ prefix: 'next-cycle', target_ref: 'doc:architecture' });
+
+  const runner = new MockAgentRunner({
+    success: true, artifacts_written: [], tokens_used: 10, duration_ms: 5, raw_output_path: '',
+  });
+  const svc = new ScopingService(runner, mgr, root, undefined, tagService);
+
+  await svc.begin(1, 1, makeCycleState());
+
+  const state = runner.calls[0].state;
+  assert.ok(state.ephemeral?.next_cycle_tagged_refs, 'ephemeral context should include tagged refs');
+  assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('node:rate-limiting'));
+  assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('doc:architecture'));
+}
+
+async function testBeginWithoutTagServiceOmitsTaggedContext() {
+  const root = makeTempDir();
+  await fs.mkdir(join(root, 'docs'), { recursive: true });
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+
+  const mgr = new InMemoryMapManager();
+  const runner = new MockAgentRunner({
+    success: true, artifacts_written: [], tokens_used: 10, duration_ms: 5, raw_output_path: '',
+  });
+  const svc = new ScopingService(runner, mgr, root);
+
+  await svc.begin(1, 1, makeCycleState());
+
+  assert.strictEqual(runner.calls[0].state.ephemeral, undefined);
+}
+
+async function testApproveClearsNextCycleTags() {
+  const root = makeTempDir();
+  await fs.mkdir(join(root, 'docs'), { recursive: true });
+  await fs.writeFile(
+    join(root, 'docs', 'cycle-charter.md'),
+    '# Charter\n\n## Scope\nWidgets.\n\n## Purpose\nShip widgets.',
+    'utf-8'
+  );
+
+  const mgr = new InMemoryMapManager();
+  const tagService = new TagService(mgr);
+  await tagService.addTag({ prefix: 'next-cycle', target_ref: 'node:rate-limiting' });
+  await tagService.addTag({ prefix: 'area', target_ref: 'node:security', value: 'security' });
+
+  const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
+  const svc = new ScopingService(runner, mgr, root, undefined, tagService);
+
+  await svc.approve(1, 1);
+
+  const nextCycleTags = await tagService.getTagged('next-cycle');
+  const areaTags = await tagService.getTagged('area');
+  assert.strictEqual(nextCycleTags.length, 0, '#next-cycle tags should be cleared after approval');
+  assert.strictEqual(areaTags.length, 1, 'other prefix tags should be untouched');
+}
+
 async function testFullScopingLifecycle() {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
@@ -427,6 +492,9 @@ async function runAllTests() {
     { name: 'processResponse: increments round count', fn: testProcessResponseIncrementsRoundCount },
     { name: 'processResponse: throws scoping_timeout when max rounds exceeded', fn: testProcessResponseThrowsWhenMaxRoundsExceeded },
     { name: 'submitResponse: with cycleState runs facilitator with response in ephemeral context', fn: testSubmitResponseWithCycleStateRunsFacilitator },
+    { name: 'begin: loads #next-cycle tagged refs into ephemeral context', fn: testBeginLoadsNextCycleTaggedRefsIntoEphemeral },
+    { name: 'begin: without tagService omits tagged context', fn: testBeginWithoutTagServiceOmitsTaggedContext },
+    { name: 'approve: clears #next-cycle tags but leaves other prefixes', fn: testApproveClearsNextCycleTags },
     { name: 'full scoping lifecycle: begin → getDraft → response → approve', fn: testFullScopingLifecycle },
   ];
 

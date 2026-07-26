@@ -119,6 +119,35 @@ class MockScopingService {
   getPendingResponse() { return this._pendingResponse; }
 }
 
+class MockTagService {
+  private tags: Array<{ prefix: string; target_ref: string; value?: string; source: string; applied_at: string }> = [];
+
+  async addTag(params: { prefix: string; target_ref: string; value?: string; source?: string }) {
+    const tag = {
+      prefix: params.prefix,
+      target_ref: params.target_ref,
+      value: params.value,
+      source: params.source ?? 'user',
+      applied_at: '2026-06-16T00:00:00Z',
+    };
+    this.tags.push(tag);
+    return tag;
+  }
+
+  async getTagged(prefix: string) {
+    return this.tags.filter((t) => t.prefix === prefix);
+  }
+
+  async removeTag(targetRef: string, prefix: string, value?: string) {
+    const idx = this.tags.findIndex(
+      (t) => t.target_ref === targetRef && t.prefix === prefix && (value === undefined || t.value === value)
+    );
+    if (idx === -1) return false;
+    this.tags.splice(idx, 1);
+    return true;
+  }
+}
+
 class MockConfirmService {
   private _awaiting = false;
   private _revision = 0;
@@ -187,6 +216,7 @@ function startServer(): Promise<DaemonServer> {
   const cycleService = new MockCycleService() as unknown as Record<string, unknown>;
   const scopingService = new MockScopingService() as unknown as Record<string, unknown>;
   const confirmService = new MockConfirmService() as unknown as Record<string, unknown>;
+  const tagService = new MockTagService() as unknown as Record<string, unknown>;
   return server.start({ port: 0 }, {
     stateAPI,
     initService,
@@ -194,6 +224,7 @@ function startServer(): Promise<DaemonServer> {
     cycleService: cycleService as never,
     scopingService: scopingService as never,
     confirmService: confirmService as never,
+    tagService: tagService as never,
     pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
   }).then(() => server);
 }
@@ -470,6 +501,71 @@ async function testScopingApproveFailsWithNoDraft() {
   await server.stop();
 }
 
+async function testTagsAddAndList() {
+  const server = await startServer();
+  const addRes = await makeRequest(server, 'POST', '/api/v2/tags', {
+    prefix: 'next-cycle',
+    target_ref: 'node:rate-limiting',
+  });
+  assert.strictEqual(addRes.statusCode, 200);
+  const addBody = addRes.body as { ok: boolean; data: { tag: { prefix: string; target_ref: string } } };
+  assert.strictEqual(addBody.ok, true);
+  assert.strictEqual(addBody.data.tag.prefix, 'next-cycle');
+  assert.strictEqual(addBody.data.tag.target_ref, 'node:rate-limiting');
+
+  const listRes = await makeRequest(server, 'GET', '/api/v2/tags?tag=next-cycle');
+  assert.strictEqual(listRes.statusCode, 200);
+  const listBody = listRes.body as { ok: boolean; data: { tags: unknown[]; count: number } };
+  assert.strictEqual(listBody.data.count, 1);
+  await server.stop();
+}
+
+async function testTagsListInvalidPrefix() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/tags?tag=bogus');
+  assert.strictEqual(res.statusCode, 400);
+  await server.stop();
+}
+
+async function testTagsAddInvalidPayload() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'POST', '/api/v2/tags', { prefix: 'next-cycle' });
+  assert.strictEqual(res.statusCode, 422);
+  await server.stop();
+}
+
+async function testTagsDelete() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/tags', {
+    prefix: 'next-cycle',
+    target_ref: 'node:rate-limiting',
+  });
+  const delRes = await makeRequest(
+    server,
+    'DELETE',
+    `/api/v2/tags/${encodeURIComponent('node:rate-limiting')}?tag=next-cycle`
+  );
+  assert.strictEqual(delRes.statusCode, 200);
+  const delBody = delRes.body as { ok: boolean; data: { deleted: boolean } };
+  assert.strictEqual(delBody.data.deleted, true);
+
+  const listRes = await makeRequest(server, 'GET', '/api/v2/tags?tag=next-cycle');
+  const listBody = listRes.body as { data: { count: number } };
+  assert.strictEqual(listBody.data.count, 0);
+  await server.stop();
+}
+
+async function testTagsDeleteNotFound() {
+  const server = await startServer();
+  const res = await makeRequest(
+    server,
+    'DELETE',
+    `/api/v2/tags/${encodeURIComponent('node:nonexistent')}?tag=next-cycle`
+  );
+  assert.strictEqual(res.statusCode, 404);
+  await server.stop();
+}
+
 async function testConfirmApprove() {
   const server = await startServer();
   // Gate must be set first so MockConfirmService.approve() doesn't throw
@@ -577,6 +673,11 @@ async function runAllTests() {
     { name: 'POST /api/v2/cycles/scoping/response records response', fn: testScopingSubmitResponse },
     { name: 'POST /api/v2/cycles/scoping/approve returns charter path', fn: testScopingApprove },
     { name: 'POST /api/v2/cycles/scoping/approve 409 with no draft', fn: testScopingApproveFailsWithNoDraft },
+    { name: 'POST /api/v2/tags + GET /api/v2/tags lists tagged refs', fn: testTagsAddAndList },
+    { name: 'GET /api/v2/tags with invalid prefix returns 400', fn: testTagsListInvalidPrefix },
+    { name: 'POST /api/v2/tags with invalid payload returns 422', fn: testTagsAddInvalidPayload },
+    { name: 'DELETE /api/v2/tags/{ref} removes tag', fn: testTagsDelete },
+    { name: 'DELETE /api/v2/tags/{ref} 404 when not found', fn: testTagsDeleteNotFound },
     { name: 'POST /api/v2/cycles/confirm invalid action returns 400', fn: testConfirmInvalidAction },
     { name: 'POST /api/v2/cycles/confirm approve 409 when not awaiting', fn: testConfirmApproveSuccess },
     { name: 'POST /api/v2/cycles/confirm revise 409 when not awaiting', fn: testConfirmRevise },

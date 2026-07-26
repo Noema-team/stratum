@@ -16,6 +16,8 @@ import { LinkIndexManager } from './link-index.js';
 import { LinkSourceSchema, LinkTargetSchema } from './types.js';
 import type { IntakeService } from './intake-service.js';
 import type { ShardingService } from './sharding-service.js';
+import type { TagService } from './tag-service.js';
+import type { TagPrefix } from './types.js';
 import { ChatService } from './chat-service.js';
 import { EventBus } from './event-bus.js';
 import { RuntimeMapManagerImpl, type RuntimeMap } from './runtime-map.js';
@@ -36,6 +38,7 @@ interface DaemonDeps {
   intakeService?: IntakeService;
   shardingService?: ShardingService;
   chatService?: ChatService;
+  tagService?: TagService;
   llmProvider?: any;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
@@ -81,6 +84,14 @@ const CreateLinkPayloadSchema = z.object({
   source: LinkSourceSchema,
   target: LinkTargetSchema,
   context: z.string(),
+});
+
+const TagPrefixValues = ['next-cycle', 'scope', 'area'] as const;
+
+const AddTagPayloadSchema = z.object({
+  prefix: z.enum(TagPrefixValues),
+  target_ref: z.string().min(1),
+  value: z.string().optional(),
 });
 
 // ─── DaemonServer ────────────────────────────────────────────────────────────
@@ -1114,6 +1125,73 @@ export class DaemonServer {
           link_id: linkIdParam,
           deleted: true,
         },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/tags' && method === 'GET') {
+      if (!this.deps.tagService) {
+        this.sendError(res, 503, 'tag_service_unavailable', 'Tag service is not configured');
+        return;
+      }
+      const prefixParam = url.searchParams.get('tag') ?? url.searchParams.get('prefix');
+      const normalizedPrefix = prefixParam?.replace(/^#/, '');
+      if (!normalizedPrefix || !TagPrefixValues.includes(normalizedPrefix as TagPrefix)) {
+        this.sendError(res, 400, 'invalid_tag_prefix', 'Query param tag/prefix must be one of: next-cycle, scope, area');
+        return;
+      }
+      const tags = await this.deps.tagService.getTagged(normalizedPrefix as TagPrefix);
+      this.sendResponse(res, {
+        ok: true,
+        data: { tags, count: tags.length },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    if (pathName === '/api/v2/tags' && method === 'POST') {
+      if (!this.deps.tagService) {
+        this.sendError(res, 503, 'tag_service_unavailable', 'Tag service is not configured');
+        return;
+      }
+      const body = await this.parseBody(req);
+      const parsed = AddTagPayloadSchema.safeParse(body);
+      if (!parsed.success) {
+        this.sendError(res, 422, 'validation_error', parsed.error.message);
+        return;
+      }
+      const tag = await this.deps.tagService.addTag(parsed.data);
+      this.sendResponse(res, {
+        ok: true,
+        data: { tag },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const deleteTagMatch = pathName.match(/^\/api\/v2\/tags\/(.+)$/);
+    if (deleteTagMatch && method === 'DELETE') {
+      if (!this.deps.tagService) {
+        this.sendError(res, 503, 'tag_service_unavailable', 'Tag service is not configured');
+        return;
+      }
+      const targetRef = decodeURIComponent(deleteTagMatch[1]);
+      const prefixParam = url.searchParams.get('tag') ?? url.searchParams.get('prefix');
+      const normalizedPrefix = prefixParam?.replace(/^#/, '');
+      if (!normalizedPrefix || !TagPrefixValues.includes(normalizedPrefix as TagPrefix)) {
+        this.sendError(res, 400, 'invalid_tag_prefix', 'Query param tag/prefix must be one of: next-cycle, scope, area');
+        return;
+      }
+      const valueParam = url.searchParams.get('value') ?? undefined;
+      const removed = await this.deps.tagService.removeTag(targetRef, normalizedPrefix as TagPrefix, valueParam);
+      if (!removed) {
+        this.sendError(res, 404, 'tag_not_found', 'No matching tag found for the given target_ref/prefix');
+        return;
+      }
+      this.sendResponse(res, {
+        ok: true,
+        data: { target_ref: targetRef, deleted: true },
         meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
       });
       return;

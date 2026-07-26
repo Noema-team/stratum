@@ -8,6 +8,8 @@ import {
   ChatStateSchema,
   ArtifactEntrySchema,
   ValidationCategorySchema,
+  NodeTagSchema,
+  type NodeTag,
   ValidationGateSchema,
   DiscoveryStatusEnum,
   DiscoveryModeEnum,
@@ -148,6 +150,7 @@ export interface RuntimeMap {
     link_count: number;
     last_rebuilt_at: string;
   };
+  tags: NodeTag[];
 }
 
 export const RuntimeMapSchema = z.object({
@@ -245,6 +248,7 @@ export const RuntimeMapSchema = z.object({
     link_count: z.number(),
     last_rebuilt_at: z.string(),
   }).optional(),
+  tags: z.array(NodeTagSchema).optional().default([]),
 });
 
 // ============================================================================
@@ -507,6 +511,7 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
         failed_categories: [],
       },
     },
+    tags: [],
   };
 }
 

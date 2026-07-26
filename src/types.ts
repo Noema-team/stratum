@@ -1342,6 +1342,7 @@ export const APIErrorSchema = z.object({
 export interface NodeTag {
   prefix: TagPrefix;
   value?: string;
+  target_ref: string;
   source: 'user' | 'facilitator' | 'system';
   applied_at: string;
 }
@@ -1349,6 +1350,7 @@ export interface NodeTag {
 export const NodeTagSchema = z.object({
   prefix: TagPrefixEnum,
   value: z.string().optional(),
+  target_ref: z.string().min(1),
   source: z.enum(['user', 'facilitator', 'system']),
   applied_at: z.string().datetime(),
 });
