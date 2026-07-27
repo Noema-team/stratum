@@ -12,7 +12,7 @@ read node content, and produce outputs without modifying the core graph.
 ## What are content modules?
 
 Content modules extend the graph system with pluggable analysis capabilities.
-They run after the core cycle loop -- the daemon functions identically with zero
+They run after the core workflow execution loop -- the daemon functions identically with zero
 modules registered. Built-in modules cover standard concerns (requirements,
 architecture, plan, build, test). Custom modules address project-specific needs:
 benchmark analysis, security linting, documentation generation, compliance
