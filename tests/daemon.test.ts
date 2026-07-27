@@ -119,6 +119,27 @@ class MockScopingService {
   getPendingResponse() { return this._pendingResponse; }
 }
 
+class MockPromptService {
+  async listTemplates() {
+    return [
+      { role: 'builder', source: 'built-in', version: '1.0.0', token_count: 100, valid: true },
+      { role: 'designer', source: 'built-in', version: '1.0.0', token_count: 120, valid: true },
+    ];
+  }
+  async getTemplate(role: string) {
+    if (role !== 'builder') {
+      throw Object.assign(new Error(`No template found for role: ${role}`), { code: 'template_missing' });
+    }
+    return {
+      role,
+      version: '1.0.0',
+      content: '# Builder\n\n## Role identity\n...',
+      source: 'built-in',
+      validation: { valid: true, errors: [], token_count: 100 },
+    };
+  }
+}
+
 class MockTagService {
   private tags: Array<{ prefix: string; target_ref: string; value?: string; source: string; applied_at: string }> = [];
 
@@ -217,6 +238,7 @@ function startServer(): Promise<DaemonServer> {
   const scopingService = new MockScopingService() as unknown as Record<string, unknown>;
   const confirmService = new MockConfirmService() as unknown as Record<string, unknown>;
   const tagService = new MockTagService() as unknown as Record<string, unknown>;
+  const promptService = new MockPromptService() as unknown as Record<string, unknown>;
   return server.start({ port: 0 }, {
     stateAPI,
     initService,
@@ -225,6 +247,7 @@ function startServer(): Promise<DaemonServer> {
     scopingService: scopingService as never,
     confirmService: confirmService as never,
     tagService: tagService as never,
+    promptService: promptService as never,
     pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
   }).then(() => server);
 }
@@ -566,6 +589,42 @@ async function testTagsDeleteNotFound() {
   await server.stop();
 }
 
+async function testTemplatesList() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { templates: unknown[] } };
+  assert.strictEqual(body.ok, true);
+  assert.strictEqual(body.data.templates.length, 2);
+  await server.stop();
+}
+
+async function testTemplatesGetByRole() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/builder');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { role: string; content: string } };
+  assert.strictEqual(body.data.role, 'builder');
+  assert.ok(body.data.content.includes('Builder'));
+  await server.stop();
+}
+
+async function testTemplatesGetInvalidRole() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/not-a-role');
+  assert.strictEqual(res.statusCode, 400);
+  await server.stop();
+}
+
+async function testTemplatesGetMissingTemplate() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/critic');
+  assert.strictEqual(res.statusCode, 404);
+  const body = res.body as { error: { code: string } };
+  assert.strictEqual(body.error.code, 'template_missing');
+  await server.stop();
+}
+
 async function testConfirmApprove() {
   const server = await startServer();
   // Gate must be set first so MockConfirmService.approve() doesn't throw
@@ -678,6 +737,10 @@ async function runAllTests() {
     { name: 'POST /api/v2/tags with invalid payload returns 422', fn: testTagsAddInvalidPayload },
     { name: 'DELETE /api/v2/tags/{ref} removes tag', fn: testTagsDelete },
     { name: 'DELETE /api/v2/tags/{ref} 404 when not found', fn: testTagsDeleteNotFound },
+    { name: 'GET /api/v2/templates lists all templates', fn: testTemplatesList },
+    { name: 'GET /api/v2/templates/{role} returns template content', fn: testTemplatesGetByRole },
+    { name: 'GET /api/v2/templates/{role} 400 with invalid role', fn: testTemplatesGetInvalidRole },
+    { name: 'GET /api/v2/templates/{role} 404 when template missing', fn: testTemplatesGetMissingTemplate },
     { name: 'POST /api/v2/cycles/confirm invalid action returns 400', fn: testConfirmInvalidAction },
     { name: 'POST /api/v2/cycles/confirm approve 409 when not awaiting', fn: testConfirmApproveSuccess },
     { name: 'POST /api/v2/cycles/confirm revise 409 when not awaiting', fn: testConfirmRevise },

@@ -18,6 +18,8 @@ import type { IntakeService } from './intake-service.js';
 import type { ShardingService } from './sharding-service.js';
 import type { TagService } from './tag-service.js';
 import type { TagPrefix } from './types.js';
+import { ALL_ROLES } from './prompt-service.js';
+import type { PromptService, RoleName } from './prompt-service.js';
 import { ChatService } from './chat-service.js';
 import { EventBus } from './event-bus.js';
 import { RuntimeMapManagerImpl, type RuntimeMap } from './runtime-map.js';
@@ -39,6 +41,7 @@ interface DaemonDeps {
   shardingService?: ShardingService;
   chatService?: ChatService;
   tagService?: TagService;
+  promptService?: PromptService;
   llmProvider?: any;
   pidFile: {
     writePidFile: (path: string, pid: number) => Promise<void>;
@@ -1194,6 +1197,45 @@ export class DaemonServer {
         data: { target_ref: targetRef, deleted: true },
         meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
       });
+      return;
+    }
+
+    if (pathName === '/api/v2/templates' && method === 'GET') {
+      if (!this.deps.promptService) {
+        this.sendError(res, 503, 'prompt_service_unavailable', 'Prompt service is not configured');
+        return;
+      }
+      const templates = await this.deps.promptService.listTemplates();
+      this.sendResponse(res, {
+        ok: true,
+        data: { templates },
+        meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const templateRoleMatch = pathName.match(/^\/api\/v2\/templates\/([a-zA-Z0-9_-]+)$/);
+    if (templateRoleMatch && method === 'GET') {
+      if (!this.deps.promptService) {
+        this.sendError(res, 503, 'prompt_service_unavailable', 'Prompt service is not configured');
+        return;
+      }
+      const roleParam = templateRoleMatch[1] as RoleName;
+      if (!ALL_ROLES.includes(roleParam)) {
+        this.sendError(res, 400, 'invalid_role', `Unknown role: ${roleParam}`);
+        return;
+      }
+      try {
+        const template = await this.deps.promptService.getTemplate(roleParam);
+        this.sendResponse(res, {
+          ok: true,
+          data: template,
+          meta: { request_id: randomUUID(), timestamp: new Date().toISOString() },
+        });
+      } catch (err) {
+        const error = err as Error & { code?: string };
+        this.sendError(res, 404, error.code ?? 'template_missing', error.message);
+      }
       return;
     }
 

@@ -7,6 +7,7 @@ import { CycleService } from './cycle-service.js';
 import { ScopingService } from './scoping-service.js';
 import { ConfirmService } from './confirm-service.js';
 import { TagService } from './tag-service.js';
+import { PromptService } from './prompt-service.js';
 import { AgentRunner } from './agent-runner.js';
 import { ContextManager } from './context-manager.js';
 import { IntakeService } from './intake-service.js';
@@ -231,6 +232,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const linkIndex = new LinkIndexManager(projectRoot);
   const intakeService = new IntakeService(projectRoot, mapManager, linkIndex);
   const shardingService = new ShardingService(projectRoot, linkIndex);
+  const promptService = new PromptService(projectRoot);
+  await promptService.validateAll();
 
   const daemon = new DaemonServer();
 
@@ -244,6 +247,7 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       scopingService,
       confirmService,
       tagService,
+      promptService,
       intakeService,
       shardingService,
       llmProvider,
