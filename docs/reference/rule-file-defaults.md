@@ -282,7 +282,7 @@ generated_outputs:
   - id: test_runner               # string
     path: scripts/run-tests.ts    # string (relative path)
     type: executable              # executable | html | markdown
-    generated_at: gate_pass       # gate_pass | cycle_end | always
+    generated_at: gate_pass       # gate_pass | run_end | always
 
   - id: validation_report
     path: reports/validation-latest.html
@@ -341,8 +341,8 @@ prompts:
     You can accept, remove categories, or add new ones.
     Respond with your confirmed list or type "accept" to use as-is.
 
-  after_gate_pass: |             # string (template with {{cycle}}, {{summary}}, {{version_id}})
-    Cycle {{cycle}} has completed. All validation categories passed.
+  after_gate_pass: |             # string (template with {{run_id}}, {{summary}}, {{version_id}})
+    Workflow run {{run_id}} has completed. All validation categories passed.
 
     {{summary}}
 
@@ -431,7 +431,7 @@ agents:
   - role: evaluator
     system_prompt: |
       You are the Evaluator agent. After the gate passes, you write evaluation.md
-      summarizing what worked, what didn't, and what should change next cycle.
+      summarizing what worked, what didn't, and what should change next workflow run.
 
       Output a JSON object with keys: summary, recommendations.
     llm:

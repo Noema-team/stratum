@@ -1,5 +1,7 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { DAGRunner } from './dag-runner.js';
-import { nextNode, shouldSkipAtDepth, buildCycleStateContext } from './dag-runner.js';
+import { nextNode, shouldSkipAtDepth, buildCycleStateContext, updateArtifactEntries } from './dag-runner.js';
 import type { ConfirmService } from './confirm-service.js';
 import type { ExecService, ValidationGateService } from './exec-gate.js';
 import type { SnapshotService } from './snapshot-service.js';
@@ -9,10 +11,23 @@ import type { RuntimeMapManager } from './runtime-map.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import type { CycleStateContext } from './context-manager.js';
 import type { FailureReport } from './types.js';
+import type { CriticAgent } from './critic-agent.js';
+import type { ShardingService } from './sharding-service.js';
+import type { ScopingService } from './scoping-service.js';
+import yaml from 'js-yaml';
+import type { ShardingProposal } from './types.js';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export const MAX_DEBUG_ATTEMPTS = 3;
+async function readOnCapHit(projectRoot: string): Promise<'halt_with_report' | 'user_prompt' | 'force_pass'> {
+  try {
+    const content = await fs.readFile(path.join(projectRoot, '.sle', 'rules', 'exit.yaml'), 'utf-8');
+    const cfg = yaml.load(content) as any;
+    return cfg?.on_cap_hit ?? 'halt_with_report';
+  } catch {
+    return 'halt_with_report';
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,7 +37,7 @@ export interface CycleRunResult {
   snapshot_dir?: string;
   failure_report?: FailureReport;
   error?: string;
-  debug_attempts_used?: number;
+  iterations_used?: number;
 }
 
 export interface CycleRunnerDeps {
@@ -35,6 +50,10 @@ export interface CycleRunnerDeps {
   stateMachine: StateMachine;
   mapManager: RuntimeMapManager;
   runArtifacts: RunArtifactManager;
+  projectRoot?: string;
+  criticAgent?: CriticAgent;
+  shardingService?: ShardingService;
+  scopingService?: ScopingService;
 }
 
 export interface CycleRunnerOptions {
@@ -42,6 +61,14 @@ export interface CycleRunnerOptions {
     cycleNumber: number,
     iteration: number
   ) => Promise<'approve' | 'revise' | 'halt'>;
+  onShardingApproval?: (
+    cycleNumber: number,
+    iteration: number
+  ) => Promise<'approve' | 'reject' | 'modify'>;
+  onScopingApproval?: (
+    cycleNumber: number,
+    iteration: number
+  ) => Promise<'approve' | 'halt'>;
 }
 
 // ─── CycleRunner ──────────────────────────────────────────────────────────────
@@ -51,6 +78,7 @@ export class CycleRunner {
 
   async run(options?: CycleRunnerOptions): Promise<CycleRunResult> {
     const map = await this.deps.mapManager.read();
+    const projectRoot = this.deps.projectRoot || process.cwd();
     const cycleNumber = map.cycle.number;
     const iteration = map.cycle.iteration;
 
@@ -67,13 +95,12 @@ export class CycleRunner {
     const dag = map.meta.dag as
       | { current_node?: string | null; completed_nodes?: string[] }
       | undefined;
-    let currentNode: string | null = dag?.current_node ?? 'DESIGN';
+    let currentNode: string | null = dag?.current_node ?? 'SCOPING';
 
     const onGate = options?.onConfirmGate ?? (async () => 'approve' as const);
+    const onShard = options?.onShardingApproval ?? (async () => 'approve' as const);
 
-    // debug_attempt tracks how many DEBUGGER invocations have occurred.
-    // Reset to 0 at cycle start (fresh cycles don't inherit prior debug state).
-    let debugAttempt = 0;
+    let criticPasses = 0;
 
     while (currentNode !== null) {
       const nodeId = currentNode;
@@ -88,8 +115,179 @@ export class CycleRunner {
       // ── Gate / system nodes ──────────────────────────────────────────────
 
       if (nodeId === 'SCOPING') {
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, awaiting_scoping: true },
+        }));
+        cycleState = { ...cycleState, facilitator_mode: 'scoping' };
+
+        if (this.deps.scopingService) {
+          await this.deps.scopingService.begin(cycleNumber, cycleState.iteration, cycleState);
+        }
+
+        const onScope = options?.onScopingApproval ?? (async () => 'approve' as const);
+        const action = await onScope(cycleNumber, cycleState.iteration);
+
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, awaiting_scoping: false },
+        }));
+
+        if (action === 'halt') {
+          await this.deps.stateMachine.halt('scoping_timeout');
+          return {
+            completed: false,
+            final_node: 'SCOPING',
+            error: 'Scoping timed out or was halted',
+            iterations_used: cycleState.iteration,
+          };
+        }
+
         currentNode = nextNode('SCOPING');
         continue;
+      }
+
+      if (nodeId === 'CRITIQUE') {
+        const start = Date.now();
+        await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'CRITIQUE', {
+          status: 'running',
+          started_at: new Date().toISOString(),
+        });
+
+        const archPath = path.join(projectRoot, 'docs/architecture.md');
+        const reqPath = path.join(projectRoot, 'docs/requirements.md');
+        const discPath = path.join(projectRoot, 'docs/discovery-summary.md');
+        const decPath = path.join(projectRoot, 'docs/decisions.md');
+        const evalPath = path.join(projectRoot, 'docs/evaluation.md');
+
+        const [architecture, requirements, contextSummary, decisions, priorEvaluation] = await Promise.all([
+          this.safeReadFile(archPath),
+          this.safeReadFile(reqPath),
+          this.safeReadFile(discPath),
+          this.safeReadFile(decPath),
+          this.safeReadFile(evalPath),
+        ]);
+
+        if (!this.deps.criticAgent) {
+          throw new Error('CriticAgent is required in CycleRunner dependencies to execute CRITIQUE node.');
+        }
+
+        const critiqueResult = await this.deps.criticAgent.critique({
+          architecture,
+          requirements,
+          contextSummary,
+          decisions,
+          priorEvaluation,
+        });
+
+        const critiqueContent = `# Critique for Cycle Revision
+
+## Blocking Issues
+${critiqueResult.blocking_issues.map(i => `- ${i}`).join('\n') || 'None'}
+
+## Warnings
+${critiqueResult.warnings.map(w => `- ${w}`).join('\n') || 'None'}
+
+## Suggestions
+${critiqueResult.suggestions.map(s => `- ${s}`).join('\n') || 'None'}`;
+
+        const writtenFiles = ['docs/cycle-critique.md'];
+        await this.safeWriteFile(path.join(projectRoot, 'docs/cycle-critique.md'), critiqueContent);
+
+        if (cycleState.planning_depth === 'deep' || cycleState.planning_depth === 'research') {
+          writtenFiles.push('docs/critique-report.md');
+          await this.safeWriteFile(path.join(projectRoot, 'docs/critique-report.md'), critiqueContent);
+        }
+
+        await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'CRITIQUE', {
+          status: 'complete',
+          completed_at: new Date().toISOString(),
+          duration_ms: Date.now() - start,
+          artifacts_written: writtenFiles,
+        });
+
+        await updateArtifactEntries(this.deps.mapManager, writtenFiles, 'critic');
+
+        const limit = cycleState.planning_depth === 'deep' ? 1 : 3;
+        if (!critiqueResult.pass && criticPasses < limit) {
+          criticPasses++;
+          currentNode = 'DESIGN';
+          continue;
+        }
+
+        currentNode = 'PLAN';
+        continue;
+      }
+
+      if (nodeId === 'SHARDING_APPROVAL') {
+        const proposalPath = path.join(projectRoot, '.sle', 'sharding-proposal.yaml');
+        const proposalContent = await this.safeReadFile(proposalPath);
+        if (!proposalContent) {
+          await this.deps.dagRunner.skipNode('SHARDING_APPROVAL', cycleNumber, iteration, 'no_sharding_proposal');
+          currentNode = 'CONFIRM';
+          continue;
+        }
+
+        // Set cycle.awaiting_sharding_approval = true
+        await this.deps.mapManager.update(m => ({
+          ...m,
+          cycle: {
+            ...m.cycle,
+            awaiting_sharding_approval: true,
+          }
+        }));
+
+        await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SHARDING_APPROVAL', {
+          status: 'running',
+          started_at: new Date().toISOString(),
+        });
+
+        const action = await onShard(cycleNumber, iteration);
+
+        // Clear cycle.awaiting_sharding_approval = false
+        await this.deps.mapManager.update(m => ({
+          ...m,
+          cycle: {
+            ...m.cycle,
+            awaiting_sharding_approval: false,
+          }
+        }));
+
+        if (action === 'approve') {
+          if (!this.deps.shardingService) {
+            throw new Error('ShardingService is required to process SHARDING_APPROVAL approval.');
+          }
+
+          const proposal = yaml.load(proposalContent) as ShardingProposal;
+          await this.deps.shardingService.createTasksFromProposal(proposal);
+
+          await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SHARDING_APPROVAL', {
+            status: 'complete',
+            completed_at: new Date().toISOString(),
+            artifacts_written: ['.sle/tasks.yaml'],
+          });
+
+          currentNode = 'CONFIRM';
+          continue;
+        } else if (action === 'reject') {
+          // Reject sharding, delete proposal file
+          try {
+            await fs.unlink(proposalPath);
+          } catch {}
+
+          await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SHARDING_APPROVAL', {
+            status: 'skipped',
+            completed_at: new Date().toISOString(),
+            skip_reason: 'User rejected sharding proposal. Planner will re-plan as single task.',
+          });
+
+          currentNode = 'CONFIRM';
+          continue;
+        } else {
+          // Modify: user edits the proposal
+          currentNode = 'SHARDING_APPROVAL';
+          continue;
+        }
       }
 
       if (nodeId === 'CONFIRM') {
@@ -115,37 +313,76 @@ export class CycleRunner {
       if (nodeId === 'VALIDATION_GATE') {
         const r = await this.deps.validationGateService.run(cycleNumber, iteration, cycleId);
         if (!r.passed) {
-          debugAttempt++;
-          if (debugAttempt > MAX_DEBUG_ATTEMPTS) {
-            return {
-              completed: false,
-              final_node: 'VALIDATION_GATE',
-              failure_report: r.failure_report,
-              error: `Validation failed after ${MAX_DEBUG_ATTEMPTS} debug attempt(s)`,
-              debug_attempts_used: debugAttempt - 1, // attempts actually run
-            };
-          }
-          // Route to Debugger with current failure context
           cycleState = { ...cycleState, failure_report: r.failure_report };
-          currentNode = 'DEBUGGER';
+          currentNode = 'DEBUG';
           continue;
         }
         currentNode = r.next_node;
         continue;
       }
 
-      if (nodeId === 'DEBUGGER') {
-        // Run Debugger agent; after it produces a fix, route back to EXEC
-        const result = await this.deps.dagRunner.runNode('DEBUGGER', cycleState);
-        if (!result.success) {
+      if (nodeId === 'DEBUG') {
+        // Debugger diagnoses the failure; output feeds next PLAN invocation.
+        const debugResult = await this.deps.dagRunner.runNode('DEBUG', cycleState);
+        if (!debugResult.success) {
           return {
             completed: false,
-            final_node: 'DEBUGGER',
-            error: result.error,
-            debug_attempts_used: debugAttempt,
+            final_node: 'DEBUG',
+            error: debugResult.error,
+            iterations_used: cycleState.iteration,
           };
         }
-        currentNode = 'EXEC'; // re-run execution after Debugger fix
+
+        // Increment iteration counter in map.yaml (spec: increment after DEBUG, before PLAN)
+        await this.deps.mapManager.update((m) => ({
+          ...m,
+          cycle: { ...m.cycle, iteration: m.cycle.iteration + 1 },
+        }));
+        const updatedMap = await this.deps.mapManager.read();
+        const newIteration = updatedMap.cycle.iteration;
+        cycleState = { ...cycleState, iteration: newIteration };
+
+        // Create run artifacts dir + manifest for the new iteration
+        try {
+          await this.deps.runArtifacts.createRunDir(cycleNumber, newIteration);
+          await this.deps.runArtifacts.createManifest({
+            cycleId,
+            cycleNumber,
+            iteration: newIteration,
+            planningDepth: cycleState.planning_depth,
+          });
+        } catch {
+          // If manifest creation fails, continue — updateNodeStatus will just silently fail
+        }
+
+        // Check cap (spec: cap check before routing to PLAN)
+        const maxIterations = updatedMap.cycle.max_iterations;
+        if (newIteration >= maxIterations) {
+          const onCapHit = await readOnCapHit(projectRoot);
+          if (onCapHit === 'force_pass') {
+            // Proceed despite failures (not recommended — caller decides)
+            currentNode = 'EVALUATE';
+            continue;
+          }
+          if (onCapHit === 'user_prompt') {
+            // For now treat user_prompt as halt (UI handles re-prompt via WebSocket events)
+            await this.deps.stateMachine.halt('cap_exceeded');
+          }
+          // halt_with_report (default)
+          await this.deps.stateMachine.halt('cap_exceeded');
+          return {
+            completed: false,
+            final_node: 'DEBUG',
+            failure_report: cycleState.failure_report,
+            error: `Iteration cap (${maxIterations}) reached`,
+            iterations_used: newIteration,
+          };
+        }
+
+        // Structural failure escalation: if any failed category is structural, loop back to DESIGN
+        const failureReport = cycleState.failure_report;
+        const hasStructural = failureReport?.failed_categories?.some((c) => c.structural === true) ?? false;
+        currentNode = hasStructural ? 'DESIGN' : 'PLAN';
         continue;
       }
 
@@ -165,7 +402,7 @@ export class CycleRunner {
           completed: true,
           final_node: null,
           snapshot_dir: r.snapshot_dir,
-          debug_attempts_used: debugAttempt,
+          iterations_used: cycleState.iteration,
         };
       }
 
@@ -177,12 +414,28 @@ export class CycleRunner {
           completed: false,
           final_node: nodeId,
           error: result.error,
-          debug_attempts_used: debugAttempt,
+          iterations_used: cycleState.iteration,
         };
       }
       currentNode = result.next_node;
     }
 
-    return { completed: true, final_node: null, debug_attempts_used: debugAttempt };
+    return { completed: true, final_node: null, iterations_used: cycleState.iteration };
+  }
+
+  private async safeReadFile(filePath: string): Promise<string> {
+    try {
+      return await fs.readFile(filePath, 'utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  private async safeWriteFile(filePath: string, content: string): Promise<void> {
+    try {
+      await fs.writeFile(filePath, content, 'utf8');
+    } catch {
+      // ignore
+    }
   }
 }

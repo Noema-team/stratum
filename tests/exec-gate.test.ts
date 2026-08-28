@@ -9,6 +9,48 @@ import { nextNode } from '../src/dag-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { RunManifest, ManifestNodeEntry } from '../src/run-artifacts.js';
 import type { FailureReport } from '../src/types.js';
+import { ExecServiceReal } from '../src/exec-service.js';
+
+// Mock ExecServiceReal.prototype.run to be a fast synchronous stub for wrapper tests
+ExecServiceReal.prototype.run = async function(cycleNumber: number, iteration: number) {
+  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+    status: 'running',
+    started_at: new Date().toISOString(),
+  } as any);
+  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+    status: 'complete',
+    exit_code: 0,
+    timed_out: false,
+  } as any);
+  await this.mapManager.update((m: any) => {
+    const completed = [...(m.meta.dag?.completed_nodes ?? [])];
+    if (!completed.includes('EXEC')) {
+      completed.push('EXEC');
+    }
+    return {
+      ...m,
+      meta: {
+        ...m.meta,
+        dag: m.meta.dag
+          ? {
+              ...m.meta.dag,
+              current_node: 'VALIDATION_GATE',
+              completed_nodes: completed,
+              exec_result: { exit_code: 0, timed_out: false },
+            }
+          : undefined,
+      },
+    };
+  });
+  return {
+    next_node: 'VALIDATION_GATE' as const,
+    exit_code: 0,
+    stdout: '',
+    stderr: '',
+    timed_out: false,
+    success: true,
+  };
+};
 
 console.log('# Running Phase J (EXEC stub + Validation Gate) tests...');
 
@@ -46,6 +88,14 @@ function makeBaseMap(): RuntimeMap {
       planning_depth: 'standard', started_at: '2026-05-08T14:00:00Z',
       outcome: 'cycling', approval_gate: null,
       awaiting_scoping: false, awaiting_confirmation: false, awaiting_sharding_approval: false,
+    },
+    validation: {
+      categories: [
+        { name: 'correctness', status: 'passed' },
+        { name: 'performance', status: 'passed' },
+        { name: 'security', status: 'passed' },
+      ],
+      gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
     },
     artifacts: [],
   } as unknown as RuntimeMap;
@@ -123,8 +173,8 @@ test('nextNode: EXEC → VALIDATION_GATE', () => {
   assert.strictEqual(nextNode('EXEC'), 'VALIDATION_GATE');
 });
 
-test('nextNode: VALIDATION_GATE → EVALUATE', () => {
-  assert.strictEqual(nextNode('VALIDATION_GATE'), 'EVALUATE');
+test('nextNode: VALIDATION_GATE → DEBUG', () => {
+  assert.strictEqual(nextNode('VALIDATION_GATE'), 'DEBUG');
 });
 
 // ─── VALIDATION_REQUIRED_NODES ────────────────────────────────────────────────
@@ -144,7 +194,6 @@ test('ExecService: always returns success=true', async () => {
   const result = await svc.run(1, 1);
 
   assert.strictEqual(result.success, true);
-  assert.strictEqual(result.passed, true);
 });
 
 test('ExecService: next_node is VALIDATION_GATE', async () => {
@@ -194,22 +243,11 @@ test('ExecService: adds EXEC to completed_nodes in dag', async () => {
   assert.ok(dag?.completed_nodes.includes('EXEC'));
 });
 
-test('ExecService: duration_ms is 0 (stub)', async () => {
+// ─── ValidationGateService tests ──────────────────────────────────────────────
+
+test('ValidationGate: passes when all active categories are cached as passed', async () => {
   const mgr = new InMemoryMapManager();
   const artifacts = new MockRunArtifacts();
-  const svc = new ExecService(mgr, artifacts as never);
-
-  const result = await svc.run(1, 1);
-
-  assert.strictEqual(result.duration_ms, 0);
-});
-
-// ─── ValidationGateService tests (passing) ────────────────────────────────────
-
-test('ValidationGate: passes when BUILD and EXEC are complete', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
@@ -220,9 +258,8 @@ test('ValidationGate: passes when BUILD and EXEC are complete', async () => {
 });
 
 test('ValidationGate: no FailureReport written on pass', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'complete' });
   const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -231,9 +268,8 @@ test('ValidationGate: no FailureReport written on pass', async () => {
 });
 
 test('ValidationGate: advances dag to EVALUATE on pass', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'complete' });
   const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -244,9 +280,8 @@ test('ValidationGate: advances dag to EVALUATE on pass', async () => {
 });
 
 test('ValidationGate: marks VALIDATION_GATE complete in manifest on pass', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'complete' });
   const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -257,64 +292,98 @@ test('ValidationGate: marks VALIDATION_GATE complete in manifest on pass', async
   assert.ok(completeUpdate, 'VALIDATION_GATE should be marked complete');
 });
 
-// ─── ValidationGateService tests (failing) ────────────────────────────────────
-
-test('ValidationGate: fails when BUILD is not complete', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+test('ValidationGate: fails when static analysis fails (exit_code !== 0)', async () => {
+  const baseMap = makeBaseMap();
+  (baseMap.meta as any).dag = {
+    current_node: 'VALIDATION_GATE',
+    completed_nodes: ['EXEC'],
+    exec_result: { exit_code: 1, timed_out: false },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
   assert.strictEqual(result.passed, false);
   assert.strictEqual(result.next_node, null);
-  assert.ok(result.failed_nodes.includes('BUILD'));
 });
 
-test('ValidationGate: fails when EXEC is not complete', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'pending' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+test('ValidationGate: fails when a category is failed', async () => {
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
   assert.strictEqual(result.passed, false);
-  assert.ok(result.failed_nodes.includes('EXEC'));
+  assert.ok(result.failed_nodes.includes('correctness'));
 });
 
 test('ValidationGate: writes FailureReport on failure', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
   assert.strictEqual(artifacts.failureReports.length, 1);
   assert.ok(result.failure_report, 'result should include failure_report');
-  assert.ok(result.failure_report!.failed_categories.some((c) => c.name === 'BUILD'));
+  assert.ok(result.failure_report!.failed_categories.some((c) => c.name === 'correctness'));
   assert.strictEqual(result.failure_report!.cycle, 1);
   assert.strictEqual(result.failure_report!.iteration, 1);
 });
 
 test('ValidationGate: FailureReport has correct passed_categories', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'cycle-abc');
 
-  assert.ok(result.failure_report!.passed_categories.includes('EXEC'));
-  assert.ok(!result.failure_report!.passed_categories.includes('BUILD'));
+  assert.ok(result.failure_report!.passed_categories.includes('performance'));
+  assert.ok(!result.failure_report!.passed_categories.includes('correctness'));
 });
 
 test('ValidationGate: marks VALIDATION_GATE failed in manifest on failure', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'failed' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -326,9 +395,17 @@ test('ValidationGate: marks VALIDATION_GATE failed in manifest on failure', asyn
 });
 
 test('ValidationGate: sets dag current_node to null on failure', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -338,41 +415,49 @@ test('ValidationGate: sets dag current_node to null on failure', async () => {
   assert.strictEqual(dag?.current_node, null);
 });
 
-test('ValidationGate: FailureReport quick_summary mentions failed nodes', async () => {
-  const manifest = makeManifest({ BUILD: 'pending', EXEC: 'pending' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+test('ValidationGate: FailureReport quick_summary mentions failed categories', async () => {
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
-  assert.ok(result.failure_report!.quick_summary.includes('BUILD'));
+  assert.ok(result.failure_report!.quick_summary.includes('categories failed'));
 });
 
 test('ValidationGate: failed_categories are FailureCategory objects', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
+  };
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   const result = await svc.run(1, 1, 'test-cycle-1');
 
-  assert.strictEqual(result.failure_report!.failed_categories[0].name, 'BUILD');
+  assert.strictEqual(result.failure_report!.failed_categories[0].name, 'correctness');
   assert.strictEqual(result.failure_report!.failed_categories[0].method, 'executable');
   assert.ok(result.failure_report!.failed_categories.every((c) => typeof c === 'object' && c !== null));
 });
 
 test('ValidationGate: sets validation.gate.last_outcome=passed on pass', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'complete' });
-  const baseMap = {
-    ...makeBaseMap(),
-    validation: {
-      categories: [],
-      gate: { mode: 'all_must_pass' as const, last_outcome: 'halted' as const, failed_categories: [] },
-    },
-  };
-  const mgr = new InMemoryMapManager(baseMap as never);
-  const artifacts = new MockRunArtifacts(manifest);
+  const mgr = new InMemoryMapManager();
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -382,16 +467,17 @@ test('ValidationGate: sets validation.gate.last_outcome=passed on pass', async (
 });
 
 test('ValidationGate: sets validation.gate.last_outcome=failed on failure', async () => {
-  const manifest = makeManifest({ BUILD: 'failed', EXEC: 'complete' });
-  const baseMap = {
-    ...makeBaseMap(),
-    validation: {
-      categories: [],
-      gate: { mode: 'all_must_pass' as const, last_outcome: 'halted' as const, failed_categories: [] },
-    },
+  const baseMap = makeBaseMap();
+  baseMap.validation = {
+    categories: [
+      { name: 'correctness', status: 'failed' },
+      { name: 'performance', status: 'passed' },
+      { name: 'security', status: 'passed' },
+    ],
+    gate: { mode: 'all_must_pass', last_outcome: 'pending', failed_categories: [] },
   };
-  const mgr = new InMemoryMapManager(baseMap as never);
-  const artifacts = new MockRunArtifacts(manifest);
+  const mgr = new InMemoryMapManager(baseMap);
+  const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
   await svc.run(1, 1, 'test-cycle-1');
@@ -403,16 +489,15 @@ test('ValidationGate: sets validation.gate.last_outcome=failed on failure', asyn
 // ─── Full EXEC → VALIDATION_GATE flow ─────────────────────────────────────────
 
 test('full flow: ExecService run then ValidationGate pass', async () => {
-  const manifest = makeManifest({ BUILD: 'complete', EXEC: 'pending' });
   const mgr = new InMemoryMapManager();
-  const artifacts = new MockRunArtifacts(manifest);
+  const artifacts = new MockRunArtifacts();
 
   // EXEC runs first
   const execSvc = new ExecService(mgr, artifacts as never);
   const execResult = await execSvc.run(1, 1);
-  assert.strictEqual(execResult.passed, true);
+  assert.strictEqual(execResult.success, true);
 
-  // After EXEC, manifest has EXEC=complete
+  // After EXEC, VALIDATION_GATE evaluates
   const gateSvc = new ValidationGateService(mgr, artifacts as never);
   const gateResult = await gateSvc.run(1, 1, 'test-cycle-1');
   assert.strictEqual(gateResult.passed, true);

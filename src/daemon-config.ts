@@ -21,6 +21,7 @@ export interface StartCommand {
   command: 'start';
   port?: number;
   foreground?: boolean;
+  noOpen?: boolean;
 }
 
 export interface StopCommand {
@@ -117,6 +118,9 @@ function parseStart(args: string[]): StartCommand {
         break;
       case '--foreground':
         result.foreground = true;
+        break;
+      case '--no-open':
+        result.noOpen = true;
         break;
       default:
         throw new Error(`Unknown option: ${args[i]}`);

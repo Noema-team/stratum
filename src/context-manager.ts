@@ -6,7 +6,23 @@ import type {
   ContextManagerConfig,
   FailureReport,
   PlanningDepth,
+  SLETask,
 } from './types.js';
+
+// ─── Public Types ─────────────────────────────────────────────────────────────
+
+export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred';
+export type FacilitatorMode = 'chat' | 'decision' | 'scoping';
+export type SliceMode = 'full' | 'last_n_entries' | 'last_cycle' | 'summary_only';
+
+export interface SliceRule {
+  artifact_id: string;
+  mode: SliceMode;
+  max_entries?: number;
+  max_tokens?: number;
+  never_truncate?: boolean;
+  source_weight?: SourceWeight;
+}
 
 export interface CycleStateContext {
   cycle_number: number;
@@ -17,48 +33,300 @@ export interface CycleStateContext {
   failure_report?: FailureReport;
   revision_count?: number;
   revision_note?: string;
+  task?: SLETask;
+  // Facilitator operating mode — defaults to 'chat'
+  facilitator_mode?: FacilitatorMode;
+  // Ephemeral artifacts injected by the DAG runner (e.g. doc:debug-diagnosis)
+  ephemeral?: Record<string, string>;
+  // Builder source files from map.yaml repo.key_files
+  source_files?: string[];
 }
 
-// ─── Per-role artifact slice defaults ────────────────────────────────────────
+// ─── Internal Slice Definition ───────────────────────────────────────────────
 
-const ROLE_ARTIFACT_PATHS: Record<AgentRole, string[]> = {
-  facilitator:  ['docs/discovery-summary.md', 'docs/cycle-charter.md'],
-  designer:     ['docs/cycle-charter.md', 'docs/discovery-summary.md'],
-  critic:       ['docs/requirements.md', 'docs/architecture.md'],
-  planner:      ['docs/requirements.md', 'docs/architecture.md', 'docs/cycle-charter.md'],
-  tester:       ['docs/requirements.md', 'docs/test-plan.md'],
-  builder:      ['docs/requirements.md', 'docs/architecture.md', 'docs/plan.md', 'docs/test-plan.md'],
-  historian:    ['docs/cycle-charter.md', 'docs/decisions.md'],
-  evaluator:    ['docs/requirements.md', 'docs/test-plan.md', 'docs/evaluation-criteria.md'],
-  explorer:     [],
-  debugger:     ['docs/requirements.md', 'docs/test-plan.md'],
+interface SliceDef {
+  ref: string;
+  mode: SliceMode;
+  max_entries?: number;
+  never_truncate?: boolean;
+  source_weight?: SourceWeight;
+  // Only include this slice at or above this planning depth
+  requires_depth?: PlanningDepth;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const DEPTH_ORDER: Record<PlanningDepth, number> = {
+  minimal: 0,
+  standard: 1,
+  deep: 2,
+  research: 3,
 };
 
-// ─── Task description inference ───────────────────────────────────────────────
+const SUMMARY_PREVIEW_LINES = 30;
+const CHARS_PER_TOKEN = 4;
+const TRUNCATION_MARKER = '[...earlier content truncated...]\n';
+
+export const DEFAULT_CONFIG: ContextManagerConfig = {
+  artifact_slice_size: 2000,
+  summary_max_tokens: 300,
+  system_prompt_max_tokens: 500,
+  hard_ceiling: 4000,
+};
+
+// ─── Node Task Descriptions ───────────────────────────────────────────────────
 
 const NODE_TASK_DESCRIPTIONS: Record<string, string> = {
-  SCOPING:        'Lead a scoping discussion to refine the following intent into a detailed cycle charter.',
-  DESIGN:         'Design the requirements and architecture to fulfill the cycle charter.',
-  PLAN:           'Create a detailed implementation plan based on the requirements and architecture.',
-  TEST:           'Define test cases and a test plan to validate the implementation.',
-  CONFIRM:        'Review the plan and test cases, then approve, request revisions, or halt.',
-  BUILD:          'Implement all code changes according to the plan and test cases.',
-  HISTORY:        'Document key decisions and architectural choices made during this cycle.',
-  EXEC:           'Execute the test suite and report results.',
-  VALIDATION_GATE:'Validate test results against acceptance criteria.',
-  EVALUATE:       'Evaluate cycle outcomes against the defined success criteria.',
-  SUMMARISE:      'Generate a cycle summary report.',
-  SNAPSHOT:       'Lock and version the cycle artifacts into an immutable snapshot.',
+  SCOPING: 'Lead a scoping discussion to refine the following intent into a detailed cycle charter.',
+  DESIGN: 'Design the requirements and architecture to fulfill the cycle charter.',
+  CRITIQUE: 'Review the architecture and requirements for blocking issues, warnings, and suggestions.',
+  PLAN: 'Create a detailed implementation plan based on the requirements and architecture.',
+  TEST: 'Write executable test scripts for the requirements and test plan. Derive tests from requirements only — never from implementation code.',
+  CONFIRM: 'Review the plan and test cases, then approve, request revisions, or halt.',
+  BUILD: 'Implement all code changes according to the plan and test cases.',
+  HISTORY: 'Document key decisions and architectural choices made during this cycle.',
+  EXEC: 'Execute the test suite and report results.',
+  VALIDATION_GATE: 'Validate test results against acceptance criteria.',
+  EVALUATE: 'Evaluate cycle outcomes against the defined success criteria.',
+  SUMMARISE: 'Generate a cycle summary report.',
+  SNAPSHOT: 'Lock and version the cycle artifacts into an immutable snapshot.',
 };
 
-function inferTaskDescription(node: string | null, intent: string): string {
-  const base = node ? (NODE_TASK_DESCRIPTIONS[node] ?? `Execute the ${node} step.`) : 'Prepare for the cycle.';
-  return `${base}\n\nCycle intent: "${intent}"`;
+// ─── Role Slice Definitions ───────────────────────────────────────────────────
+
+const DESIGNER_SLICES: SliceDef[] = [
+  { ref: 'doc:product-brief', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:success-definition', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:constraints', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:stakeholders', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:system-description', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:vision', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:open-questions', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:project-plan', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:research-findings', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:architecture', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  { ref: 'doc:decisions', mode: 'last_n_entries', max_entries: 3, source_weight: 'cycle_produced' },
+  { ref: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
+];
+
+const EXPLORER_SLICES: SliceDef[] = [
+  { ref: 'doc:system-description', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:open-questions', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:constraints', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  { ref: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
+];
+
+const PLANNER_SLICES: SliceDef[] = [
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:architecture', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:decisions', mode: 'last_n_entries', max_entries: 3, source_weight: 'cycle_produced' },
+  { ref: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  { ref: 'doc:critique-report', mode: 'full', source_weight: 'inferred', requires_depth: 'deep' },
+  { ref: 'doc:cycle-critique', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
+  // doc:debug-diagnosis is ephemeral — injected via cycleState.ephemeral on retry
+];
+
+const TESTER_SLICES: SliceDef[] = [
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:test-plan', mode: 'full', source_weight: 'cycle_produced' },
+];
+
+const BUILDER_SLICES: SliceDef[] = [
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:architecture', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:test-plan', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:plan', mode: 'full', source_weight: 'cycle_produced', requires_depth: 'deep' },
+  { ref: 'doc:build-plan', mode: 'full', source_weight: 'cycle_produced', requires_depth: 'deep' },
+  // doc:test-script:{category} and source_files added dynamically in getRoleSlices()
+];
+
+const DEBUGGER_SLICES: SliceDef[] = [
+  // run: refs resolve relative to failure_report.run_dir
+  { ref: 'run:manifest.json', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'run:ai/context-pack.md', mode: 'full', source_weight: 'cycle_produced' },
+  // Per-category result and metrics artifacts added dynamically in getRoleSlices()
+  { ref: 'doc:architecture', mode: 'full', source_weight: 'user_defined' },
+];
+
+const EVALUATOR_SLICES: SliceDef[] = [
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:test-plan', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  { ref: 'run:ai/context-pack.md', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'run:manifest.json', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:build-plan', mode: 'summary_only', source_weight: 'inferred', requires_depth: 'deep' },
+];
+
+const CRITIC_SLICES: SliceDef[] = [
+  { ref: 'doc:architecture', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:requirements', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+  { ref: 'doc:evaluation', mode: 'last_cycle', source_weight: 'inferred' },
+  { ref: 'doc:constraints', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:system-description', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:decisions', mode: 'last_n_entries', max_entries: 3, source_weight: 'cycle_produced' },
+];
+
+const HISTORIAN_SLICES: SliceDef[] = [
+  { ref: 'doc:decisions', mode: 'full', never_truncate: true, source_weight: 'user_defined' },
+];
+
+const FACILITATOR_CHAT_SLICES: SliceDef[] = [
+  { ref: 'doc:product-brief', mode: 'summary_only', source_weight: 'user_defined' },
+  { ref: 'doc:system-description', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:vision', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:open-questions', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:project-plan', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: '.sle/chat-history.jsonl', mode: 'last_n_entries', max_entries: 20, source_weight: 'inferred' },
+];
+
+const FACILITATOR_DECISION_SLICES: SliceDef[] = [
+  { ref: 'doc:plan', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:test-plan', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: '.sle/chat-history.jsonl', mode: 'last_n_entries', max_entries: 5, source_weight: 'inferred' },
+];
+
+const FACILITATOR_SCOPING_SLICES: SliceDef[] = [
+  { ref: 'doc:cycle-scope-draft', mode: 'full', source_weight: 'user_defined' },
+  { ref: 'doc:cycle-charter', mode: 'full', source_weight: 'cycle_produced' },
+  { ref: 'doc:architecture', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:requirements', mode: 'summary_only', source_weight: 'inferred' },
+  { ref: 'doc:decisions', mode: 'last_n_entries', max_entries: 5, source_weight: 'cycle_produced' },
+];
+
+// ─── Dynamic Slice Resolution ─────────────────────────────────────────────────
+
+function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
+  const depth = state.planning_depth;
+
+  function filterDepth(slices: SliceDef[]): SliceDef[] {
+    return slices.filter(s => !s.requires_depth || meetsDepth(s.requires_depth, depth));
+  }
+
+  switch (role) {
+    case 'designer':
+      return filterDepth(DESIGNER_SLICES);
+
+    case 'explorer':
+      return filterDepth(EXPLORER_SLICES);
+
+    case 'planner': {
+      const base = filterDepth(PLANNER_SLICES);
+      // Inject ephemeral debug-diagnosis on retry
+      if (state.iteration > 1 && state.ephemeral?.['doc:debug-diagnosis']) {
+        base.push({ ref: 'doc:debug-diagnosis', mode: 'full', source_weight: 'cycle_produced' });
+      }
+      return base;
+    }
+
+    case 'tester':
+      return filterDepth(TESTER_SLICES);
+
+    case 'builder': {
+      const base = filterDepth(BUILDER_SLICES);
+      // Add source files as individual entries
+      if (state.source_files) {
+        for (const file of state.source_files) {
+          base.push({ ref: file, mode: 'full', source_weight: 'inferred' });
+        }
+      }
+      return base;
+    }
+
+    case 'debugger': {
+      const base = filterDepth(DEBUGGER_SLICES);
+      // Add per-failed-category run artifacts
+      if (state.failure_report) {
+        const runDir = state.failure_report.run_dir;
+        if (runDir) {
+          for (const cat of state.failure_report.failed_categories) {
+            const name = getCategoryName(cat);
+            base.push({ ref: `run:tests/${name}/result.json`, mode: 'full', source_weight: 'cycle_produced' });
+            base.push({ ref: `run:metrics/${name}.json`, mode: 'full', source_weight: 'cycle_produced' });
+            base.push({ ref: `run:traces/${name}.jsonl`, mode: 'last_n_entries', max_entries: 20, source_weight: 'inferred' });
+          }
+        }
+      }
+      return base;
+    }
+
+    case 'evaluator':
+      return filterDepth(EVALUATOR_SLICES);
+
+    case 'critic':
+      return filterDepth(CRITIC_SLICES);
+
+    case 'historian':
+      return filterDepth(HISTORIAN_SLICES);
+
+    case 'facilitator': {
+      const mode = state.facilitator_mode ?? 'chat';
+      switch (mode) {
+        case 'decision': return filterDepth(FACILITATOR_DECISION_SLICES);
+        case 'scoping':  return filterDepth(FACILITATOR_SCOPING_SLICES);
+        default:         return filterDepth(FACILITATOR_CHAT_SLICES);
+      }
+    }
+  }
 }
 
-// ─── Token counting (VS2: chars ÷ 4 approximation) ───────────────────────────
+// ─── Path Resolution ──────────────────────────────────────────────────────────
 
-const CHARS_PER_TOKEN = 4;
+function resolveArtifactPath(
+  ref: string,
+  projectRoot: string,
+  runDir?: string
+): string | null {
+  if (ref.startsWith('doc:')) {
+    const key = ref.slice(4);
+    return path.join(projectRoot, '.sle', 'project-docs', `${key}.md`);
+  }
+  if (ref.startsWith('node:')) {
+    const rest = ref.slice(5);
+    const colonIdx = rest.indexOf(':');
+    if (colonIdx === -1) return null;
+    const group = rest.slice(0, colonIdx);
+    const key = rest.slice(colonIdx + 1);
+    return path.join(projectRoot, '.sle', 'project-graph', 'layers', group, `${key}.md`);
+  }
+  if (ref.startsWith('run:')) {
+    if (!runDir) return null;
+    return path.join(runDir, ref.slice(4));
+  }
+  if (ref.startsWith('.sle/')) {
+    return path.join(projectRoot, ref);
+  }
+  // Bare path — treat as relative to project root
+  return path.join(projectRoot, ref);
+}
+
+function resolveSummaryPath(projectRoot: string, ref: string): string | null {
+  if (!ref.startsWith('doc:')) return null;
+  const key = ref.slice(4);
+  return path.join(projectRoot, '.sle', 'project-docs', `${key}.summary.md`);
+}
+
+function refToSliceKey(ref: string): string {
+  if (ref.startsWith('doc:')) return ref.slice(4);
+  if (ref.startsWith('node:')) {
+    const parts = ref.slice(5).split(':');
+    return parts[parts.length - 1];
+  }
+  if (ref.startsWith('run:')) {
+    const filePart = ref.slice(4);
+    return path.basename(filePart, path.extname(filePart));
+  }
+  return path.basename(ref, path.extname(ref));
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function meetsDepth(required: PlanningDepth, actual: PlanningDepth): boolean {
+  return DEPTH_ORDER[actual] >= DEPTH_ORDER[required];
+}
 
 function charsToTokens(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
@@ -68,27 +336,39 @@ function tokensToChars(tokens: number): number {
   return tokens * CHARS_PER_TOKEN;
 }
 
-// ─── Truncation (prefer dropping earlier sections) ───────────────────────────
-
-const TRUNCATION_MARKER = '[...earlier content truncated...]\n';
-
 function truncateContent(content: string, maxChars: number): { text: string; truncated: boolean } {
   if (content.length <= maxChars) return { text: content, truncated: false };
   const keepChars = maxChars - TRUNCATION_MARKER.length;
+  if (keepChars <= 0) return { text: '', truncated: true };
   return {
     text: TRUNCATION_MARKER + content.slice(content.length - keepChars),
     truncated: true,
   };
 }
 
-// ─── ContextManager ───────────────────────────────────────────────────────────
+function getCategoryName(c: string | { name: string }): string {
+  return typeof c === 'string' ? c : c.name;
+}
 
-export const DEFAULT_CONFIG: ContextManagerConfig = {
-  artifact_slice_size: 8_000,
-  summary_max_tokens: 500,
-  system_prompt_max_tokens: 4_000,
-  hard_ceiling: 32_000,
-};
+function applyLoadingMode(content: string, def: SliceDef): string {
+  if (def.mode === 'last_n_entries' && def.max_entries) {
+    const entries = content.split(/(?=^##\s)/m);
+    if (entries.length > def.max_entries) {
+      return entries.slice(-def.max_entries).join('');
+    }
+    return content;
+  }
+  if (def.mode === 'last_cycle') {
+    const entries = content.split(/(?=^##\s*Cycle)/im);
+    if (entries.length > 1) {
+      return entries[entries.length - 1];
+    }
+    return content;
+  }
+  return content;
+}
+
+// ─── ContextManager ───────────────────────────────────────────────────────────
 
 export class ContextManager {
   private fs: typeof import('fs').promises;
@@ -102,9 +382,9 @@ export class ContextManager {
   }
 
   async assemble(role: AgentRole, cycleState: CycleStateContext): Promise<AssembledContext> {
-    const systemPrompt = await this.loadSystemPrompt(role);
+    const rawSystemPrompt = await this.loadSystemPrompt(role);
     const stateSummary = this.buildStateSummary(cycleState);
-    const task = inferTaskDescription(cycleState.current_node, cycleState.intent);
+    const task = this.buildTaskDescription(cycleState);
 
     const failureContext =
       cycleState.iteration > 1 && cycleState.failure_report
@@ -114,11 +394,19 @@ export class ContextManager {
     const { slices, truncated } = await this.loadArtifactSlices(
       role,
       cycleState,
-      systemPrompt,
+      rawSystemPrompt,
       stateSummary,
       task,
       failureContext
     );
+
+    const artifactList = Object.keys(slices)
+      .map(id => `- ${id}`)
+      .join('\n');
+
+    const systemPrompt = rawSystemPrompt
+      ? rawSystemPrompt.replace('{artifact_list}', artifactList || 'No documents available.')
+      : '';
 
     const totalTokens = this.estimateTotalTokens(systemPrompt, stateSummary, task, slices, failureContext);
 
@@ -133,31 +421,28 @@ export class ContextManager {
     };
   }
 
-  // ─── System prompt ──────────────────────────────────────────────────────────
+  // ─── Component 1: System prompt ───────────────────────────────────────────
 
   private async loadSystemPrompt(role: AgentRole): Promise<string> {
-    const parts: string[] = [];
-
     const agentMdPath = path.join(this.projectRoot, 'agent.md');
     const agentMd = await this.safeReadFile(agentMdPath);
-    if (agentMd) {
-      const maxChars = tokensToChars(this.config.system_prompt_max_tokens);
-      const { text } = truncateContent(agentMd, Math.floor(maxChars * 0.6));
-      parts.push(text);
-    }
-
     const rolePromptPath = path.join(this.projectRoot, '.sle', 'prompts', `${role}.md`);
     const rolePrompt = await this.safeReadFile(rolePromptPath);
-    if (rolePrompt) {
-      const maxChars = tokensToChars(this.config.system_prompt_max_tokens);
-      const { text } = truncateContent(rolePrompt, Math.floor(maxChars * 0.4));
-      parts.push(text);
-    }
 
-    return parts.join('\n\n---\n\n');
+    if (!agentMd && !rolePrompt) return '';
+
+    const agentHeader = agentMd
+      ? truncateContent(agentMd, tokensToChars(300)).text
+      : `You are the ${role} agent in an SLE cycle.`;
+
+    const roleDetails = rolePrompt
+      ? truncateContent(rolePrompt, tokensToChars(200)).text
+      : 'Review constraints and proceed with your assigned task.';
+
+    return `${agentHeader}\n\n## Your role\n${roleDetails}\n\n## Artifacts in your context\n{artifact_list}`;
   }
 
-  // ─── State summary ──────────────────────────────────────────────────────────
+  // ─── Component 3: State summary ────────────────────────────────────────────
 
   private buildStateSummary(cycleState: CycleStateContext): string {
     const lines = [
@@ -174,73 +459,222 @@ export class ContextManager {
         lines.push(`- Revision note: "${cycleState.revision_note}"`);
       }
     }
-    return lines.join('\n');
+    return truncateContent(lines.join('\n'), tokensToChars(this.config.summary_max_tokens)).text;
   }
 
-  // ─── Failure context ─────────────────────────────────────────────────────────
+  // ─── Component 4: Task description ────────────────────────────────────────
+
+  private buildTaskDescription(cycleState: CycleStateContext): string {
+    if (cycleState.task?.description) {
+      return cycleState.task.description;
+    }
+    const node = cycleState.current_node;
+    const base = node
+      ? (NODE_TASK_DESCRIPTIONS[node] ?? `Execute the ${node} step.`)
+      : 'Prepare for the cycle.';
+    return `${base}\n\nCycle intent: "${cycleState.intent}"`;
+  }
+
+  // ─── Component 5: Failure context ─────────────────────────────────────────
 
   private formatFailureContext(report: FailureReport): string {
+    const failedNames = report.failed_categories.map(getCategoryName);
     const lines = [
       '## Previous Iteration Failure',
-      `Iteration ${report.iteration} failed with ${report.failed_categories.length} category failures.`,
+      `Iteration ${report.iteration} failed with ${failedNames.length} category failure(s).`,
       '',
       `**Summary:** ${report.quick_summary}`,
       '',
-      `**Failed categories:** ${report.failed_categories.join(', ')}`,
+      `**Failed categories:** ${failedNames.join(', ')}`,
       `**Passed categories:** ${report.passed_categories.join(', ')}`,
     ];
-    const text = lines.join('\n');
-    const maxChars = tokensToChars(2_000);
-    return truncateContent(text, maxChars).text;
+    return truncateContent(lines.join('\n'), tokensToChars(400)).text;
   }
 
-  // ─── Artifact slices ─────────────────────────────────────────────────────────
+  // ─── Component 2: Artifact slices ─────────────────────────────────────────
 
   private async loadArtifactSlices(
     role: AgentRole,
-    _cycleState: CycleStateContext,
+    cycleState: CycleStateContext,
     systemPrompt: string,
     stateSummary: string,
     task: string,
     failureContext: string | undefined
   ): Promise<{ slices: Record<string, string>; truncated: string[] }> {
-    const usedTokens =
+    // Budget = hard_ceiling minus the tokens used by the other components
+    const fixedTokens =
       charsToTokens(systemPrompt.length) +
       charsToTokens(stateSummary.length) +
       charsToTokens(task.length) +
       (failureContext ? charsToTokens(failureContext.length) : 0);
 
-    let remainingTokens = this.config.hard_ceiling - usedTokens;
-    if (remainingTokens < 0) remainingTokens = 0;
+    const artifactBudget = Math.max(this.config.hard_ceiling - fixedTokens, 500);
 
-    const paths = ROLE_ARTIFACT_PATHS[role] ?? [];
-    const slices: Record<string, string> = {};
-    const truncated: string[] = [];
+    const runDir = cycleState.failure_report?.run_dir;
+    const sliceDefs = this.resolveSliceDefs(role, cycleState, runDir);
 
-    for (const artifactPath of paths) {
-      if (remainingTokens <= 0) break;
-
-      const fullPath = path.join(this.projectRoot, artifactPath);
-      const content = await this.safeReadFile(fullPath);
-      if (!content) continue;
-
-      const artifactId = path.basename(artifactPath, '.md');
-      const maxChars = Math.min(
-        this.config.artifact_slice_size,
-        tokensToChars(remainingTokens)
-      );
-
-      const { text, truncated: wasTruncated } = truncateContent(content, maxChars);
-      slices[artifactId] = text;
-      remainingTokens -= charsToTokens(text.length);
-
-      if (wasTruncated) truncated.push(artifactId);
+    // Load content for each slice
+    interface LoadedSlice {
+      key: string;
+      content: string;
+      tokens: number;
+      weight: SourceWeight;
+      neverTruncate: boolean;
     }
 
-    return { slices, truncated };
+    const loaded: LoadedSlice[] = [];
+    const truncated: string[] = [];
+
+    for (const def of sliceDefs) {
+      const key = refToSliceKey(def.ref);
+      const content = await this.loadSliceContent(def, cycleState, runDir);
+      if (!content) continue;
+
+      const processed = applyLoadingMode(content, def);
+      const weight = def.source_weight ?? 'inferred';
+      const neverTruncate = def.never_truncate ?? false;
+
+      loaded.push({
+        key,
+        content: processed,
+        tokens: charsToTokens(processed.length),
+        weight,
+        neverTruncate,
+      });
+    }
+
+    // Enforce budget — truncate inferred first, then cycle_produced, then user_defined
+    const TRUNCATION_ORDER: SourceWeight[] = ['inferred', 'cycle_produced', 'user_defined'];
+
+    let totalTokens = loaded.reduce((sum, s) => sum + s.tokens, 0);
+
+    if (totalTokens > artifactBudget) {
+      for (const weightTier of TRUNCATION_ORDER) {
+        if (totalTokens <= artifactBudget) break;
+        for (const slice of loaded) {
+          if (totalTokens <= artifactBudget) break;
+          if (slice.neverTruncate || slice.weight !== weightTier) continue;
+
+          const over = totalTokens - artifactBudget;
+          if (slice.tokens <= over) {
+            totalTokens -= slice.tokens;
+            slice.content = '';
+            slice.tokens = 0;
+            truncated.push(slice.key);
+          } else {
+            const keepChars = tokensToChars(slice.tokens - over);
+            const { text } = truncateContent(slice.content, keepChars);
+            totalTokens -= slice.tokens - charsToTokens(text.length);
+            slice.content = text;
+            slice.tokens = charsToTokens(text.length);
+            if (!truncated.includes(slice.key)) truncated.push(slice.key);
+          }
+        }
+      }
+
+      // Hard ceiling safety: if still over, truncate never_truncate as last resort
+      if (totalTokens > this.config.hard_ceiling) {
+        console.warn(`[ContextManager] Hard ceiling exceeded for role=${role}. Forcing truncation.`);
+        for (const slice of loaded) {
+          if (totalTokens <= this.config.hard_ceiling) break;
+          const over = totalTokens - this.config.hard_ceiling;
+          const keepChars = tokensToChars(slice.tokens - over);
+          if (keepChars < 0) {
+            totalTokens -= slice.tokens;
+            slice.content = '';
+            slice.tokens = 0;
+          } else {
+            const { text } = truncateContent(slice.content, keepChars);
+            totalTokens -= slice.tokens - charsToTokens(text.length);
+            slice.content = text;
+            slice.tokens = charsToTokens(text.length);
+          }
+          if (!truncated.includes(slice.key)) truncated.push(slice.key);
+        }
+      }
+    }
+
+    // Also apply per-artifact max_tokens from config (artifact_slice_size)
+    // Individual slice caps — prevent any single artifact dominating
+    for (const slice of loaded) {
+      if (slice.neverTruncate) continue;
+      const maxChars = tokensToChars(this.config.artifact_slice_size);
+      if (slice.content.length > maxChars) {
+        const { text } = truncateContent(slice.content, maxChars);
+        slice.content = text;
+        slice.tokens = charsToTokens(text.length);
+        if (!truncated.includes(slice.key)) truncated.push(slice.key);
+      }
+    }
+
+    const finalSlices: Record<string, string> = {};
+    for (const slice of loaded) {
+      if (slice.content) {
+        finalSlices[slice.key] = slice.content;
+      }
+    }
+
+    return { slices: finalSlices, truncated };
   }
 
-  // ─── Token estimate ──────────────────────────────────────────────────────────
+  // Resolve the slice definitions for a role, applying conditions
+  private resolveSliceDefs(
+    role: AgentRole,
+    state: CycleStateContext,
+    _runDir: string | undefined
+  ): SliceDef[] {
+    const task = state.task;
+
+    // Declared mode: use task context_declarations if present
+    if (task?.context_declarations && task.context_declarations.length > 0) {
+      const decl = task.context_declarations[0];
+      return decl.slices.map((ref: string) => ({
+        ref,
+        mode: 'full' as SliceMode,
+        source_weight: 'user_defined' as SourceWeight,
+      }));
+    }
+
+    // Inferred mode: use role-specific slice definitions
+    return getRoleSlices(role, state);
+  }
+
+  // Load the raw content for a single slice definition
+  private async loadSliceContent(
+    def: SliceDef,
+    state: CycleStateContext,
+    runDir: string | undefined
+  ): Promise<string | null> {
+    // Ephemeral artifacts — injected by DAG runner, no disk read
+    const ephemeralContent = state.ephemeral?.[def.ref];
+    if (ephemeralContent !== undefined) return ephemeralContent;
+
+    // summary_only: check for pre-generated summary first
+    if (def.mode === 'summary_only') {
+      const summaryPath = resolveSummaryPath(this.projectRoot, def.ref);
+      if (summaryPath) {
+        const summary = await this.safeReadFile(summaryPath);
+        if (summary) return summary;
+      }
+      // Fall back to first N lines of the full document
+      const fullPath = resolveArtifactPath(def.ref, this.projectRoot, runDir);
+      if (!fullPath) return null;
+      const full = await this.safeReadFile(fullPath);
+      if (!full) return null;
+      const lines = full.split('\n');
+      if (lines.length <= SUMMARY_PREVIEW_LINES) return full;
+      return (
+        lines.slice(0, SUMMARY_PREVIEW_LINES).join('\n') +
+        '\n[...document continues — full version available on request...]'
+      );
+    }
+
+    const filePath = resolveArtifactPath(def.ref, this.projectRoot, runDir);
+    if (!filePath) return null;
+    return this.safeReadFile(filePath);
+  }
+
+  // ─── Token estimation ────────────────────────────────────────────────────────
 
   private estimateTotalTokens(
     systemPrompt: string,

@@ -34,7 +34,7 @@ export type TestCommandFormat = 'shell' | 'npm_script' | 'makefile';
 export type ArtifactFormat = 'markdown' | 'json' | 'yaml';
 export type OutputType = 'executable' | 'html' | 'markdown';
 export type GeneratedAt = 'gate_pass' | 'cycle_end' | 'always';
-export type LLMProvider = 'openai_compatible' | 'anthropic';
+export type LLMProvider = 'openai_compatible' | 'anthropic' | 'glm' | 'openrouter';
 export type ArtifactScope = 'project' | 'group' | 'run' | 'ephemeral';
 export type ArtifactRef = `doc:${string}` | `node:${string}:${string}`;
 export type ContextAssemblyMode = 'declared' | 'inferred';
@@ -76,8 +76,8 @@ export const SummaryFormatEnum = z.enum(['markdown', 'html', 'json']);
 export const TestCommandFormatEnum = z.enum(['shell', 'npm_script', 'makefile']);
 export const ArtifactFormatEnum = z.enum(['markdown', 'json', 'yaml']);
 export const OutputTypeEnum = z.enum(['executable', 'html', 'markdown']);
-export const GeneratedAtEnum = z.enum(['gate_pass', 'cycle_end', 'always']);
-export const LLMProviderEnum = z.enum(['openai_compatible', 'anthropic']);
+export const GeneratedAtEnum = z.enum(['always', 'gate_pass', 'cycle_end']); // swap to match enum order
+export const LLMProviderEnum = z.enum(['openai_compatible', 'anthropic', 'glm', 'openrouter']);
 export const ArtifactScopeEnum = z.enum(['project', 'group', 'run', 'ephemeral']);
 export const ContextAssemblyModeEnum = z.enum(['declared', 'inferred']);
 export const SourceWeightEnum = z.enum(['user_defined', 'cycle_produced', 'inferred']);
@@ -90,7 +90,7 @@ export const NodeStatusEnum = z.enum(['pending', 'running', 'complete', 'failed'
 export const ArtifactRefSchema = z.string().refine(
   (val) => /^(doc:[a-zA-Z0-9_-]+|node:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)$/.test(val),
   'ArtifactRef must be either doc:key or node:group:key'
-);
+) as unknown as z.ZodType<ArtifactRef, z.ZodTypeDef, string>;
 
 // OpenQuestionBlocking template literal validation
 export const OpenQuestionBlockingSchema = z.union([
@@ -102,17 +102,96 @@ export const OpenQuestionBlockingSchema = z.union([
 // 2 — System State
 // ============================================================================
 
-export interface ChatState {
+export interface ChatSession {
   session_open: boolean;
   session_id?: string;
   started_at?: string;
+  last_active_at?: string;
+  total_exchanges: number;
+  pending_decisions: number;
+  last_consumed_by_cycle?: number;
 }
 
-export const ChatStateSchema = z.object({
+export const ChatSessionSchema = z.object({
   session_open: z.boolean(),
   session_id: z.string().optional(),
   started_at: z.string().datetime().optional(),
+  last_active_at: z.string().datetime().optional(),
+  total_exchanges: z.number().nonnegative().default(0),
+  pending_decisions: z.number().nonnegative().default(0),
+  last_consumed_by_cycle: z.number().nonnegative().optional(),
 });
+
+export interface ChatMessage {
+  ts: string;
+  role: 'user' | 'facilitator' | 'system';
+  content: string;
+  sources?: string[];
+  decision_detected?: DecisionCandidate;
+  decision_captured?: boolean;
+}
+
+export const ChatMessageSchema = z.object({
+  ts: z.string().datetime(),
+  role: z.enum(['user', 'facilitator', 'system']),
+  content: z.string(),
+  sources: z.array(z.string()).optional(),
+  decision_detected: z.lazy(() => DecisionCandidateSchema).optional(),
+  decision_captured: z.boolean().optional(),
+});
+
+export interface DecisionCandidate {
+  id: string;
+  summary: string;
+  rationale: string;
+  scope: string;
+  confidence: 'high' | 'medium';
+}
+
+export const DecisionCandidateSchema = z.object({
+  id: z.string(),
+  summary: z.string(),
+  rationale: z.string(),
+  scope: z.string(),
+  confidence: z.enum(['high', 'medium']),
+});
+
+export type FacilitatorMode = 'chat' | 'decision' | 'scoping';
+
+export interface ChatContext {
+  session_id: string;
+  exchanges_consumed: number;
+  summary: string;
+  key_decisions: Array<{
+    summary: string;
+    rationale: string;
+    scope: string;
+  }>;
+  open_questions: string[];
+  preferences: Array<{
+    topic: string;
+    preference: string;
+    confidence: 'strong' | 'mild' | 'mentioned';
+  }>;
+}
+
+export interface ConversationConfig {
+  max_history_exchanges: number;
+  context_window_exchanges: number;
+  session_timeout_minutes: number;
+  auto_summarize_after: number;
+}
+
+export const DEFAULT_CONVERSATION_CONFIG: ConversationConfig = {
+  max_history_exchanges: 100,
+  context_window_exchanges: 20,
+  session_timeout_minutes: 60,
+  auto_summarize_after: 50,
+};
+
+export type ChatSessionAlias = ChatSession;
+
+export const ChatStateSchema = ChatSessionSchema;
 
 export interface CycleFlags {
   awaiting_scoping: boolean;
@@ -682,6 +761,7 @@ export interface FailureCategory {
   method: ValidationMethod;
   error_summary: string;
   test_output?: string;
+  structural?: boolean;
 }
 
 export const FailureCategorySchema = z.object({
@@ -689,6 +769,7 @@ export const FailureCategorySchema = z.object({
   method: ValidationMethodEnum,
   error_summary: z.string(),
   test_output: z.string().optional(),
+  structural: z.boolean().optional(),
 });
 
 export interface FailureReport {
@@ -1130,11 +1211,11 @@ export interface TaskContextDeclaration {
   intent: string;
 }
 
-export const TaskContextDeclarationSchema = z.object({
+export const TaskContextDeclarationSchema: z.ZodType<TaskContextDeclaration, any, any> = z.object({
   task_id: z.string().uuid(),
-  slices: z.array(ArtifactRefSchema),
+  slices: z.array(ArtifactRefSchema as any),
   intent: z.string(),
-});
+}) as any;
 
 export interface SLETask {
   id: string;
@@ -1261,6 +1342,7 @@ export const APIErrorSchema = z.object({
 export interface NodeTag {
   prefix: TagPrefix;
   value?: string;
+  target_ref: string;
   source: 'user' | 'facilitator' | 'system';
   applied_at: string;
 }
@@ -1268,6 +1350,593 @@ export interface NodeTag {
 export const NodeTagSchema = z.object({
   prefix: TagPrefixEnum,
   value: z.string().optional(),
+  target_ref: z.string().min(1),
   source: z.enum(['user', 'facilitator', 'system']),
   applied_at: z.string().datetime(),
 });
+
+// ============================================================================
+// 14 — Job Dispatch & Worker Pool
+// ============================================================================
+
+export const JobTypeEnum = z.enum(['static-check', 'llm-check', 'exec-check', 'task-execution']);
+
+export const JobStatusEnum = z.enum([
+  'queued',
+  'preparing',
+  'running',
+  'collecting',
+  'completed',
+  'failed',
+  'cancelled',
+  'timed_out',
+]);
+
+export const JobPriorityEnum = z.union([
+  z.literal(0),
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+]);
+
+export const WorkerStatusEnum = z.enum(['idle', 'busy', 'draining', 'dead']);
+
+export const JobResultSchema = z.object({
+  exit_code: z.number(),
+  stdout: z.string(),
+  stderr: z.string(),
+  artifacts: z.record(z.string(), z.string()),
+  duration_ms: z.number().nonnegative(),
+  metrics: z.record(z.string(), z.number()),
+});
+
+export const JobErrorCodeEnum = z.enum([
+  'docker_unavailable',
+  'container_start_failed',
+  'container_oom_killed',
+  'container_timeout',
+  'script_missing',
+  'script_syntax_error',
+  'context_pack_invalid',
+  'result_parse_failed',
+  'artifact_capture_failed',
+  'unknown',
+]);
+
+export const JobErrorSchema = z.object({
+  code: JobErrorCodeEnum,
+  message: z.string(),
+  recoverable: z.boolean(),
+  container_exit_code: z.number().nullable(),
+  docker_error: z.string().nullable(),
+  retry_count: z.number().nonnegative(),
+});
+
+export const JobSchema: z.ZodSchema<Job> = z.lazy(() =>
+  z.object({
+    id: z.string().uuid(),
+    type: JobTypeEnum,
+    status: JobStatusEnum,
+    priority: JobPriorityEnum,
+    created_at: z.string().datetime(),
+    started_at: z.string().datetime().nullable(),
+    completed_at: z.string().datetime().nullable(),
+    cycle_id: z.string(),
+    iteration: z.number().positive(),
+    run_id: z.string(),
+    category: z.string().nullable(),
+    sub_phase: SubPhaseEnum.nullable(),
+    task_id: z.string().uuid().nullable(),
+    task_context_declaration: TaskContextDeclarationSchema.nullable(),
+    container_id: z.string().nullable(),
+    context_pack_path: z.string().nullable(),
+    result: JobResultSchema.nullable(),
+    error: JobErrorSchema.nullable(),
+  })
+) as any;
+
+export const WorkerSchema = z.object({
+  id: z.string().uuid(),
+  status: WorkerStatusEnum,
+  container_id: z.string().nullable(),
+  current_job_id: z.string().uuid().nullable(),
+  last_heartbeat: z.string().datetime(),
+  total_jobs_completed: z.number().nonnegative(),
+  total_errors: z.number().nonnegative(),
+});
+
+export const WorkerPoolConfigSchema = z.object({
+  max_workers: z.number().positive(),
+  min_workers: z.number().positive(),
+  idle_timeout_ms: z.number().nonnegative(),
+  heartbeat_interval_ms: z.number().nonnegative(),
+  max_heartbeat_misses: z.number().positive(),
+  container_startup_timeout_ms: z.number().positive(),
+});
+
+export const MountPointSchema = z.object({
+  host_path: z.string(),
+  container_path: z.string(),
+  read_only: z.boolean(),
+});
+
+export const ResourceLimitsSchema = z.object({
+  memory_mb: z.number().positive(),
+  cpu_cores: z.number().positive(),
+  disk_mb: z.number().positive(),
+  pids_max: z.number().positive(),
+});
+
+export const ContainerSpecSchema = z.object({
+  image: z.string(),
+  install_command: z.string(),
+  timeout_ms: z.number().positive(),
+  env: z.record(z.string(), z.string()),
+  mount_points: z.array(MountPointSchema),
+  resource_limits: ResourceLimitsSchema,
+  network_mode: z.enum(['none', 'bridge']),
+});
+
+export const DispatchPlanJobSchema = z.object({
+  job_type: JobTypeEnum,
+  category: z.string().nullable(),
+  sub_phase: SubPhaseEnum.nullable(),
+  depends_on: z.array(z.string().uuid()),
+  priority: JobPriorityEnum,
+});
+
+export const StaticGateSchema = z.object({
+  job_id: z.string().uuid(),
+  blocks: z.array(z.string().uuid()),
+});
+
+export const DispatchPlanSchema = z.object({
+  run_id: z.string(),
+  cycle_id: z.string(),
+  iteration: z.number().positive(),
+  created_at: z.string().datetime(),
+  jobs: z.array(DispatchPlanJobSchema),
+  static_gate: StaticGateSchema,
+});
+
+export const JobDispatchStateSchema = z.object({
+  pool_size: z.number().nonnegative(),
+  active_jobs: z.number().nonnegative(),
+  queued_jobs: z.number().nonnegative(),
+  last_dispatch_at: z.string().datetime().nullable(),
+  last_collect_at: z.string().datetime().nullable(),
+  worker_errors: z.number().nonnegative(),
+});
+
+export interface Job {
+  id: string;
+  type: JobType;
+  status: JobStatus;
+  priority: JobPriority;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  cycle_id: string;
+  iteration: number;
+  run_id: string;
+  category: string | null;
+  sub_phase: SubPhase | null;
+  task_id: string | null;
+  task_context_declaration: TaskContextDeclaration | null;
+  container_id: string | null;
+  context_pack_path: string | null;
+  result: JobResult | null;
+  error: JobError | null;
+}
+
+export interface JobResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  artifacts: Record<string, string>;
+  duration_ms: number;
+  metrics: Record<string, number>;
+}
+
+export interface JobError {
+  code: JobErrorCode;
+  message: string;
+  recoverable: boolean;
+  container_exit_code: number | null;
+  docker_error: string | null;
+  retry_count: number;
+}
+
+export type JobType = 'static-check' | 'llm-check' | 'exec-check' | 'task-execution';
+
+export type JobStatus =
+  | 'queued'
+  | 'preparing'
+  | 'running'
+  | 'collecting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out';
+
+export type JobPriority = 0 | 1 | 2 | 3;
+
+export type JobErrorCode =
+  | 'docker_unavailable'
+  | 'container_start_failed'
+  | 'container_oom_killed'
+  | 'container_timeout'
+  | 'script_missing'
+  | 'script_syntax_error'
+  | 'context_pack_invalid'
+  | 'result_parse_failed'
+  | 'artifact_capture_failed'
+  | 'unknown';
+
+export type WorkerStatus = 'idle' | 'busy' | 'draining' | 'dead';
+
+export interface Worker {
+  id: string;
+  status: WorkerStatus;
+  container_id: string | null;
+  current_job_id: string | null;
+  last_heartbeat: string;
+  total_jobs_completed: number;
+  total_errors: number;
+}
+
+export interface WorkerPoolConfig {
+  max_workers: number;
+  min_workers: number;
+  idle_timeout_ms: number;
+  heartbeat_interval_ms: number;
+  max_heartbeat_misses: number;
+  container_startup_timeout_ms: number;
+}
+
+export interface MountPoint {
+  host_path: string;
+  container_path: string;
+  read_only: boolean;
+}
+
+export interface ResourceLimits {
+  memory_mb: number;
+  cpu_cores: number;
+  disk_mb: number;
+  pids_max: number;
+}
+
+export interface ContainerSpec {
+  image: string;
+  install_command: string;
+  timeout_ms: number;
+  env: Record<string, string>;
+  mount_points: MountPoint[];
+  resource_limits: ResourceLimits;
+  network_mode: 'none' | 'bridge';
+}
+
+export interface DispatchPlanJob {
+  job_type: JobType;
+  category: string | null;
+  sub_phase: SubPhase | null;
+  depends_on: string[];
+  priority: JobPriority;
+}
+
+export interface StaticGate {
+  job_id: string;
+  blocks: string[];
+}
+
+export interface DispatchPlan {
+  run_id: string;
+  cycle_id: string;
+  iteration: number;
+  created_at: string;
+  jobs: DispatchPlanJob[];
+  static_gate: StaticGate;
+}
+
+export interface JobDispatchState {
+  pool_size: number;
+  active_jobs: number;
+  queued_jobs: number;
+  last_dispatch_at: string | null;
+  last_collect_at: string | null;
+  worker_errors: number;
+}
+
+// ============================================================================
+// 15 — Document Link Index
+// ============================================================================
+
+export const LinkEntityKindEnum = z.enum(['node', 'document', 'source_file', 'test_file']);
+
+export const AutoLinkTypeEnum = z.enum(['structural_dag', 'structural_declaration', 'contextual_execution']);
+
+export const LinkSourceSchema = z.union([
+  z.object({ kind: z.literal('node'), group: z.string(), key: z.string() }),
+  z.object({ kind: z.literal('document'), key: z.string() }),
+]);
+
+export const LinkTargetSchema = z.union([
+  z.object({ kind: z.literal('node'), group: z.string(), key: z.string() }),
+  z.object({ kind: z.literal('document'), key: z.string() }),
+  z.object({ kind: z.literal('source_file'), path: z.string() }),
+  z.object({ kind: z.literal('test_file'), path: z.string() }),
+]);
+
+export const LinkSchema = z.object({
+  id: z.string().uuid(),
+  source: LinkSourceSchema,
+  target: LinkTargetSchema,
+  link_type: z.union([AutoLinkTypeEnum, z.literal('manual')]),
+  context: z.string(),
+  created_at: z.string().datetime(),
+  created_by: z.enum(['sle', 'user']),
+});
+
+export const ForwardLinkSchema = z.object({
+  source: LinkSourceSchema,
+  target: LinkTargetSchema,
+  link_type: z.union([AutoLinkTypeEnum, z.literal('manual')]),
+  context: z.string(),
+  created_at: z.string().datetime(),
+});
+
+export const BacklinkSchema = z.object({
+  from: LinkSourceSchema,
+  context: z.string(),
+  link_type: z.union([AutoLinkTypeEnum, z.literal('manual')]),
+  resolved_label: z.string(),
+});
+
+export const FileEntrySchema = z.object({
+  path: z.string(),
+  language: z.string(),
+  last_modified: z.string().datetime(),
+  line_count: z.number().nonnegative(),
+  referencing_nodes: z.array(z.string()),
+  group_id: z.string().nullable(),
+  layer: z.string().nullable(),
+});
+
+export const FileIndexSchema = z.object({
+  files: z.map(z.string(), FileEntrySchema),
+});
+
+export const DocumentEntrySchema = z.object({
+  key: z.string(),
+  path: z.string(),
+  title: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+  source: z.enum(['user', 'sle_generated', 'sle_suggested']),
+  last_modified: z.string().datetime(),
+  modified_by: z.enum(['user', 'sle']),
+  backlink_count: z.number().nonnegative(),
+});
+
+export const DocumentIndexSchema = z.object({
+  documents: z.map(z.string(), DocumentEntrySchema),
+});
+
+export const LinkIndexSchema: z.ZodSchema<LinkIndex> = z.lazy(() =>
+  z.object({
+    version: z.number().nonnegative(),
+    last_rebuilt_at: z.string().datetime(),
+    links: z.array(ForwardLinkSchema),
+    backlinks: z.map(z.string(), z.array(BacklinkSchema)),
+    file_index: FileIndexSchema,
+    document_index: DocumentIndexSchema,
+  })
+);
+
+export type LinkEntityKind = 'node' | 'document' | 'source_file' | 'test_file';
+
+export type AutoLinkType = 'structural_dag' | 'structural_declaration' | 'contextual_execution';
+
+export type LinkSource =
+  | { kind: 'node'; group: string; key: string }
+  | { kind: 'document'; key: string };
+
+export type LinkTarget =
+  | { kind: 'node'; group: string; key: string }
+  | { kind: 'document'; key: string }
+  | { kind: 'source_file'; path: string }
+  | { kind: 'test_file'; path: string };
+
+export interface Link {
+  id: string;
+  source: LinkSource;
+  target: LinkTarget;
+  link_type: AutoLinkType | 'manual';
+  context: string;
+  created_at: string;
+  created_by: 'sle' | 'user';
+}
+
+export interface ForwardLink {
+  source: LinkSource;
+  target: LinkTarget;
+  link_type: AutoLinkType | 'manual';
+  context: string;
+  created_at: string;
+}
+
+export interface Backlink {
+  from: LinkSource;
+  context: string;
+  link_type: AutoLinkType | 'manual';
+  resolved_label: string;
+}
+
+export interface FileEntry {
+  path: string;
+  language: string;
+  last_modified: string;
+  line_count: number;
+  referencing_nodes: string[];
+  group_id: string | null;
+  layer: string | null;
+}
+
+export interface FileIndex {
+  files: Map<string, FileEntry>;
+}
+
+export interface DocumentEntry {
+  key: string;
+  path: string;
+  title: string;
+  description: string;
+  tags: string[];
+  source: 'user' | 'sle_generated' | 'sle_suggested';
+  last_modified: string;
+  modified_by: 'user' | 'sle';
+  backlink_count: number;
+}
+
+export interface DocumentIndex {
+  documents: Map<string, DocumentEntry>;
+}
+
+export interface LinkIndex {
+  version: number;
+  last_rebuilt_at: string;
+  links: ForwardLink[];
+  backlinks: Map<string, Backlink[]>;
+  file_index: FileIndex;
+  document_index: DocumentIndex;
+}
+
+// ============================================================================
+// Vertical Slice 5 — Critic, Intake, Sharding & WebSocket Events
+// ============================================================================
+
+export interface CritiqueResult {
+  blocking_issues: string[];
+  warnings: string[];
+  suggestions: string[];
+  pass: boolean;
+}
+
+export const CritiqueResultSchema = z.object({
+  blocking_issues: z.array(z.string()),
+  warnings: z.array(z.string()),
+  suggestions: z.array(z.string()),
+  pass: z.boolean(),
+});
+
+export interface DocumentSection {
+  id: string;
+  heading: string;
+  tokens: number;
+  anchor: string;
+}
+
+export const DocumentSectionSchema = z.object({
+  id: z.string(),
+  heading: z.string(),
+  tokens: z.number().nonnegative(),
+  anchor: z.string(),
+});
+
+export interface IntakeDocument {
+  id: string;
+  filename: string;
+  title: string;
+  description: string;
+  tags: string[];
+  status: 'ungraphed' | 'promoted' | 'superseded';
+  source: 'user' | 'sle_suggested';
+  version: number;
+  sections: DocumentSection[];
+  last_modified: string;
+  promoted_to_node?: string;
+}
+
+export const IntakeDocumentSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  title: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+  status: z.enum(['ungraphed', 'promoted', 'superseded']),
+  source: z.enum(['user', 'sle_suggested']),
+  version: z.number().int().nonnegative(),
+  sections: z.array(DocumentSectionSchema),
+  last_modified: z.string(),
+  promoted_to_node: z.string().optional(),
+});
+
+export interface CoherenceFinding {
+  type: 'contradiction' | 'undefined_reference' | 'terminology_conflict' | 'missing_document';
+  severity: 'blocking' | 'warning';
+  document_a: string;
+  document_b?: string;
+  section_a?: string;
+  section_b?: string;
+  description: string;
+}
+
+export const CoherenceFindingSchema = z.object({
+  type: z.enum(['contradiction', 'undefined_reference', 'terminology_conflict', 'missing_document']),
+  severity: z.enum(['blocking', 'warning']),
+  document_a: z.string(),
+  document_b: z.string().optional(),
+  section_a: z.string().optional(),
+  section_b: z.string().optional(),
+  description: z.string(),
+});
+
+export interface CoherenceReport {
+  status: 'clean' | 'flagged' | 'blocked';
+  findings: CoherenceFinding[];
+  document_count: number;
+  checked_at: string;
+}
+
+export const CoherenceReportSchema = z.object({
+  status: z.enum(['clean', 'flagged', 'blocked']),
+  findings: z.array(CoherenceFindingSchema),
+  document_count: z.number().int().nonnegative(),
+  checked_at: z.string(),
+});
+
+
+
+export interface ShardingProposal {
+  tasks: SLETask[];
+  total_estimated_tokens: number;
+  coherence_report: CoherenceReport;
+  approved_by_user: boolean;
+  approved_at?: string;
+}
+
+export const ShardingProposalSchema = z.object({
+  tasks: z.array(SLETaskSchema),
+  total_estimated_tokens: z.number().nonnegative(),
+  coherence_report: CoherenceReportSchema,
+  approved_by_user: z.boolean(),
+  approved_at: z.string().optional(),
+});
+
+export interface SLEEvent<T = unknown> {
+  type: string;
+  cycle?: string;
+  iteration?: number;
+  timestamp: string;
+  payload: T;
+}
+
+export const SLEEventSchema = z.object({
+  type: z.string(),
+  cycle: z.string().optional(),
+  iteration: z.number().int().optional(),
+  timestamp: z.string(),
+  payload: z.any(),
+});
+

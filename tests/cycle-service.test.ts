@@ -442,12 +442,12 @@ async function testDAGStateInitializedOnStart() {
   assert.strictEqual(dagState!.iteration, 1);
   assert.strictEqual(dagState!.revision, 0);
 
-  // All 12 core nodes initialized as pending
+  // All 14 core nodes initialized as pending
   const nodeIds = Object.keys(dagState!.nodes);
   assert.ok(nodeIds.includes('SCOPING'));
   assert.ok(nodeIds.includes('DESIGN'));
   assert.ok(nodeIds.includes('SNAPSHOT'));
-  assert.strictEqual(nodeIds.length, 12);
+  assert.strictEqual(nodeIds.length, 14);
   for (const node of Object.values(dagState!.nodes)) {
     assert.strictEqual(node.status, 'pending');
   }

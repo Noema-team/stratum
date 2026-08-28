@@ -27,11 +27,17 @@ within a knowledge-graph group (Research, Spikes, Design, Plans, Implementation,
 Code, Notes, Hosting). See [Contested terms → G03](#g03--layer-naming-collision)
 and [architecture.md](architecture.md).
 
-**Cycle vs Session.** A **cycle** is one complete pass from user intent through
-the DAG to a validated, versioned artifact snapshot (or clean halt). A
-**session** is one unit of interaction with the system — of which there are
-three types: discovery, chat, and cycle. A session may contain zero or more
-cycles. See [cycle-model.md](cycle-model.md), SLE-002.
+**Workflow run vs Session.** A **workflow run** is one execution of a
+`WorkflowDefinition` — a composable, skill-style unit of work — against a
+target, producing one or more committed artifacts (or a clean halt). `cycle`
+is the legacy term for one specific workflow, `full-build`, which runs the
+former fixed 15-node DAG end to end; the term survives only as a synonym for
+that one preset, not for workflow runs in general. A **session** is one unit
+of interaction with the system — discovery, chat, or a workflow run. A
+session may contain zero or more workflow runs, and (unlike the old model)
+more than one workflow run may be active at the same time, provided they
+don't claim the same artifact. See [workflow-model.md](workflow-model.md),
+DDR-031.
 
 **Depth vs Planning mode.** **Planning depth** is the canonical term for the
 configuration controlling reasoning passes, Critic activation, and artifact
@@ -67,69 +73,69 @@ This glossary supports the broader overview documentation set:
 | **artifact** | A versioned file produced by a role or the daemon, with a known location and schema | SLE-024 §7 |
 | **artifact slice** | The subset of the artifact store loaded into one agent call's context window, assembled by the context manager | SLE-007 |
 | **artifact store** | The daemon subsystem that reads, writes, and versions all project artifacts across the three remotes | SLE-005 |
-| **backlog** | A latent-work queue separate from Beads. Backlog items can be promoted to Beads issues and then to active cycle tasks | SLE-021 |
+| **backlog** | A latent-work queue separate from Beads. Backlog items can be promoted to Beads issues and then to active workflow-run tasks | SLE-021 |
 | **Beads** | The Git-native issue tracker (`bd`) backed by Dolt. Manages active tasks and agent memory across sessions | SLE-006 |
 | **bootstrap pair** | `agent.md` + `map.yaml` — the two files every agent reads before doing any work | SLE-001 |
-| **build node** | DAG node where the Builder role produces implementation code and instrumented test scripts. Always after TEST and CONFIRM GATE | [cycle-model.md](cycle-model.md), SLE-024 §5.1 |
-| **Builder** | Agent role at the BUILD node. Receives requirements + architecture + test-plan; produces implementation and test scripts. Never sees Tester reasoning | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
+| **build step** | The step (`produce`) where the Builder role produces implementation code and instrumented test scripts. Always after TEST and the CONFIRM checkpoint | [workflow-model.md](workflow-model.md), SLE-024 §5.1 |
+| **Builder** | Agent role at the BUILD step. Receives requirements + architecture + test-plan; produces implementation and test scripts. Never sees Tester reasoning | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
 | **category** | A named validation concern (e.g. correctness, performance, security) with its own test script and three sub-phases | SLE-003 |
-| **chat session** | An always-available, orthogonal interaction mode using the Facilitator role. Independent of system state; never blocks a running cycle | SLE-012 |
-| **Critic** | Agent role at the DESIGN node (deep/research depth only). Reviews architecture for blocking issues before detailed planning begins | DDR-022, SLE-024 §4.2 |
-| **cycle** | One pass from user intent to a validated, versioned artifact snapshot (or a clean halt) | [cycle-model.md](cycle-model.md), SLE-002 |
-| **CycleOutcome** | The terminal state of a cycle: `complete \| halted`. Used in version snapshots and reports | SLE-001 types, SLE-024 §2 |
-| **cycle roles** | The nine agent roles active during a development cycle: Explorer, Designer, Planner, Tester, Builder, Debugger, Evaluator, Critic, Historian | [agent-roles.md](agent-roles.md) |
-| **DAG** | Directed Acyclic Graph — the fixed node sequence the daemon walks through each cycle iteration | SLE-002, SLE-024 §5.1 |
-| **Debug node** | Conditional DAG node activated only on VALIDATION GATE failure. The Debugger diagnoses root cause and feeds a diagnosis to the next PLAN node | SLE-024 §5.1 |
-| **Debugger** | Agent role at the DEBUG node. First consumer of run artifacts after gate failure. Produces root-cause diagnosis; does not plan or build | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
+| **chat session** | An always-available, orthogonal interaction mode using the Facilitator role. Independent of system state; never blocks a running workflow run | SLE-012 |
+| **Critic** | Agent role at the DESIGN step (deep/research depth only, modeled as `review`). Reviews architecture for blocking issues before detailed planning begins | DDR-022, SLE-024 §4.2 |
+| **cycle** | Legacy term for one pass from user intent to a validated, versioned artifact snapshot (or a clean halt). Superseded by *workflow run*; survives only as a synonym for the `full-build` workflow specifically | [workflow-model.md](workflow-model.md), DDR-031, SLE-002 |
+| **CycleOutcome** | Legacy name for `WorkflowRun.status`'s terminal values: `complete \| halted`. Used in version snapshots and reports | DDR-031, SLE-024 §2 |
+| **cycle roles** | Legacy term for the nine agent roles active during a `full-build` workflow run: Explorer, Designer, Planner, Tester, Builder, Debugger, Evaluator, Critic, Historian | [agent-roles.md](agent-roles.md) |
+| **DAG** | Directed Acyclic Graph — historical term for the fixed step sequence the daemon walked through each cycle iteration. Superseded by the generic, composable workflow step-graph (DDR-031); `full-build` retains the same sequence expressed in `StepKind` terms | SLE-002, SLE-024 §5.1, DDR-031 |
+| **Debug step** | The VALIDATION_GATE review step's `on_fail` produce step — not a standalone step kind. The Debugger diagnoses root cause and feeds a diagnosis to the next PLAN step | SLE-024 §5.1, DDR-031 |
+| **Debugger** | Agent role at the Debug step. First consumer of run artifacts after gate failure. Produces root-cause diagnosis; does not plan or build | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
 | **declared mode** | Context assembly using Beads task declarations (`TaskContextDeclaration`) as precise section references. Preferred over inferred mode | DDR-016, SLE-024 §6.2 |
-| **design node** | DAG node where the Designer role produces architecture decisions and system shape. Critic may review here at deep/research depth | SLE-024 §5.1 |
-| **Designer** | Agent role at the DESIGN node. Produces architecture, system shape, and component boundaries. Owns the architecture artifact | DDR-019, [agent-roles.md](agent-roles.md) |
-| **discovery** | A one-time structured session (`sle discover`) that produces 6–8 foundational documents all subsequent cycles depend on | SLE-011 |
+| **design step** | The step (`produce`) where the Designer role produces architecture decisions and system shape. Critic may review here at deep/research depth | SLE-024 §5.1 |
+| **Designer** | Agent role at the DESIGN step. Produces architecture, system shape, and component boundaries. Owns the architecture artifact | DDR-019, [agent-roles.md](agent-roles.md) |
+| **discovery** | A one-time structured session (`sle discover`) that produces 6–8 foundational documents all subsequent workflow runs depend on | SLE-011 |
 | **document** | A project-scoped entity in the knowledge graph (e.g. `decisions.md`, `README`). Lives in `.sle/project-docs/`. Distinct from nodes and source files | DDR-013 |
 | **eval-check** | See *exec-check* | |
-| **Evaluator** | Agent role at the EVALUATE node. Produces a structured verdict on whether the implementation satisfied the user's intent | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
+| **Evaluator** | Agent role at the EVALUATE step. Produces a structured verdict on whether the implementation satisfied the user's intent | [agent-roles.md](agent-roles.md), SLE-024 §4.2 |
 | **exec-check** | The executable validation sub-phase — generated test scripts run in an isolated Docker container. No LLM involvement | SLE-003, SLE-024 §5.4 |
 | **execution plane** | Tier 4 — the execution environment for generated scripts and Docker containers. Pure execution, no LLM | SLE-001, [architecture.md](architecture.md) |
 | **Execution tier** | See *tier (platform)* | |
-| **Executor** | The Debug node's agent role. See *Debugger* | |
-| **EXPLORE node** | Conditional DAG node activated when unknowns are flagged in the intent or by the daemon. The Explorer role investigates before design begins | DDR-023, SLE-024 §5.1 |
-| **Explorer** | Agent role at the EXPLORE node (conditional). Produces research findings, spike results, and benchmarks injected into Designer context | DDR-023, [agent-roles.md](agent-roles.md) |
+| **Executor** | The Debug step's agent role. See *Debugger* | |
+| **EXPLORE step** | Conditional step triggered by SCOPING's gather step, activated when unknowns are flagged in the intent or by the daemon. The Explorer role investigates before design begins | DDR-023, SLE-024 §5.1 |
+| **Explorer** | Agent role triggered by the EXPLORE step (conditional). Produces research findings, spike results, and benchmarks injected into Designer context | DDR-023, [agent-roles.md](agent-roles.md) |
 | **Facilitator** | The only agent role active in discovery and chat sessions. Asks questions, captures decisions; never builds or plans | SLE-011, SLE-012 |
-| **FailureReport** | A structured summary of validation failure: cycle/iteration numbers, run directory pointer, failed and passed categories, quick summary | SLE-022 |
-| **gate** | A decision point in the DAG where the cycle branches based on outcomes. Two types exist: CONFIRM GATE and VALIDATION GATE | SLE-024 §5.2 |
-| **gate (CONFIRM)** | Human approval point after TEST, before BUILD. User can approve, modify (sending back to TEST), or halt | SLE-024 §5.2 |
-| **gate (VALIDATION)** | Machine decision point after EXEC. Deterministic boolean logic on all category results — no LLM involved. Pass → EVALUATE; fail → DEBUG → retry | SLE-024 §5.2 |
+| **FailureReport** | A structured summary of validation failure: run/iteration identifiers, run directory pointer, failed and passed categories, quick summary | SLE-022 |
+| **gate** | A `review` step where the workflow run branches based on outcomes. Two types exist in `full-build`: the CONFIRM checkpoint and the VALIDATION_GATE review | SLE-024 §5.2 |
+| **gate (CONFIRM)** | Human approval checkpoint after TEST, before BUILD. User can approve, modify (sending back to TEST), or halt | SLE-024 §5.2 |
+| **gate (VALIDATION)** | Machine decision point after EXEC, modeled as a `review` step. Deterministic boolean logic on all category results — no LLM involved. Pass → EVALUATE; fail → Debug step → retry | SLE-024 §5.2 |
 | **group** | A feature-scoped collection of nodes in the knowledge graph. Each group stacks nodes across the 8 lifecycle layers | SLE-016 |
-| **historian** | Agent role that runs after every agent turn, appending a 2–3 sentence audit entry to `decisions.md`. Under review for potential replacement by structured logging | SLE-024 §4.2 |
+| **historian** | Agent role folded into SNAPSHOT's `logs_decision: true` commit step, appending a 2–3 sentence audit entry to `decisions.md` after every agent turn. Under review for potential replacement by structured logging | SLE-024 §4.2, DDR-031 |
 | **host tier** | Tier 0 — the stable server base (Debian, SSH, tmux, Docker). Never project-specific | SLE-001, [architecture.md](architecture.md) |
-| **inferred mode** | Context assembly using role-based artifact slice defaults when no declared tasks exist. Fallback for ad-hoc cycles | DDR-016, SLE-024 §6.2 |
-| **intent** | The user's goal for a cycle, passed as a string to `sle start`. Includes optional planning depth override and session ID | SLE-002 |
+| **inferred mode** | Context assembly using role-based artifact slice defaults when no declared tasks exist. Fallback for ad-hoc workflow runs | DDR-016, SLE-024 §6.2 |
+| **intent** | The user's goal for a workflow run, typically routed from chat or passed as a string to `sle run`. Includes optional planning depth override and session ID | SLE-002 |
 | **interface tier** | Tier 1 — the developer-facing surfaces: CLI, web app, Obsidian plugin. Thin clients; no system logic lives here | SLE-001, [architecture.md](architecture.md) |
-| **iteration** | One full BUILD → EXEC → VALIDATION GATE attempt within a cycle. Increments when the VALIDATION GATE fails | SLE-024 §5.3 |
+| **iteration** | One full BUILD → EXEC → VALIDATION_GATE attempt within a workflow run. Increments when VALIDATION_GATE fails | SLE-024 §5.3 |
 | **layer** | A content-organization category within a group in the knowledge graph. The 8 baseline layers are: Research, Spikes, Design, Plans, Implementation, Code, Notes, Hosting | DDR-012, [architecture.md](architecture.md) |
 | **layer status** | The fill state of a lifecycle layer within a group: `filled \| partial \| empty \| not_applicable` | DDR-012 |
 | **lifecycle layer** | See *layer*. Qualified form used when disambiguation from platform tiers is needed | DDR-012 |
 | **link index** | The daemon subsystem that maintains bidirectional `[[wikilink]]` connections between nodes, documents, and source files. Serves as agent working memory | SLE-017, DDR-018 |
 | **llm-check** | The LLM validation sub-phase — semantic correctness check per category. Runs in Tier 3 (agent runtime) | SLE-003, SLE-024 §5.4 |
-| **map.yaml** | Auto-generated system-state file, regenerated after every DAG node. Read by all agents as the second half of the bootstrap pair. Never edited by humans | SLE-001 |
+| **map.yaml** | Auto-generated system-state file, regenerated after every workflow step. Read by all agents as the second half of the bootstrap pair. Never edited by humans | SLE-001 |
 | **module** | A registered content processor in the modular dashboard system. Fires on configured triggers (node type, state, layer, group) | SLE-015 |
 | **node** | A group-scoped work unit in the knowledge graph, tied to one lifecycle layer (e.g. the "Rate Limiting" group's architecture node). Lives in `.sle/project-graph/layers/` | DDR-013 |
-| **phase (project)** | A milestone chunk of work in `docs/project-plan.md` spanning multiple cycles (Phase 1, Phase 2, …). Do not confuse with validation sub-phases | SLE-011 |
+| **phase (project)** | A milestone chunk of work in `docs/project-plan.md` spanning multiple workflow runs (Phase 1, Phase 2, …). Do not confuse with validation sub-phases | SLE-011 |
 | **planning depth** | Configuration controlling reasoning passes, Critic activation, and artifact slice size. Four levels: `minimal \| standard \| deep \| research` | SLE-004, SLE-024 §6.1 |
-| **Planner** | Agent role at the PLAN node. Receives requirements + architecture + decisions + evaluation; produces specific implementation steps and test-plan | DDR-019, [agent-roles.md](agent-roles.md) |
+| **Planner** | Agent role at the PLAN step. Receives requirements + architecture + decisions + evaluation; produces specific implementation steps and test-plan | DDR-019, [agent-roles.md](agent-roles.md) |
 | **platform tier** | See *tier (platform)* | |
-| **revision** | A plan modification made by the user at the CONFIRM GATE within one iteration. Resets to TEST for re-derivation | SLE-024 §5.3 |
+| **revision** | A plan modification made by the user at the CONFIRM checkpoint within one iteration. Resets to TEST for re-derivation | SLE-024 §5.3 |
 | **round** | A single interaction step within a discovery session (Round 1–4) | SLE-011 |
 | **rule file** | One of the YAML configuration files in `.sle/rules/` that governs system behavior at runtime. Seven files: planning, validation, artifacts, exit, user_validation, summary, agents | SLE-004, DDR-002 |
 | **run** | One execution of the EXEC phase — produces a run artifact directory under `.sle/runs/{id}/` | SLE-022 |
 | **run artifact** | Structured outputs from a validation run: manifest.json, context-pack.md, test results, metrics, traces, logs | SLE-022 |
-| **session** | One unit of interaction with the system. Three types: discovery, chat, cycle | SLE-024 §3 |
-| **snapshot** | The locked, versioned artifact set produced on cycle completion. Identified by a version ID | SLE-002 |
+| **session** | One unit of interaction with the system. Three types: discovery, chat, workflow run | SLE-024 §3 |
+| **snapshot** | The locked, versioned artifact set produced when a workflow run reaches a `commit` step. Identified by a version ID | SLE-002 |
 | **source file** | A filesystem file (e.g. `src/middleware/rate-limit.ts`) linked as a target from code-layer nodes. Not embedded in the graph | DDR-013 |
 | **static-check** | The static analysis validation sub-phase — lint, typecheck, complexity. Runs first; blocks llm-check and exec-check if it fails | SLE-003, SLE-024 §5.4 |
 | **sub-phase** | One of the three validation checks within a category: static-check, llm-check, exec-check. Do not call these "phases" (reserved for project milestones) | SLE-024 §5.4 |
-| **SystemStatus** | The daemon's top-level state value: `idle \| discovering \| cycling \| confirming \| halted \| complete`. Exactly one is active at any time | SLE-024 §2 |
-| **Tester** | Agent role at the TEST node. Produces executable test scripts from requirements and test-plan only. Never sees Builder implementation or architecture — this is the TDD separation | DDR-010, [agent-roles.md](agent-roles.md) |
+| **SystemStatus** | The daemon's top-level state value: `idle \| discovering`. No longer tracks work — that lives on each `WorkflowRun.status` (`active \| halted \| complete`), since multiple runs can be active at once | SLE-024 §2, DDR-031 |
+| **Tester** | Agent role at the TEST step. Produces executable test scripts from requirements and test-plan only. Never sees Builder implementation or architecture — this is the TDD separation | DDR-010, [agent-roles.md](agent-roles.md) |
 | **three-remote model** | Code remote (git) + issues remote (Dolt/Beads) + docs remote (git at `.server/`) — three independent histories, never merged | SLE-001 |
 | **tier (platform)** | A system-architecture tier in the 5-tier stack. Tiers 0–4: Host, Interface, Daemon, Agent Runtime, Execution Plane. Qualified form: "platform tier" | DDR-004, [architecture.md](architecture.md) |
 | **tier 0 — host** | The stable server base (Debian, SSH, tmux, Docker). Never project-specific. Platform tier | |
@@ -138,9 +144,15 @@ This glossary supports the broader overview documentation set:
 | **tier 3 — agent runtime** | LLM calls and structured outputs. All agent roles execute here. Platform tier | |
 | **tier 4 — execution plane** | Generated scripts and Docker containers. Pure execution, no LLM. Platform tier | |
 | **token budget** | Hard cap on tokens per component in an agent's context window. The full assembled context is capped at 4000 tokens | SLE-007 |
-| **validation** | The process of checking that a cycle's output meets all configured criteria across active categories | SLE-003 |
+| **validation** | The process of checking that a workflow run's output meets all configured criteria across active categories | SLE-003 |
 | **validation category** | See *category*. A named concern with its own sub-phases and pass criteria, declared in `validation.yaml` | SLE-003, SLE-004 |
 | **wikilink** | The `[[target]]` syntax used to create bidirectional links between nodes, documents, and source files in the knowledge graph | DDR-013, SLE-017 |
+| **workflow** | A composable, skill-style unit of work (`WorkflowDefinition`): a trigger description for chat-router matching, an ordered/branching sequence of steps, optional checkpoints, and an output contract. Replaces the single fixed DAG as the system's unit of execution | DDR-031, [workflow-model.md](workflow-model.md) |
+| **workflow run** | One execution of a workflow against a target (`WorkflowRun`). Multiple workflow runs may be active concurrently, each independently tracked, as long as they don't claim the same artifact. Supersedes *cycle* as the general term; *cycle* survives only as a synonym for the `full-build` workflow | DDR-031 |
+| **step kind** | One of six generic execution primitives a workflow step can be (`gather \| produce \| review \| checkpoint \| execute \| commit`). Replaces the 15-value DAG node enum; `full-build` expresses today's pipeline as a sequence of typed steps | DDR-031, [step-kind-reference.md](../specs/step-kind-reference.md) |
+| **artifact claim** | A short-lived, optimistic-concurrency lock on a single artifact (`doc:` or `node:` ref), held by one workflow run for the duration of a step. Generalizes the `concurrent_modification` task-version pattern and the Beads atomic task claim from "tasks only" to any artifact | DDR-031 |
+| **full-build** | The built-in workflow preset that reproduces today's fixed 15-node pipeline (SCOPING → ... → SNAPSHOT) using the generic step-kind model. The default workflow when none is specified | DDR-031 |
+| **draft-artifact** | The built-in workflow preset for producing one artifact from a template (gather → produce → checkpoint → commit). Also serves as the workflow creator: authoring a new workflow is running `draft-artifact` with output type "workflow definition" | DDR-031 |
 
 ---
 
@@ -157,7 +169,7 @@ introductory documents.
 | tier | platform tier | lifecycle layer |
 | layer | lifecycle layer | platform tier |
 | phase | project phase (or just "phase") | validation sub-phase |
-| node | DAG node / graph node | DAG node when in cycle context; graph node when in knowledge-graph context |
+| node | step / graph node | step when in workflow-run context; graph node when in knowledge-graph context |
 
 ---
 
@@ -222,12 +234,12 @@ approve.
 | Entity | Scope | Storage | Who writes |
 |--------|-------|---------|-----------|
 | **Document** | Project | `.sle/project-docs/` | Human or Facilitator (discovery) |
-| **Node** | Group | `.sle/project-graph/layers/` | SLE cycle agents |
+| **Node** | Group | `.sle/project-graph/layers/` | SLE workflow-run agents |
 | **Source file** | Filesystem | `src/`, `scripts/`, etc. | Builder role; linked from code-layer nodes |
 
 All three entity types connect via `[[wikilink]]` with bidirectional backlinks.
-SLE cycles can create and modify nodes freely but can only suggest document
-changes (user approval required).
+SLE workflow runs can create and modify nodes freely but can only suggest
+document changes (user approval required).
 
 ### "Phase" reservation
 
@@ -240,16 +252,20 @@ between project-level milestones and per-category validation steps.
 
 The word **node** appears in two contexts:
 
-1. **DAG node** — a step in the cycle's directed acyclic graph (SCOPING, DESIGN,
-   CRITIQUE, PLAN, TEST, CONFIRM GATE, SHARDING_APPROVAL, BUILD, HISTORY, EXEC,
-   VALIDATION GATE, DEBUG, EVALUATE, SUMMARISE, SNAPSHOT). Always qualified as
-   "DAG node" in cycle-context docs.
+1. **Step** (formerly "DAG node") — one instance of a `StepKind` in a
+   workflow's step sequence. `full-build`'s steps (SCOPING, DESIGN, CRITIQUE,
+   PLAN, TEST, CONFIRM GATE, SHARDING_APPROVAL, BUILD, EXEC, VALIDATION GATE,
+   DEBUG, EVALUATE, SUMMARISE, SNAPSHOT) are this preset's specific step
+   sequence, not a fixed system-wide graph — other workflows define their own.
+   DDR-031 retires "DAG node" as a term; use "step" instead, qualified as
+   "full-build step" when the preset-specific sequence is meant.
 2. **Graph node** — a work unit in the knowledge graph, scoped to a group and
    tied to a lifecycle layer. Always qualified as "graph node" or just "node"
    in knowledge-graph contexts.
 
-Both are correct uses of "node." The disambiguating prefix (DAG vs graph)
-should be used on first mention in any document that could touch both concepts.
+Both are correct uses of "node" for the graph sense; the former DAG sense is
+now called a step. The disambiguating prefix ("graph") should be used on
+first mention in any document that could touch both concepts.
 
 ### Alternative G03 resolutions not chosen
 
@@ -269,6 +285,6 @@ the tier/layer split:
 - [types.md](../specs/types.md) — canonical type definitions for all enums,
   interfaces, and data structures referenced in this glossary
 - [state-machine.md](../specs/state-machine.md) — state terminology and
-  transition definitions (`SystemStatus`, cycle states, gate outcomes)
+  transition definitions (`SystemStatus`, `WorkflowRun.status`, gate outcomes)
 - [context-manager.md](../specs/context-manager.md) — loading mode
   terminology (declared mode vs inferred mode, artifact slicing)

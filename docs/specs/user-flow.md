@@ -1,25 +1,31 @@
 # User Flow
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-05-01
-**Depends on:** [ui-shell.md](ui-shell.md), [tasks-dashboard.md](tasks-dashboard.md), [project-overview.md](project-overview.md), [conversation.md](conversation.md), [state-machine.md](state-machine.md), [dag-execution.md](dag-execution.md)
-**Source material:** vision/SLE-023-user-flow.md
+**Type:** spec · **Status:** draft · **Updated:** 2026-06-21
+**Depends on:** [ui-shell.md](ui-shell.md), [tasks-dashboard.md](tasks-dashboard.md), [project-overview.md](project-overview.md), [conversation.md](conversation.md), [state-machine.md](state-machine.md), [workflow-execution.md](workflow-execution.md), [step-kind-reference.md](step-kind-reference.md), [workflow-authoring.md](workflow-authoring.md)
+**Source material:** vision/SLE-023-user-flow.md, DDR-031
 **Resolves:** G2 (outdated SLE-001 anchor — user flow reflects full system), G3 (overloaded "layer" term — use "tier" for architecture, "layer" for lifecycle)
 
 ## Overview
 
 The user flow spec defines how a person moves through the SLE interface during a
 session. The interface presents three co-present surfaces — Overview, Chat,
-Graph — connected by a live status indicator. Cycles run in the background; the
-user interacts with the product, not the DAG.
+Graph — connected by a live status indicator. Workflow runs execute in the
+background; the user interacts with the product, not the step graph.
 
-Design principle: **"Cycle is background; interface is product."** The user
-should rarely think about the DAG. They interact with the product (overview,
-chat, graph) while cycles happen behind the scenes. Gate panels appear as modal
-overlays only when the system needs a human decision.
+Design principle: **"The workflow run is background; interface is product."**
+The user should rarely think about steps directly. They interact with the
+product (overview, chat, graph) while one or more workflow runs happen behind
+the scenes. Gate panels appear as modal overlays only when a run needs a human
+decision at one of its `checkpoint` steps.
 
 All interaction happens across the three surfaces. The user may freely switch
 between them at any time. Gate panels overlay whichever surface is active —
 they never force a tab switch.
+
+Because multiple workflow runs can be active concurrently (DDR-031), the
+Overview surface's Active Jobs panel is a list, not a singleton — the
+flows below describe the behavior of one run at a time, but nothing here
+assumes only one run exists.
 
 ### Terminology
 
@@ -27,8 +33,9 @@ they never force a tab switch.
 - **Layer** = lifecycle layers only (Research, Spikes, Design, Plans,
   Implementation, Code, Notes, Hosting). Never used for architecture.
 - **Surface** = one of the three interface tabs: Overview, Chat, Graph.
-- **Gate panel** = modal overlay that appears when the system requires a human
-  decision (CONFIRM gate, gate pass, sharding approval).
+- **Gate panel** = modal overlay that appears when a workflow run's
+  `checkpoint` step sets `awaiting_checkpoint`, requiring a human decision
+  (e.g. the SCOPING checkpoint, the CONFIRM checkpoint, sharding approval).
 
 ---
 
@@ -47,28 +54,32 @@ not track which surface is active — surfaces are a presentation concern.
 
 ```typescript
 interface GatePanel {
-  type: 'confirm' | 'gate_pass' | 'sharding_approval'
-  cycle_id: string
-  node: DAGNode
+  type: 'confirm' | 'gate_pass' | 'sharding_approval' | string
+  run_id: string
+  workflow_id: string
+  step_id: string
   iteration: number
   presented_at: string
 }
 ```
 
-Produced by the daemon when a cycle reaches a human checkpoint. The daemon emits
-a WebSocket event (`dag.confirm_requested`, `dag.sharding_requested`, or a new
-`dag.gate_pass_requested`). The UI renders the panel as a modal overlay on the
-active surface.
+Produced by the daemon when a workflow run reaches one of its `checkpoint`
+steps. The daemon emits a `workflow_run.checkpoint_requested` WebSocket event
+carrying the `step_id` that triggered the pause. The UI renders the panel as a
+modal overlay on the active surface.
 
-Only one gate panel is presented at a time. At most one cycle flag
-(`awaiting_confirmation`, `awaiting_sharding_approval`) is `true` at a time
-(per [state-machine.md](state-machine.md) §Flag exclusivity).
+At most one gate panel per run is presented at a time — `WorkflowRun.
+awaiting_checkpoint` is a single nullable pointer, so a run can only be paused
+at one checkpoint at once (per [state-machine.md](state-machine.md)
+§Checkpoint pointer). Different runs may each have their own gate panel open
+concurrently; the UI queues additional panels and presents them one at a time
+on the active surface.
 
 ### Notification badge
 
 ```typescript
 interface NotificationBadge {
-  type: 'gate_pending' | 'cycle_complete' | 'cycle_error' | 'new_task'
+  type: 'gate_pending' | 'run_complete' | 'run_error' | 'new_task'
   surface: SurfaceState
   count: number
   latest_at: string
@@ -84,8 +95,8 @@ Badge rendering rules:
 | Badge type | Where displayed | Cleared when |
 |---|---|---|
 | `gate_pending` | All surface tabs | User opens gate panel |
-| `cycle_complete` | Overview tab | User views Recent Activity |
-| `cycle_error` | All surface tabs | User views error report |
+| `run_complete` | Overview tab | User views Recent Activity |
+| `run_error` | All surface tabs | User views error report |
 | `new_task` | Overview tab (Tasks panel) | User views Tasks panel |
 
 ### User flow context
@@ -93,7 +104,7 @@ Badge rendering rules:
 ```typescript
 interface UserFlowContext {
   active_surface: SurfaceState
-  running_cycle_id?: string
+  active_run_ids: string[]
   pending_gates: GatePanel[]
   notifications: NotificationBadge[]
 }
@@ -101,21 +112,21 @@ interface UserFlowContext {
 
 Assembled client-side from WebSocket events and REST API responses. The daemon
 does not store this as a single object — it is a view model derived from
-system state, cycle state, and notification state.
+system state, the set of active `WorkflowRun`s, and notification state.
 
 ### Live status indicator
 
 ```typescript
 interface LiveStatus {
   connected: boolean
-  active_cycle: boolean
+  active_run_count: number
   pending_gate: boolean
   last_event_at: string
 }
 ```
 
 Rendered as `[● live]` in the UI shell when `connected = true` and
-`active_cycle = true`. When `pending_gate = true`, the indicator changes to
+`active_run_count > 0`. When `pending_gate = true`, the indicator changes to
 `[● gate]`. When `connected = false`, it shows `[○ disconnected]`.
 
 ---
@@ -130,18 +141,21 @@ Rendered as `[● live]` in the UI shell when `connected = true` and
 | Gate interrupt | Any surface (modal overlay) | Gate panel overlays active tab |
 | Standalone exploration | Chat | Free exchange with Facilitator |
 | Structure navigation | Graph | Nodes by group/layer → click to open or "ask about this" → Chat scoped |
-| Cycle initiation | Overview or Graph | Tasks panel or scoped node → start cycle |
+| Workflow initiation | Overview or Graph | Tasks panel or scoped node → start a workflow run |
 
 ### Primary session flow
 
-The typical user session follows this sequence. The user is not required to
-follow this exact path — surfaces are freely switchable at any time.
+The typical user session follows this sequence, using `full-build` (the
+built-in long-running workflow) as the worked example. The user is not
+required to follow this exact path — surfaces are freely switchable at any
+time, and a short workflow (e.g. `draft-artifact`) collapses most of this
+into a single gather → produce → checkpoint → commit pass.
 
 ```
 1. Open app
    │  Overview surface loads (default landing)
    │  Actions Required panel shows pending gates (if any)
-   │  Active Jobs panel shows running cycles
+   │  Active Jobs panel shows running workflow runs
    │  Tasks panel shows available tasks
    │  Sharding Review visible if sharding proposal pending
    │  Recent Activity shows latest changes
@@ -151,28 +165,30 @@ follow this exact path — surfaces are freely switchable at any time.
    │  Navigate structure, review artifacts
    │  Open Chat → discuss what to build with Facilitator
    │
-3. Pre-cycle scoping (DDR-028)
+3. Pre-run scoping (DDR-028)
    │  Together with Facilitator, tag nodes and create scope draft
-   │  Nodes tagged #next-cycle, scope draft approved
+   │  Nodes tagged #next-run, scope draft approved
    │
-4. Trigger cycle
-   │  "New cycle" button → selects scope draft or quick-start goal
-   │  SCOPING node runs (guided discussion in Chat if not quick-start)
+4. Trigger a workflow run
+   │  "New run" button → selects scope draft or quick-start goal, picks a
+   │  workflow (defaults to full-build) — see conversation.md §Workflow selection
+   │  SCOPING's gather/produce/checkpoint steps run (guided discussion in Chat
+   │  if not quick-start)
    │
-5. Charter produced → DAG continues
+5. Charter produced → step graph continues
    │  DESIGN → CRITIQUE → PLAN → TEST → ...
    │
-6. CONFIRM gate
+6. CONFIRM checkpoint
    │  Gate panel appears as modal overlay on active surface
    │  User reviews plan, optionally modifies, approves
    │  Badge: gate_pending on all tabs
    │
 7. Build, Validation, Gate pass
    │  User monitors via Active Jobs
-   │  Gate pass panel → lock snapshot → version locked, cycle complete
+   │  Gate pass panel → commit step → version committed, run complete
    │
 8. Return to Overview
-   │  Cycle complete, version locked
+   │  Run complete, artifact version committed
    │  New tasks auto-created
    │  Recent Activity updated
 ```
@@ -185,11 +201,11 @@ The default landing surface. Shows:
 
 | Panel | Content | Update mechanism |
 |---|---|---|
-| Actions Required | Gates, approvals, blocked issues | WebSocket `cycle.flag_changed`, gate events |
-| Active Jobs | Running cycles, current node, iteration count | WebSocket `node.started`, `node.completed` |
-| Tasks | Available tasks from Beads integration | WebSocket `cycle_complete` triggers auto-creation |
-| Sharding Review | Sharding proposals (conditional, visible only when pending) | WebSocket `cycle.awaiting_sharding_approval` |
-| Recent Activity | Timeline of cycle completions, decisions, snapshots | WebSocket events, aggregated on surface load |
+| Actions Required | Gates, approvals, blocked issues | WebSocket `workflow_run.checkpoint_changed`, gate events |
+| Active Jobs | Running workflow runs, current step, iteration count | WebSocket `step.started`, `step.completed` |
+| Tasks | Available tasks from Beads integration | WebSocket `workflow_run.committed` triggers auto-creation |
+| Sharding Review | Sharding proposals (conditional, visible only when pending) | WebSocket `workflow_run.checkpoint_requested` (sharding step) |
+| Recent Activity | Timeline of run completions, decisions, commits | WebSocket events, aggregated on surface load |
 | Documents | Recent document changes | WebSocket artifact events |
 
 Below these fixed panels, the Overview page hosts the extensible widget
@@ -197,22 +213,22 @@ dashboard defined in [tasks-dashboard.md](tasks-dashboard.md). The fixed panels
 and the widget dashboard together constitute the Overview page's content — there
 is no separate dashboard page.
 
-The Overview surface observes running cycles. It does not control them — cycle
-control actions (approve, halt, resume) are routed through the REST API, not
-through Overview panels.
+The Overview surface observes running workflow runs. It does not control
+them — run control actions (approve, halt, resume) are routed through the
+REST API, not through Overview panels.
 
 #### Chat surface
 
-Provides access to the Facilitator. Chat is standalone — no cycle dependency.
-Full behavior is defined in [conversation.md](conversation.md).
+Provides access to the Facilitator. Chat is standalone — no workflow-run
+dependency. Full behavior is defined in [conversation.md](conversation.md).
 
-Chat-cycle integration rules:
+Chat-run integration rules:
 
 | Rule | Detail |
 |---|---|
-| Facilitator reads cycle state | Current node, iteration, validation status |
-| Facilitator cannot modify cycle | No write access to cycle artifacts or DAG state |
-| Chat works without a cycle | Reads discovery docs + knowledge base |
+| Facilitator reads run state | Current step, iteration, validation status, for any active run |
+| Facilitator cannot modify a run | No write access to run artifacts or step state |
+| Chat works without a run | Reads discovery docs + knowledge base |
 | Chat history persisted | `.sle/chat-history.jsonl` |
 
 When the user scopes Chat to a Graph node (via "Ask about this"), the
@@ -227,94 +243,99 @@ layer. The user can:
 - Browse nodes by group/layer
 - Click a node to open its artifacts
 - Use "Ask about this" to switch to Chat with node context
-- Use "Start cycle" on a node to initiate a cycle scoped to that node
+- Use "Start workflow" on a node to dispatch a workflow run targeting that node
 
-Graph-initiated cycles set the cycle's scope to the selected node. The Planner
-receives the node's artifact slices as additional context.
+Graph-initiated runs set the run's `target` to the selected node. The Planner
+(or equivalent role in a non-`full-build` workflow) receives the node's
+artifact slices as additional context.
 
 ### Decision points
 
-The system presents gate panels at human checkpoints. Gate panels are modal
-overlays — they do not navigate the user away from the active surface.
+The system presents gate panels at human checkpoints — any `checkpoint` step
+in the active workflow's definition. Gate panels are modal overlays — they do
+not navigate the user away from the active surface.
 
 #### SCOPING (DDR-028)
 
-Presented when `cycle.awaiting_scoping = true`.
+Presented when the SCOPING `checkpoint` step sets `awaiting_checkpoint`.
 
 | User action | Effect |
 |---|---|
-| Approve charter | Cycle-charter accepted. Cycle proceeds to DESIGN. |
-| Refine scope | User provides additional guidance. SCOPING continues. |
-| Halt cycle | Clean stop. Cycle transitions to `halted`. |
+| Approve charter | Run-charter accepted. Run proceeds to DESIGN. |
+| Refine scope | User provides additional guidance. SCOPING's gather/produce loop continues. |
+| Halt run | Clean stop. Run transitions to `halted`. |
 
 The SCOPING decision point replaces the former INTENT/CONTEXT_ASSEMBLY/EXPLORE
-nodes. It is the first human checkpoint in the cycle flow, where the user
-reviews and approves the cycle-charter before the DAG continues to DESIGN.
+nodes. It is the first human checkpoint in `full-build`, where the user
+reviews and approves the run-charter before the step graph continues to
+DESIGN.
 
 #### CONFIRM gate (post-planning, post-testing)
 
-Presented when `cycle.awaiting_confirmation = true`.
+Presented when the CONFIRM `checkpoint` step sets `awaiting_checkpoint`.
 
 | User action | Effect |
 |---|---|
 | Approve | Builder starts immediately. Gate panel dismisses. |
 | Modify plan | Edit/reorder steps, add constraints. Triggers test regeneration. Re-presents at CONFIRM. Revision counter increments. |
-| Halt cycle | Clean stop. Partial report generated. Cycle transitions to `halted`. |
+| Halt run | Clean stop. Partial report generated. Run transitions to `halted`. |
 
-This is the primary decision point in the cycle flow. The user reviews the
+This is the primary decision point in `full-build`. The user reviews the
 plan, tests, and coverage before giving the Builder permission to proceed.
 
 #### Gate pass panel (post-validation)
 
-Presented when all validation categories pass and the EVALUATE node confirms
-the implementation satisfies the intent.
+Presented when all validation categories pass and the EVALUATE `produce` step
+confirms the implementation satisfies the intent.
 
 | User action | Effect |
 |---|---|
-| Lock snapshot | Version locked, cycle complete, transitions to `idle`. |
-| Run tests locally | User verification before locking. Cycle pauses. |
-| Reject | Cycle halted. |
+| Commit | Version committed, run complete, transitions to `idle` for that run. |
+| Run tests locally | User verification before committing. Run pauses. |
+| Reject | Run halted. |
 
-The gate pass panel is the final checkpoint before a version is locked.
+The gate pass panel is the final checkpoint before a version is committed.
 
 #### Sharding approval
 
-Presented when `cycle.awaiting_sharding_approval = true`. Full behavior defined
-in [dag-execution.md](dag-execution.md) §Checkpoint 1 — Sharding approval.
+Presented when the SHARDING_APPROVAL `checkpoint` step sets
+`awaiting_checkpoint`. Full behavior defined in
+[workflow-execution.md](workflow-execution.md) §Checkpoint 1 — Sharding
+approval.
 
 ### Integration points between surfaces
 
 | From | To | Mechanism |
 |---|---|---|
-| Overview → Chat | Tab switch | Chat observes running cycles read-only |
+| Overview → Chat | Tab switch | Chat observes running workflow runs read-only |
 | Overview → Graph | Tab switch | — |
 | Graph → Chat | "Ask about this" action on a node | Switches to Chat tab with node context injected |
-| Graph → Cycle start | "Start cycle" on node/group | Initiates cycle scoped to node |
+| Graph → Run start | "Start workflow" on node/group | Dispatches a workflow run targeting the node |
 | Any surface → Gate panel | Modal overlay | Overlays active tab; does not switch surface |
 | Chat → Overview | Gate notification badge | Badge on all surface tabs |
-| Cycle completion → Overview | Recent Activity auto-update | WebSocket event triggers panel refresh |
-| Cycle completion → Tasks | New task auto-created | Post-cycle task creation hook |
+| Run completion → Overview | Recent Activity auto-update | WebSocket event triggers panel refresh |
+| Run completion → Tasks | New task auto-created | Post-run task creation hook |
 
-### Flow: Cycle observation
+### Flow: Workflow run observation
 
-The user watches a running cycle through Active Jobs on the Overview surface
+The user watches a running workflow run through Active Jobs on the Overview surface
 without intervening:
 
 ```
-1. Cycle running (meta.status = cycling)
-   │  Active Jobs panel shows: cycle ID, current node, iteration count
+1. Run active (WorkflowRun.status = 'active')
+   │  Active Jobs panel shows: run ID, current step, iteration count
    │  Live status indicator: [● live]
    │
-2. DAG progresses through nodes
+2. The step graph progresses
    │  WebSocket events update Active Jobs in real time
-    │  Node transitions: SCOPING → DESIGN → PLAN → TEST → CONFIRM → ...
+   │  Step transitions: SCOPING → DESIGN → PLAN → TEST → CONFIRM → ...
    │
 3. Auto-retry on validation failure
    │  Status update in Active Jobs: "Iteration 2 — PLAN"
    │  NO gate panel (auto-retry does not interrupt the user)
    │
 4. Iteration cap hit
-   │  Badge: "Cycle 7 halted — cap reached"
+   │  Badge: "Run {run_id} halted — cap reached"
    │  User acknowledges, triages
 ```
 
@@ -324,11 +345,11 @@ through Active Jobs status updates.
 
 ### Flow: Standalone chat
 
-Chat with no cycle running:
+Chat with no workflow run active:
 
 ```
 1. User switches to Chat tab
-   │  No running cycle (meta.status = idle)
+   │  No active runs (system status = idle)
    │  Facilitator reads discovery docs + knowledge base
    │
 2. Freeform exchange
@@ -337,18 +358,20 @@ Chat with no cycle running:
    │  Capture suggestions surfaced for high-confidence decisions
    │  (captured to decisions.md; see decisions/DECISION-BRIEFS.md for format)
    │
-3. User may initiate cycle from chat
-   │  Natural language: "start a cycle for X"
-   │  Daemon detects intent, constructs cycle start request
-   │  ChatContext injected into SCOPING node
+3. User may initiate a workflow run from chat
+   │  Natural language: "review the auth contract" or "start a build for X"
+   │  Facilitator matches free text against workflow trigger descriptions
+   │  (see conversation.md §Workflow selection), confirms with the user,
+   │  then dispatches via POST /api/v2/workflow-runs
+   │  ChatContext injected into the workflow's first step
    │
-4. Pre-cycle actions available (DDR-028)
-   │  Tag nodes/layers for next cycle (#next-cycle)
+4. Pre-run actions available (DDR-028)
+   │  Tag nodes/layers for next run (#next-run)
    │  Create/edit scope drafts
    │  These actions are available in chat mode, not just scoping mode
 ```
 
-### Flow: Graph-initiated cycle
+### Flow: Graph-initiated workflow run
 
 ```
 1. User navigates to Graph tab
@@ -356,19 +379,20 @@ Chat with no cycle running:
    │
 2. User selects node(s)
    │  Node detail panel shows artifacts, status, history
-   │  Nodes get tagged #next-cycle automatically
+   │  Nodes get tagged #next-run automatically
    │
-3. User clicks "Start cycle"
-   │  Cycle starts with scope_draft_id or quick_start_goal
-   │  SCOPING node runs (may be quick-start bypass)
+3. User clicks "Start workflow"
+   │  User picks a workflow (or accepts the default, full-build)
+   │  Run starts with scope_draft_id or quick_start_goal
+   │  SCOPING's gather/produce/checkpoint steps run (may be quick-start bypass)
    │  Charter produced
    │
-4. Cycle continues through DESIGN → CRITIQUE → PLAN → ...
+4. Run continues through DESIGN → CRITIQUE → PLAN → ...
    │  Active Jobs panel shows progress
    │  Gate panels overlay active surface when needed
 ```
 
-### Flow: Pre-cycle scoping
+### Flow: Pre-run scoping
 
 ```
 1. User opens Chat (idle state)
@@ -377,34 +401,34 @@ Chat with no cycle running:
    │
 3. Facilitator identifies relevant nodes/layers, proposes tagging
    │
-4. User confirms tags: #next-cycle on rate-limiting group nodes
+4. User confirms tags: #next-run on rate-limiting group nodes
    │
 5. Facilitator proposes scope draft
    │
 6. User reviews and approves scope draft
    │
-7. User clicks "Start cycle" → selects scope draft
+7. User clicks "Start workflow" → selects scope draft
    │
-8. Cycle starts → SCOPING node → charter produced
+8. Run starts → SCOPING steps run → charter produced
 ```
 
 ### Flow: Gate rejection / halt
 
 ```
-CONFIRM gate:
-  User halts → cycle transitions to halted
+CONFIRM checkpoint:
+  User halts → run transitions to halted
   Partial report generated
-  Badge: "Cycle halted" on all tabs
-  User acknowledges → cycle transitions to idle
+  Badge: "Run halted" on all tabs
+  User acknowledges → run transitions to idle
   Recent Activity updated
 
 Gate pass panel:
-  User rejects → cycle halted
+  User rejects → run halted
   Same recovery flow as halt
 
 Iteration cap hit:
   Auto-halt, no gate panel
-  Badge: "Cycle N halted — cap reached"
+  Badge: "Run {run_id} halted — cap reached"
   User acknowledges, triages
 ```
 
@@ -416,22 +440,22 @@ The user flow does not define new REST endpoints. It consumes existing endpoints
 from dependent specs. The following endpoints are used by the UI to assemble the
 user flow context:
 
-### System and cycle state
+### System and workflow-run state
 
 | Endpoint | Purpose | Source spec |
 |---|---|---|
-| `GET /api/v2/system/state` | Current system state, cycle flags, chat session | [state-machine.md](state-machine.md) |
-| `GET /api/v2/cycles/{cycle_id}` | Cycle detail (iteration, revision, dag_state, flags) | [dag-execution.md](dag-execution.md) |
+| `GET /api/v2/system/state` | Current system state, active run summary, chat session | [state-machine.md](state-machine.md) |
+| `GET /api/v2/workflow-runs/{run_id}` | Run detail (iteration, revision, current step, awaiting_checkpoint) | [workflow-execution.md](workflow-execution.md) |
 
 ### Gate actions
 
 | Endpoint | Purpose | Source spec |
 |---|---|---|
-| `POST /api/v2/cycles/{cycle_id}/approve` | Approve at CONFIRM or gate pass | [dag-execution.md](dag-execution.md) |
-| `POST /api/v2/cycles/{cycle_id}/revise` | Modify plan at CONFIRM | [dag-execution.md](dag-execution.md) |
-| `POST /api/v2/cycles/{cycle_id}/halt` | Halt cycle | [dag-execution.md](dag-execution.md) |
-| `POST /api/v2/cycles/{cycle_id}/sharding/approve` | Approve sharding | [dag-execution.md](dag-execution.md) |
-| `POST /api/v2/cycles/{cycle_id}/sharding/reject` | Reject sharding | [dag-execution.md](dag-execution.md) |
+| `POST /api/v2/workflow-runs/{run_id}/approve` | Approve at CONFIRM or gate pass | [workflow-execution.md](workflow-execution.md) |
+| `POST /api/v2/workflow-runs/{run_id}/revise` | Modify plan at CONFIRM | [workflow-execution.md](workflow-execution.md) |
+| `POST /api/v2/workflow-runs/{run_id}/halt` | Halt run | [workflow-execution.md](workflow-execution.md) |
+| `POST /api/v2/workflow-runs/{run_id}/sharding/approve` | Approve sharding | [workflow-execution.md](workflow-execution.md) |
+| `POST /api/v2/workflow-runs/{run_id}/sharding/reject` | Reject sharding | [workflow-execution.md](workflow-execution.md) |
 
 ### Chat
 
@@ -449,69 +473,55 @@ uses the following events to update surfaces and render gate panels:
 | Event | UI effect | Source spec |
 |---|---|---|
 | `system.state_changed` | Update Active Jobs, live status indicator | [state-machine.md](state-machine.md) |
-| `cycle.flag_changed` | Render/dismiss gate panel overlay, update badges | [state-machine.md](state-machine.md) |
-| `node.started` | Update Active Jobs node display | [dag-execution.md](dag-execution.md) |
-| `node.completed` | Update Active Jobs node display | [dag-execution.md](dag-execution.md) |
-| `gate.result` | Update Active Jobs with pass/fail, trigger badges | [dag-execution.md](dag-execution.md) |
-| `dag.confirm_requested` | Render CONFIRM gate panel on active surface | [dag-execution.md](dag-execution.md) |
-| `dag.sharding_requested` | Render sharding approval panel on active surface | [dag-execution.md](dag-execution.md) |
-| `dag.snapshot_locked` | Update Recent Activity, clear cycle badges | [dag-execution.md](dag-execution.md) |
+| `workflow_run.checkpoint_changed` | Render/dismiss gate panel overlay, update badges | [state-machine.md](state-machine.md) |
+| `step.started` | Update Active Jobs step display | [workflow-execution.md](workflow-execution.md) |
+| `step.completed` | Update Active Jobs step display | [workflow-execution.md](workflow-execution.md) |
+| `gate.result` | Update Active Jobs with pass/fail, trigger badges | [workflow-execution.md](workflow-execution.md) |
+| `workflow_run.checkpoint_requested` | Render the relevant gate panel on active surface | [workflow-execution.md](workflow-execution.md) |
+| `workflow_run.checkpoint_cleared` | Dismiss the relevant gate panel | [workflow-execution.md](workflow-execution.md) |
+| `workflow_run.committed` | Update Recent Activity, clear run badges | [workflow-execution.md](workflow-execution.md) |
 | `chat.message` | Render chat messages | [conversation.md](conversation.md) |
 | `chat.decision_captured` | Update notification badges | [conversation.md](conversation.md) |
 | `chat.session_changed` | Update chat session state | [conversation.md](conversation.md) |
 
-### Gate pass WebSocket event
-
-The gate pass panel requires a WebSocket event not yet defined in
-dag-execution.md:
-
-```
-event: dag.gate_pass_requested
-{
-  "cycle_id":    string,
-  "iteration":   number,
-  "snapshot_preview": {
-    "version_id":    string,
-    "files_changed": number,
-    "tests_passed":  number
-  },
-  "timestamp": string
-}
-```
-
-This event signals that all validation has passed, EVALUATE is complete, and the
-user may lock the snapshot or request local test verification.
-
 ### Gate pass actions
 
+Gate pass is a checkpoint like any other — approving it uses the same generic
+endpoint as CONFIRM and other checkpoints. There is no dedicated "commit"
+endpoint; the version commit happens asynchronously inside the run's `commit`
+step once the checkpoint is cleared, and the UI learns the commit completed
+via the `workflow_run.committed` WebSocket event (which carries the new
+version id), not via the approve response.
+
 ```
-POST /api/v2/cycles/{cycle_id}/lock-snapshot
+POST /api/v2/workflow-runs/{run_id}/approve
 
 Response 200:
 {
-  "cycle_id":   string,
-  "version_id": string,
-  "locked_at":  string
+  "run_id":          string,
+  "current_step_id": string
 }
 
 Response 409:
 {
-  "error":  "not_awaiting_gate_pass",
-  "reason": "Cycle has not reached gate pass state."
+  "error":  "not_awaiting_checkpoint",
+  "reason": "No checkpoint is awaiting approval for this run."
 }
 
-POST /api/v2/cycles/{cycle_id}/run-tests-locally
+POST /api/v2/workflow-runs/{run_id}/run-tests-locally
 
 Response 200:
 {
-  "cycle_id":    string,
+  "run_id":      string,
   "test_run_id": string,
   "status":      "started"
 }
 ```
 
-These endpoints are candidates for dag-execution.md. They are documented here as
-the user flow's required API surface for gate pass interactions.
+The approve endpoint is documented in full in
+[workflow-execution.md](workflow-execution.md). It is restated here as the
+user flow's required API surface for gate pass interactions. `run-tests-locally`
+is open — see UF-006.
 
 ---
 
@@ -522,8 +532,8 @@ the user flow's required API surface for gate pass interactions.
 | State | Notification | Recovery |
 |---|---|---|
 | Gate fail (auto-retry) | Status update in Active Jobs (no panel, no badge) | System retries automatically. User observes in Active Jobs. |
-| Iteration cap hit | Badge: "Cycle N halted — cap reached" | User acknowledges, triages. Partial report available. |
-| Unrecoverable error | Badge: "Cycle N error — see report" | User reads report, decides next action. |
+| Iteration cap hit | Badge: "Run {run_id} halted — cap reached" | User acknowledges, triages. Partial report available. |
+| Unrecoverable error | Badge: "Run {run_id} error — see report" | User reads report, decides next action. |
 
 Auto-retry failures do NOT interrupt the user. Only decision-requiring pause
 points produce gate panels.
@@ -534,15 +544,16 @@ points produce gate panels.
 |---|---|---|---|
 | WebSocket disconnect | All | Network interruption or daemon crash | Live status shows `[○ disconnected]`. UI retries connection. Surface shows last-known state. |
 | Stale state | Overview | UI state diverges from daemon | Re-fetch `GET /api/v2/system/state` on reconnect. Reconcile. |
-| Gate action timeout | Any | User does not respond to gate panel | Gate panel remains until user acts. No auto-dismiss. Cycle stays paused. |
+| Gate action timeout | Any | User does not respond to gate panel | Gate panel remains until user acts. No auto-dismiss. Run stays paused. |
 | Chat Facilitator error | Chat | LLM timeout or provider error | Error message in chat. User may retry. Session stays open. |
 
 ### Cross-surface error propagation
 
 Errors do not propagate between surfaces. If Chat encounters a Facilitator
-error, Overview and Graph continue to function. If a cycle error occurs, the
+error, Overview and Graph continue to function. If a workflow run errors, the
 badge appears on all tabs, but each surface handles the notification
-independently.
+independently. Because runs are independent (DDR-031), an error in one run
+never affects any other concurrently active run.
 
 ---
 
@@ -553,15 +564,16 @@ independently.
    returns the user to the surface they were on.
 
 2. **Auto-retry failures do not produce gate panels.** Only decision-requiring
-   pause points (CONFIRM, gate pass, sharding approval) produce gate panels.
-   Validation failures that trigger automatic retries update Active Jobs only.
+   pause points (CONFIRM, gate pass, sharding approval, or any other
+   `checkpoint` step) produce gate panels. Validation failures that trigger
+   automatic retries update Active Jobs only.
 
-3. **Chat is standalone.** Chat works without any cycle running. The Facilitator
-   reads discovery docs and the knowledge base. No cycle dependency.
+3. **Chat is standalone.** Chat works without any workflow run active. The
+   Facilitator reads discovery docs and the knowledge base. No run dependency.
 
-4. **Facilitator is read-only re: cycle state.** The Facilitator can observe
-   cycle state (current node, iteration, validation status) but cannot modify
-   the cycle or its artifacts.
+4. **Facilitator is read-only re: run state.** The Facilitator can observe a
+   run's state (current step, iteration, validation status) but cannot modify
+   the run or its artifacts.
 
 5. **Free surface switching.** The user may switch between Overview, Chat, and
    Graph at any time, regardless of system state. Gate panels overlay the active
@@ -572,21 +584,22 @@ independently.
    Design, Plans, Implementation, Code, Notes, Hosting). Never use "layer" for
    both meanings.
 
-7. **Approval actions via API only.** Cycle approval actions (approve, halt,
+7. **Approval actions via API only.** Run approval actions (approve, halt,
    revise) are routed through the REST API from the Actions Required panel on the Overview surface or
    gate panel overlays. The Facilitator cannot execute approval actions.
 
-8. **Single gate panel at a time.** At most one gate panel is visible. The
-   daemon enforces flag exclusivity (`awaiting_confirmation` and
-   `awaiting_sharding_approval` are mutually exclusive).
+8. **Single gate panel per run.** At most one gate panel per run is visible,
+   enforced by `WorkflowRun.awaiting_checkpoint` being a single nullable
+   pointer. Multiple concurrently active runs may each present their own gate
+   panel; the UI queues and presents them one at a time.
 
 9. **Notification badges are surface-local.** Badges are rendered per-surface
    tab. Clearing a badge on one surface clears it on all surfaces for that
    notification type.
 
 10. **Gate pass rejection recovery is unspecified.** The vision doc does not
-    define what happens after a user rejects at the gate pass. The cycle halts,
-    but the subsequent user flow (re-run cycle, modify scope, etc.) is an open
+    define what happens after a user rejects at the gate pass. The run halts,
+    but the subsequent user flow (re-run, modify scope, etc.) is an open
     question.
 
 ---
@@ -595,13 +608,14 @@ independently.
 
 | ID | Question | Impact | Status |
 |---|---|---|---|
-| UF-001 | What happens when the user rejects at gate pass? Does the cycle halt permanently, or can the user re-initiate from the halted state with modifications? | Recovery flow completeness | Open |
+| UF-001 | What happens when the user rejects at gate pass? Does the run halt permanently, or can the user re-initiate from the halted state with modifications? | Recovery flow completeness | Open |
 | UF-002 | How does the UI behave during network disconnection or offline mode? Should surfaces queue actions and replay on reconnect? | Reliability, UX during network issues | Open |
-| UF-003 | What is the expected behavior if the daemon crashes during a running cycle? Does the UI detect the crash and surface a recovery panel? | Crash recovery, data loss prevention | Open |
+| UF-003 | What is the expected behavior if the daemon crashes during a running workflow run? Does the UI detect the crash and surface a recovery panel? | Crash recovery, data loss prevention | Open |
 | UF-004 | Are there mobile-specific flows that differ from the three-surface desktop model? The vision doc does not differentiate. | Responsive design, touch interactions | Open |
 | UF-005 | Are notification badges persisted across sessions? If the user closes and reopens the app, do unread badges persist? | Session continuity, state persistence | Open |
 | UF-006 | How does "Run tests locally" at gate pass work? Does the daemon orchestrate a local test run, or does the user run tests manually outside the system? | Gate pass flow completeness | Open |
-| UF-007 | ~~Should the Graph surface support multi-node selection for scoped cycles, or is single-node scoping sufficient?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-cycle`, replacing the need for ad-hoc multi-node selection. | — | Resolved (DDR-028) |
+| UF-007 | ~~Should the Graph surface support multi-node selection for scoped cycles, or is single-node scoping sufficient?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-run`, replacing the need for ad-hoc multi-node selection. | — | Resolved (DDR-028) |
 | UF-008 | What is the expected behavior when a gate panel appears while the user is mid-conversation in Chat? Does the conversation pause, or can the user continue chatting while the gate panel is open? | Modal behavior, chat interruption policy | Open |
-| UF-009 | Should the live status indicator show which DAG node is currently executing, or only that a cycle is running? | Information density, surface clutter | Open |
-| UF-010 | Can the user dismiss a gate panel without acting on it (e.g., "remind me later")? If so, how does the system re-present the gate? | Gate panel lifecycle, cycle blocking | Open |
+| UF-009 | Should the live status indicator show which step is currently executing, or only that a workflow run is active? With multiple concurrent runs, should it show a count, a list, or just the most recent? | Information density, surface clutter | Open |
+| UF-010 | Can the user dismiss a gate panel without acting on it (e.g., "remind me later")? If so, how does the system re-present it, especially with multiple queued gate panels from different runs? | Gate panel lifecycle, run blocking | Open |
+| UF-011 | When multiple workflow runs are active concurrently, how should the Active Jobs panel prioritize or group them (by workflow, by group, by recency)? | Information density with concurrency | Open |

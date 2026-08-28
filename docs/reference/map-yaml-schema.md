@@ -1,30 +1,36 @@
 # map.yaml Schema
 
-**Type:** reference · **Status:** draft · **Updated:** 2026-04-17
+**Type:** reference · **Status:** draft · **Updated:** 2026-06-21
 
 Authoritative schema for `map.yaml` — the single source of runtime truth for
 every agent and interface connecting to an SLE project. Generated once at
-`sle init`, regenerated automatically after every cycle.
+`sle init`, regenerated automatically after every workflow-run step.
 
 Any agent bootstrapping into a session reads `agent.md` first, which references
 this file. `map.yaml` describes reality. `agent.md` describes intent. They are
 never merged.
 
-**New fields in this revision:**
+**New fields in this revision (DDR-031 — workflow generalization):**
 
 | Field | Source | Resolves |
 |---|---|---|
-| `cycle.awaiting_confirmation` | DDR-021 | G21, G27 |
-| `cycle.awaiting_sharding_approval` | DDR-026 | G38 |
-| `cycle.approval_gate.decision` | G27 | G27 |
-| `cycle.approval_gate.approved_categories` | G27 | G27 |
-| `cycle.approval_gate.decided_at` | G27 | G27 |
-| `cycle.nodes_completed` | G31 | G31 |
-| `cycle.current_node` | G31 | G31 |
-| `cycle.roles_completed` | G31 | G31 |
+| `workflow_runs` (map, replaces singular `cycle`) | DDR-031 | WG-001, WG-003 |
+| `workflow_runs.{run_id}.awaiting_checkpoint` | DDR-031 | collapses the 3 flag fields below |
+| `workflow_runs.{run_id}.claimed_artifacts` | DDR-031 | artifact-level claim contract |
+| `meta.completed_run_count` (replaces `meta.cycle`) | DDR-031 | WG-003 |
+| `history[*].workflow_run_id` / `workflow_id` (replaces `history[*].cycle`) | DDR-031 | — |
+
+**Prior fields (still present, now scoped per-run instead of project-wide):**
+
+| Field | Source | Resolves |
+|---|---|---|
+| `workflow_runs.{run_id}.approval_gate.*` | G27 | G27 |
+| `workflow_runs.{run_id}.steps_completed` | G31 | G31 |
+| `workflow_runs.{run_id}.current_step_id` | G31 | G31 |
+| `workflow_runs.{run_id}.roles_completed` | G31 | G31 |
 | `artifacts.files[*].scope` | DDR-025 | G30 |
 | `chat` | DDR-020 | 4.4.1 |
-| `cycle.last_run` | DDR-022 | 4.4.2 |
+| `workflow_runs.{run_id}.last_run` | DDR-022 | 4.4.2 |
 
 ---
 
@@ -35,7 +41,7 @@ meta:
   sle_version: "2.0.0"
   generated_at: "2026-04-17T10:00:00Z"
   project_type: api
-  cycle: 4
+  completed_run_count: 4
   version_id: "v0.4.0"
   status: idle
 
@@ -347,66 +353,72 @@ chat:
   mode: freeform
 
 
-cycle:
-  number: 4
-  iteration: 1
-  max_iterations: 5
-  planning_depth: standard
-  started_at: "2026-04-17T09:00:00Z"
-  completed_at: "2026-04-17T09:58:00Z"
-  outcome: completed
-
-  awaiting_confirmation: false
-  awaiting_sharding_approval: false
-
-  approval_gate:
-    gate: "after_planning"
-    decision: "approved"
-    approved_categories:
-      - correctness
-      - performance
-      - security
-    decided_at: "2026-04-17T09:30:00Z"
-
-  nodes_completed:
-    - "intent"
-    - "context_assembly"
-    - "explore"
-    - "design"
-    - "plan"
-    - "intake"
-    - "sharding_approval"
-    - "confirm"
-    - "build"
-    - "history"
-    - "exec"
-    - "validation_gate"
-    - "evaluate"
-    - "summarise"
-    - "snapshot"
-
-  current_node: null
-
-  roles_completed:
-    - "designer"
-    - "planner"
-    - "tester"
-    - "builder"
-    - "historian"
-    - "evaluator"
-    - "critic"
-    - "facilitator"
-
-  last_summary:
-    path: "reports/summary-v0.4.0.md"
-    generated_at: "2026-04-17T09:58:00Z"
-
-  last_run:
-    run_id: "run-20260417-001"
+workflow_runs:
+  full-build-4-i1-20260417T090000Z:
+    workflow_id: full-build
+    target:
+      group: null
+      layer: null
+      node_key: null
+    status: complete
+    iteration: 1
+    revision: 0
     started_at: "2026-04-17T09:00:00Z"
     completed_at: "2026-04-17T09:58:00Z"
-    iteration_count: 1
-    outcome: completed
+
+    awaiting_checkpoint: null
+
+    approval_gate:
+      gate: "after_planning"
+      decision: "approved"
+      approved_categories:
+        - correctness
+        - performance
+        - security
+      decided_at: "2026-04-17T09:30:00Z"
+
+    steps_completed:
+      - "scoping_gather"
+      - "scoping_produce"
+      - "scoping_checkpoint"
+      - "design"
+      - "plan"
+      - "test"
+      - "sharding_approval"
+      - "confirm"
+      - "build"
+      - "exec"
+      - "validation_gate"
+      - "evaluate"
+      - "summarise"
+      - "snapshot"
+
+    current_step_id: null
+
+    roles_completed:
+      - "designer"
+      - "planner"
+      - "tester"
+      - "builder"
+      - "historian"
+      - "evaluator"
+      - "critic"
+      - "facilitator"
+
+    claimed_artifacts: []
+
+    last_summary:
+      path: "reports/summary-v0.4.0.md"
+      generated_at: "2026-04-17T09:58:00Z"
+
+    last_run:
+      run_id: "full-build-4-i1-20260417T090000Z"
+      started_at: "2026-04-17T09:00:00Z"
+      completed_at: "2026-04-17T09:58:00Z"
+      iteration_count: 1
+      outcome: complete
+
+    updated_at: "2026-04-17T09:58:00Z"
 
 
 graph:
@@ -445,30 +457,34 @@ graph:
 
 
 history:
-  - cycle: 1
+  - workflow_run_id: "full-build-1-i1-20260410T080000Z"
+    workflow_id: full-build
     version_id: "v0.1.0"
-    outcome: completed
+    outcome: complete
     started_at: "2026-04-10T08:00:00Z"
     completed_at: "2026-04-10T08:45:00Z"
     summary_path: "reports/summary-v0.1.0.md"
 
-  - cycle: 2
+  - workflow_run_id: "full-build-2-i1-20260412T090000Z"
+    workflow_id: full-build
     version_id: "v0.2.0"
-    outcome: completed
+    outcome: complete
     started_at: "2026-04-12T09:00:00Z"
     completed_at: "2026-04-12T09:50:00Z"
     summary_path: "reports/summary-v0.2.0.md"
 
-  - cycle: 3
+  - workflow_run_id: "full-build-3-i1-20260415T100000Z"
+    workflow_id: full-build
     version_id: "v0.3.0"
-    outcome: completed
+    outcome: complete
     started_at: "2026-04-15T10:00:00Z"
     completed_at: "2026-04-15T10:55:00Z"
     summary_path: "reports/summary-v0.3.0.md"
 
-  - cycle: 4
+  - workflow_run_id: "full-build-4-i1-20260417T090000Z"
+    workflow_id: full-build
     version_id: "v0.4.0"
-    outcome: completed
+    outcome: complete
     started_at: "2026-04-17T09:00:00Z"
     completed_at: "2026-04-17T09:58:00Z"
     summary_path: "reports/summary-v0.4.0.md"
@@ -498,8 +514,8 @@ repo:
   key_files:
     - path: "src/index.ts"
       role: "main entry point"
-    - path: "src/dag/runner.ts"
-      role: "DAG execution engine"
+    - path: "src/workflow/runner.ts"
+      role: "workflow execution engine"
     - path: "src/rules/loader.ts"
       role: "YAML rule loader"
     - path: "src/sdk/daemon.ts"
@@ -517,7 +533,7 @@ repo:
 | `sle_version` | string | Version of SLE that generated this file |
 | `generated_at` | ISO 8601 | Timestamp of last regeneration |
 | `project_type` | enum | Template used at init: `api` · `ui` · `library` · `research` · `custom` |
-| `cycle` | integer | Increments with every completed cycle |
+| `completed_run_count` | integer | ⚡ **DDR-031.** Increments with every completed workflow run, across all workflow ids. Was `cycle`. Kept as a single global counter (not per-workflow-id) because version numbering and changelog generation want one incrementing integer. |
 | `version_id` | string | Semver of last locked version snapshot |
 | `status` | enum | Current system state (see below) |
 
@@ -525,15 +541,18 @@ repo:
 
 | Value | Meaning |
 |---|---|
-| `idle` | No cycle or discovery running |
+| `idle` | No discovery running. There may or may not be active workflow runs — see `workflow_runs` |
 | `discovering` | `sle discover` in progress |
-| `cycling` | Cycle DAG is executing (includes pauses at gates) |
-| `halted` | Stopped by iteration cap or unrecoverable error |
-| `complete` | All cycles finished, no further work queued |
+
+⚡ **DDR-031.** `cycling` · `halted` · `complete` are removed from `SystemStatus`.
+Under concurrent workflow runs there is no single project-wide "running"
+state — per-run progress lives entirely on each entry in `workflow_runs`.
+Clients derive "is any work in progress" from `workflow_runs` (count entries
+with `status: active`), not from `meta.status`.
 
 Per DDR-020, chat is not a system state — it is an orthogonal session.
 Per DDR-021, `confirming` is not a top-level state — it is expressed as
-`cycle.awaiting_confirmation`.
+`workflow_runs.{run_id}.awaiting_checkpoint`.
 
 ---
 
@@ -578,7 +597,7 @@ Per-role agent configuration. Populated from `agents.yaml` at daemon startup.
 
 | Field | Type | Description |
 |---|---|---|
-| `active` | boolean | Whether this role participates in cycles |
+| `active` | boolean | Whether this role participates in workflow runs |
 | `model` | string \| null | LLM model identifier |
 | `temperature` | number \| null | Sampling temperature |
 | `max_tokens` | number \| null | Maximum output tokens |
@@ -599,10 +618,10 @@ Roles: `explorer` · `designer` · `planner` · `tester` · `builder` · `debugg
 | `generator` | enum | Which agent role writes this file |
 | `scope` | enum | **DDR-025:** `project` or `group` |
 | `group` | string? | Group ID (only when `scope: group`) |
-| `required` | boolean | Cycle cannot complete without it |
+| `required` | boolean | A `full-build` run cannot complete without it |
 | `append_only` | boolean? | System will never overwrite, only append |
 | `last_updated` | ISO 8601 \| null | Timestamp of last write |
-| `dirty` | boolean | Modified since last cycle snapshot |
+| `dirty` | boolean | Modified since last version snapshot |
 
 The `scope` field (DDR-025) enables the context manager to resolve typed
 references: `doc:{key}` loads project-scoped artifacts, `node:{group}:{key}`
@@ -627,7 +646,9 @@ field identifying the owning group.
 | `overrides` | map? | Project-level overrides (optional) |
 
 Seven rule files: `planning` · `validation` · `artifacts` · `exit` ·
-`user_validation` · `summary` · `agents`.
+`user_validation` · `summary` · `agents`. `planning.yaml → max_iterations`
+and `scoping.max_rounds` apply per workflow run, not globally — two
+concurrent runs each get their own iteration/round budget.
 
 ---
 
@@ -686,48 +707,52 @@ All interfaces except `daemon` are optional.
 ### `chat`
 
 Orthogonal chat session state (DDR-020). Chat is not a system state — it
-operates independently of the cycle DAG. Multiple chat sessions may occur
-within a single cycle, or outside of any cycle entirely.
+operates independently of any workflow run. Multiple chat sessions may occur
+while zero or more workflow runs are active.
 
 | Field | Type | Description |
 |---|---|---|
 | `session_open` | boolean | Whether a chat session is currently active |
 | `session_id` | string \| null | Unique session identifier (null when no session) |
-| `mode` | enum | `freeform` · `decision` |
+| `mode` | enum | `freeform` · `decision` · `scoping` · `workflow_select` |
 
 In `freeform` mode the user chats with the Facilitator without constraint.
 In `decision` mode the Facilitator presents options and records a structured
-choice (used by approval gates).
+choice (used by approval gates). In `workflow_select` mode the Facilitator has
+proposed a `WorkflowMatchCandidate` and is awaiting the user's confirm/reject
+(DDR-031) — see conversation.md.
 
 ---
 
-### `cycle`
+### `workflow_runs`
 
-The core cycle state section. Updated after every node completion for crash
-recovery (G31).
+⚡ **DDR-031.** Replaces the singular `cycle` section. A map keyed by `run_id`,
+holding one entry per workflow run that has ever started this project — not
+just the currently-active one. Multiple entries may have `status: active`
+simultaneously. Updated after every step completion, for the owning run only
+(other runs' entries are untouched), for crash recovery (G31).
 
-**Core fields:**
-
-| Field | Type | Description |
-|---|---|---|
-| `number` | integer | Current cycle number (0 at init, increments per cycle) |
-| `iteration` | integer | Iteration within this cycle (resets on new cycle) |
-| `max_iterations` | integer | From `planning.yaml` |
-| `planning_depth` | enum | `minimal` · `standard` · `deep` · `research` |
-| `started_at` | ISO 8601 | When this cycle started |
-| `completed_at` | ISO 8601? | When this cycle completed |
-| `outcome` | enum | `completed` · `halted` · `running` |
-
-**Gate flags (DDR-021, DDR-026):**
+**Core fields (per entry):**
 
 | Field | Type | Description |
 |---|---|---|
-| `awaiting_confirmation` | boolean | **DDR-021:** CONFIRM gate pending human response |
-| `awaiting_sharding_approval` | boolean | **DDR-026:** Sharding proposal pending human review |
+| `workflow_id` | string | Which `WorkflowDefinition` this run executes, e.g. `full-build` |
+| `target.group` / `target.layer` / `target.node_key` | string? | What this run is scoped to, if anything |
+| `status` | enum | `active` · `halted` · `complete` |
+| `iteration` | integer | Iteration within this run (increments on validation-gate-equivalent failure) |
+| `revision` | integer | Revision within the current iteration (increments on checkpoint modification) |
+| `started_at` | ISO 8601 | When this run started |
+| `completed_at` | ISO 8601? | When this run completed |
 
-Both are `false` by default. When `true`, `meta.status` stays `cycling`. The
-Facilitator enters decision mode. On daemon restart, these flags tell the
-system exactly which interaction to resume.
+**Checkpoint state (DDR-031, replaces the 3-flag set from DDR-021/DDR-026):**
+
+| Field | Type | Description |
+|---|---|---|
+| `awaiting_checkpoint` | string \| null | The id of the step currently paused at, or `null`. At most one checkpoint is active per run — this is enforced by the field being a single nullable pointer, not a flag set. |
+
+The Facilitator enters decision mode while this is non-null. On daemon
+restart, the daemon reads this field to know exactly which interaction to
+resume, per run.
 
 **Approval gate record (G27):**
 
@@ -738,7 +763,7 @@ system exactly which interaction to resume.
 | `approval_gate.approved_categories` | string[] | Categories confirmed during this gate |
 | `approval_gate.decided_at` | ISO 8601 \| null | When the user responded |
 
-Written immediately when the user responds, before resuming the DAG. On crash
+Written immediately when the user responds, before resuming the run. On crash
 recovery, the daemon reads `approval_gate.decision` to determine whether to
 re-prompt or resume.
 
@@ -746,36 +771,46 @@ re-prompt or resume.
 
 | Field | Type | Description |
 |---|---|---|
-| `nodes_completed` | string[] | DAG node IDs completed this iteration |
-| `current_node` | string \| null | Node currently executing (null between iterations) |
+| `steps_completed` | string[] | Step ids completed this iteration |
+| `current_step_id` | string \| null | Step currently executing (null between iterations) |
 | `roles_completed` | string[] | Agent roles that have written outputs this iteration |
 
-Written after every node completion, before the next node starts. On daemon
-restart, the daemon reads `nodes_completed` to skip already-run nodes and
-resumes at `current_node`.
+Written after every step completion, before the next step starts. On daemon
+restart, the daemon reads `steps_completed` to skip already-run steps and
+resumes at `current_step_id`.
+
+**Claimed artifacts (DDR-031):**
+
+| Field | Type | Description |
+|---|---|---|
+| `claimed_artifacts` | `ArtifactClaim[]` | Artifacts this run currently holds a claim on. Mirrors (does not replace) the per-artifact files at `.sle/claims/{ref-slug}.json` — those files are the source of truth for cross-run conflict checks; this field is a convenience view scoped to one run. |
 
 **Summary:**
 
 | Field | Type | Description |
 |---|---|---|
-| `last_summary.path` | string | Path to the cycle summary document |
+| `last_summary.path` | string | Path to this run's summary document |
 | `last_summary.generated_at` | ISO 8601 | When the summary was generated |
 
 **Last run record:**
 
 | Field | Type | Description |
 |---|---|---|
-| `last_run.run_id` | string | Unique identifier for the most recent run |
+| `last_run.run_id` | string | Same as the entry's own key — present for convenience when an entry is passed around detached from its key |
 | `last_run.started_at` | ISO 8601 | When the run started |
 | `last_run.completed_at` | ISO 8601 | When the run completed |
 | `last_run.iteration_count` | integer | Number of iterations in this run |
-| `last_run.outcome` | CycleOutcome | Final outcome of the run |
+| `last_run.outcome` | `WorkflowRunStatus` | Final status of the run |
+
+`updated_at` (top-level on the entry): timestamp of the most recent write to
+this run's record, regardless of which field changed.
 
 ---
 
 ### `graph`
 
-Project graph metadata — populated after discovery and updated after each cycle.
+Project graph metadata — populated after discovery and updated after each
+workflow run that touches the graph.
 
 **`graph.groups` entries:**
 
@@ -804,19 +839,22 @@ Project graph metadata — populated after discovery and updated after each cycl
 
 ### `history`
 
-Append-only log of completed cycles. Each entry:
+Append-only log of completed workflow runs, across all workflow ids. Each
+entry:
 
 | Field | Type | Description |
 |---|---|---|
-| `cycle` | integer | Cycle number |
+| `workflow_run_id` | string | The run's id (matches a `workflow_runs` key at the time it ran, though that entry is not pruned afterward) |
+| `workflow_id` | string | Which workflow produced this entry |
 | `version_id` | string | Locked semver snapshot |
-| `outcome` | enum | `completed` · `halted` |
-| `started_at` | ISO 8601 | When the cycle started |
-| `completed_at` | ISO 8601 | When the cycle ended |
-| `summary_path` | string | Path to the cycle summary |
+| `outcome` | enum | `complete` · `halted` |
+| `started_at` | ISO 8601 | When the run started |
+| `completed_at` | ISO 8601 | When the run ended |
+| `summary_path` | string | Path to the run summary |
 
-The Historian appends entries here after each cycle. Never truncated — provides
-full audit trail.
+The Historian appends entries here after each run's terminal commit (via that
+commit step's `logs_decision: true`). Never truncated — provides full audit
+trail. ⚡ **DDR-031.** `cycle` → `workflow_run_id` + `workflow_id`.
 
 ---
 
@@ -831,7 +869,11 @@ Discovery state — set during `sle discover`, frozen after completion.
 | `current_phase` | integer | Current discovery phase (0 before start) |
 | `total_phases` | integer | Total discovery phases planned |
 | `open_questions_count` | integer | Unresolved questions remaining |
-| `blocking_questions_count` | integer | Questions blocking cycle start |
+| `blocking_questions_count` | integer | Questions blocking `full-build` start |
+
+Discovery is not itself a workflow (DDR-031) — it stays a distinct
+pre-workflow mechanism. `full-build` requires `discovery.status: complete`
+before it can start; other workflows may not.
 
 ---
 
@@ -849,18 +891,18 @@ Repository structure on disk. Used by agents to navigate the codebase.
 | `entry_points` | string[] | Main entry point files |
 | `key_files` | object[] | Structurally significant files (path + role) |
 
-The Historian updates `key_files` after each cycle based on what changed. The
+The Historian updates `key_files` after each run based on what changed. The
 `entry_points` list is populated during discovery.
 
 ---
 
-## Fields that update after every cycle
+## Fields that update after every workflow-run step
 
 The system regenerates `map.yaml` by diffing real disk state against the
 previous version. Fields that update automatically:
 
 - `meta.generated_at`
-- `meta.cycle`
+- `meta.completed_run_count`
 - `meta.version_id`
 - `meta.status`
 - `artifacts.files[*].last_updated`
@@ -870,7 +912,7 @@ previous version. Fields that update automatically:
 - `validation.categories[*].last_run`
 - `validation.gate.last_outcome`
 - `validation.gate.failed_categories`
-- `cycle.*`
+- `workflow_runs.{run_id}.*` (only the entry for the run that just stepped)
 - `chat.session_open`
 - `chat.session_id`
 - `chat.mode`
@@ -895,28 +937,12 @@ At `sle init`, the following sections start empty or at zero:
 
 | Section | Init value |
 |---|---|
-| `meta.cycle` | `0` |
+| `meta.completed_run_count` | `0` |
 | `meta.version_id` | `v0.0.0` |
 | `meta.status` | `idle` |
 | `artifacts.files` | `{}` |
 | `artifacts.generated_outputs` | `{}` |
-| `cycle.number` | `0` |
-| `cycle.iteration` | `0` |
-| `cycle.outcome` | `idle` |
-| `cycle.awaiting_confirmation` | `false` |
-| `cycle.awaiting_sharding_approval` | `false` |
-| `cycle.approval_gate.gate` | `null` |
-| `cycle.approval_gate.decision` | `null` |
-| `cycle.approval_gate.approved_categories` | `[]` |
-| `cycle.approval_gate.decided_at` | `null` |
-| `cycle.nodes_completed` | `[]` |
-| `cycle.current_node` | `null` |
-| `cycle.roles_completed` | `[]` |
-| `cycle.last_run.run_id` | `null` |
-| `cycle.last_run.started_at` | `null` |
-| `cycle.last_run.completed_at` | `null` |
-| `cycle.last_run.iteration_count` | `0` |
-| `cycle.last_run.outcome` | `null` |
+| `workflow_runs` | `{}` |
 | `chat.session_open` | `false` |
 | `chat.session_id` | `null` |
 | `chat.mode` | `freeform` |
@@ -926,6 +952,13 @@ At `sle init`, the following sections start empty or at zero:
 | `repo.entry_points` | `[]` |
 | `repo.key_files` | `[]` |
 | `discovery.status` | `not_started` |
+
+A new entry is added to `workflow_runs` the moment a run starts (`POST
+/api/v2/workflow-runs`), with `status: active`, `iteration: 0`, `revision: 0`,
+`awaiting_checkpoint: null`, `claimed_artifacts: []`, `steps_completed: []`,
+`current_step_id` set to the workflow's first step, `roles_completed: []`,
+and `last_run` fields mirroring the entry's own `run_id`/`started_at` (rest
+null/zero until completion).
 
 ---
 

@@ -103,6 +103,11 @@ class MockScopingService {
     this._draft = '# Cycle Charter: 1\n\n## Intent\nTest intent\n\n## Scope\nScope here.';
     return { draft: this._draft, charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
   }
+  async generateDraft(_cn: number, _startedAt: string, _path: string) {
+    this._draft = '# Cycle Charter: 1\n\n## Intent\nTest intent\n\n## Scope\nScope here.';
+  }
+  async readScopingState() { return {}; }
+  async updateScopingState(_cn: number, _startedAt: string, _state: unknown) {}
   async getDraft() { return this._draft; }
   async submitResponse(text: string) { this._pendingResponse = text; }
   async approve(_cn: number, _it: number) {
@@ -112,6 +117,56 @@ class MockScopingService {
     return { charter_path: 'docs/cycle-charter.md', awaiting_scoping: false as const };
   }
   getPendingResponse() { return this._pendingResponse; }
+}
+
+class MockPromptService {
+  async listTemplates() {
+    return [
+      { role: 'builder', source: 'built-in', version: '1.0.0', token_count: 100, valid: true },
+      { role: 'designer', source: 'built-in', version: '1.0.0', token_count: 120, valid: true },
+    ];
+  }
+  async getTemplate(role: string) {
+    if (role !== 'builder') {
+      throw Object.assign(new Error(`No template found for role: ${role}`), { code: 'template_missing' });
+    }
+    return {
+      role,
+      version: '1.0.0',
+      content: '# Builder\n\n## Role identity\n...',
+      source: 'built-in',
+      validation: { valid: true, errors: [], token_count: 100 },
+    };
+  }
+}
+
+class MockTagService {
+  private tags: Array<{ prefix: string; target_ref: string; value?: string; source: string; applied_at: string }> = [];
+
+  async addTag(params: { prefix: string; target_ref: string; value?: string; source?: string }) {
+    const tag = {
+      prefix: params.prefix,
+      target_ref: params.target_ref,
+      value: params.value,
+      source: params.source ?? 'user',
+      applied_at: '2026-06-16T00:00:00Z',
+    };
+    this.tags.push(tag);
+    return tag;
+  }
+
+  async getTagged(prefix: string) {
+    return this.tags.filter((t) => t.prefix === prefix);
+  }
+
+  async removeTag(targetRef: string, prefix: string, value?: string) {
+    const idx = this.tags.findIndex(
+      (t) => t.target_ref === targetRef && t.prefix === prefix && (value === undefined || t.value === value)
+    );
+    if (idx === -1) return false;
+    this.tags.splice(idx, 1);
+    return true;
+  }
 }
 
 class MockConfirmService {
@@ -134,18 +189,18 @@ class MockConfirmService {
 
 class MockDiscoveryService {
   private _complete = false;
-  async start(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', mode: 'solo', current_round: 1, round_status: 'collecting', total_rounds: 1, started_at: new Date().toISOString() }, meta: { request_id: 'r', timestamp: '' } };
+  async start(): Promise<any> {
+    return { session_id: 's1', mode: 'solo', current_round: 1, round_status: 'collecting', total_rounds: 1, started_at: new Date().toISOString() };
   }
-  async submitResponse(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', round: 1, status: 'drafting' }, meta: { request_id: 'r', timestamp: '' } };
+  async submitResponse(): Promise<any> {
+    return { session_id: 's1', round: 1, status: 'drafting' };
   }
-  async approveRound(): Promise<APIResponse<Record<string, unknown>>> {
+  async approveRound(): Promise<any> {
     this._complete = true;
-    return { ok: true, data: { round: 1, approved: true }, meta: { request_id: 'r', timestamp: '' } };
+    return { round: 1, approved: true };
   }
-  async getStatus(): Promise<APIResponse<Record<string, unknown>>> {
-    return { ok: true, data: { session_id: 's1', status: this._complete ? 'complete' : 'in_progress', mode: 'solo', current_round: 1, total_rounds: 1, artifacts: [], open_questions_count: 0, blocking_questions_count: 0 }, meta: { request_id: 'r', timestamp: '' } };
+  async getStatus(): Promise<any> {
+    return { session_id: 's1', status: this._complete ? 'complete' : 'in_progress', mode: 'solo', current_round: 1, total_rounds: 1, artifacts: [], open_questions_count: 0, blocking_questions_count: 0 };
   }
 }
 
@@ -182,6 +237,8 @@ function startServer(): Promise<DaemonServer> {
   const cycleService = new MockCycleService() as unknown as Record<string, unknown>;
   const scopingService = new MockScopingService() as unknown as Record<string, unknown>;
   const confirmService = new MockConfirmService() as unknown as Record<string, unknown>;
+  const tagService = new MockTagService() as unknown as Record<string, unknown>;
+  const promptService = new MockPromptService() as unknown as Record<string, unknown>;
   return server.start({ port: 0 }, {
     stateAPI,
     initService,
@@ -189,6 +246,8 @@ function startServer(): Promise<DaemonServer> {
     cycleService: cycleService as never,
     scopingService: scopingService as never,
     confirmService: confirmService as never,
+    tagService: tagService as never,
+    promptService: promptService as never,
     pidFile: { writePidFile: async () => {}, removePidFile: async () => {} },
   }).then(() => server);
 }
@@ -465,6 +524,107 @@ async function testScopingApproveFailsWithNoDraft() {
   await server.stop();
 }
 
+async function testTagsAddAndList() {
+  const server = await startServer();
+  const addRes = await makeRequest(server, 'POST', '/api/v2/tags', {
+    prefix: 'next-cycle',
+    target_ref: 'node:rate-limiting',
+  });
+  assert.strictEqual(addRes.statusCode, 200);
+  const addBody = addRes.body as { ok: boolean; data: { tag: { prefix: string; target_ref: string } } };
+  assert.strictEqual(addBody.ok, true);
+  assert.strictEqual(addBody.data.tag.prefix, 'next-cycle');
+  assert.strictEqual(addBody.data.tag.target_ref, 'node:rate-limiting');
+
+  const listRes = await makeRequest(server, 'GET', '/api/v2/tags?tag=next-cycle');
+  assert.strictEqual(listRes.statusCode, 200);
+  const listBody = listRes.body as { ok: boolean; data: { tags: unknown[]; count: number } };
+  assert.strictEqual(listBody.data.count, 1);
+  await server.stop();
+}
+
+async function testTagsListInvalidPrefix() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/tags?tag=bogus');
+  assert.strictEqual(res.statusCode, 400);
+  await server.stop();
+}
+
+async function testTagsAddInvalidPayload() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'POST', '/api/v2/tags', { prefix: 'next-cycle' });
+  assert.strictEqual(res.statusCode, 422);
+  await server.stop();
+}
+
+async function testTagsDelete() {
+  const server = await startServer();
+  await makeRequest(server, 'POST', '/api/v2/tags', {
+    prefix: 'next-cycle',
+    target_ref: 'node:rate-limiting',
+  });
+  const delRes = await makeRequest(
+    server,
+    'DELETE',
+    `/api/v2/tags/${encodeURIComponent('node:rate-limiting')}?tag=next-cycle`
+  );
+  assert.strictEqual(delRes.statusCode, 200);
+  const delBody = delRes.body as { ok: boolean; data: { deleted: boolean } };
+  assert.strictEqual(delBody.data.deleted, true);
+
+  const listRes = await makeRequest(server, 'GET', '/api/v2/tags?tag=next-cycle');
+  const listBody = listRes.body as { data: { count: number } };
+  assert.strictEqual(listBody.data.count, 0);
+  await server.stop();
+}
+
+async function testTagsDeleteNotFound() {
+  const server = await startServer();
+  const res = await makeRequest(
+    server,
+    'DELETE',
+    `/api/v2/tags/${encodeURIComponent('node:nonexistent')}?tag=next-cycle`
+  );
+  assert.strictEqual(res.statusCode, 404);
+  await server.stop();
+}
+
+async function testTemplatesList() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { templates: unknown[] } };
+  assert.strictEqual(body.ok, true);
+  assert.strictEqual(body.data.templates.length, 2);
+  await server.stop();
+}
+
+async function testTemplatesGetByRole() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/builder');
+  assert.strictEqual(res.statusCode, 200);
+  const body = res.body as { ok: boolean; data: { role: string; content: string } };
+  assert.strictEqual(body.data.role, 'builder');
+  assert.ok(body.data.content.includes('Builder'));
+  await server.stop();
+}
+
+async function testTemplatesGetInvalidRole() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/not-a-role');
+  assert.strictEqual(res.statusCode, 400);
+  await server.stop();
+}
+
+async function testTemplatesGetMissingTemplate() {
+  const server = await startServer();
+  const res = await makeRequest(server, 'GET', '/api/v2/templates/critic');
+  assert.strictEqual(res.statusCode, 404);
+  const body = res.body as { error: { code: string } };
+  assert.strictEqual(body.error.code, 'template_missing');
+  await server.stop();
+}
+
 async function testConfirmApprove() {
   const server = await startServer();
   // Gate must be set first so MockConfirmService.approve() doesn't throw
@@ -572,6 +732,15 @@ async function runAllTests() {
     { name: 'POST /api/v2/cycles/scoping/response records response', fn: testScopingSubmitResponse },
     { name: 'POST /api/v2/cycles/scoping/approve returns charter path', fn: testScopingApprove },
     { name: 'POST /api/v2/cycles/scoping/approve 409 with no draft', fn: testScopingApproveFailsWithNoDraft },
+    { name: 'POST /api/v2/tags + GET /api/v2/tags lists tagged refs', fn: testTagsAddAndList },
+    { name: 'GET /api/v2/tags with invalid prefix returns 400', fn: testTagsListInvalidPrefix },
+    { name: 'POST /api/v2/tags with invalid payload returns 422', fn: testTagsAddInvalidPayload },
+    { name: 'DELETE /api/v2/tags/{ref} removes tag', fn: testTagsDelete },
+    { name: 'DELETE /api/v2/tags/{ref} 404 when not found', fn: testTagsDeleteNotFound },
+    { name: 'GET /api/v2/templates lists all templates', fn: testTemplatesList },
+    { name: 'GET /api/v2/templates/{role} returns template content', fn: testTemplatesGetByRole },
+    { name: 'GET /api/v2/templates/{role} 400 with invalid role', fn: testTemplatesGetInvalidRole },
+    { name: 'GET /api/v2/templates/{role} 404 when template missing', fn: testTemplatesGetMissingTemplate },
     { name: 'POST /api/v2/cycles/confirm invalid action returns 400', fn: testConfirmInvalidAction },
     { name: 'POST /api/v2/cycles/confirm approve 409 when not awaiting', fn: testConfirmApproveSuccess },
     { name: 'POST /api/v2/cycles/confirm revise 409 when not awaiting', fn: testConfirmRevise },

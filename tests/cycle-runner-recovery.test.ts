@@ -1,29 +1,27 @@
 /**
- * Phase E: CycleRunner recovery loop — DEBUGGER agent integration.
+ * VS7 Phase A: CycleRunner iteration loop — spec-correct DEBUG integration.
  *
- * Tests the VALIDATION_GATE→DEBUGGER→EXEC recovery loop:
- * - failure_report is passed into CycleStateContext for the DEBUGGER node
- * - debugAttempt counter increments on each VALIDATION_GATE failure
- * - after MAX_DEBUG_ATTEMPTS, the cycle halts with a failure_report
- * - debug_attempts_used is tracked in CycleRunResult
- * - on DEBUGGER LLM failure, the cycle halts immediately
+ * Per dag-execution.md: VALIDATION_GATE fail → DEBUG → PLAN (not EXEC).
+ * The Debugger diagnoses; the Planner re-plans from the diagnosis.
+ * Iteration counter increments after DEBUG, before PLAN.
+ * Cap is enforced via map.cycle.max_iterations.
  */
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { CycleRunner, MAX_DEBUG_ATTEMPTS } from '../src/cycle-runner.js';
+import { CycleRunner } from '../src/cycle-runner.js';
 import { nextNode } from '../src/dag-runner.js';
 import type { CycleStateContext } from '../src/context-manager.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
 import type { FailureReport } from '../src/types.js';
 
-console.log('# Running Phase E (CycleRunner recovery) tests...');
+console.log('# Running VS7 Phase A (CycleRunner iteration loop) tests...');
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
 
-function makeBaseMap(): RuntimeMap {
+function makeBaseMap(maxIterations = 5): RuntimeMap {
   return {
     meta: {
       status: 'cycling', cycle: 1,
@@ -44,7 +42,7 @@ function makeBaseMap(): RuntimeMap {
       current_phase: 0, total_phases: 0, open_questions_count: 0, blocking_questions_count: 0,
     },
     cycle: {
-      number: 1, iteration: 1, revision: 0, max_iterations: 5,
+      number: 1, iteration: 1, revision: 0, max_iterations: maxIterations,
       planning_depth: 'standard', started_at: '2026-05-08T14:00:00Z',
       outcome: 'cycling', approval_gate: null,
       awaiting_scoping: false, awaiting_confirmation: false, awaiting_sharding_approval: false,
@@ -112,7 +110,7 @@ const SAMPLE_FAILURE_REPORT: FailureReport = {
   run_dir: '.sle/runs/1-1',
   run_id: 'c1',
   quick_summary: 'EXEC failed with exit code 1',
-  failed_categories: [{ name: 'EXEC', method: 'executable' as const, error_summary: 'Node EXEC did not complete' }],
+  failed_categories: [{ name: 'correctness', method: 'executable' as const, error_summary: 'tests failed' }],
   passed_categories: [],
 };
 
@@ -127,7 +125,7 @@ class FailNTimesValidationGate {
       return {
         passed: false,
         next_node: null as null,
-        failed_nodes: ['EXEC'],
+        failed_nodes: ['correctness'],
         failure_report: { ...SAMPLE_FAILURE_REPORT },
       };
     }
@@ -161,6 +159,7 @@ class MockSummariseService {
 
 class MockStateMachine {
   async completeCycle() { return { success: true, from: 'cycling' as const, to: 'complete' as const }; }
+  async halt(_reason: string) { return { success: true }; }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
@@ -195,12 +194,12 @@ function makeRecoveryRunner(overrides: {
     mapManager: mgr,
     runArtifacts: new MockRunArtifactsForRunner() as never,
   });
-  return { runner, dagRunner, execService };
+  return { runner, dagRunner, execService, mgr };
 }
 
-// ─── Recovery loop tests ──────────────────────────────────────────────────────
+// ─── Iteration loop tests ──────────────────────────────────────────────────────
 
-test('Phase E recovery: 1 validation failure → DEBUGGER → EXEC retry → pass → complete', async () => {
+test('VS7 A: 1 validation failure → DEBUG → PLAN → ... → EXEC retry → pass → complete', async () => {
   const validationGateService = new FailNTimesValidationGate(1);
   const { runner } = makeRecoveryRunner({ validationGateService });
 
@@ -208,10 +207,9 @@ test('Phase E recovery: 1 validation failure → DEBUGGER → EXEC retry → pas
 
   assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
   assert.strictEqual(result.final_node, null);
-  assert.strictEqual(result.debug_attempts_used, 1);
 });
 
-test('Phase E recovery: 2 validation failures → 2 DEBUGGER calls → pass → complete', async () => {
+test('VS7 A: 2 validation failures → 2 DEBUG calls → pass → complete', async () => {
   const validationGateService = new FailNTimesValidationGate(2);
   const dagRunner = new TrackingDAGRunner();
   const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
@@ -219,12 +217,12 @@ test('Phase E recovery: 2 validation failures → 2 DEBUGGER calls → pass → 
   const result = await runner.run();
 
   assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
-  assert.strictEqual(result.debug_attempts_used, 2);
-  const debuggerCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUGGER');
-  assert.strictEqual(debuggerCalls.length, 2, 'DEBUGGER should be called twice');
+  const debugCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUG');
+  assert.strictEqual(debugCalls.length, 2, 'DEBUG should be called twice');
 });
 
-test('Phase E recovery: 3 validation failures → 3 DEBUGGER calls → pass → complete', async () => {
+test('VS7 A: 3 validation failures → 3 DEBUG calls → pass → complete', async () => {
+  // max_iterations=5, iteration starts at 1; after 3 failures iteration=4 < 5, continues
   const validationGateService = new FailNTimesValidationGate(3);
   const dagRunner = new TrackingDAGRunner();
   const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
@@ -232,110 +230,115 @@ test('Phase E recovery: 3 validation failures → 3 DEBUGGER calls → pass → 
   const result = await runner.run();
 
   assert.strictEqual(result.completed, true, `should complete: ${result.error}`);
-  assert.strictEqual(result.debug_attempts_used, 3);
-  const debuggerCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUGGER');
-  assert.strictEqual(debuggerCalls.length, 3, 'DEBUGGER should be called 3 times');
+  const debugCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUG');
+  assert.strictEqual(debugCalls.length, 3, 'DEBUG should be called 3 times');
 });
 
-test('Phase E recovery: MAX_DEBUG_ATTEMPTS+1 failures → cycle halted', async () => {
-  // 4 failures exceed MAX_DEBUG_ATTEMPTS=3 — the 4th validation failure causes halt
-  const validationGateService = new FailNTimesValidationGate(MAX_DEBUG_ATTEMPTS + 1);
+test('VS7 A: iteration counter increments in map after each DEBUG run', async () => {
+  const validationGateService = new FailNTimesValidationGate(2);
+  const mgr = new InMemoryMapManager();
+  const { runner } = makeRecoveryRunner({ validationGateService, mapManager: mgr });
+
+  await runner.run();
+
+  // Started at iteration=1, failed twice → incremented to 3
+  assert.strictEqual(mgr.map.cycle.iteration, 3);
+});
+
+test('VS7 A: cap reached → cycle halts (max_iterations=5, 4 failures → iteration=5)', async () => {
+  // max_iterations=5: after 4 failures iteration becomes 5 ≥ 5 → halt
+  const validationGateService = new FailNTimesValidationGate(4);
   const { runner } = makeRecoveryRunner({ validationGateService });
 
   const result = await runner.run();
 
   assert.strictEqual(result.completed, false);
-  assert.strictEqual(result.final_node, 'VALIDATION_GATE');
-  assert.strictEqual(result.debug_attempts_used, MAX_DEBUG_ATTEMPTS);
+  assert.ok(result.error?.includes('cap'), `error should mention cap: ${result.error}`);
 });
 
-test('Phase E recovery: debug_attempts_used=0 on happy path', async () => {
-  // ValidationGate passes immediately — no debugging needed
+test('VS7 A: cap halt result includes failure_report', async () => {
+  const validationGateService = new FailNTimesValidationGate(4);
+  const { runner } = makeRecoveryRunner({ validationGateService });
+
+  const result = await runner.run();
+
+  assert.ok(result.failure_report, 'failure_report should be present on cap halt');
+  assert.ok(result.failure_report!.failed_categories.length > 0);
+});
+
+test('VS7 A: iterations_used reported correctly', async () => {
   const validationGateService = new FailNTimesValidationGate(0);
   const { runner } = makeRecoveryRunner({ validationGateService });
 
   const result = await runner.run();
 
   assert.strictEqual(result.completed, true);
-  assert.strictEqual(result.debug_attempts_used, 0);
+  assert.ok(typeof result.iterations_used === 'number');
 });
 
-test('Phase E recovery: failure_report in result when MAX exceeded', async () => {
-  const validationGateService = new FailNTimesValidationGate(MAX_DEBUG_ATTEMPTS + 1);
-  const { runner } = makeRecoveryRunner({ validationGateService });
-
-  const result = await runner.run();
-
-  assert.ok(result.failure_report, 'failure_report should be present');
-  assert.ok(result.failure_report!.failed_categories.length > 0, 'should have failed categories');
-});
-
-test('Phase E recovery: error message identifies attempt count when MAX exceeded', async () => {
-  const validationGateService = new FailNTimesValidationGate(MAX_DEBUG_ATTEMPTS + 1);
-  const { runner } = makeRecoveryRunner({ validationGateService });
-
-  const result = await runner.run();
-
-  assert.ok(
-    result.error?.includes(String(MAX_DEBUG_ATTEMPTS)),
-    `error should mention ${MAX_DEBUG_ATTEMPTS}: ${result.error}`
-  );
-  assert.ok(
-    result.error?.toLowerCase().includes('debug attempt'),
-    `error should mention debug attempts: ${result.error}`
-  );
-});
-
-test('Phase E recovery: DEBUGGER appears in dagRunner.calls after each VALIDATION_GATE failure', async () => {
-  const validationGateService = new FailNTimesValidationGate(2);
-  const dagRunner = new TrackingDAGRunner();
-  const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
-
-  await runner.run();
-
-  const debuggerCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUGGER');
-  assert.strictEqual(debuggerCalls.length, 2, 'one DEBUGGER call per validation failure');
-});
-
-test('Phase E recovery: failure_report injected into cycleState for DEBUGGER node', async () => {
+test('VS7 A: failure_report injected into cycleState for DEBUG node', async () => {
   const validationGateService = new FailNTimesValidationGate(1);
   const dagRunner = new TrackingDAGRunner();
   const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
 
   await runner.run();
 
-  const debuggerCall = dagRunner.calls.find(c => c.nodeId === 'DEBUGGER');
-  assert.ok(debuggerCall, 'DEBUGGER should have been called');
-  assert.ok(debuggerCall!.state.failure_report, 'failure_report should be in cycleState for DEBUGGER');
+  const debugCall = dagRunner.calls.find(c => c.nodeId === 'DEBUG');
+  assert.ok(debugCall, 'DEBUG should have been called');
+  assert.ok(debugCall!.state.failure_report, 'failure_report should be in cycleState for DEBUG');
   assert.ok(
-    debuggerCall!.state.failure_report!.quick_summary.length > 0,
+    debugCall!.state.failure_report!.quick_summary.length > 0,
     'failure_report should have a quick_summary'
   );
 });
 
-test('Phase E recovery: after DEBUGGER succeeds, EXEC is called before VALIDATION_GATE', async () => {
-  // Fail once: EXEC → fail → DEBUGGER → EXEC (2nd call) → pass → done
+test('VS7 A: after DEBUG, DAG routes to PLAN (not EXEC) — PLAN appears in dagRunner.calls after DEBUG', async () => {
+  const validationGateService = new FailNTimesValidationGate(1);
+  const dagRunner = new TrackingDAGRunner();
+  const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
+
+  await runner.run();
+
+  const calls = dagRunner.calls.map(c => c.nodeId);
+  const debugIdx = calls.lastIndexOf('DEBUG');
+  assert.ok(debugIdx >= 0, 'DEBUG should appear in calls');
+  // PLAN must appear after the last DEBUG call
+  const planAfterDebug = calls.slice(debugIdx + 1).includes('PLAN');
+  assert.ok(planAfterDebug, `PLAN should follow DEBUG; calls after DEBUG: ${calls.slice(debugIdx + 1).join(',')}`);
+});
+
+test('VS7 A: after DEBUG → PLAN → ... → EXEC is called again (EXEC count ≥ 2)', async () => {
   const validationGateService = new FailNTimesValidationGate(1);
   const execService = new TrackingExecService();
   const { runner } = makeRecoveryRunner({ execService, validationGateService });
 
   await runner.run();
 
-  // ExecService is called for the initial EXEC and again after DEBUGGER fix
-  assert.ok(execService.callCount >= 2, `ExecService should be called at least twice, got ${execService.callCount}`);
+  assert.ok(execService.callCount >= 2, `ExecService should be called ≥2 times, got ${execService.callCount}`);
 });
 
-test('Phase E recovery: DEBUGGER LLM failure returns completed=false with final_node=DEBUGGER', async () => {
+test('VS7 A: DEBUG LLM failure returns completed=false with final_node=DEBUG', async () => {
   const validationGateService = new FailNTimesValidationGate(1);
   const dagRunner = new TrackingDAGRunner();
-  dagRunner.failOnNode = 'DEBUGGER';
+  dagRunner.failOnNode = 'DEBUG';
   const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
 
   const result = await runner.run();
 
   assert.strictEqual(result.completed, false);
-  assert.strictEqual(result.final_node, 'DEBUGGER');
-  assert.ok(result.error?.includes('DEBUGGER failed'), `unexpected error: ${result.error}`);
+  assert.strictEqual(result.final_node, 'DEBUG');
+  assert.ok(result.error?.includes('DEBUG failed'), `unexpected error: ${result.error}`);
 });
 
-console.log('# ✅ All Phase E (CycleRunner recovery) tests passed!');
+test('VS7 A: no DEBUG calls on happy path (gate passes immediately)', async () => {
+  const validationGateService = new FailNTimesValidationGate(0);
+  const dagRunner = new TrackingDAGRunner();
+  const { runner } = makeRecoveryRunner({ dagRunner, validationGateService });
+
+  await runner.run();
+
+  const debugCalls = dagRunner.calls.filter(c => c.nodeId === 'DEBUG');
+  assert.strictEqual(debugCalls.length, 0, 'no DEBUG calls on happy path');
+});
+
+console.log('# ✅ All VS7 Phase A (CycleRunner iteration loop) tests passed!');

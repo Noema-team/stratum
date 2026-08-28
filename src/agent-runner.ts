@@ -44,7 +44,7 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   tester:      ['docs/test-plan.md', '.sle/runs/'],
   historian:   ['docs/decisions.md', 'docs/cycle-summary.md'],
   evaluator:   ['docs/evaluation.md'],
-  critic:      ['docs/critique.md'],
+  critic:      ['docs/critique.md', 'docs/cycle-critique.md', 'docs/critique-report.md'],
   // Debugger can write source code (fixing implementation bugs)
   debugger:    ['src/', 'tests/', 'scripts/', '.sle/runs/'],
 };
@@ -68,12 +68,13 @@ export const APPEND_ONLY_PATHS = new Set(['docs/decisions.md']);
 const NODE_TO_ROLE: Record<string, AgentRole> = {
   SCOPING:   'facilitator',
   DESIGN:    'designer',
+  CRITIQUE:  'critic',
   PLAN:      'planner',
   TEST:      'tester',
   BUILD:     'builder',
   HISTORY:   'historian',
   EVALUATE:  'evaluator',
-  DEBUGGER:  'debugger',
+  DEBUG:     'debugger',
   // SUMMARISE is daemon-generated (no LLM call) — handled by SummariseService
 };
 

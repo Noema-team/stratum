@@ -82,9 +82,10 @@ const DEFAULT_PROVIDERS: Record<string, AgentLLMConfig> = {
   },
   glm: {
     provider: 'openai_compatible',
-    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    // International Z.AI Coding Plan endpoint. Standard: https://api.z.ai/api/paas/v4
+    base_url: 'https://api.z.ai/api/coding/paas/v4',
     api_key_env: 'GLM_API_KEY',
-    model: 'gpt-4o',
+    model: 'glm-4',
   },
   zai: {
     provider: 'openai_compatible',

@@ -179,12 +179,53 @@ export class AnthropicProvider implements ILLMProvider {
   }
 }
 
+export class DynamicLLMProvider implements ILLMProvider {
+  private activeProvider: ILLMProvider;
+
+  constructor(initialProvider: ILLMProvider) {
+    this.activeProvider = initialProvider;
+  }
+
+  setProvider(provider: ILLMProvider) {
+    this.activeProvider = provider;
+  }
+
+  getProvider(): ILLMProvider {
+    return this.activeProvider;
+  }
+
+  async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
+    return this.activeProvider.complete(params);
+  }
+}
+
 export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
   switch (config.provider) {
     case 'openai_compatible':
       return new OpenAICompatibleProvider(config);
     case 'anthropic':
       return new AnthropicProvider(config);
+    case 'glm': {
+      const glmConfig: AgentLLMConfig = {
+        ...config,
+        // Default to Z.AI Coding Plan endpoint.
+        // For standard Z.AI use: https://api.z.ai/api/paas/v4
+        // For mainland CN use: https://open.bigmodel.cn/api/paas/v4
+        base_url: config.base_url || 'https://api.z.ai/api/coding/paas/v4',
+        model: config.model || 'glm-4',
+        api_key_env: config.api_key_env || 'GLM_API_KEY',
+      };
+      return new OpenAICompatibleProvider(glmConfig);
+    }
+    case 'openrouter': {
+      const orConfig: AgentLLMConfig = {
+        ...config,
+        base_url: config.base_url || 'https://openrouter.ai/api/v1',
+        model: config.model || 'google/gemini-2.5-pro',
+        api_key_env: config.api_key_env || 'OPENROUTER_API_KEY',
+      };
+      return new OpenAICompatibleProvider(orConfig);
+    }
     default:
       throw new Error(`Unknown LLM provider: ${(config as { provider: string }).provider}`);
   }

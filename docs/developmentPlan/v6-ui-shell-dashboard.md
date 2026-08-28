@@ -1,6 +1,6 @@
 # Vertical Slice 6: UI Shell & Dashboard
 
-**Type:** implementation plan · **Status:** not started · **Updated:** 2026-05-23
+**Type:** implementation plan · **Status:** completed · **Updated:** 2026-05-26
 **Slice:** v6 · **Prerequisites:** VS5 Complete (Critic agent, intake pipeline, WebSocket events)
 
 ---
@@ -9,12 +9,12 @@
 
 | Phase | Component | Status | Commit |
 |-------|-----------|--------|--------|
-| A | UI Shell Foundation | ☐ Not started | — |
-| B | Overview Page + Fixed Panels | ☐ Not started | — |
-| C | Chat Page | ☐ Not started | — |
-| D | Graph Page | ☐ Not started | — |
-| E | Tasks Dashboard Widgets | ☐ Not started | — |
-| F | Integration Tests | ☐ Not started | — |
+| A | UI Shell Foundation | ☑ Completed | `1423c31` |
+| B | Overview Page + Fixed Panels | ☑ Completed | `1423c31` |
+| C | Chat Page | ☑ Completed | `1423c31` |
+| D | Graph Page | ☑ Completed | `1423c31` |
+| E | Tasks Dashboard Widgets | ☑ Completed | `1423c31` |
+| F | Integration Tests | ☑ Completed | `1423c31` |
 
 ---
 

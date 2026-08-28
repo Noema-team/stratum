@@ -5,8 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "stratum": "./dist/cli.js"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r public dist/public",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:watch": "node --import tsx --watch --test tests/*.test.ts",
     "type-check": "tsc --noEmit",
@@ -15,11 +18,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "js-yaml": "^4.1.0",
+    "ws": "^8.21.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.5",
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0"
   },

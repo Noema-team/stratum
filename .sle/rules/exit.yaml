@@ -1,0 +1,13 @@
+conditions:
+  all_categories_pass: true
+  requirements_met: true
+on_cap_hit: halt_with_report
+halt_behavior:
+  write_partial_report: true
+  notify_user: true
+  block_version_snapshot: true
+  preserve_decisions: true
+on_error:
+  behavior: halt
+  write_error_report: true
+  block_version_snapshot: true

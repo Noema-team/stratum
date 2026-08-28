@@ -8,6 +8,8 @@ import {
   ChatStateSchema,
   ArtifactEntrySchema,
   ValidationCategorySchema,
+  NodeTagSchema,
+  type NodeTag,
   ValidationGateSchema,
   DiscoveryStatusEnum,
   DiscoveryModeEnum,
@@ -24,6 +26,7 @@ export interface RuntimeDAGState {
   revision: number;
   started_at: string;
   nodes: Record<string, { status: NodeStatus; started_at?: string; completed_at?: string }>;
+  exec_result?: { exit_code: number; timed_out: boolean };
 }
 
 const RuntimeDAGStateSchema = z.object({
@@ -40,6 +43,12 @@ const RuntimeDAGStateSchema = z.object({
       completed_at: z.string().datetime().optional(),
     })
   ),
+  exec_result: z
+    .object({
+      exit_code: z.number(),
+      timed_out: z.boolean(),
+    })
+    .optional(),
 });
 
 // ============================================================================
@@ -106,6 +115,10 @@ export interface RuntimeMap {
     session_open: boolean;
     session_id?: string;
     started_at?: string;
+    last_active_at?: string;
+    total_exchanges: number;
+    pending_decisions: number;
+    last_consumed_by_cycle?: number;
   };
   artifacts: Array<{
     path: string;
@@ -133,6 +146,11 @@ export interface RuntimeMap {
       failed_categories: string[];
     };
   };
+  graph?: {
+    link_count: number;
+    last_rebuilt_at: string;
+  };
+  tags: NodeTag[];
 }
 
 export const RuntimeMapSchema = z.object({
@@ -226,6 +244,11 @@ export const RuntimeMapSchema = z.object({
     categories: z.array(ValidationCategorySchema),
     gate: ValidationGateSchema,
   }),
+  graph: z.object({
+    link_count: z.number(),
+    last_rebuilt_at: z.string(),
+  }).optional(),
+  tags: z.array(NodeTagSchema).optional().default([]),
 });
 
 // ============================================================================
@@ -476,6 +499,8 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
     },
     chat: {
       session_open: false,
+      total_exchanges: 0,
+      pending_decisions: 0,
     },
     artifacts: [],
     validation: {
@@ -486,6 +511,7 @@ export function createInitialMap(options: InitialMapOptions): RuntimeMap {
         failed_categories: [],
       },
     },
+    tags: [],
   };
 }
 

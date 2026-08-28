@@ -19,6 +19,11 @@ function makeFsMock(files: Record<string, string>): typeof import('fs').promises
 
 const ROOT = '/project';
 
+// Artifact paths now live under .sle/project-docs/
+function docPath(key: string): string {
+  return `/project/.sle/project-docs/${key}.md`;
+}
+
 function baseState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
   return {
     cycle_number: 1,
@@ -55,8 +60,8 @@ async function testTaskDescriptionContainsNodeAndIntent() {
 
 async function testArtifactSlicesLoadedForRole() {
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': '# Requirements\nContent here.',
-    '/project/docs/test-plan.md': '# Test Plan\nTest here.',
+    [docPath('requirements')]: '# Requirements\nContent here.',
+    [docPath('test-plan')]: '# Test Plan\nTest here.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('tester', baseState({ current_node: 'TEST' }));
@@ -69,7 +74,7 @@ async function testArtifactSlicesLoadedForRole() {
 
 async function testMissingArtifactFilesSkipped() {
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': '# Requirements\nContent.',
+    [docPath('requirements')]: '# Requirements\nContent.',
     // test-plan.md missing
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
@@ -79,14 +84,26 @@ async function testMissingArtifactFilesSkipped() {
   assert.ok(!('test-plan' in result.artifact_slices), 'test-plan should be absent');
 }
 
-async function testExplorerRoleHasNoArtifacts() {
-  const fsMock = makeFsMock({
-    '/project/docs/requirements.md': '# Req',
-  });
+async function testExplorerRoleLoadsExpectedSlices() {
+  // Explorer looks for system-description, open-questions, constraints, evaluation, cycle-charter
+  // With none present, slices should be empty
+  const fsMock = makeFsMock({});
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('explorer', baseState());
 
   assert.deepStrictEqual(result.artifact_slices, {});
+}
+
+async function testExplorerRoleLoadsWhenFilesExist() {
+  const fsMock = makeFsMock({
+    [docPath('system-description')]: '# System\nOverview.',
+    [docPath('open-questions')]: '# Questions\nUnknowns.',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('explorer', baseState());
+
+  assert.ok('system-description' in result.artifact_slices);
+  assert.ok('open-questions' in result.artifact_slices);
 }
 
 async function testSystemPromptLoadsAgentMdAndRolePrompt() {
@@ -127,7 +144,10 @@ async function testFailureContextNotInjectedOnIteration1() {
     baseState({
       iteration: 1,
       failure_report: {
+        cycle: 1,
         iteration: 1,
+        run_id: 'run-001',
+        run_dir: '/project/.sle/runs/run-001',
         failed_categories: ['correctness'],
         passed_categories: ['style'],
         quick_summary: 'Tests failed.',
@@ -146,11 +166,11 @@ async function testFailureContextInjectedOnIteration2() {
     baseState({
       iteration: 2,
       failure_report: {
+        cycle: 1,
         iteration: 1,
-        failed_categories: [
-          'correctness',
-          'coverage',
-        ],
+        run_id: 'run-001',
+        run_dir: '/project/.sle/runs/run-001',
+        failed_categories: ['correctness', 'coverage'],
         passed_categories: ['style'],
         quick_summary: 'Two categories failed.',
       },
@@ -173,8 +193,8 @@ async function testFailureContextNotInjectedWithoutReport() {
 async function testTokenCountIsPositive() {
   const fsMock = makeFsMock({
     '/project/agent.md': 'Agent instructions.',
-    '/project/docs/requirements.md': '# Requirements\nContent.',
-    '/project/docs/architecture.md': '# Architecture\nContent.',
+    [docPath('requirements')]: '# Requirements\nContent.',
+    [docPath('architecture')]: '# Architecture\nContent.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('critic', baseState());
@@ -185,21 +205,21 @@ async function testTokenCountIsPositive() {
 async function testTruncationWhenArtifactExceedsSliceSize() {
   const bigContent = 'x'.repeat(100_000);
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': bigContent,
+    [docPath('test-plan')]: bigContent,
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('tester', baseState());
 
-  const slice = result.artifact_slices['requirements'];
+  const slice = result.artifact_slices['test-plan'];
   assert.ok(slice !== undefined, 'slice missing');
-  assert.ok(slice.length <= DEFAULT_CONFIG.artifact_slice_size + 100, 'slice too large');
-  assert.ok(result.truncated.includes('requirements'), 'truncated not recorded');
+  assert.ok(slice.length <= DEFAULT_CONFIG.artifact_slice_size * 4 + 100, 'slice too large');
+  assert.ok(result.truncated.includes('test-plan'), 'truncated not recorded');
   assert.ok(slice.includes('[...earlier content truncated...]'), 'truncation marker missing');
 }
 
 async function testTruncatedEmptyWhenNoTruncation() {
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': 'Short content.',
+    [docPath('requirements')]: 'Short content.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('tester', baseState());
@@ -209,33 +229,49 @@ async function testTruncatedEmptyWhenNoTruncation() {
 
 async function testHardCeilingEnforced() {
   const bigContent = 'y'.repeat(50_000);
+  // Facilitator (chat mode) loads: product-brief, system-description, vision, open-questions, project-plan
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': bigContent,
-    '/project/docs/architecture.md': bigContent,
-    '/project/docs/plan.md': bigContent,
-    '/project/docs/test-plan.md': bigContent,
+    [docPath('system-description')]: bigContent,
+    [docPath('open-questions')]: bigContent,
   });
   const smallConfig = { ...DEFAULT_CONFIG, hard_ceiling: 2_000, artifact_slice_size: 100_000 };
   const cm = new ContextManager(ROOT, smallConfig, fsMock);
-  const result = await cm.assemble('builder', baseState());
+  const result = await cm.assemble('facilitator', baseState());
 
   assert.ok(result.token_count <= 2_100, `token_count ${result.token_count} exceeds ceiling`);
 }
 
-async function testBuilderRoleLoadsAllFourArtifacts() {
+async function testBuilderRoleLoadsArtifactsAtDeepDepth() {
   const fsMock = makeFsMock({
-    '/project/docs/requirements.md': '# Req',
-    '/project/docs/architecture.md': '# Arch',
-    '/project/docs/plan.md': '# Plan',
-    '/project/docs/test-plan.md': '# Tests',
+    [docPath('requirements')]: '# Req',
+    [docPath('architecture')]: '# Arch',
+    [docPath('test-plan')]: '# Tests',
+    [docPath('plan')]: '# Plan',
+    [docPath('build-plan')]: '# Build Plan',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('builder', baseState({ current_node: 'BUILD' }));
+  const result = await cm.assemble('builder', baseState({ current_node: 'BUILD', planning_depth: 'deep' }));
+
+  assert.ok('requirements' in result.artifact_slices, 'requirements missing');
+  assert.ok('architecture' in result.artifact_slices, 'architecture missing');
+  assert.ok('test-plan' in result.artifact_slices, 'test-plan missing');
+  assert.ok('plan' in result.artifact_slices, 'plan missing at deep depth');
+  assert.ok('build-plan' in result.artifact_slices, 'build-plan missing at deep depth');
+}
+
+async function testBuilderExcludesPlanAtStandardDepth() {
+  const fsMock = makeFsMock({
+    [docPath('requirements')]: '# Req',
+    [docPath('architecture')]: '# Arch',
+    [docPath('test-plan')]: '# Tests',
+    [docPath('plan')]: '# Plan — should not appear',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('builder', baseState({ current_node: 'BUILD', planning_depth: 'standard' }));
 
   assert.ok('requirements' in result.artifact_slices);
   assert.ok('architecture' in result.artifact_slices);
-  assert.ok('plan' in result.artifact_slices);
-  assert.ok('test-plan' in result.artifact_slices);
+  assert.ok(!('plan' in result.artifact_slices), 'plan should be absent at standard depth');
 }
 
 async function testNullCurrentNode() {
@@ -247,17 +283,137 @@ async function testNullCurrentNode() {
   assert.ok(result.state_summary.includes('not started'), 'null node not shown');
 }
 
+async function testEphemeralArtifactsInjected() {
+  const fsMock = makeFsMock({});
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble(
+    'planner',
+    baseState({
+      iteration: 2,
+      failure_report: {
+        cycle: 1,
+        iteration: 1,
+        run_id: 'run-001',
+        run_dir: '/project/.sle/runs/run-001',
+        failed_categories: ['correctness'],
+        passed_categories: [],
+        quick_summary: 'Correctness failed.',
+      },
+      ephemeral: {
+        'doc:debug-diagnosis': 'Root cause: missing null check on line 42.',
+      },
+    })
+  );
+
+  assert.ok('debug-diagnosis' in result.artifact_slices, 'ephemeral debug-diagnosis not injected');
+  assert.ok(result.artifact_slices['debug-diagnosis'].includes('null check'));
+}
+
+async function testFacilitatorChatMode() {
+  const fsMock = makeFsMock({
+    [docPath('system-description')]: '# System\nDetails.',
+    [docPath('open-questions')]: '# Questions\nUnknowns.',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'chat' }));
+
+  assert.ok('system-description' in result.artifact_slices);
+  assert.ok('open-questions' in result.artifact_slices);
+}
+
+async function testFacilitatorDecisionMode() {
+  const fsMock = makeFsMock({
+    [docPath('plan')]: '# Plan\nSteps.',
+    [docPath('test-plan')]: '# Test Plan\nTests.',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'decision' }));
+
+  assert.ok('plan' in result.artifact_slices, 'plan missing in decision mode');
+  assert.ok('test-plan' in result.artifact_slices, 'test-plan missing in decision mode');
+}
+
+async function testFacilitatorScopingMode() {
+  const fsMock = makeFsMock({
+    [docPath('cycle-scope-draft')]: '# Scope Draft\nDraft.',
+    [docPath('cycle-charter')]: '# Charter\nCharter.',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'scoping' }));
+
+  assert.ok('cycle-scope-draft' in result.artifact_slices, 'scope-draft missing in scoping mode');
+  assert.ok('cycle-charter' in result.artifact_slices, 'cycle-charter missing in scoping mode');
+}
+
+async function testTesterNeverReceivesArchitecture() {
+  const fsMock = makeFsMock({
+    [docPath('requirements')]: '# Req',
+    [docPath('architecture')]: '# ARCH — must not appear',
+    [docPath('test-plan')]: '# Tests',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble('tester', baseState({ current_node: 'TEST' }));
+
+  assert.ok(!('architecture' in result.artifact_slices), 'TDD violation: Tester received architecture');
+  assert.ok('requirements' in result.artifact_slices);
+  assert.ok('test-plan' in result.artifact_slices);
+}
+
+async function testSourceFilesInjectedForBuilder() {
+  const fsMock = makeFsMock({
+    [docPath('requirements')]: '# Req',
+    [docPath('architecture')]: '# Arch',
+    '/project/src/service.ts': 'export class Service {}',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble(
+    'builder',
+    baseState({ source_files: ['src/service.ts'] })
+  );
+
+  assert.ok('service' in result.artifact_slices, 'source file not injected for builder');
+  assert.ok(result.artifact_slices['service'].includes('Service'));
+}
+
+async function testDebuggerLoadsRunArtifacts() {
+  const fsMock = makeFsMock({
+    '/project/.sle/runs/run-001/manifest.json': '{"status":"failed"}',
+    '/project/.sle/runs/run-001/ai/context-pack.md': '# Context Pack\nDetails.',
+    [docPath('architecture')]: '# Arch',
+  });
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
+  const result = await cm.assemble(
+    'debugger',
+    baseState({
+      failure_report: {
+        cycle: 1,
+        iteration: 1,
+        run_id: 'run-001',
+        run_dir: '/project/.sle/runs/run-001',
+        failed_categories: ['correctness'],
+        passed_categories: [],
+        quick_summary: 'Tests failed.',
+      },
+    })
+  );
+
+  assert.ok('manifest' in result.artifact_slices, 'manifest not loaded');
+  assert.ok('context-pack' in result.artifact_slices, 'context-pack not loaded');
+  assert.ok('architecture' in result.artifact_slices, 'architecture not loaded');
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 
 async function runAllTests() {
-  console.log('Running Phase C (Context Manager) tests...\n');
+  console.log('Running Context Manager tests...\n');
 
   const tests: Array<{ name: string; fn: () => Promise<void> }> = [
     { name: 'state summary contains all 5 fields', fn: testStateSummaryContainsAllFields },
     { name: 'task description contains node intent', fn: testTaskDescriptionContainsNodeAndIntent },
     { name: 'artifact slices loaded per role (tester)', fn: testArtifactSlicesLoadedForRole },
     { name: 'missing artifact files skipped gracefully', fn: testMissingArtifactFilesSkipped },
-    { name: 'explorer role returns empty artifact_slices', fn: testExplorerRoleHasNoArtifacts },
+    { name: 'explorer role returns empty slices when no files', fn: testExplorerRoleLoadsExpectedSlices },
+    { name: 'explorer role loads correct slices when files exist', fn: testExplorerRoleLoadsWhenFilesExist },
     { name: 'system prompt loads agent.md + role prompt', fn: testSystemPromptLoadsAgentMdAndRolePrompt },
     { name: 'system prompt works with missing agent.md', fn: testSystemPromptWorksWithMissingAgentMd },
     { name: 'system prompt empty when no files exist', fn: testSystemPromptEmptyWhenNoFiles },
@@ -268,8 +424,16 @@ async function runAllTests() {
     { name: 'artifact truncated at artifact_slice_size', fn: testTruncationWhenArtifactExceedsSliceSize },
     { name: 'truncated array empty when no truncation', fn: testTruncatedEmptyWhenNoTruncation },
     { name: 'hard ceiling enforced across artifacts', fn: testHardCeilingEnforced },
-    { name: 'builder role loads all 4 artifacts', fn: testBuilderRoleLoadsAllFourArtifacts },
+    { name: 'builder loads plan and build-plan at deep depth', fn: testBuilderRoleLoadsArtifactsAtDeepDepth },
+    { name: 'builder excludes plan at standard depth', fn: testBuilderExcludesPlanAtStandardDepth },
     { name: 'null current_node handled gracefully', fn: testNullCurrentNode },
+    { name: 'ephemeral artifacts injected into context', fn: testEphemeralArtifactsInjected },
+    { name: 'facilitator chat mode loads correct slices', fn: testFacilitatorChatMode },
+    { name: 'facilitator decision mode loads plan + test-plan', fn: testFacilitatorDecisionMode },
+    { name: 'facilitator scoping mode loads charter + scope-draft', fn: testFacilitatorScopingMode },
+    { name: 'tester never receives architecture (TDD isolation)', fn: testTesterNeverReceivesArchitecture },
+    { name: 'source_files injected for builder role', fn: testSourceFilesInjectedForBuilder },
+    { name: 'debugger loads run artifacts from failure_report.run_dir', fn: testDebuggerLoadsRunArtifacts },
   ];
 
   const failures: Array<{ name: string; error: unknown }> = [];
@@ -285,7 +449,7 @@ async function runAllTests() {
   }
 
   if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase C tests FAILED:`);
+    console.error(`\n❌ ${failures.length}/${tests.length} tests FAILED:`);
     for (const f of failures) {
       console.error(`  - ${f.name}`);
       console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
@@ -293,7 +457,7 @@ async function runAllTests() {
     throw failures[0].error;
   }
 
-  console.log(`\n✅ All ${tests.length} Phase C tests passed!`);
+  console.log(`\n✅ All ${tests.length} tests passed!`);
 }
 
 runAllTests();

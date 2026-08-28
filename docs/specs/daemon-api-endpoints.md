@@ -1,6 +1,6 @@
 # Daemon API — Endpoints
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-25 · **Depends on:** DDR-005, DDR-013, DDR-020, DDR-024, DDR-025, DDR-026, DDR-028
+**Type:** spec · **Status:** draft · **Updated:** 2026-06-21 · **Depends on:** DDR-005, DDR-013, DDR-020, DDR-024, DDR-025, DDR-026, DDR-028, DDR-031
 
 > This document contains all REST endpoint definitions for the SDK daemon API.
 > For architecture overview, data model, authentication, error handling,
@@ -49,6 +49,12 @@ Response 200:
 
 ## System state
 
+`SystemStatus` is now a two-value enum, `"idle" | "discovering"` — it
+describes only the project-wide discovery lifecycle. Per-run progress
+(`active`, `halted`, `complete`) lives on each `WorkflowRun.status` and is
+never bundled into this endpoint, because multiple workflow runs may be
+active simultaneously with no single project-wide "running" state (DDR-031).
+
 ### Get system state
 
 ```
@@ -58,21 +64,21 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "state": "idle" | "discovering" | "cycling" | "halted" | "complete",
+    "state": "idle" | "discovering",
     "active_session_id": string | null,
-    "active_cycle_id": string | null,
     "discovery_status": "not_started" | "in_progress" | "complete",
-    "iteration": number,
-    "revision": number,
-    "awaiting_confirmation": boolean,
-    "awaiting_sharding_approval": boolean,
-    "awaiting_scoping": boolean,
+    "active_workflow_run_count": number,
+    "active_workflow_run_ids": string[],
     "chat": {
       "session_open": boolean
     }
   }
 }
 ```
+
+Per-run detail (`iteration`, `revision`, `awaiting_checkpoint`, etc.) is
+fetched per run via `GET /api/v2/workflow-runs/{run_id}` (see §Workflow
+runs below), not bundled into this project-wide response.
 
 ### Transition state
 
@@ -81,7 +87,7 @@ POST /api/v2/system/state/transition
 
 Request:
 {
-  "target": "idle" | "discovering" | "cycling" | "halted" | "complete",
+  "target": "idle" | "discovering",
   "trigger": string,
   "payload": object | null
 }
@@ -91,8 +97,7 @@ Response 200:
   "ok": true,
   "data": {
     "previous": SystemStatus,
-    "current": SystemStatus,
-    "cycle_id": string | null
+    "current": SystemStatus
   }
 }
 
@@ -111,7 +116,11 @@ Response 409:
 }
 ```
 
-Valid transitions are defined in [state-machine.md](state-machine.md) §Transition table.
+This endpoint now only ever transitions between `idle` and `discovering`.
+Starting, retrying, halting, resuming, or completing a workflow run uses the
+per-run endpoints in §Workflow runs below (`POST /api/v2/workflow-runs`,
+`/halt`, `/approve`, `/revise`), never this one. Valid transitions are
+defined in [state-machine.md](state-machine.md) §Transition table.
 
 ---
 
@@ -488,15 +497,70 @@ Response 409:
 
 ---
 
-## Cycles
+## Workflow definitions
 
-### Start cycle
+### List workflow definitions
 
 ```
-POST /api/v2/cycles
+GET /api/v2/workflows
+
+Response 200:
+{
+  "ok": true,
+  "data": {
+    "workflows": Array<{
+      "id": string,
+      "version": number,
+      "trigger": { "description": string, "examples": string[] },
+      "checkpoints": string[],
+      "created_by": "builtin" | "user",
+      "created_at": string
+    }>
+  }
+}
+```
+
+Lists every `WorkflowDefinition` visible to the chat router: the two
+built-ins (`full-build`, `draft-artifact`) plus any committed
+user-authored workflow at `.sle/workflows/{id}.md`. There is no creation
+endpoint here — a new `WorkflowDefinition` becomes visible only once a
+`draft-artifact` run commits it (see
+[workflow-authoring.md](workflow-authoring.md)).
+
+### Get workflow definition
+
+```
+GET /api/v2/workflows/{id}
+
+Response 200:
+{
+  "ok": true,
+  "data": WorkflowDefinition
+}
+
+Response 404:
+{
+  "ok": false,
+  "error": {
+    "code": "workflow_not_found",
+    "message": "Workflow {id} does not exist."
+  }
+}
+```
+
+---
+
+## Workflow runs
+
+### Start workflow run
+
+```
+POST /api/v2/workflow-runs
 
 Request:
 {
+  "workflow_id": string | null,
+  "target": { "group"?: string, "layer"?: string, "node_key"?: string } | null,
   "scope_draft_id": string | null,
   "quick_start_goal": string | null,
   "depth_override": "minimal" | "standard" | "deep" | "research" | null,
@@ -508,10 +572,10 @@ Response 201:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
-    "dag_state": DAGState,
-    "started_at": string,
-    "first_node": "SCOPING"
+    "run_id": string,
+    "workflow_id": string,
+    "current_step_id": string,
+    "started_at": string
   }
 }
 
@@ -519,10 +583,11 @@ Response 409:
 {
   "ok": false,
   "error": {
-    "code": "session_conflict",
-    "message": "A session is already active. Halt or complete before starting.",
+    "code": "claim_conflict",
+    "message": "This artifact is already claimed by an active workflow run.",
     "details": {
-      "state": SystemStatus
+      "conflicting_run_id": string,
+      "artifact_ref": string
     }
   }
 }
@@ -537,12 +602,20 @@ Response 403:
 }
 ```
 
-### List cycles
+`workflow_id` defaults to `"full-build"` when omitted. Unlike the former
+single-cycle model, this endpoint does not reject concurrent unrelated work
+with `session_conflict` — only an actual artifact claim conflict blocks a
+new run. Multiple `WorkflowRun`s may be `active` project-wide at once
+(DDR-031).
+
+### List workflow runs
 
 ```
-GET /api/v2/cycles
+GET /api/v2/workflow-runs
 
 Query params:
+  status: "active" | "halted" | "complete" | null
+  workflow_id: string | null
   limit: number (default 20, max 100)
   cursor: string | null
 
@@ -550,41 +623,35 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "cycles": Array<{
-      "cycle_id": string,
-      "number": number,
-      "outcome": CycleOutcome,
+    "runs": Array<{
+      "run_id": string,
+      "workflow_id": string,
+      "status": WorkflowRunStatus,
       "started_at": string,
-      "completed_at": string | null,
-      "planning_depth": PlanningDepth
+      "completed_at": string | null
     }>,
     "next_cursor": string | null
   }
 }
 ```
 
-### Get cycle state
+### Get workflow run state
 
 ```
-GET /api/v2/cycles/{cycle_id}
+GET /api/v2/workflow-runs/{run_id}
 
 Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
-    "number": number,
+    "run_id": string,
+    "workflow_id": string,
     "iteration": number,
     "revision": number,
-    "max_iterations": number,
-    "planning_depth": PlanningDepth,
-    "outcome": CycleOutcome,
-    "dag_state": DAGState,
-    "flags": {
-      "awaiting_scoping": boolean,
-      "awaiting_confirmation": boolean,
-      "awaiting_sharding_approval": boolean
-    },
+    "status": "active" | "halted" | "complete",
+    "current_step_id": string,
+    "awaiting_checkpoint": string | null,
+    "claimed_artifacts": ArtifactClaim[],
     "started_at": string,
     "completed_at": string | null
   }
@@ -594,34 +661,34 @@ Response 404:
 {
   "ok": false,
   "error": {
-    "code": "cycle_not_found",
-    "message": "Cycle {cycle_id} does not exist."
+    "code": "run_not_found",
+    "message": "Workflow run {run_id} does not exist."
   }
 }
 ```
 
-### Approve at gate
+### Approve at checkpoint
 
 ```
-POST /api/v2/cycles/{cycle_id}/approve
+POST /api/v2/workflow-runs/{run_id}/approve
 
 Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
-    "dag_state": DAGState
+    "run_id": string,
+    "current_step_id": string
   }
 }
 
-Response 409: not_awaiting_confirmation
-Response 404: cycle_not_found
+Response 409: not_awaiting_checkpoint
+Response 404: run_not_found
 ```
 
-### Revise plan at CONFIRM gate
+### Revise plan at CONFIRM checkpoint
 
 ```
-POST /api/v2/cycles/{cycle_id}/revise
+POST /api/v2/workflow-runs/{run_id}/revise
 
 Request:
 {
@@ -638,10 +705,10 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
+    "run_id": string,
     "revision": number,
     "affected_categories": string[],
-    "dag_state": DAGState
+    "current_step_id": string
   }
 }
 
@@ -649,25 +716,25 @@ Response 409:
 {
   "ok": false,
   "error": {
-    "code": "not_awaiting_confirmation",
-    "message": "CONFIRM gate is not active for this cycle."
+    "code": "not_awaiting_checkpoint",
+    "message": "The CONFIRM checkpoint is not active for this run."
   }
 }
 
-Response 404: cycle_not_found
+Response 404: run_not_found
 ```
 
-### Halt cycle
+### Halt workflow run
 
 ```
-POST /api/v2/cycles/{cycle_id}/halt
+POST /api/v2/workflow-runs/{run_id}/halt
 
 Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
-    "outcome": "halted",
+    "run_id": string,
+    "status": "halted",
     "partial_report": {
       "iterations_used": number,
       "failed_categories": string[],
@@ -680,124 +747,38 @@ Response 409:
 {
   "ok": false,
   "error": {
-    "code": "halt_not_cycling",
-    "message": "Can only halt a cycling session.",
+    "code": "halt_not_active",
+    "message": "Can only halt an active workflow run.",
     "details": {
-      "state": SystemStatus
+      "status": "halted" | "complete"
     }
   }
 }
 ```
 
-### Set cycle flags
-
-```
-PATCH /api/v2/cycles/{cycle_id}/flags
-
-Request:
-{
-  "awaiting_confirmation": boolean | null,
-  "awaiting_sharding_approval": boolean | null,
-  "awaiting_scoping": boolean | null
-}
-
-Response 200:
-{
-  "ok": true,
-  "data": {
-    "cycle_id": string,
-    "flags": {
-      "awaiting_confirmation": boolean,
-      "awaiting_sharding_approval": boolean,
-      "awaiting_scoping": boolean
-    }
-  }
-}
-
-Response 409:
-{
-  "ok": false,
-  "error": {
-    "code": "flag_conflict",
-    "message": "Cannot set both awaiting_confirmation and awaiting_sharding_approval simultaneously."
-  }
-}
-
-Response 404: cycle_not_found
-```
-
-A null value in the request means "leave unchanged". Setting one flag to
-`true` implicitly sets the other to `false` (flag exclusivity).
+`awaiting_checkpoint` replaces the old fixed 3-flag set
+(`awaiting_confirmation` / `awaiting_sharding_approval` / `awaiting_scoping`).
+It is a single nullable pointer to the id of the `checkpoint` step currently
+paused — any workflow can declare any number of checkpoint steps, so a fixed
+flag enum no longer fits. Exclusivity (at most one pause point active at a
+time) holds by construction, not convention (DDR-031).
 
 ---
 
-## Sharding (cycle-scoped)
+## Sharding (run-scoped)
 
-### Sharding approve
-
-```
-POST /api/v2/cycles/{cycle_id}/sharding/approve
-
-Response 200:
-{
-  "ok": true,
-  "data": {
-    "cycle_id": string,
-    "tasks_created": number
-  }
-}
-
-Response 409: not_awaiting_sharding_approval
-```
-
-### Sharding reject
-
-```
-POST /api/v2/cycles/{cycle_id}/sharding/reject
-
-Response 200:
-{
-  "ok": true,
-  "data": {
-    "cycle_id": string
-  }
-}
-
-Response 409: not_awaiting_sharding_approval
-```
-
-### Sharding modify
-
-```
-POST /api/v2/cycles/{cycle_id}/sharding/modify
-
-Request:
-{
-  "tasks": {
-    "add": [{ "title": string, "description": string, "context_declarations": ArtifactRef[] }] | null,
-    "remove": [{ "task_index": number }] | null,
-    "edit": [{ "task_index": number, "title": string, "description": string }] | null
-  }
-}
-
-Response 200:
-{
-  "ok": true,
-  "data": {
-    "cycle_id": string,
-    "proposal": ShardingProposal
-  }
-}
-
-Response 409: not_awaiting_sharding_approval
-```
+`POST /api/v2/workflow-runs/{run_id}/sharding/approve`,
+`/sharding/reject`, and `/sharding/modify` are documented under §Workflow
+runs above — sharding approval is a checkpoint on a `WorkflowRun`, not a
+standalone resource. All three return `not_awaiting_checkpoint` (409) when
+the SHARDING_APPROVAL checkpoint is not the run's current pause point.
 
 ---
 
 ## Tags
 
-Endpoints for managing node tags, including the #next-cycle tag used by the
-SCOPING node (DDR-028).
+Endpoints for managing node tags, including the #next-run tag used by the
+SCOPING step (DDR-028, renamed from #next-cycle under DDR-031).
 
 ### List tags
 
@@ -805,7 +786,7 @@ SCOPING node (DDR-028).
 GET /api/v2/tags?type={TagPrefix}&scope={group_id}
 
 Query params (all optional):
-  type: TagPrefix — filter by tag prefix (e.g., "next-cycle")
+  type: TagPrefix — filter by tag prefix (e.g., "next-run")
   scope: string — filter by group_id
 
 Response 200:
@@ -865,10 +846,10 @@ Response 404:
 }
 ```
 
-### List next-cycle nodes
+### List next-run nodes
 
 ```
-GET /api/v2/tags/next-cycle
+GET /api/v2/tags/next-run
 
 Response 200:
 {
@@ -884,14 +865,17 @@ Response 200:
 }
 ```
 
-Convenience endpoint: returns all nodes tagged #next-cycle.
+Convenience endpoint: returns all nodes tagged #next-run.
 
 ---
 
 ## Scoping
 
 Endpoints for managing scope drafts and submitting input during the SCOPING
-node's guided discussion (DDR-028).
+step's guided discussion (DDR-028). SCOPING is itself a `gather → produce →
+checkpoint` composite step (step-kind-reference.md §Part 2) — these
+endpoints serve that produce step's discussion loop, not a standalone node
+type.
 
 ### List scope drafts
 
@@ -993,7 +977,7 @@ Response 404:
 ### Submit scoping input
 
 ```
-POST /api/v2/cycles/{cycle_id}/scoping/input
+POST /api/v2/workflow-runs/{run_id}/scoping/input
 
 Request:
 {
@@ -1006,9 +990,9 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
+    "run_id": string,
     "charter_produced": boolean,
-    "dag_state": DAGState
+    "current_step_id": string
   }
 }
 
@@ -1016,16 +1000,16 @@ Response 409:
 {
   "ok": false,
   "error": {
-    "code": "not_awaiting_scoping",
-    "message": "SCOPING node is not active for this cycle."
+    "code": "not_awaiting_checkpoint",
+    "message": "SCOPING's checkpoint is not active for this run."
   }
 }
 
-Response 404: cycle_not_found
+Response 404: run_not_found
 ```
 
-Submit user input during the SCOPING node's guided discussion. If
-`approve_charter` is true, the charter is accepted and SCOPING completes. If
+Submit user input during SCOPING's guided discussion. If `approve_charter`
+is true, the charter is accepted and SCOPING's checkpoint clears. If
 `version_bump_override` is provided, it overrides the inferred bump type.
 
 ---
@@ -1035,14 +1019,14 @@ Submit user input during the SCOPING node's guided discussion. If
 ### Dispatch status
 
 ```
-GET /api/v2/cycles/{cycle_id}/dispatch
+GET /api/v2/workflow-runs/{run_id}/dispatch
 
 Response 200:
 {
   "ok": true,
   "data": {
     "active": boolean,
-    "mode": "cycle_validation" | "task-execution" | null,
+    "mode": "run-validation" | "task-execution" | null,
     "total_jobs": number,
     "completed_jobs": number,
     "failed_jobs": number,
@@ -1059,13 +1043,13 @@ Response 200:
   }
 }
 
-Response 404: cycle_not_found
+Response 404: run_not_found
 ```
 
 ### Dispatch job detail
 
 ```
-GET /api/v2/cycles/{cycle_id}/dispatch/jobs/{job_id}
+GET /api/v2/workflow-runs/{run_id}/dispatch/jobs/{job_id}
 
 Response 200:
 {
@@ -1089,6 +1073,11 @@ Response 404: job_not_found
 ```
 
 Full dispatch internals (internal API, worker pool, context injection): [job-dispatch.md](job-dispatch.md).
+Dispatch is scoped to an `execute` step within a `WorkflowRun`, not a
+project-wide "cycle" — see [job-dispatch.md](job-dispatch.md) §Dispatch
+lifecycle for how `run-validation` jobs (from a workflow's `execute` step)
+and `task-execution` jobs (from Beads) share the worker pool via per-artifact
+claims rather than a single project-wide lock.
 
 ---
 
@@ -1204,7 +1193,7 @@ Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
+    "run_id": string,
     "path": string,
     "format": SummaryFormat,
     "content": string,
@@ -1217,16 +1206,16 @@ Response 200:
 Response 404: report_not_found
 ```
 
-### Cycle report
+### Workflow run report
 
 ```
-GET /api/v2/reports/{cycle_id}
+GET /api/v2/reports/{run_id}
 
 Response 200:
 {
   "ok": true,
   "data": {
-    "cycle_id": string,
+    "run_id": string,
     "path": string,
     "format": SummaryFormat,
     "content": string,
@@ -1239,7 +1228,7 @@ Response 200:
   }
 }
 
-Response 404: cycle_not_found
+Response 404: run_not_found
 ```
 
 ---
@@ -1326,9 +1315,9 @@ POST /api/v2/context/assemble
 Request:
 {
   "role": AgentRole,
-  "cycle_state": CycleState,
+  "workflow_run": WorkflowRun,
   "task_id": string | null,
-  "facilitator_mode": "chat" | "decision" | "scoping" | null
+  "facilitator_mode": "chat" | "decision" | "scoping" | "workflow_select" | null
 }
 
 Response 200: { context: AssembledContext, assembly_mode, role_budget, warnings[] }
@@ -1477,7 +1466,7 @@ Request:
     "version_id": string | null,
     "reason": string | null,
     "report_path": string | null,
-    "cycle": number,
+    "run_id": string,
     "iteration": number
   }
 }
@@ -1602,7 +1591,7 @@ Response 409:
   "ok": false,
   "error": {
     "code": "session_conflict",
-    "message": "Cannot run intake while a cycle is active.",
+    "message": "Cannot run intake while a workflow run targeting the same scope is active.",
     "details": {
       "state": SystemStatus
     }
@@ -2434,12 +2423,12 @@ Response 404:
 
 ## WebSocket events (DDR-028 additions)
 
-Additional WebSocket events for the SCOPING cycle start and tag system:
+Additional WebSocket events for the SCOPING run start and tag system:
 
 | Event | Payload | When |
 |---|---|---|
-| `cycle.scoping_input_requested` | `cycle_id, timestamp` | Fired when `awaiting_scoping` becomes true |
-| `cycle.charter_produced` | `cycle_id, charter_content, timestamp` | Fired when SCOPING produces the charter |
+| `workflow_run.checkpoint_requested` | `run_id, workflow_id, step_id, timestamp` | Fired when SCOPING's `checkpoint` step sets `awaiting_checkpoint` |
+| `workflow_run.charter_produced` | `run_id, charter_content, timestamp` | Fired when SCOPING's `produce` step produces the charter |
 | `graph.node_tagged` | `node_id, tag, timestamp` | Fired when a tag is added to a node |
 | `graph.node_untagged` | `node_id, tag_prefix, value, timestamp` | Fired when a tag is removed from a node |
 

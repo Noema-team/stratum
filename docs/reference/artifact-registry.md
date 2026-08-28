@@ -39,7 +39,7 @@ The `scope` column in every table below is one of:
 ## Discovery phase
 
 Produced once per project by the Facilitator during `sle discover`. These
-documents feed every subsequent session type — cycle, chat, and future
+documents feed every subsequent session type — workflow run, chat, and future
 discovery revisits.
 
 | Key | Type | Scope | Generator | Description |
@@ -48,10 +48,10 @@ discovery revisits.
 | `doc:success-definition` | markdown | project | Facilitator (Round 2) | Measurable success criteria. Consumed by Evaluator to produce verdicts. |
 | `doc:constraints` | markdown | project | Facilitator (Round 3) | Technical, business, and operational constraints. Consumed by Critic for compliance checks. |
 | `doc:stakeholders` | markdown | project | Facilitator (Round 4) | Who the system serves, their needs, and priority ordering. |
-| `doc:system-description` | markdown | project | Facilitator (synthesis) | System shape, boundaries, major components, and data flows. Read by all cycle roles. |
+| `doc:system-description` | markdown | project | Facilitator (synthesis) | System shape, boundaries, major components, and data flows. Read by all workflow-run roles. |
 | `doc:vision` | markdown | project | Facilitator (synthesis) | Long-term direction. Provides context for Designer architecture decisions. |
 | `doc:open-questions` | markdown | project | Facilitator (synthesis) | Unresolved questions. Triggers Explorer investigations. |
-| `doc:project-plan` | markdown | project | Facilitator (planning loop) | Phase breakdown with cycle targets and milestone definitions. Written to Beads as Phase 1 tasks. |
+| `doc:project-plan` | markdown | project | Facilitator (planning loop) | Phase breakdown with run targets and milestone definitions. Written to Beads as Phase 1 tasks. |
 
 **Discovery structure variants** (SLE-024 §6.3):
 
@@ -64,32 +64,33 @@ discovery revisits.
 
 ## Scoping phase
 
-Produced during the SCOPING node (DDR-028). The Facilitator creates scope
+Produced during full-build's SCOPING steps (gather → produce → checkpoint;
+DDR-028, decomposition per DDR-031 decision 3). The Facilitator creates scope
 artifacts that replace the old goal string as the Designer's and Planner's
-primary input. `doc:cycle-scope-draft` may also be created during pre-cycle
-chat before the SCOPING node runs.
+primary input. `doc:cycle-scope-draft` may also be created during
+pre-workflow-run chat before the SCOPING steps run.
 
 | Key | Type | Scope | Generator | Required | Description |
 |-----|------|-------|-----------|----------|-------------|
-| `doc:cycle-scope-draft` | markdown | project | Facilitator (DDR-028 SC-010) | false | Informal scope document created during pre-cycle chat. Captures scope, purpose, initial requirements, and deferred items. Not a formal cycle artifact — serves as input to SCOPING node. |
-| `doc:cycle-charter` | markdown | run | Facilitator (DDR-028 SC-010) | true | Formal scope document produced by the SCOPING node. Defines scope, purpose, requirements, boundaries, version_bump intent, and deferred items. Replaces the old goal string as the Planner's primary input. |
+| `doc:cycle-scope-draft` | markdown | project | Facilitator (DDR-028 SC-010) | false | Informal scope document created during pre-workflow-run chat. Captures scope, purpose, initial requirements, and deferred items. Not a formal workflow-run artifact — serves as input to the SCOPING steps. |
+| `doc:cycle-charter` | markdown | run | Facilitator (DDR-028 SC-010) | true | Formal scope document produced by the SCOPING steps' checkpoint step. Defines scope, purpose, requirements, boundaries, version_bump intent, and deferred items. Replaces the old goal string as the Planner's primary input. |
 
 ---
 
 ## Design phase
 
-Produced during the DESIGN node. The Designer reads the cycle charter from the
-SCOPING node and produces requirements and architecture. The Critic
-reviews both at the DESIGN node when `planning.depth` is `deep` or `research`
-(DDR-022).
+Produced during the DESIGN step (produce). The Designer reads the cycle
+charter from the SCOPING steps and produces requirements and architecture.
+The Critic reviews both at the DESIGN step when `planning.depth` is `deep`
+or `research` (DDR-022).
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
 | `doc:research-findings` | markdown | project | Explorer | Research findings, spike results, benchmarks, tradeoff analysis. Tagged `explore:user-guided` (DDR-023). Injected into Designer context when Explorer runs (triggered by SCOPING). |
 | `doc:requirements` | markdown | project | Designer | Functional and non-functional requirements — what to build. Owned by Designer per DDR-019. Consumed by Planner (reads), Tester (reads), Builder (reads), Evaluator (reads). |
 | `doc:architecture` | markdown | project | Designer | Architecture decisions, system shape, component boundaries, data models, API contracts. Owned by Designer per DDR-019. Consumed by Planner (reads), Builder (reads), Critic (reads), Evaluator (reads). Tester does NOT see this — TDD separation (G22). |
-| `doc:critique-report` | markdown | project | Critic | Persistent architecture review: blocking issues, warnings, suggestions. Only produced at `deep` or `research` planning depth (DDR-022). Persists across cycles. |
-| `doc:cycle-critique` | json | run | Critic | Structured per-cycle critique output fed back to Designer during CRITIQUE→DESIGN iteration. Ephemeral — not persisted across cycles. |
+| `doc:critique-report` | markdown | project | Critic | Persistent architecture review: blocking issues, warnings, suggestions. Only produced at `deep` or `research` planning depth (DDR-022). Persists across workflow runs. |
+| `doc:cycle-critique` | json | run | Critic | Structured per-run critique output fed back to Designer via the CRITIQUE step's `on_fail` route to DESIGN. Ephemeral — not persisted across workflow runs. |
 
 ### Explorer trigger and output
 
@@ -99,7 +100,7 @@ Explorer is user-initiated only (DDR-023). It does not auto-trigger from
 | Source tag | Mechanism | Interactive? |
 |------------|-----------|-------------|
 | `explore:user-guided` | User explicitly requests exploration via intent or Facilitator | Yes — rounds of discussion |
-| `detection:automatic` | Daemon gap detection at defined points in the cycle | No — flagged to user via Facilitator |
+| `detection:automatic` | Daemon gap detection at defined points in the workflow run | No — flagged to user via Facilitator |
 
 Automatic gap detection is a separate mechanism with its own output channel,
 not routed through the Explorer agent.
@@ -108,9 +109,9 @@ not routed through the Explorer agent.
 
 ## Planning phase
 
-Produced during the PLAN node. The Planner reads Designer output
+Produced during the PLAN step. The Planner reads Designer output
 (`doc:requirements`, `doc:architecture`) and produces step-level plans.
-The optional INTAKE sub-phase runs within the PLAN node when documents are
+The optional INTAKE sub-phase runs within the PLAN step when documents are
 present (SLE-019).
 
 | Key | Type | Scope | Generator | Description |
@@ -121,9 +122,9 @@ present (SLE-019).
 
 ### Intake sub-phase artifacts (SLE-019)
 
-Produced within the PLAN node when documents exist in `.sle/project-docs/`
+Produced within the PLAN step when documents exist in `.sle/project-docs/`
 or when `--intake` is passed. Intake is an embeddable pipeline, not a
-separate node.
+separate step.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
@@ -131,7 +132,7 @@ separate node.
 | `.sle/sharding-proposal.yaml` | yaml | project | Planner + User | Collaborative task decomposition. Each task is a `SLETask` with `TaskContextDeclaration`. Blocked on coherence gate passing. |
 | `.sle/tasks.yaml` | yaml | project | Daemon | Local-only task store (DDR-024). Written when Beads is unavailable. Mirrors `SLETask` type from SLE-019. |
 
-Promoted document nodes are created when ungraphed documents enter a cycle:
+Promoted document nodes are created when ungraphed documents enter a workflow run:
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
@@ -141,7 +142,7 @@ Promoted document nodes are created when ungraphed documents enter a cycle:
 
 ## Testing phase
 
-Produced during the TEST node. The Tester reads `doc:requirements` and
+Produced during the TEST step. The Tester reads `doc:requirements` and
 `doc:test-plan` only — never architecture, implementation, or Builder output
 (G22, TDD separation constraint enforced by context manager slice).
 
@@ -153,68 +154,71 @@ Produced during the TEST node. The Tester reads `doc:requirements` and
 
 ## Building phase
 
-Produced during the BUILD node. The Builder reads `doc:requirements`,
+Produced during the BUILD step. The Builder reads `doc:requirements`,
 `doc:architecture`, and `doc:test-plan`. The Builder never sees the Tester's
 internal reasoning — only the final test scripts as a contract to satisfy.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
 | `scripts/test-{category}.ts` | typescript | project | Builder | Instrumented test scripts ready for Docker execution. Derived from Tester's test contracts with execution harness, assertions, and coverage instrumentation. |
-| `scripts/run-tests.ts` | typescript | project | Builder | Aggregated test runner for all categories. Used by EXEC phase and CI. Generated after CONFIRM gate approval. |
+| `scripts/run-tests.ts` | typescript | project | Builder | Aggregated test runner for all categories. Used by the EXEC step and CI. Generated after the CONFIRM checkpoint approval. |
 | `node:{group}:implementation` | source | group | Builder | Implementation code for the group's scope. The primary BUILD output. Written to the project source tree and tracked as a group node. |
 
 ---
 
 ## Execution phase (run artifacts)
 
-Produced during the EXEC node (Layer 4, Docker container). These are structured
-outputs from a single validation run, consumed by the VALIDATION gate,
-Debugger, and context manager. Full detail: SLE-022.
+Produced during the EXEC step (`execute` kind; Layer 4, Docker container).
+These are structured outputs from a single validation run, consumed by the
+VALIDATION review step, Debugger, and context manager. Full detail: SLE-022.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
-| `.sle/runs/{id}/manifest.json` | json | run | Daemon (gate node) | Run entrypoint. Run ID, cycle/iteration, category list, timestamps, overall status. First artifact the context manager reads on failure. |
-| `.sle/runs/{id}/ai/context-pack.md` | markdown | run | Daemon (gate node) | Narrative summary of run results for LLM consumption. Includes per-category results, metric highlights, log excerpts, and trace analysis. ~800–1200 tokens for 2–3 failed categories. |
+| `.sle/runs/{id}/manifest.json` | json | run | Daemon (validation review step) | Run entrypoint. Run ID, workflow run id/iteration, category list, timestamps, overall status. First artifact the context manager reads on failure. |
+| `.sle/runs/{id}/ai/context-pack.md` | markdown | run | Daemon (validation review step) | Narrative summary of run results for LLM consumption. Includes per-category results, metric highlights, log excerpts, and trace analysis. ~800–1200 tokens for 2–3 failed categories. |
 | `.sle/runs/{id}/tests/{category}/result.json` | json | run | EXEC scripts | Per-category pass/fail with test names, error messages, and assertion details. |
 | `.sle/runs/{id}/metrics/{category}.json` | json | run | EXEC scripts | Quantitative metrics per category: p50/p95/p99 latencies, throughput, memory, error rates. |
 | `.sle/runs/{id}/traces/{category}.jsonl` | jsonl | run | EXEC scripts | Distributed trace spans per category. Hot-path identification for performance failures. |
-| `.sle/runs/{id}/logs/{service}.log` | text | run | EXEC scripts | Service logs captured during execution. Relevant lines extracted into context-pack by gate node. |
+| `.sle/runs/{id}/logs/{service}.log` | text | run | EXEC scripts | Service logs captured during execution. Relevant lines extracted into context-pack by the validation review step. |
 
 ---
 
 ## Validation and evaluation phase
 
-Produced after the VALIDATION gate. The gate itself is deterministic — no
-LLM involvement. On failure, the Debugger diagnoses; on pass, the Evaluator
-verdicts.
+Produced after the VALIDATION review step. The review step itself is
+deterministic — no LLM involvement. On failure (`on_fail`), the Debugger
+diagnoses; on pass, the Evaluator verdicts.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
-| `doc:debug-diagnosis` | markdown | ephemeral | Debugger | Ephemeral — feeds next PLAN iteration, only on gate failure. Resolved from daemon state, not persisted across cycles. |
+| `doc:debug-diagnosis` | markdown | ephemeral | Debugger | Ephemeral — feeds the next PLAN step's iteration, only on validation review step failure. Resolved from daemon state, not persisted across workflow runs. |
 | `FailureReport` | json | ephemeral | Debugger | In-memory root-cause diagnosis injected into Planner context on retry. Never written to disk. |
-| `doc:evaluation` | markdown | project | Evaluator | Structured verdict: did implementation satisfy intent? Reads requirements, test-plan, and run artifacts. Consumed by Planner (next cycle) and Critic. Persists across cycles. |
-| `reports/validation-latest.html` | html | project | Daemon (gate pass) | Human-readable validation report. Links to previous versions. Overwritten each cycle. |
-| `reports/changelog-{version}.md` | markdown | project | Daemon (gate pass) | Cycle changelog. Versioned snapshot of what changed. |
-| `.sle/snapshots/{version}/` | directory | project | Daemon (SNAPSHOT node) | Locked, versioned artifact set. Created on cycle completion. Immutable once written. |
+| `doc:evaluation` | markdown | project | Evaluator | Structured verdict: did implementation satisfy intent? Reads requirements, test-plan, and run artifacts. Consumed by Planner (next workflow run) and Critic. Persists across workflow runs. |
+| `reports/validation-latest.html` | html | project | Daemon (review pass) | Human-readable validation report. Links to previous versions. Overwritten each workflow run. |
+| `reports/changelog-{version}.md` | markdown | project | Daemon (review pass) | Workflow-run changelog. Versioned snapshot of what changed. |
+| `.sle/snapshots/{version}/` | directory | project | Daemon (SNAPSHOT step, `commit` kind) | Locked, versioned artifact set. Created on workflow-run completion. Immutable once written. |
 
-### Validation gate outputs
+### Validation review step outputs
 
-The gate produces two structured types consumed by the feedback loop:
+The validation review step produces two structured types consumed by the
+feedback loop:
 
 | Output | Type | Produced when | Consumed by |
 |--------|------|---------------|-------------|
-| `FailureReport` | json | Gate fails | Debugger → Planner (next iteration via context manager Component 5) |
-| Gate pass signal | event | Gate passes | Evaluator node activation |
+| `FailureReport` | json | Review fails (`on_fail`) | Debugger → Planner (next iteration via context manager Component 5) |
+| Review pass signal | event | Review passes | Evaluator step activation |
 
 `FailureReport` carries a `run_dir` pointer (SLE-022 version, supersedes
-SLE-003's inline format): `cycle`, `iteration`, `run_dir`, `run_id`,
+SLE-003's inline format): `workflow_run_id`, `iteration`, `run_dir`, `run_id`,
 `quick_summary`, `failed_categories`, `passed_categories`.
 
 ---
 
 ## History phase
 
-Produced during the HISTORY node, after every agent turn within a cycle.
+Produced as the `logs_decision: true` side effect of a `commit` step, after
+every agent turn within a workflow run (DDR-031 decision 2 — HISTORY folds
+into commit).
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
@@ -230,7 +234,7 @@ but read by all agents during bootstrap.
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
 | `agent.md` | markdown | project | Human (once, at init) | Project intent, conventions, and constraints. Written during `sle init` step 7. Never modified by the system after init. Read by all agents as bootstrap. |
-| `.sle/map.yaml` | yaml | project | Daemon | System state: meta status, cycle progress, artifact registry, remotes. Regenerated after every DAG node. Never hand-edited. |
+| `.sle/map.yaml` | yaml | project | Daemon | System state: meta status, workflow-run progress, artifact registry, remotes. Regenerated after every step. Never hand-edited. |
 | `.sle/rules/planning.yaml` | yaml | project | Human (config) | Planning depth, max iterations, reasoning passes. Read by Planner and Designer. |
 | `.sle/rules/validation.yaml` | yaml | project | Human (config) + Planner (categories) | Validation categories, thresholds, run artifact declarations. Planner may append new categories; cannot modify existing entries (LLM write boundary, SLE-004). |
 | `.sle/rules/artifacts.yaml` | yaml | project | Human (config) | Artifact path mappings and output schemas. |
@@ -246,19 +250,19 @@ but read by all agents during bootstrap.
 ## Intake pipeline documents (SLE-019)
 
 Free-floating documents that enter the system through `.sle/project-docs/`.
-These are distinct from cycle artifacts — they are upstream input provided by
-the user or imported from external sources.
+These are distinct from workflow-run artifacts — they are upstream input
+provided by the user or imported from external sources.
 
 | Key | Type | Scope | Generator | Description |
 |-----|------|-------|-----------|-------------|
-| `.sle/project-docs/{filename}` | varies | project | User / external import | Ungraphed documents: product briefs, API contracts, ADRs, research summaries, hand-written specs. Promoted to `doc:{id}` nodes on first use in a cycle. |
+| `.sle/project-docs/{filename}` | varies | project | User / external import | Ungraphed documents: product briefs, API contracts, ADRs, research summaries, hand-written specs. Promoted to `doc:{id}` nodes on first use in a workflow run. |
 | `.sle/project-docs/{filename}#meta` | json | project | Daemon | Parsed `IntakeDocument` metadata: id, title, tags, sections with token counts, status (`ungraphed`, `promoted`, `superseded`), version. |
 
 ### Document lifecycle states
 
 | Status | Meaning | Next transition |
 |--------|---------|-----------------|
-| `ungraphed` | Exists in `project-docs/` but not yet referenced by any cycle | → `promoted` (on first use) |
+| `ungraphed` | Exists in `project-docs/` but not yet referenced by any workflow run | → `promoted` (on first use) |
 | `promoted` | Has a graphed node; backlinks from consuming nodes | → `superseded` (when a newer version replaces it) |
 | `superseded` | Replaced by a newer document; preserved for history | Terminal |
 
@@ -298,8 +302,8 @@ maps each of the 10 agent roles to the artifacts they produce.
 | `doc:vision` | project | Discovery |
 | `doc:open-questions` | project | Discovery |
 | `doc:project-plan` | project | Discovery |
-| `doc:cycle-scope-draft` | project | Cycle (pre-scope chat) |
-| `doc:cycle-charter` | run | Cycle (SCOPING node) |
+| `doc:cycle-scope-draft` | project | Workflow run (pre-scope chat) |
+| `doc:cycle-charter` | run | Workflow run (SCOPING steps) |
 
 ### Explorer (invoked by SCOPING, conditional)
 
@@ -318,7 +322,7 @@ maps each of the 10 agent roles to the artifacts they produce.
 
 | Output | Scope | Notes |
 |--------|-------|-------|
-| `doc:cycle-critique` | run | Per-cycle structured critique fed back to Designer during CRITIQUE→DESIGN iteration. Ephemeral. |
+| `doc:cycle-critique` | run | Per-run structured critique fed back to Designer via the CRITIQUE step's `on_fail` route to DESIGN. Ephemeral. |
 | `doc:critique-report` | project | Only at `deep`/`research` depth. Persistent design review (DDR-022). |
 
 ### Planner (PLAN node)
@@ -343,20 +347,20 @@ maps each of the 10 agent roles to the artifacts they produce.
 | `scripts/run-tests.ts` | project | Aggregated test runner. |
 | `node:{group}:implementation` | group | Implementation code, one per affected group. |
 
-### Debugger (DEBUG node, conditional)
+### Debugger (DEBUG step — failure path of VALIDATION review, conditional)
 
 | Output | Scope | Notes |
 |--------|-------|-------|
-| `doc:debug-diagnosis` | ephemeral | Ephemeral. Only on VALIDATION gate failure. Feeds next PLAN iteration. |
+| `doc:debug-diagnosis` | ephemeral | Ephemeral. Only on VALIDATION review step failure (`on_fail`). Feeds next PLAN step iteration. |
 | `FailureReport` | ephemeral | In-memory root-cause diagnosis injected into Planner context on retry. |
 
-### Evaluator (EVALUATE node)
+### Evaluator (EVALUATE step)
 
 | Output | Scope | Notes |
 |--------|-------|-------|
-| `doc:evaluation` | project | Structured verdict on intent satisfaction. Persists across cycles. |
+| `doc:evaluation` | project | Structured verdict on intent satisfaction. Persists across workflow runs. |
 
-### Historian (HISTORY node)
+### Historian (`logs_decision` commit step)
 
 | Output | Scope | Notes |
 |--------|-------|-------|
@@ -424,7 +428,7 @@ context:
 | Typed prefix format (`doc:` / `node:`) | DDR-025 |
 | Local task fallback (no Beads) | DDR-024 |
 | Sharding approval (CONFIRM gate tab) | DDR-026 |
-| Scoping phase artifacts (cycle-scope-draft, cycle-charter) | DDR-028 |
+| Scoping phase artifacts (cycle-scope-draft, cycle-charter) | DDR-028, DDR-031 (decision 3 — step decomposition) |
 | Document intake pipeline | SLE-019 |
 | Context manager slices | SLE-007 |
 | Run artifacts | SLE-022 |

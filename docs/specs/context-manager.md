@@ -14,8 +14,8 @@ costs grow unboundedly across iterations and the system becomes incoherent.
 
 Instead, each agent call receives a precisely assembled window built from five
 components, each with a hard token budget. The total target is under 3,500
-tokens per call regardless of how many cycles have run or how large the
-artifact store has grown.
+tokens per call regardless of how many workflow runs have completed or how
+large the artifact store has grown.
 
 The context manager is pure computation — no LLM calls, no external services.
 It reads artifacts from disk, applies slice rules and token budgets, and
@@ -38,7 +38,7 @@ order:
 ┌─────────────────────────────────────┐
 │ 1. System prompt        ~500 tokens │  role + behavioral rules
 │ 2. Artifact slices     ~2000 tokens │  only what this role needs
-│ 3. State summary        ~300 tokens │  current cycle, iteration, depth
+│ 3. State summary        ~300 tokens │  current run, iteration, depth
 │ 4. Task                 ~200 tokens │  specific instruction this turn
 │ 5. Failure context      ~400 tokens │  FailureReport — only on retry
 └─────────────────────────────────────┘
@@ -68,11 +68,11 @@ Full definition: `AssembledContext` in [../reference/types.md](../reference/type
 ### SliceRule
 
 ```typescript
-type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred'
+type SourceWeight = 'user_defined' | 'workflow_run_produced' | 'inferred'
 
 interface SliceRule {
   artifact_id: string
-  mode: 'full' | 'last_n_entries' | 'last_cycle' | 'summary_only'
+  mode: 'full' | 'last_n_entries' | 'last_run' | 'summary_only'
   max_entries?: number
   max_tokens?: number
   never_truncate?: boolean
@@ -87,7 +87,7 @@ interface SliceRule {
 | `max_entries` | Cap on entry count when mode is `last_n_entries` |
 | `max_tokens` | Hard token cap for this artifact regardless of mode |
 | `never_truncate` | If `true`, this artifact is exempt from budget truncation |
-| `source_weight` | Truncation priority: `inferred` truncated first, then `cycle_produced`, then `user_defined` last. User-tagged nodes always have `user_defined` weight. — DDR-028 |
+| `source_weight` | Truncation priority: `inferred` truncated first, then `workflow_run_produced`, then `user_defined` last. User-tagged nodes always have `user_defined` weight. — DDR-028, DDR-031 (was `cycle_produced`) |
 
 ### ContextManagerConfig
 
@@ -153,15 +153,15 @@ assemble(role, state, config, map, failureReport?) → AssembledContext
     - If inferred mode: load role default slices from §Context slices
     - Apply per-artifact SliceRule (mode, max_entries, max_tokens)
     - DDR-028 tagged node loading:
-      - When assembling for SCOPING node: load all #next-cycle tagged
-        nodes/layers as `user_defined` weight slices
-      - When assembling for DESIGN/PLAN: charter is `cycle_produced`,
-        tagged nodes are `user_defined`
+      - When assembling for the SCOPING checkpoint step: load all #next-run
+        tagged nodes/layers as `user_defined` weight slices
+      - When assembling for DESIGN/PLAN: the charter is
+        `workflow_run_produced`, tagged nodes are `user_defined`
       - Tagged nodes are always loaded — they are never excluded, only
         reordered for truncation via source_weight
     - Enforce total token budget: config.artifact_slice_size (~2000)
     - When budget exceeded, truncate in source_weight order:
-      `inferred` first, then `cycle_produced`, then `user_defined` last
+      `inferred` first, then `workflow_run_produced`, then `user_defined` last
     - Record truncated artifact IDs
 
 4. State summary (Component 3)
@@ -171,7 +171,7 @@ assemble(role, state, config, map, failureReport?) → AssembledContext
 
 5. Task (Component 4)
    - state.current_task
-   - Written by DAG runner based on current node and cycle state
+   - Written by the workflow runner based on the current step and run state
    - Budget: ~200 tokens
 
 6. Failure context (Component 5) — only on retry
@@ -192,7 +192,7 @@ The system prompt defines the agent's role and behavioral constraints. Same
 structure for every role — only the role-specific section differs.
 
 ```
-You are the {role} agent in an SLE cycle.
+You are the {role} agent in an SLE workflow run.
 
 ## Your role
 {role_description}
@@ -244,7 +244,7 @@ Use sparingly — it consumes token budget proportional to group count.
 |------|----------|
 | `full` | Load the entire artifact. No truncation unless total budget exceeded. |
 | `last_n_entries` | Load only the last N entries (for append-only artifacts like decisions). |
-| `last_cycle` | Load only the most recent cycle's content (for evaluation, failure reports). |
+| `last_run` | Load only the most recent run's content (for evaluation, failure reports). |
 | `summary_only` | Load a pre-generated summary if available, otherwise load full with truncation. |
 
 Default loading modes per artifact key:
@@ -255,13 +255,13 @@ Default loading modes per artifact key:
 | `doc:architecture` | `full` | Never truncated (`never_truncate: true`) |
 | `doc:test-plan` | `full` | Never truncated for Tester; truncated for other roles if budget exceeded |
 | `doc:decisions` | `last_n_entries: 3` | Historian gets `full` — it is the append target |
-| `doc:evaluation` | `last_cycle` | Only the most recent evaluation entry |
+| `doc:evaluation` | `last_run` | Only the most recent evaluation entry |
 | `doc:plan`                  | `full`              | Only loaded at `deep`+ depth |
 | `doc:build-plan`           | `full`              | Only present at `deep`/`research` depth after PLAN node |
 | `doc:research-findings`     | `full`              | Only present when Explorer agent ran (triggered by SCOPING) |
 | `doc:debug-diagnosis` | `full` | Ephemeral — only present on retry, only for Planner/Debugger |
 | `doc:critique-report` | `full` | Only present at `deep`/`research` depth after CRITIQUE node. Project-scoped persistent design review. |
-| `doc:cycle-critique` | `full` | Per-cycle structured critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE node ran. |
+| `doc:cycle-critique` | `full` | Per-run structured critique fed back to Designer. Run-scoped — ephemeral across runs. Present whenever the critique review step ran. |
 
 **3. Token budget enforcement:**
 
@@ -317,11 +317,12 @@ truncating documents.
 
 ### Component 3 — State summary
 
-A short, structured summary of the current cycle state. Generated by the
-context manager from `map.yaml` — not by an LLM call.
+A short, structured summary of the current workflow run's state. Generated by
+the context manager from `map.yaml` and the active `WorkflowRun` — not by an
+LLM call.
 
 ```
-Cycle: 4 | Iteration: 2 | Depth: standard | Status: running
+Run: full-build-4 | Iteration: 2 | Depth: standard | Status: active
 Active categories: correctness · performance · security
 Last gate outcome: failed (iteration 1)
 Version: v0.3.0 → targeting v0.4.0
@@ -335,8 +336,8 @@ orientation, not information.
 
 ### Component 4 — Task
 
-The specific instruction for this agent turn. Written by the DAG runner based
-on the current node and cycle state.
+The specific instruction for this agent turn. Written by the workflow runner
+based on the current step and run state.
 
 Examples:
 
@@ -459,7 +460,7 @@ these to file contents within the token budget.
 
 ### Designer
 
-**DAG node:** DESIGN
+**Step kind:** `produce` (DESIGN step instance — [step-kind-reference.md](step-kind-reference.md) Part 2)
 **DDR reference:** DDR-019 (Designer owns requirements + architecture)
 
 The Designer has the broadest input context. It reads all discovery documents,
@@ -475,13 +476,13 @@ ensures architecture decisions are grounded in project context.
 | `doc:system-description` | `full` | 300 | System shape, boundaries, data flows |
 | `doc:vision` | `summary_only` | 150 | Long-term direction |
 | `doc:open-questions` | `full` | 100 | Unresolved questions |
-| `doc:project-plan` | `summary_only` | 100 | Phase breakdown, cycle targets |
+| `doc:project-plan` | `summary_only` | 100 | Phase breakdown, run targets |
 | `doc:research-findings` | `full` | 200 | Only present when Explorer agent ran (triggered by SCOPING, DDR-023) |
 | `doc:architecture` | `full` | 400 | Prior architecture — present on revision, absent on first design |
 | `doc:requirements` | `full` | 300 | Prior requirements — present on revision |
-| `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
+| `doc:evaluation` | `last_run` | 150 | Prior evaluation for context |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions |
-| `doc:cycle-charter` | `full` | 200 | Cycle scope and purpose — DDR-028 |
+| `doc:cycle-charter` | `full` | 200 | Workflow run scope and purpose — DDR-028 |
 | `agent.md` | `full` | 200 | Project conventions and constraints |
 
 **Total budget:** ~2,700 tokens (uses elevated budget — Designer's context is
@@ -497,31 +498,32 @@ component.
 
 ### Explorer
 
-**DAG node:** SCOPING (conditional — invoked when SCOPING requests additional research)
+**Step kind:** `gather` (conditional — invoked when the SCOPING checkpoint step requests additional research)
 **DDR reference:** DDR-023 (research agent), DDR-028 (triggered by SCOPING, not standalone)
 
-The Explorer investigates unknowns flagged during the SCOPING node's guided
-discussion. It is no longer a standalone DAG node — it runs at SCOPING's request
-when additional research is needed to resolve open questions.
+The Explorer investigates unknowns flagged during the SCOPING step's guided
+discussion. It is not a standalone step in its own right — it runs at
+SCOPING's request when additional research is needed to resolve open
+questions.
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
 | `doc:system-description` | `full` | 300 | System boundaries and components |
 | `doc:open-questions` | `full` | 150 | Questions to investigate |
 | `doc:constraints` | `full` | 200 | Technical constraints to respect |
-| `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
+| `doc:evaluation` | `last_run` | 150 | Prior evaluation for context |
 | `doc:cycle-charter` | `full` | 200 | Charter scope — provides focus for research (DDR-028) |
 | `agent.md` | `full` | 200 | Project conventions |
 
 **Total budget:** ~1,200 tokens
 
 The Explorer's output (`doc:research-findings`) is fed back into the SCOPING
-node's context. It is injected into the Designer's context when SCOPING
+step's context. It is injected into the Designer's context when SCOPING
 completes before DESIGN.
 
 ### Planner
 
-**DAG node:** PLAN
+**Step kind:** `produce` (PLAN step instance)
 **DDR reference:** DDR-019 (Planner reads Designer output, produces plan + test-plan)
 
 The Planner reads the Designer's architecture and requirements. It does not
@@ -532,10 +534,10 @@ write requirements — the Designer owns those (DDR-019).
 | `doc:requirements` | `full` | 400 | Never truncated |
 | `doc:architecture` | `full` | 400 | Never truncated |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions |
-| `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for context |
+| `doc:evaluation` | `last_run` | 150 | Prior evaluation for context |
 | `doc:critique-report` | `full` | 200 | Only present at `deep`/`research` depth after CRITIQUE. Project-scoped persistent design review. |
-| `doc:cycle-critique` | `full` | 200 | Per-cycle critique fed back to Designer. Run-scoped — ephemeral across cycles. Present whenever CRITIQUE ran. |
-| `doc:cycle-charter` | `full` | 200 | Cycle scope and requirements — DDR-028 |
+| `doc:cycle-critique` | `full` | 200 | Per-run critique fed back to Designer. Run-scoped — ephemeral across runs. Present whenever the critique review step ran. |
+| `doc:cycle-charter` | `full` | 200 | Workflow run scope and requirements — DDR-028 |
 | `doc:debug-diagnosis` | `full` | 200 | Only present on retry — Debugger's root-cause analysis. Ephemeral — bypasses standard disk resolution, injected by daemon directly into assembled context. |
 
 **Total budget:** ~1,450 tokens (base) + ~400 (failure context on retry)
@@ -557,7 +559,7 @@ sections.
 
 ### Tester
 
-**DAG node:** TEST
+**Step kind:** `produce` (TEST step instance)
 **DDR reference:** G22 (TDD separation — Tester never sees architecture or implementation)
 
 The Tester has the most constrained context. It reads only requirements and
@@ -586,7 +588,7 @@ iteration, not patched.
 
 ### Builder
 
-**DAG node:** BUILD
+**Step kind:** `execute` (BUILD step instance)
 
 The Builder reads requirements, architecture, and the test plan. It also sees
 the Tester's test scripts as contracts to satisfy — but never the Tester's
@@ -613,7 +615,7 @@ scripts as executable contracts.
 
 ### Debugger
 
-**DAG node:** DEBUG (conditional — only on VALIDATION gate failure)
+**Step kind:** `produce` (DEBUG step instance, conditional — only on VALIDATION gate failure, the `review` step's `on_fail.target_step_id`)
 
 The Debugger reads run artifacts from the failed validation run. Its context
 is narrowly focused on what failed and why.
@@ -639,7 +641,7 @@ Debugger operates on a single run — it does not compare across runs.
 
 ### Evaluator
 
-**DAG node:** EVALUATE
+**Step kind:** `review` (EVALUATE step instance)
 
 The Evaluator reads requirements, test-plan, prior evaluation, and current run
 artifacts to produce a structured verdict on whether the implementation
@@ -649,7 +651,7 @@ satisfied the intent.
 |-------|------|--------|-------|
 | `doc:requirements` | `full` | 400 | What was supposed to be built |
 | `doc:test-plan` | `full` | 300 | What coverage was planned |
-| `doc:evaluation` | `last_cycle` | 150 | Prior evaluation for continuity |
+| `doc:evaluation` | `last_run` | 150 | Prior evaluation for continuity |
 | `.sle/runs/{id}/ai/context-pack.md` | `full` | 400 | Current run results narrative |
 | `.sle/runs/{id}/manifest.json`              | `full`        | 100 | Run metadata |
 | `doc:build-plan`                            | `summary_only`| 100 | Implementation expansion (deep+ only, summary only) |
@@ -658,8 +660,8 @@ satisfied the intent.
 
 ### Critic
 
-**DAG node:** CRITIQUE (conditional — only at `deep`/`research` depth)
-**DDR reference:** DDR-022 (Critic reviews at DESIGN node, not PLAN node)
+**Step kind:** `review` (CRITIQUE step instance, conditional — only at `deep`/`research` depth)
+**DDR reference:** DDR-022 (Critic reviews at the DESIGN step, not the PLAN step)
 
 The Critic reviews the Designer's architecture and requirements before the
 Planner runs. It identifies blocking issues, warnings, and suggestions.
@@ -668,11 +670,11 @@ Planner runs. It identifies blocking issues, warnings, and suggestions.
 |-------|------|--------|-------|
 | `doc:architecture` | `full` | 500 | Primary review target |
 | `doc:requirements` | `full` | 400 | Secondary review target |
-| `doc:evaluation` | `last_cycle` | 150 | Prior evaluation — avoids repeating known issues |
+| `doc:evaluation` | `last_run` | 150 | Prior evaluation — avoids repeating known issues |
 | `doc:constraints` | `full` | 200 | Compliance checks against stated constraints |
 | `doc:system-description` | `full` | 200 | System shape for structural consistency checks |
 | `doc:decisions` | `last_n_entries: 3` | 100 | Recent decisions for context |
-| `doc:cycle-critique` | write | — | Per-cycle critique fed back to Designer |
+| `doc:cycle-critique` | write | — | Per-run critique fed back to Designer |
 | `doc:critique-report` | write | — | Persistent design review (deep/research only) |
 
 **Total budget:** ~1,550 tokens
@@ -685,7 +687,7 @@ The Critic does NOT receive:
 
 ### Historian
 
-**DAG node:** HISTORY
+**Step kind:** `commit` (HISTORY step instance)
 
 The Historian has the most constrained input context. It reads only the full
 decisions log — it is the append target.
@@ -698,24 +700,31 @@ decisions log — it is the append target.
 
 The Historian does not read requirements, architecture, test plans, or any
 other artifact. It produces short audit entries based on the task instruction,
-which the DAG runner populates with a summary of what just happened (which
-agent ran, what it produced, whether it was a retry).
+which the workflow runner populates with a summary of what just happened
+(which agent ran, what it produced, whether it was a retry).
 
 ### Facilitator
 
-**DAG node:** No single node — operates across sessions.
-**DDR reference:** DDR-020 (orthogonal chat layer), Facilitator has two modes.
+**Step kind:** None — the Facilitator operates across chat sessions, not as a
+step instance in any `WorkflowDefinition`.
+**DDR reference:** DDR-020 (orthogonal chat layer), DDR-031 (mode set
+generalized to per-run checkpoints plus `workflow_select`).
 
-The Facilitator is unique: it has two operating modes with different context
-assemblies. The mode is determined by the system state and cycle flags, not by
-a DAG node.
+The Facilitator is unique: it has multiple operating modes with different
+context assemblies. The mode is determined by the chat session state and the
+`awaiting_checkpoint` pointer of every active `WorkflowRun` — not by a step in
+a workflow. Mode resolution itself is canonically defined in
+[conversation.md](conversation.md) §Mode switching mechanism
+(`resolveFacilitatorMode`); this section only covers what each mode loads into
+context.
 
 #### Chat mode
 
-**When:** `chat.session_open = true` AND no `awaiting_*` flag is set.
+**When:** `chat.session_open = true` AND no active run has `awaiting_checkpoint`
+set (see [conversation.md](conversation.md) for the full mode resolver).
 
 The Facilitator answers freeform questions about the project using broad
-project and cycle context.
+project and workflow-run context.
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
@@ -731,10 +740,12 @@ project and cycle context.
 
 #### Decision mode
 
-**When:** `awaiting_confirmation = true` OR `awaiting_sharding_approval = true`.
+**When:** an active `WorkflowRun` has `awaiting_checkpoint` set to a
+non-scoping checkpoint step (e.g. SHARDING_APPROVAL, CONFIRM).
 
 The Facilitator presents a pending action and relevant artifacts for the user
-to review. Context is narrowly focused on the decision at hand.
+to review, scoped to that run. Context is narrowly focused on the decision at
+hand.
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
@@ -749,34 +760,49 @@ to review. Context is narrowly focused on the decision at hand.
 
 #### Scoping mode
 
-**When:** `awaiting_scoping = true` — DDR-028
+**When:** an active `WorkflowRun` has `awaiting_checkpoint` set to a step that
+resembles a scoping checkpoint — DDR-028, DDR-031.
 
-The Facilitator runs the SCOPING node's guided discussion to produce the
-cycle charter from user input and tagged project content.
+The Facilitator runs the SCOPING step's guided discussion to produce the
+run's charter from user input and tagged project content.
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
-| `doc:cycle-scope-draft` | `full` | 300 | Pre-cycle scope draft |
+| `doc:cycle-scope-draft` | `full` | 300 | Pre-run scope draft |
 | `doc:cycle-charter` | `full` | 200 | Charter being developed (scoping mode) |
-| Tagged node content | `full` | varies | All #next-cycle tagged nodes/layers |
+| Tagged node content | `full` | varies | All #next-run tagged nodes/layers |
 
 **Tagged nodes** are loaded as `user_defined` weight and are always included —
-they represent the user's explicit selection of what this cycle should address.
+they represent the user's explicit selection of what this workflow run should
+address.
 
-**Additional context when `awaiting_sharding_approval = true`:**
+**Additional context when the active run's `awaiting_checkpoint` is the
+SHARDING_APPROVAL step:**
 
 | Slice | Mode | Budget | Notes |
 |-------|------|--------|-------|
 | `.sle/sharding-proposal.yaml` | `full` | 300 | Proposed task boundaries |
 | `.sle/coherence-report.json` | `summary_only` | 100 | Coherence gate status |
 
-**Modes can coexist.** When `chat.session_open = true` AND one or more
-`awaiting_*` flags are set, the Facilitator operates in multiple modes
-simultaneously. Chat-mode context is used for freeform Q&A; decision-mode
-context is used when the user engages with the pending action; scoping-mode
-context is used during the SCOPING guided discussion. The context manager
-produces separate assemblies — one per mode — and the Facilitator switches
-between them based on the user's input.
+#### Workflow-select mode
+
+**When:** `resolveFacilitatorMode` ([conversation.md](conversation.md))
+determines the user's free text plausibly requests new work and no run's
+checkpoint claims the turn first.
+
+The Facilitator matches free text against candidate `WorkflowDefinition`s and
+a target. This mode's slice set and the `WorkflowMatchCandidate` shape are
+defined in [conversation.md](conversation.md) — it has no role-specific
+context-manager budget of its own beyond what that spec assigns.
+
+**Modes can coexist.** When `chat.session_open = true` AND one or more active
+runs have `awaiting_checkpoint` set, the Facilitator operates in multiple
+modes simultaneously. Chat-mode context is used for freeform Q&A;
+decision-mode context is used when the user engages with a pending action on
+a specific run; scoping-mode context is used during that run's SCOPING
+guided discussion. The context manager produces separate assemblies — one per
+mode — and the Facilitator switches between them based on the user's input
+and on `resolveFacilitatorMode`'s output.
 
 ---
 
@@ -788,7 +814,7 @@ between them based on the user's input.
 |-----------|---------|-------------------|-------|
 | System prompt | 500 | `planning.system_prompt_max_tokens` | Role description + rules |
 | Artifact slices | 2000 | `planning.artifact_slice_size` | Role-dependent content |
-| State summary | 300 | `planning.summary_max_tokens` | Cycle metadata |
+| State summary | 300 | `planning.summary_max_tokens` | Workflow run metadata |
 | Task | 200 | — | Fixed per DAG node |
 | Failure context | 400 | — | Only on retry |
 | **Total target** | **3400** | — | |
@@ -881,8 +907,8 @@ The Builder is regenerated from scratch — implementation is never patched.
 
 ### Cap iteration
 
-On the final iteration (cap hit), the DAG runner sets a `cap_hit: true` flag
-on the cycle state. The context manager does not change its assembly logic —
+On the final iteration (cap hit), the workflow run engine sets a `cap_hit: true`
+flag on the run state. The context manager does not change its assembly logic —
 but the task component changes to instruct the Planner to produce a best-effort
 output rather than a complete solution.
 
@@ -940,8 +966,9 @@ resolveMode(task?, role):
     return 'inferred'
 ```
 
-The mode is determined per-invocation, not per-cycle. A cycle with multiple
-tasks may use declared mode for some agent calls and inferred mode for others.
+The mode is determined per-invocation, not per-run. A workflow run with
+multiple tasks may use declared mode for some agent calls and inferred mode
+for others.
 
 ---
 
@@ -952,17 +979,13 @@ operates in three modes that can coexist (DDR-020, DDR-028).
 
 ### Mode determination
 
-```
-resolveFacilitatorMode(chatState, cycleFlags):
-  modes = []
-  if chatState.session_open:
-    modes.push('chat')
-  if cycleFlags.awaiting_confirmation OR cycleFlags.awaiting_sharding_approval:
-    modes.push('decision')
-  if cycleFlags.awaiting_scoping:
-    modes.push('scoping')
-  return modes
-```
+Mode determination is owned by [conversation.md](conversation.md)
+§Facilitator modes (`resolveFacilitatorMode`), which resolves modes against
+the full set of currently active `WorkflowRun`s rather than a single set of
+cycle flags — DDR-031 replaced the 3 booleans with each run's
+`awaiting_checkpoint` pointer, and a checkpoint on *any* active run can
+trigger decision mode. This spec does not redeclare that logic; it only
+documents how each mode's resolved set feeds context assembly below.
 
 ### Assembly when multiple modes are active
 
@@ -970,12 +993,14 @@ When multiple modes are active, the context manager produces separate
 `AssembledContext` instances — one per active mode:
 
 1. **Chat context** — uses chat-mode slices (project context + chat history).
-2. **Decision context** — uses decision-mode slices (pending action + relevant artifacts).
+2. **Decision context** — uses decision-mode slices (pending action + relevant artifacts for the run whose checkpoint triggered it).
 3. **Scoping context** — uses scoping-mode slices (scope draft + charter + tagged nodes) — DDR-028.
+4. **Workflow-select context** — uses workflow-select-mode slices (candidate workflow trigger descriptions + chat history) — DDR-031, see conversation.md §Workflow selection.
 
 The Facilitator agent receives the chat context by default. When the user's
 input matches a decision action (approve, reject, modify, halt), the
-Facilitator switches to the decision context for that turn.
+Facilitator switches to the decision context for that turn, scoped to
+whichever run's checkpoint is being acted on.
 
 This multi-assembly is unique to the Facilitator. All other roles produce a
 single `AssembledContext` per invocation.
@@ -990,10 +1015,10 @@ When the Facilitator is in scoping mode (DDR-028):
    - doc:architecture (summary_only)
    - doc:requirements (summary_only)
    - doc:decisions (last_n_entries: 5)
-   - All #next-cycle tagged node content (full)
+   - All #next-run tagged node content (full)
 3. State summary: current map.yaml overview
 4. Task: scoping discussion (produces charter)
-5. Failure context: N/A (scoping is first node)
+5. Failure context: N/A (scoping is the first step group in the run)
 
 ### Chat history management
 
@@ -1014,7 +1039,7 @@ POST /api/v2/context/assemble
 Request:
 {
   "role":               AgentRole,
-  "cycle_state":        CycleState,
+  "workflow_run":       WorkflowRun,
   "task_id":            string | null,
   "facilitator_mode":   "chat" | "decision" | "scoping" | null
 }
@@ -1092,8 +1117,8 @@ Response 400:
 
 | Error | Condition | Response |
 |-------|-----------|----------|
-| `artifact_not_found` | Required artifact (`required: true` in artifacts.yaml) missing from disk | Halt cycle — unrecoverable. Log artifact ID and role. |
-| `artifact_empty` | Artifact exists but is empty (0 bytes) | Log warning, skip slice. If required, halt cycle. |
+| `artifact_not_found` | Required artifact (`required: true` in artifacts.yaml) missing from disk | Halt the workflow run — unrecoverable. Log artifact ID and role. |
+| `artifact_empty` | Artifact exists but is empty (0 bytes) | Log warning, skip slice. If required, halt the workflow run. |
 | `budget_exceeded` | Total tokens exceed hard ceiling after all truncation | Log warning with total and role. Proceed with truncated context — do not halt. |
 | `invalid_ref` | Artifact reference does not match `doc:{key}` or `node:{group}:{key}` format | Skip the reference. Log warning. |
 | `group_not_found` | `node:{group}:{key}` references a group that does not exist in the project graph | Skip the reference. Log warning. |
@@ -1171,7 +1196,7 @@ Response 400:
 | CM-002 | Should the Debugger receive `doc:requirements` in addition to run artifacts, or is architecture sufficient for root-cause diagnosis? | Debugger context breadth vs. focus | Open |
 | CM-003 | Should declared mode support per-section loading (e.g., `doc:architecture#security-layer`) or only per-document loading? | Precision of declared context, implementation complexity | Open |
 | CM-004 | What is the optimal number of chat-history entries for Facilitator chat mode? 20 may be too many for short sessions and too few for long ones. | Facilitator context quality, token budget | Open |
-| CM-005 | Should the context manager cache assembled contexts within a cycle (same role, same iteration) to avoid re-reading artifacts from disk? | Performance, disk I/O | Open |
+| CM-005 | Should the context manager cache assembled contexts within a workflow run (same role, same iteration) to avoid re-reading artifacts from disk? | Performance, disk I/O | Open |
 | CM-006 | Should the `summary_only` loading mode produce summaries via LLM (costly, high quality) or extract first N lines (cheap, approximate)? | Summary quality, token budget, cost | Open |
 | CM-007 | Should the token estimator be replaced with a proper tokenizer (e.g., tiktoken) in production, or is the 5% approximation sufficient? | Billing accuracy, performance | Open |
-| CM-008 | How should the context manager handle group-level artifacts (`node:{group}:{key}`) when multiple groups are affected by the same cycle? | Multi-group context assembly, budget scaling | Open |
+| CM-008 | How should the context manager handle group-level artifacts (`node:{group}:{key}`) when multiple groups are affected by the same workflow run? | Multi-group context assembly, budget scaling | Open |

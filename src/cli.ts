@@ -6,26 +6,57 @@ import { DiscoveryService } from './discovery-service.js';
 import { CycleService } from './cycle-service.js';
 import { ScopingService } from './scoping-service.js';
 import { ConfirmService } from './confirm-service.js';
+import { TagService } from './tag-service.js';
+import { PromptService } from './prompt-service.js';
 import { AgentRunner } from './agent-runner.js';
 import { ContextManager } from './context-manager.js';
-import { createLLMProvider, type ILLMProvider } from './llm-provider.js';
+import { IntakeService } from './intake-service.js';
+import { ShardingService } from './sharding-service.js';
+import { LinkIndexManager } from './link-index.js';
+import { createLLMProvider, DynamicLLMProvider, type ILLMProvider } from './llm-provider.js';
 import { RunArtifactManager } from './run-artifacts.js';
+import fs from 'node:fs';
 import { readPidFile, removePidFile, isPidAlive, writePidFile } from './pid-file.js';
 import { parseCLIArgs, type DaemonCommand, type InitCommand, type StartCommand } from './daemon-config.js';
 import { RuntimeMapManagerImpl } from './runtime-map.js';
 import { StateAPI } from './state-api.js';
 import { StateMachine } from './state-machine.js';
 import { ProjectTypeEnum } from './types.js';
+import { exec } from 'node:child_process';
 
 const projectRoot = process.cwd();
 
+function openBrowser(url: string): void {
+  const platform = process.platform;
+  let cmd = '';
+
+  switch (platform) {
+    case 'darwin':
+      cmd = `open "${url}"`;
+      break;
+    case 'win32':
+      cmd = `start "" "${url}"`;
+      break;
+    default:
+      cmd = `xdg-open "${url}"`;
+      break;
+  }
+
+  exec(cmd, (error) => {
+    if (error) {
+      console.warn(`\n[Warning] Could not open browser automatically: ${error.message}`);
+      console.log(`Please open the UI manually at: ${url}\n`);
+    }
+  });
+}
+
 function showHelp(): void {
   console.log(`
-Usage: sle <command> [options]
+Usage: stratum <command> [options]
 
 Commands:
   init              Initialize a new SLE project
-  start             Start the daemon server
+  start             Start the daemon server (Default when running 'stratum' with no arguments)
   stop              Stop the daemon server
   status            Show daemon status
   discover          Start a discovery session
@@ -41,6 +72,7 @@ Init options:
 Start options:
   --port <port>             Daemon port (default: 7700)
   --foreground              Run in foreground
+  --no-open                 Don't open the browser automatically
 
 Global options:
   -h, --help                Show this help message
@@ -88,7 +120,7 @@ async function handleInit(cmd: InitCommand): Promise<void> {
   const request: InitRequest = {
     project_name: cmd.name!,
     project_type: projectType,
-    task_store: cmd.taskStore === 'local' ? 'local' : 'beads',
+    task_store: cmd.taskStore === 'beads' ? 'beads' : 'local',
     daemon_port: 7700,
     docs_remote: null,
     non_interactive: true,
@@ -102,6 +134,11 @@ async function handleInit(cmd: InitCommand): Promise<void> {
     if (result.data.files_created.length > 0) {
       console.log(`Files created: ${result.data.files_created.join(', ')}`);
     }
+    // Step 10: auto-start daemon after a complete init unless --no-daemon was passed
+    if (result.data.status === 'complete' && !cmd.noDaemon) {
+      console.log('\nStarting Stratum daemon...');
+      await handleStart({ command: 'start', foreground: true });
+    }
   } else {
     console.error(`Error: ${result.error.message}`);
     process.exit(1);
@@ -110,7 +147,26 @@ async function handleInit(cmd: InitCommand): Promise<void> {
 
 async function handleStart(cmd: StartCommand): Promise<void> {
   const port = cmd.port ?? 7700;
-  const mapPath = `${projectRoot}/.sle/map.yaml`;
+
+  const pidPath = `${projectRoot}/.sle/daemon.pid`;
+  const existingPid = await readPidFile(pidPath);
+  if (existingPid && isPidAlive(existingPid)) {
+    console.log(`Daemon already running (PID: ${existingPid}) on port ${port}`);
+    if (cmd.foreground && !cmd.noOpen) {
+      openBrowser(`http://localhost:${port}`);
+    }
+    return;
+  }
+  if (existingPid) {
+    await removePidFile(pidPath);
+  }
+
+  const sleDir = `${projectRoot}/.sle`;
+  if (!fs.existsSync(sleDir)) {
+    fs.mkdirSync(sleDir, { recursive: true });
+  }
+
+  const mapPath = `${sleDir}/map.yaml`;
 
   const mapManager = new RuntimeMapManagerImpl({ mapPath });
   const stateMachine = new StateMachine(mapManager);
@@ -128,20 +184,56 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const cycleService = new CycleService(stateMachine, mapManager, runArtifacts);
 
   const contextManager = new ContextManager(projectRoot);
+  const settingsPath = `${projectRoot}/.sle/settings.json`;
+  let initialLLMConfig: any = {
+    provider: 'openai_compatible',
+    base_url: 'https://api.openai.com/v1',
+    model: 'gpt-4o',
+    api_key_env: 'OPENAI_API_KEY',
+  };
+
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const savedSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      if (savedSettings.provider) {
+        initialLLMConfig = {
+          provider: savedSettings.provider,
+          base_url: savedSettings.base_url,
+          model: savedSettings.model,
+          api_key_env: savedSettings.api_key_env || (
+            savedSettings.provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
+            savedSettings.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
+            savedSettings.provider === 'glm' ? 'GLM_API_KEY' :
+            savedSettings.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'
+          )
+        };
+        if (savedSettings.api_key) {
+          process.env.SLE_LLM_API_KEY = savedSettings.api_key;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to parse .sle/settings.json, falling back to default:', err);
+    }
+  }
+
   let llmProvider: ILLMProvider;
   try {
-    llmProvider = createLLMProvider({
-      provider: 'openai_compatible',
-      base_url: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
-      api_key_env: 'OPENAI_API_KEY',
-    });
-  } catch {
-    llmProvider = { complete: () => Promise.reject(new Error('LLM not configured — set OPENAI_API_KEY or SLE_LLM_API_KEY')) };
+    const rawProvider = createLLMProvider(initialLLMConfig);
+    llmProvider = new DynamicLLMProvider(rawProvider);
+  } catch (err) {
+    const fallbackProvider = { complete: () => Promise.reject(new Error('LLM not configured — set OPENAI_API_KEY or SLE_LLM_API_KEY')) };
+    llmProvider = new DynamicLLMProvider(fallbackProvider);
   }
   const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
-  const scopingService = new ScopingService(agentRunner, mapManager, projectRoot);
+  const tagService = new TagService(mapManager);
+  const scopingService = new ScopingService(agentRunner, mapManager, projectRoot, undefined, tagService);
   const confirmService = new ConfirmService(mapManager, runArtifacts);
+  
+  const linkIndex = new LinkIndexManager(projectRoot);
+  const intakeService = new IntakeService(projectRoot, mapManager, linkIndex);
+  const shardingService = new ShardingService(projectRoot, linkIndex);
+  const promptService = new PromptService(projectRoot);
+  await promptService.validateAll();
 
   const daemon = new DaemonServer();
 
@@ -154,11 +246,20 @@ async function handleStart(cmd: StartCommand): Promise<void> {
       cycleService,
       scopingService,
       confirmService,
+      tagService,
+      promptService,
+      intakeService,
+      shardingService,
+      llmProvider,
       pidFile: { writePidFile, removePidFile },
     }
   );
 
   console.log(`SLE daemon started on port ${port}`);
+
+  if (cmd.foreground && !cmd.noOpen) {
+    openBrowser(`http://localhost:${port}`);
+  }
 }
 
 async function handleStop(): Promise<void> {
@@ -218,7 +319,12 @@ async function handleDiscover(): Promise<void> {
 async function main(): Promise<void> {
   const args = process.argv;
 
-  if (args.length < 3 || args[2] === '-h' || args[2] === '--help') {
+  if (args.length < 3) {
+    await handleStart({ command: 'start', foreground: true });
+    return;
+  }
+
+  if (args[2] === '-h' || args[2] === '--help') {
     showHelp();
     process.exit(0);
   }

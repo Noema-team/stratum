@@ -2,7 +2,7 @@
 
 **Type:** spec · **Status:** draft · **Updated:** 2026-04-22
 **Depends on:** DDR-008, DDR-019, DDR-025
-**Source material:** SLE-019 §Part 4, SLE-020 (job system), validation.md, dag-execution.md
+**Source material:** SLE-019 §Part 4, SLE-020 (job system), validation.md, workflow-execution.md
 
 ## Overview
 
@@ -14,12 +14,12 @@ gate.
 
 The job dispatcher sits between two producers and one consumer:
 
-1. **Producers** — the DAG EXEC node (cycle-scoped validation runs) and the
-   Beads task system (declared tasks from SLE-019's sharding pipeline). Both
-   produce units of work that need containerized execution.
+1. **Producers** — an `execute` step (workflow-run-scoped validation runs) and
+   the Beads task system (declared tasks from SLE-019's sharding pipeline).
+   Both produce units of work that need containerized execution.
 
-2. **Consumer** — the VALIDATION gate, which evaluates the combined results of
-   all dispatched jobs deterministically.
+2. **Consumer** — the validation `review` step, which evaluates the combined
+   results of all dispatched jobs deterministically.
 
 Job dispatch is L4 (Execution Plane). It does not call LLMs, does not modify
 artifacts, and does not make decisions. It runs code in containers and reports
@@ -27,7 +27,7 @@ outcomes.
 
 **Relationship to existing specs:**
 
-- [dag-execution.md](dag-execution.md) — EXEC node delegates to job dispatch
+- [workflow-execution.md](workflow-execution.md) — the `execute` step delegates to job dispatch
 - [validation.md](validation.md) — defines what runs inside containers (sub-phases, categories)
 - [state-machine.md](state-machine.md) — job dispatch never changes system state
 - [context-manager.md](context-manager.md) — produces the context packs that job dispatch injects into containers
@@ -55,7 +55,7 @@ interface Job {
   started_at: string | null
   completed_at: string | null
 
-  cycle_id: string
+  workflow_run_id: string
   iteration: number
   run_id: string
 
@@ -85,9 +85,9 @@ type JobType =
 
 | Type | Source | Container | LLM |
 |---|---|---|---|
-| `static-check` | EXEC node (validation) | Yes | No |
-| `llm-check` | EXEC node (validation) | Yes | Yes (inside container) |
-| `exec-check` | EXEC node (validation) | Yes | No |
+| `static-check` | `execute` step (validation) | Yes | No |
+| `llm-check` | `execute` step (validation) | Yes | Yes (inside container) |
+| `exec-check` | `execute` step (validation) | Yes | No |
 | `task-execution` | Beads task dispatch | Yes | Varies by task |
 
 ### JobStatus
@@ -255,7 +255,7 @@ interface ContainerSpec {
 ```
 
 `image` and `install_command` come from `validation.yaml → container`. Per-job
-overrides are not supported — all jobs in a cycle use the same base image.
+overrides are not supported — all jobs in a workflow run use the same base image.
 
 ### MountPoint
 
@@ -303,7 +303,7 @@ containerized scripts need.
 ```typescript
 interface ContextPack {
   run_id: string
-  cycle: number
+  workflow_run_id: string
   iteration: number
   category: string | null
   task_id: string | null
@@ -320,14 +320,14 @@ them and injects them into containers.
 
 ### DispatchPlan
 
-Created at the start of each EXEC node entry. The dispatch plan describes every
-job that will run this iteration, their dependencies, and the expected fan-out
-structure.
+Created at the start of each `execute` step entry. The dispatch plan describes
+every job that will run this iteration, their dependencies, and the expected
+fan-out structure.
 
 ```typescript
 interface DispatchPlan {
   run_id: string
-  cycle_id: string
+  workflow_run_id: string
   iteration: number
   created_at: string
   jobs: DispatchPlanJob[]
@@ -371,13 +371,13 @@ Read by the status API for observability.
 
 ## Behavior
 
-### Dispatch lifecycle within a cycle
+### Dispatch lifecycle within a workflow run
 
-The job dispatcher activates when the DAG enters the EXEC node and deactivates
-after all results are collected and the container is destroyed.
+The job dispatcher activates when a workflow run enters an `execute` step and
+deactivates after all results are collected and the container is destroyed.
 
 ```
-DAG enters EXEC node
+Workflow run enters execute step
     │
     ▼
 1. Create DispatchPlan
@@ -423,7 +423,7 @@ DAG enters EXEC node
 8. Destroy container
     │
     ▼
-DAG proceeds to VALIDATION_GATE
+Workflow run proceeds to the validation review step
 ```
 
 ### Worker pool management
@@ -529,7 +529,7 @@ static-check (priority 0, single job)
             │
             ▼
         All category jobs cancelled
-        VALIDATION_GATE receives static failure only
+        The validation review step receives static failure only
 ```
 
 Within each category, `llm-check` and `exec-check` run in parallel (no
@@ -551,8 +551,8 @@ Job IDs are deterministic within a run:
 job_id = "{run_id}-{sub_phase}-{category}"
 ```
 
-Example: `c4-i2-static-check-all`, `c4-i2-llm-check-correctness`,
-`c4-i2-exec-check-security`.
+Example: `full-build-3-i2-static-check-all`, `full-build-3-i2-llm-check-correctness`,
+`full-build-3-i2-exec-check-security`.
 
 ### Context injection
 
@@ -570,7 +570,7 @@ Before a container starts, the dispatcher prepares the execution environment:
 |---|---|---|
 | `SLE_RUN_DIR` | `/sle/run` | Where scripts write results |
 | `SLE_RUN_ID` | `{run_id}` | Unique run identifier |
-| `SLE_CYCLE` | `{cycle_number}` | Current cycle |
+| `SLE_WORKFLOW_RUN_ID` | `{workflow_run_id}` | Parent workflow run |
 | `SLE_ITERATION` | `{iteration_number}` | Current iteration |
 | `SLE_CATEGORY` | `{category_name}` | Category being tested |
 | `SLE_SUB_PHASE` | `{sub_phase}` | Current sub-phase |
@@ -662,20 +662,31 @@ Execute in container with declared context
 Collect result → update Beads issue with outcome
 ```
 
-Task dispatch uses the same worker pool and container lifecycle as cycle
-validation. The difference is the context source (declared vs inferred) and the
-result routing (Beads update vs VALIDATION_GATE).
+Task dispatch uses the same worker pool and container lifecycle as workflow
+run validation. The difference is the context source (declared vs inferred)
+and the result routing (Beads update vs the validation review step).
 
-Task dispatch is mutually exclusive with cycle validation dispatch. The worker
-pool serves one mode at a time:
+**Worker pool is a shared resource, not an exclusive lock (DDR-031).** Under
+the single-cycle model, only one DAG could be active project-wide, so the
+worker pool was given to whichever mode (workflow-run validation or task
+dispatch) was running and the other waited. With N `WorkflowRun`s able to be active
+concurrently, that single-owner model no longer holds: multiple `execute`
+steps (from different runs) and task-dispatch jobs may all need the pool at
+once. The dispatcher instead treats the pool as a shared, capacity-bounded
+queue:
 
-| Active mode | Trigger | Pool ownership |
+| Source | Trigger | Pool interaction |
 |---|---|---|
-| Cycle validation | DAG enters EXEC node | EXEC node owns pool until gate evaluation |
-| Task dispatch | `bd ready` returns a task | Pool acquired per task, released after completion |
+| Workflow run validation | A run's `execute` step is entered | Jobs enqueued at their existing priority (see JobPriority); compete for workers like any other job |
+| Task dispatch | `bd ready` returns a task | Job enqueued at priority 1 (High); competes for workers like any other job |
 
-If the DAG is in `cycling` state, cycle validation takes priority. Task dispatch
-waits until the cycle completes or halts.
+There is no pool ownership to acquire or release — jobs are pulled from the
+priority queue as workers become idle, regardless of which run or task
+produced them. Exclusivity that matters for correctness (e.g. two runs
+racing to modify the same implementation files) is enforced upstream by
+artifact claims (see workflow-execution.md and intake-and-sharding.md), not
+by the job dispatcher. If queue depth exceeds pool capacity, jobs simply
+wait their turn — this is ordinary backpressure, not a halt condition.
 
 ### Container lifecycle
 
@@ -709,8 +720,8 @@ destroyContainer(container_id):
 ```
 
 Container destruction is guaranteed at the end of every job, even on error.
-The dispatcher runs a cleanup sweep at the start of each EXEC node to remove
-any orphaned containers from previous runs (e.g., after daemon crash).
+The dispatcher runs a cleanup sweep at the start of each `execute` step to
+remove any orphaned containers from previous runs (e.g., after daemon crash).
 
 ### Job queue
 
@@ -745,12 +756,12 @@ releaseBlockedJobs(static_result, pending_set, queue):
 
 ### Dispatch plan generation
 
-When the DAG enters the EXEC node, the dispatcher generates the dispatch plan
-for this iteration:
+When a workflow run enters an `execute` step, the dispatcher generates the
+dispatch plan for this iteration:
 
 ```
-generateDispatchPlan(cycle, iteration, categories, run_id):
-  plan = { run_id, cycle_id, iteration, jobs: [], static_gate: null }
+generateDispatchPlan(workflow_run_id, iteration, categories, run_id):
+  plan = { run_id, workflow_run_id, iteration, jobs: [], static_gate: null }
 
   static_job = {
     job_type: 'static-check',
@@ -797,14 +808,14 @@ previous iteration are excluded from the dispatch plan entirely. Their
 
 ### Container image management
 
-The dispatcher maintains a local image cache. On first run per cycle:
+The dispatcher maintains a local image cache. On first run per workflow run:
 
 1. Check if `container.base_image` exists in local Docker cache
 2. If not, pull the image (timeout: `container_startup_timeout_ms`)
-3. Tag the pulled image with the cycle ID for tracking
+3. Tag the pulled image with the workflow run ID for tracking
 
 Image pulls are not retried on failure — if the image cannot be pulled, the
-EXEC node halts the cycle (`docker_unavailable` error).
+`execute` step halts the workflow run (`docker_unavailable` error).
 
 The dispatcher does not build custom images. All customization happens through:
 - Mount points (injecting project source, scripts, and context)
@@ -835,8 +846,8 @@ as failed with `container_start_failed`. The install command is not retried.
 
 ### Internal API (daemon-to-dispatcher)
 
-The dispatcher exposes an internal API used by the DAG runner. These endpoints
-are not exposed to external clients.
+The dispatcher exposes an internal API used by the workflow run engine. These
+endpoints are not exposed to external clients.
 
 #### Create dispatch plan
 
@@ -845,11 +856,11 @@ POST /internal/dispatch/plan
 
 Request:
 {
-  "cycle_id":       string,
+  "workflow_run_id": string,
   "iteration":      number,
   "categories":     ValidationRuleCategory[],
   "run_id":         string,
-  "mode":           "cycle_validation" | "task-execution"
+  "mode":           "workflow_run_validation" | "task-execution"
 }
 
 Response 200:
@@ -882,7 +893,7 @@ Response 200:
 Response 409:
 {
   "error":          "dispatch_already_active",
-  "reason":         "A dispatch is already running for this cycle."
+  "reason":         "A dispatch is already running for this workflow run."
 }
 ```
 
@@ -964,25 +975,24 @@ Response 200:
   "dispatch_id":    string,
   "status":         "queued"
 }
-
-Response 409:
-{
-  "error":          "pool_busy",
-  "reason":         "Worker pool is owned by a cycle validation run."
-}
 ```
+
+The worker pool is shared (DDR-031) — task jobs are enqueued alongside
+workflow run validation jobs and compete for workers by priority. There is no
+"pool busy" rejection; a task job simply waits in the queue if all workers
+are occupied.
 
 ### External API (user-facing)
 
 #### Get dispatch status
 
 ```
-GET /api/v2/cycles/{cycle_id}/dispatch
+GET /api/v2/workflow-runs/{run_id}/dispatch
 
 Response 200:
 {
   "active":             boolean,
-  "mode":               "cycle_validation" | "task-execution" | null,
+  "mode":               "workflow_run_validation" | "task-execution" | null,
   "total_jobs":         number,
   "completed_jobs":     number,
   "failed_jobs":        number,
@@ -1000,14 +1010,14 @@ Response 200:
 
 Response 404:
 {
-  "error": "cycle_not_found"
+  "error": "run_not_found"
 }
 ```
 
 #### Get job detail
 
 ```
-GET /api/v2/cycles/{cycle_id}/dispatch/jobs/{job_id}
+GET /api/v2/workflow-runs/{run_id}/dispatch/jobs/{job_id}
 
 Response 200:
 {
@@ -1035,16 +1045,16 @@ Response 404:
 ```
 event: dispatch.started
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "dispatch_id":   string,
   "total_jobs":    number,
-  "mode":          "cycle_validation" | "task-execution",
+  "mode":          "workflow_run_validation" | "task-execution",
   "timestamp":     string
 }
 
 event: dispatch.job_status_changed
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "dispatch_id":   string,
   "job_id":        string,
   "previous":      JobStatus,
@@ -1054,7 +1064,7 @@ event: dispatch.job_status_changed
 
 event: dispatch.static_gate_passed
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "dispatch_id":   string,
   "released_jobs": string[],
   "timestamp":     string
@@ -1062,7 +1072,7 @@ event: dispatch.static_gate_passed
 
 event: dispatch.static_gate_failed
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "dispatch_id":   string,
   "cancelled_jobs": string[],
   "timestamp":     string
@@ -1070,7 +1080,7 @@ event: dispatch.static_gate_failed
 
 event: dispatch.category_completed
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "category":      string,
   "passed":        boolean,
   "duration_ms":   number,
@@ -1079,7 +1089,7 @@ event: dispatch.category_completed
 
 event: dispatch.completed
 {
-  "cycle_id":      string,
+  "run_id":        string,
   "dispatch_id":   string,
   "total_jobs":    number,
   "completed":     number,
@@ -1107,17 +1117,17 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 
 | Error | Condition | Response |
 |---|---|---|
-| `docker_unavailable` | Docker daemon not running or unreachable | Halt cycle (unrecoverable). Log docker error. |
-| `container_start_failed` | Container creation or install command failed | Mark job failed. Retry once. If retry fails, halt cycle. |
+| `docker_unavailable` | Docker daemon not running or unreachable | Halt the workflow run (unrecoverable). Log docker error. |
+| `container_start_failed` | Container creation or install command failed | Mark job failed. Retry once. If retry fails, halt the workflow run. |
 | `container_oom_killed` | Container exceeded memory limit | Mark job failed with `container_oom_killed`. Not retried — indicates resource issue. |
 | `container_timeout` | Job exceeded `timeout_ms` | SIGKILL container. Mark job `timed_out`. Not retried. |
-| `image_pull_failed` | Base image cannot be pulled | Halt cycle (unrecoverable). Suggest checking image name and network. |
+| `image_pull_failed` | Base image cannot be pulled | Halt the workflow run (unrecoverable). Suggest checking image name and network. |
 
 ### Script errors
 
 | Error | Condition | Response |
 |---|---|---|
-| `script_missing` | Expected test script not found in container | Halt cycle (unrecoverable). Script should exist from BUILD phase. |
+| `script_missing` | Expected test script not found in container | Halt the workflow run (unrecoverable). Script should exist from the build step. |
 | `script_syntax_error` | Test script has syntax errors, cannot execute | Mark job failed. Not retried — requires BUILD fix. |
 | `result_parse_failed` | Script output does not match expected JSON schema | Mark job failed. Capture raw stdout for debugging. |
 | `artifact_capture_failed` | Expected artifact file missing from container after run | Mark job failed. Log missing paths. Partial results may still be usable. |
@@ -1127,14 +1137,14 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 | Error | Condition | Response |
 |---|---|---|
 | `worker_dead` | Worker missed 3 consecutive heartbeats | Mark current job failed. Requeue job (if retry budget allows). Spawn replacement worker. |
-| `worker_spawn_failed` | Cannot create new worker (Docker error) | Log error. Continue with remaining workers. If all workers dead, halt cycle. |
-| `pool_exhausted` | All workers dead and cannot spawn replacements | Halt cycle (unrecoverable). |
+| `worker_spawn_failed` | Cannot create new worker (Docker error) | Log error. Continue with remaining workers. If all workers dead, halt the workflow run. |
+| `pool_exhausted` | All workers dead and cannot spawn replacements | Halt the workflow run (unrecoverable). |
 
 ### Context errors
 
 | Error | Condition | Response |
 |---|---|---|
-| `context_pack_invalid` | Context pack file missing or malformed | Halt cycle (unrecoverable). Context assembly should have produced this. |
+| `context_pack_invalid` | Context pack file missing or malformed | Halt the workflow run (unrecoverable). Context assembly should have produced this. |
 | `declared_ref_unresolved` | TaskContextDeclaration references artifact that does not exist | Fall back to inferred context. Log warning. |
 | `mount_failed` | Volume mount fails on container creation | Mark job failed. Retry once with fresh container. |
 
@@ -1142,9 +1152,9 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 
 | Error | Condition | Response |
 |---|---|---|
-| `dispatch_already_active` | Attempt to start dispatch while one is running | 409. Only one dispatch per cycle. |
+| `dispatch_already_active` | Attempt to start dispatch while one is running | 409. Only one dispatch per workflow run. |
 | `dispatch_not_complete` | Attempt to collect results before all jobs finish | 409. Poll until complete. |
-| `plan_generation_failed` | Cannot generate dispatch plan (no active categories) | Halt cycle (no work to do). |
+| `plan_generation_failed` | Cannot generate dispatch plan (no active categories) | Halt the workflow run (no work to do). |
 | `orphaned_containers` | Containers from previous daemon run detected at startup | Log warning. Destroy all orphaned containers. Proceed. |
 
 ### Error recovery strategy
@@ -1153,7 +1163,7 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 |---|---|---|
 | Transient (Docker hiccup, network blip) | Retry once | 1 |
 | Resource (OOM, timeout) | Fail job, continue | 0 |
-| Structural (missing script, bad config) | Halt cycle | 0 |
+| Structural (missing script, bad config) | Halt the workflow run | 0 |
 | Worker death | Requeue job | 1 |
 
 Retries create a fresh container. No retry reuses the container from the failed
@@ -1163,9 +1173,10 @@ attempt.
 
 ## Constraints
 
-1. **One dispatch per cycle.** At most one active dispatch per cycle. The DAG
-   EXEC node owns the worker pool until all jobs complete or the dispatch is
-   cancelled.
+1. **One dispatch per workflow run.** At most one active dispatch per workflow
+   run. The run's `execute` step owns its own dispatch plan until all jobs
+   complete or the dispatch is cancelled — this is per-run, not pool-wide;
+   other runs may have their own active dispatches concurrently (DDR-031).
 
 2. **Fresh container per job.** No container reuse. Each job gets a new
    container that is destroyed after result capture. This guarantees isolation
@@ -1180,8 +1191,8 @@ attempt.
    modifies project artifacts, rule files, or `map.yaml` directly.
 
 5. **No state transitions.** The dispatcher does not change `meta.status`,
-   cycle flags, or iteration counters. State transitions are the DAG runner's
-   responsibility.
+   `WorkflowRun.awaiting_checkpoint`, or iteration counters. State transitions
+   are the workflow run engine's responsibility.
 
 6. **Static gate is absolute.** `static-check` must pass before any other
    sub-phase runs. No override, no skip, no parallel release. The static gate
@@ -1213,24 +1224,23 @@ attempt.
     against the expected schema for the sub-phase before being accepted. Invalid
     results are treated as failures.
 
-14. **Orphan cleanup.** At the start of each EXEC node, the dispatcher scans
-    for containers labeled with the cycle ID and destroys any that exist. This
-    handles daemon crash recovery.
+14. **Orphan cleanup.** At the start of each `execute` step, the dispatcher
+    scans for containers labeled with the workflow run ID and destroys any
+    that exist. This handles daemon crash recovery.
 
 15. **Deterministic job IDs.** Job IDs are derived from the run ID, sub-phase,
     and category name. They are not random UUIDs. This enables log correlation
     and debugging.
 
 16. **Queue is in-memory.** The job queue is not persisted. Daemon crash during
-    EXEC causes the iteration to restart from scratch. No partial results are
-    preserved.
+    an `execute` step causes that step's iteration to restart from scratch. No
+    partial results are preserved.
 
-17. **Worker pool bounded.** The pool never exceeds `max_workers`. If all
-    workers are busy, jobs wait in the queue. No unbounded concurrency.
-
-18. **Task dispatch yields to cycle.** When the system is in `cycling` state,
-    task dispatch is blocked. The worker pool is exclusively owned by the
-    active cycle's EXEC node.
+17. **Worker pool bounded and shared.** The pool never exceeds `max_workers`
+    across all sources combined. If all workers are busy, jobs from any
+    source — any run's `execute` step or task dispatch — wait in the same
+    priority queue. No unbounded concurrency, and no single run or task
+    exclusively owns the pool (DDR-031; see §Task dispatch mode).
 
 ---
 

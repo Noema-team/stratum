@@ -1,7 +1,7 @@
 # Stratum 
 
 > ⚠️ **Status: Under Active Development**  
-> Stratum is currently in active development. While the codebase implements a fully functional sequential development cycle (Vertical Slice), advanced horizontal architectures (such as secure Docker sandboxing, parallel execution grids, and the web dashboard UI) detailed in the specifications are currently simplified or deferred. See the [Spec Divergence Audit](docs/developmentPlan/spec-divergence-audit.md) for details.
+> Stratum is currently in active development. Vertical Slices 1–6 are complete: the full development cycle engine, web dashboard UI, facilitator chat, document intake pipeline, critic agent, and WebSocket event bus are all implemented. Advanced features such as the knowledge engine (Cognee integration), Beads integration, and secure Docker sandboxing remain deferred. See the [Implementation Tracking](docs/developmentPlan/implementation-tracking.md) for the current coverage breakdown.
 
 ---
 
@@ -24,18 +24,28 @@ $$\text{Intent} \longrightarrow \text{Scoping} \longrightarrow \text{Design} \lo
 
 ```directory
 .
-├── src/                      # TS Core Engine (Sequential DAG Execution)
+├── src/                      # TS Core Engine
 │   ├── daemon.ts             # REST server & state coordinator (port 8000)
 │   ├── state-machine.ts      # Core lifecycle machine (5 states, 12 transitions)
-│   ├── agent-loop.ts         # Multi-turn LLM reasoning loop with turn budgets
 │   ├── dag-runner.ts         # DAG execution coordinator
-│   └── rule-files.ts         # Validation rules validation using Zod
-├── tests/                    # Core Engine Test Suite
+│   ├── context-manager.ts    # 5-component context assembly with token budgeting
+│   ├── critic-agent.ts       # LLM-backed design critic with revision loop
+│   ├── intake-service.ts     # Document intake pipeline with 5-layer coherence gate
+│   ├── sharding-service.ts   # Task decomposition with SHARDING_APPROVAL gate
+│   ├── chat-service.ts       # Facilitator conversation with session persistence
+│   ├── event-bus.ts          # WebSocket event bus (62+ event types)
+│   ├── llm-provider.ts       # Multi-provider LLM abstraction (Anthropic/GLM/OpenRouter)
+│   └── rule-files.ts         # Validation rule schemas (Zod)
+├── public/                   # Web Dashboard (served by daemon)
+│   ├── index.html            # 3-page SPA shell (Overview, Chat, Graph)
+│   ├── index.js              # Client-side routing, WebSocket client, page logic
+│   └── index.css             # Dashboard styles
+├── tests/                    # Test suite
 └── docs/                     # Documentation Vault
     ├── overview/             # Mental models (e.g. what-is-sle.md)
     ├── specs/                # Target architectural specifications
     ├── decisions/            # Architectural Decision Records (DDR-001..030)
-    └── developmentPlan/      # Roadmaps & spec-divergence audit files
+    └── developmentPlan/      # Implementation tracking & roadmaps
 ```
 
 ---
@@ -56,12 +66,19 @@ npm test
 
 ### 3. Run the Daemon
 ```bash
+# Foreground mode — starts daemon and opens the web dashboard in your browser
+npx stratum
+
+# Or manually
 node dist/cli.js start-daemon
 ```
+
+The dashboard is served at `http://localhost:8000` by default.
 
 ---
 
 ## 📖 Essential Reading
 *   **Conceptual Overview**: [what-is-sle.md](docs/overview/what-is-sle.md)
 *   **Target Blueprints**: [docs/specs/README.md](docs/specs/README.md)
-*   **Implementation Divergence (Must Read)**: [spec-divergence-audit.md](docs/developmentPlan/spec-divergence-audit.md)
+*   **Implementation Coverage**: [implementation-tracking.md](docs/developmentPlan/implementation-tracking.md)
+*   **Implementation Divergence**: [spec-divergence-audit.md](docs/developmentPlan/spec-divergence-audit.md)

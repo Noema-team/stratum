@@ -7,7 +7,7 @@
 
 ## How validation works
 
-Validation determines whether a cycle's implementation meets its requirements. It runs after BUILD and produces a deterministic pass/fail verdict that drives whether the cycle completes or iterates.
+Validation determines whether a workflow run's implementation meets its requirements. It runs after BUILD and produces a deterministic pass/fail verdict that drives whether the run completes or iterates.
 
 ### Three sub-phases
 
@@ -21,14 +21,14 @@ Every validation run executes three sub-phases in order:
 
 `static-check` is a global gate — it must pass before the category-level sub-phases fan out.
 
-### Where validation runs in the DAG
+### Where validation runs in full-build's step graph
 
-Validation occupies two DAG nodes:
+Validation occupies two steps in the `full-build` workflow:
 
-- **EXEC** — runs all three sub-phases inside a Docker container
-- **VALIDATION_GATE** — evaluates results deterministically with no LLM
+- **EXEC** (execute) — runs all three sub-phases inside a Docker container
+- **VALIDATION_GATE** (review) — evaluates results deterministically with no LLM
 
-On gate pass → EVALUATE → SUMMARISE → SNAPSHOT. On gate fail → DEBUG → iteration loop back to PLAN. See [dag-execution.md](../specs/dag-execution.md) for the full DAG flow.
+On pass → EVALUATE → SUMMARISE → SNAPSHOT. On fail (`on_fail`) → the Debug step → iteration loop back to PLAN. See [workflow-execution.md](../specs/workflow-execution.md) and [step-kind-reference.md](../specs/step-kind-reference.md) for the full step flow.
 
 ### Validation categories
 
@@ -69,7 +69,7 @@ For each category, pass criteria depend on the `method`:
 .sle/rules/validation.yaml
 ```
 
-Created during `sle init`. The daemon reads it at startup and at the start of each cycle.
+Created during `sle init`. The daemon reads it at startup and at the start of each workflow run.
 
 ### Structure
 
@@ -140,7 +140,7 @@ categories:
         - evidence
 ```
 
-For categories using `llm` or `both`, create a prompt template at `.sle/prompts/{category}_check.md` (see [LLM validation prompts](#llm-validation-prompts)). For categories using `executable` or `both`, the Tester agent generates scripts at `scripts/test_{category}.ts` during the TEST node.
+For categories using `llm` or `both`, create a prompt template at `.sle/prompts/{category}_check.md` (see [LLM validation prompts](#llm-validation-prompts)). For categories using `executable` or `both`, the Tester agent generates scripts at `scripts/test_{category}.ts` during the TEST step.
 
 ### Enabling and disabling built-in categories
 
@@ -410,7 +410,7 @@ categories:
         - issues
 ```
 
-The `runner` path is relative to the project root. The Tester generates these scripts during the TEST node. `timeout_ms` bounds execution time — scripts that exceed it are treated as failed.
+The `runner` path is relative to the project root. The Tester generates these scripts during the TEST step. `timeout_ms` bounds execution time — scripts that exceed it are treated as failed.
 
 ### Coverage thresholds
 
@@ -455,7 +455,6 @@ When the gate fails, it produces a `FailureReport`:
 
 ```typescript
 interface FailureReport {
-  cycle: number
   iteration: number
   run_dir: string
   run_id: string
@@ -473,38 +472,38 @@ When the gate fails:
 
 1. `map.yaml` is updated — failed categories get `status: failed`, passed get `status: passed`
 2. A `FailureReport` is constructed and injected into the Planner's context
-3. The DAG proceeds to DEBUG → `iteration++` → PLAN
+3. The workflow run proceeds to the Debug step → `iteration++` → PLAN
 
 If `iteration < max_iterations`, the Planner retries. Passing categories are **not re-run** — their results are cached, keeping iteration cost proportional to what failed.
 
-If `iteration >= max_iterations`, the cycle halts per `exit.yaml → on_cap_hit`:
+If `iteration >= max_iterations`, the workflow run halts per `exit.yaml → on_cap_hit`:
 
 | Behavior | Effect |
 |---|---|
-| `halt_with_report` | Write partial report, halt, no snapshot |
+| `halt_with_report` | Write partial report, halt, no commit |
 | `user_prompt` | Pause and ask whether to continue or halt |
-| `force_pass` | Lock snapshot despite failures (not recommended) |
+| `force_pass` | Commit despite failures (not recommended) |
 
-Cache is invalidated on plan revision (CONFIRM modify) or structural failure escalation (DEBUG → DESIGN), but survives normal iteration increments.
+Cache is invalidated on plan revision (CONFIRM modify) or structural failure escalation (Debug step → DESIGN), but survives normal iteration increments.
 
 ### Re-running validation after fixes
 
-Trigger a re-run of specific categories during an active cycle:
+Trigger a re-run of specific categories during an active workflow run:
 
 ```bash
-curl -X POST http://localhost:7700/api/v2/cycles/{cycle_id}/validation/rerun \
+curl -X POST http://localhost:7700/api/v2/workflow-runs/{run_id}/validation/rerun \
   -H "Content-Type: application/json" \
   -d '{"categories": ["performance"]}'
 ```
 
-Passing categories from the previous run are preserved (category caching applies). Returns 409 if no cycle is active.
+Passing categories from the previous run are preserved (category caching applies). Returns 409 if the workflow run is not active.
 
 Monitor progress via WebSocket events (`run.phase_completed`, `run.category_completed`, `run.manifest_ready`, `gate.result`).
 
 Inspect validation state:
 
 ```bash
-curl -s http://localhost:7700/api/v2/cycles/{cycle_id}/validation | jq .
+curl -s http://localhost:7700/api/v2/workflow-runs/{run_id}/validation | jq .
 
-curl -s http://localhost:7700/api/v2/cycles/{cycle_id}/runs/{run_id} | jq .
+curl -s http://localhost:7700/api/v2/workflow-runs/{run_id}/runs/{run_id} | jq .
 ```

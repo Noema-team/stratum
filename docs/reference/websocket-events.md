@@ -16,14 +16,17 @@ All messages share a common envelope:
 ```typescript
 interface SLEEvent {
   type: string
-  cycle: number
+  run_id: string | null
+  workflow_id: string | null
   iteration: number
   timestamp: string
   payload: unknown
 }
 ```
 
-Chat events carry an additional `session_id` field at the top level.
+`run_id`/`workflow_id` are `null` for events not scoped to a workflow run
+(system lifecycle, chat, init/discovery). Chat events carry an additional
+`session_id` field at the top level.
 
 ### Direction convention
 
@@ -38,12 +41,16 @@ Chat events carry an additional `session_id` field at the top level.
 
 Events that track the top-level system state machine.
 
-**System states (mutually exclusive):**
-`idle` · `discovering` · `cycling` · `halted` · `complete`
+**System states (mutually exclusive, project-wide):**
+`idle` · `discovering` (DDR-031)
 
-**Orthogonal flags (set on the cycle record, not states):**
-- `cycle.awaiting_confirmation: boolean` — confirm gate reached (DDR-021)
-- `cycle.awaiting_sharding_approval: boolean` — sharding proposal awaiting review (DDR-026)
+Per-run progress (`active | halted | complete`) lives on each
+`WorkflowRun.status`, not on system-wide state — see §2 for run lifecycle
+events. A derived `active_workflow_run_count` is included in
+`system.state_changed` payloads for display purposes only.
+
+**Checkpoint pointer (per run, not a system-wide flag):**
+`WorkflowRun.awaiting_checkpoint: string | null` (DDR-031) — see §2.
 
 **Chat is orthogonal (DDR-020):** chat sessions are always available
 regardless of system state. See §5 for chat events.
@@ -57,10 +64,8 @@ regardless of system state. See §5 for chat events.
 ```typescript
 interface StateChangedPayload {
   previous: string
-  current: 'idle' | 'discovering' | 'cycling' | 'halted' | 'complete'
-  cycle?: number
-  awaiting_confirmation?: boolean
-  awaiting_sharding_approval?: boolean
+  current: 'idle' | 'discovering'
+  active_workflow_run_count: number
   reason?: string
 }
 ```
@@ -71,40 +76,45 @@ interface StateChangedPayload {
 
 ---
 
-## 2. DAG execution
+## 2. Workflow run execution
 
-Events emitted as the DAG runner progresses through nodes within a cycle.
+Events emitted as the daemon walks a workflow run's step graph (DDR-031).
+Multiple runs may be active concurrently — every event in this group carries
+`run_id` so clients can demultiplex.
 
 | # | Event name | Dir | Payload type | Trigger |
 |---|-----------|-----|-------------|---------|
-| 2.1 | `cycle.started` | S→C | `CycleStartedPayload` | New cycle begins |
-| 2.2 | `cycle.completed` | S→C | `CycleCompletedPayload` | Cycle finishes successfully |
-| 2.3 | `cycle.halted` | S→C | `CycleHaltedPayload` | Cycle halted (cap hit, error, or user action) |
-| 2.4 | `cycle.iteration_started` | S→C | `IterationStartedPayload` | New iteration begins within a cycle |
-| 2.5 | `node.started` | S→C | `NodeStartedPayload` | A DAG node begins execution |
-| 2.6 | `node.completed` | S→C | `NodeCompletedPayload` | A DAG node finishes execution |
-| 2.7 | `cycle.flag_changed` | S→C | `CycleFlagChangedPayload` | A cycle-level flag is toggled |
-| 2.8 | `dag.confirm_requested` | S→C | `DagConfirmRequestedPayload` | DAG requests user confirmation |
-| 2.9 | `dag.sharding_requested` | S→C | `DagShardingRequestedPayload` | DAG requests sharding approval |
-| 2.10 | `dag.snapshot_locked` | S→C | `DagSnapshotLockedPayload` | Version snapshot locked after cycle |
+| 2.1 | `workflow_run.started` | S→C | `WorkflowRunStartedPayload` | New workflow run begins |
+| 2.2 | `workflow_run.completed` | S→C | `WorkflowRunCompletedPayload` | Workflow run finishes successfully |
+| 2.3 | `workflow_run.halted` | S→C | `WorkflowRunHaltedPayload` | Workflow run halted (cap hit, error, or user action) |
+| 2.4 | `workflow_run.iteration_started` | S→C | `IterationStartedPayload` | New iteration begins within a run |
+| 2.5 | `step.started` | S→C | `StepStartedPayload` | A step begins execution |
+| 2.6 | `step.completed` | S→C | `StepCompletedPayload` | A step finishes execution |
+| 2.7 | `workflow_run.checkpoint_requested` | S→C | `CheckpointRequestedPayload` | A `checkpoint` step pauses the run, awaiting input |
+| 2.8 | `workflow_run.checkpoint_cleared` | S→C | `CheckpointClearedPayload` | A checkpoint is cleared (approved, revised, or rejected) |
+| 2.9 | `workflow_run.committed` | S→C | `WorkflowRunCommittedPayload` | A `commit` step locks a new version |
 
 ```typescript
-interface CycleStartedPayload {
+interface WorkflowRunStartedPayload {
+  run_id: string
+  workflow_id: string
+  target: { group?: string; layer?: string; node_key?: string } | null
   goal: string
   depth: 'minimal' | 'standard' | 'deep' | 'research'
-  categories_pending: string[]
   max_iterations: number
   session_id: string
 }
 
-interface CycleCompletedPayload {
+interface WorkflowRunCompletedPayload {
+  run_id: string
   version_id: string
   summary_path: string
   iterations_used: number
   categories_validated: string[]
 }
 
-interface CycleHaltedPayload {
+interface WorkflowRunHaltedPayload {
+  run_id: string
   reason: 'user_halt' | 'max_iterations' | 'error' | 'crash'
   iteration: number
   report_path: string
@@ -112,43 +122,43 @@ interface CycleHaltedPayload {
 }
 
 interface IterationStartedPayload {
+  run_id: string
   iteration: number
   failure_context_present: boolean
 }
 
-interface NodeStartedPayload {
-  node_id: string
+interface StepStartedPayload {
+  run_id: string
+  workflow_id: string
+  step_id: string
+  kind: 'gather' | 'produce' | 'review' | 'checkpoint' | 'execute' | 'commit'
   agent_role?: string
   input_summary?: string
 }
 
-interface NodeCompletedPayload {
-  node_id: string
+interface StepCompletedPayload {
+  run_id: string
+  step_id: string
   outcome: 'success' | 'failure' | 'skipped'
   duration_ms: number
   artifact_ids_written?: string[]
   error?: string
 }
 
-interface CycleFlagChangedPayload {
-  cycle_id: string
-  flag: string
-  value: boolean
-}
-
-interface DagConfirmRequestedPayload {
-  cycle_id: string
+interface CheckpointRequestedPayload {
+  run_id: string
+  step_id: string
   revision: number
-  plan_summary: { step_count: number; test_count: number; coverage_pct: number }
+  plan_summary?: { step_count: number; test_count: number; coverage_pct: number }
 }
 
-interface DagShardingRequestedPayload {
-  cycle_id: string
-  task_count: number
+interface CheckpointClearedPayload {
+  run_id: string
+  step_id: string
 }
 
-interface DagSnapshotLockedPayload {
-  cycle_id: string
+interface WorkflowRunCommittedPayload {
+  run_id: string
   version_id: string
 }
 ```
@@ -156,6 +166,17 @@ interface DagSnapshotLockedPayload {
 > **Note (2.4):** New event — consolidated from G5a. Previously, iteration
 > boundaries were implied by node sequences. This event makes iteration
 > transitions explicit.
+>
+> **Note (DDR-031):** This group replaces the former cycle-scoped events
+> (`cycle.started/completed/halted/iteration_started`, `node.started/
+> completed`, `cycle.flag_changed`, `dag.confirm_requested`,
+> `dag.sharding_requested`, `dag.snapshot_locked`). `node.*` becomes
+> `step.*` since steps are no longer DAG-fixed nodes. The three former
+> checkpoint-specific events (`cycle.flag_changed`, `dag.confirm_requested`,
+> `dag.sharding_requested`) collapse into the single generic
+> `workflow_run.checkpoint_requested`/`checkpoint_cleared` pair, since any
+> `checkpoint` step uses the same `awaiting_checkpoint` pointer mechanism.
+> `dag.snapshot_locked` becomes `workflow_run.committed`.
 
 ---
 
@@ -171,12 +192,14 @@ Events emitted during the validation fan-out and gate evaluation phases.
 
 ```typescript
 interface CategoryStartedPayload {
+  run_id: string
   category: string
   method: 'static' | 'llm' | 'executable'
-  node_id: string
+  step_id: string
 }
 
 interface CategoryCompletedPayload {
+  run_id: string
   category: string
   result: {
     passed: boolean
@@ -188,6 +211,8 @@ interface CategoryCompletedPayload {
 }
 
 interface GateResultPayload {
+  run_id: string
+  step_id: string
   outcome: 'pass' | 'fail'
   failed_categories: string[]
   passed_categories: string[]
@@ -214,7 +239,7 @@ panel. Includes the new `action.required` event (G36).
 interface ApprovalRequiredPayload {
   gate: 'after_planning' | 'after_gate_pass' | 'sharding_review'
   prompt: string
-  cycle: number
+  run_id: string
   iteration: number
   categories?: string[]
   sharding_proposal?: {
@@ -253,9 +278,9 @@ interface ActionRequiredPayload {
   title: string
   description: string
   context: {
-    cycle?: number
+    run_id?: string
     iteration?: number
-    node_id?: string
+    step_id?: string
     categories?: string[]
     task_id?: string
     issue_id?: string
@@ -277,15 +302,15 @@ interface ActionRequiredPayload {
 | `sharding_approval` | high | — |
 | `blocked_issue` | high | medium if issue is non-blocking |
 | `decision_flagged` | medium | — |
-| `stale_task` | medium | low if no active cycle |
+| `stale_task` | medium | low if no active workflow run |
 | `session_handoff` | low | — |
 
 **When emitted:**
 
 | Action type | Emitted when |
 |-------------|-------------|
-| `gate_approval` | Confirm gate reached (`cycle.awaiting_confirmation = true`) |
-| `sharding_approval` | Sharding proposal ready (`cycle.awaiting_sharding_approval = true`, DDR-026) |
+| `gate_approval` | A checkpoint step is reached (`WorkflowRun.awaiting_checkpoint` set) |
+| `sharding_approval` | Sharding proposal ready (the sharding `checkpoint` step is reached, DDR-026) |
 | `blocked_issue` | A Beads issue is blocked and cannot proceed |
 | `decision_flagged` | Chat decision capture suggested or Historian flags a decision |
 | `stale_task` | A sharded task's source documents changed after sharding (SLE-019) |
@@ -306,8 +331,8 @@ gate triggers, the daemon emits *both* `approval.required` and
 ## 5. Chat / conversation
 
 Events for conversation mode (SLE-012). Chat is orthogonal to system state
-(DDR-020) — these events are emitted regardless of whether the system is idle,
-cycling, discovering, halted, or complete.
+(DDR-020) — these events are emitted regardless of system state or how many
+workflow runs are active.
 
 Chat events carry a top-level `session_id` field in addition to the standard
 envelope.
@@ -352,8 +377,9 @@ Facilitator detects a decision, `decision_detected` is included. The client
 may present a capture prompt. If the user confirms, `chat.decision_captured`
 follows.
 
-> **Note:** Chat events do not carry `cycle` or `iteration` fields from the
-> standard envelope. These fields are set to `0` when no cycle is active.
+> **Note:** Chat events do not carry `run_id`/`workflow_id` or `iteration`
+> fields from the standard envelope. These fields are `null`/`0` since chat
+> is not scoped to any particular workflow run.
 
 ---
 
@@ -566,12 +592,15 @@ interface IntakeTaskStalePayload {
 
 ## 11. Job dispatch
 
-Events from the execution plane's job dispatcher (L4). Emitted during the EXEC
-node when Docker containers are spawned for validation runs.
+Events from the execution plane's job dispatcher (L4). Emitted when a
+workflow run's `execute` step spawns Docker containers for validation runs.
+The worker pool is a shared resource (DDR-031) — these events interleave
+with task-dispatch jobs on the same pool; see
+[../specs/job-dispatch.md](../specs/job-dispatch.md).
 
 | # | Event name | Dir | Payload type | Trigger |
 |---|-----------|-----|-------------|---------|
-| 11.1 | `dispatch.started` | S→C | `DispatchStartedPayload` | Dispatch begins for a cycle |
+| 11.1 | `dispatch.started` | S→C | `DispatchStartedPayload` | Dispatch begins for a workflow run |
 | 11.2 | `dispatch.job_status_changed` | S→C | `DispatchJobStatusChangedPayload` | A job transitions between statuses |
 | 11.3 | `dispatch.static_gate_passed` | S→C | `DispatchStaticGatePassedPayload` | Static check passes, releasing category jobs |
 | 11.4 | `dispatch.static_gate_failed` | S→C | `DispatchStaticGateFailedPayload` | Static check fails, cancelling remaining jobs |
@@ -581,16 +610,16 @@ node when Docker containers are spawned for validation runs.
 
 ```typescript
 interface DispatchStartedPayload {
-  cycle_id: string
+  workflow_run_id: string
   dispatch_id: string
   total_jobs: number
-  mode: 'cycle_validation' | 'task-execution'
+  mode: 'workflow_run_validation' | 'task-execution'
 }
 ```
 
 ```typescript
 interface DispatchJobStatusChangedPayload {
-  cycle_id: string
+  workflow_run_id: string
   dispatch_id: string
   job_id: string
   previous: string
@@ -600,7 +629,7 @@ interface DispatchJobStatusChangedPayload {
 
 ```typescript
 interface DispatchStaticGatePassedPayload {
-  cycle_id: string
+  workflow_run_id: string
   dispatch_id: string
   released_jobs: string[]
 }
@@ -608,7 +637,7 @@ interface DispatchStaticGatePassedPayload {
 
 ```typescript
 interface DispatchStaticGateFailedPayload {
-  cycle_id: string
+  workflow_run_id: string
   dispatch_id: string
   cancelled_jobs: string[]
 }
@@ -616,7 +645,7 @@ interface DispatchStaticGateFailedPayload {
 
 ```typescript
 interface DispatchCategoryCompletedPayload {
-  cycle_id: string
+  workflow_run_id: string
   category: string
   passed: boolean
   duration_ms: number
@@ -625,7 +654,7 @@ interface DispatchCategoryCompletedPayload {
 
 ```typescript
 interface DispatchCompletedPayload {
-  cycle_id: string
+  workflow_run_id: string
   dispatch_id: string
   total_jobs: number
   completed: number
@@ -647,8 +676,8 @@ interface DispatchWorkerStatusChangedPayload {
 ## 12. Task / store
 
 Events from the TaskStore provider layer (BeadsTaskStore or LocalTaskStore).
-These cover task lifecycle operations triggered by DAG integration points and
-the resolveExit flow.
+These cover task lifecycle operations triggered by workflow-run step
+integration points and the resolveExit flow.
 
 | # | Event name | Dir | Payload type | Trigger |
 |---|-----------|-----|-------------|---------|
@@ -807,12 +836,15 @@ originally defined.
 | 1.1 | `system.state_changed` | S→C | G5a (new) | System lifecycle |
 | 1.2 | `system.ready` | S→C | G5a (new) | System lifecycle |
 | 1.3 | `system.shutdown` | S→C | G5a (new) | System lifecycle |
-| 2.1 | `cycle.started` | S→C | SLE-005 | DAG execution |
-| 2.2 | `cycle.completed` | S→C | SLE-005 | DAG execution |
-| 2.3 | `cycle.halted` | S→C | SLE-005 | DAG execution |
-| 2.4 | `cycle.iteration_started` | S→C | G5a (new) | DAG execution |
-| 2.5 | `node.started` | S→C | SLE-005 | DAG execution |
-| 2.6 | `node.completed` | S→C | SLE-005 | DAG execution |
+| 2.1 | `workflow_run.started` | S→C | SLE-005 | Workflow run execution |
+| 2.2 | `workflow_run.completed` | S→C | SLE-005 | Workflow run execution |
+| 2.3 | `workflow_run.halted` | S→C | SLE-005 | Workflow run execution |
+| 2.4 | `workflow_run.iteration_started` | S→C | G5a (new) | Workflow run execution |
+| 2.5 | `step.started` | S→C | SLE-005 | Workflow run execution |
+| 2.6 | `step.completed` | S→C | SLE-005 | Workflow run execution |
+| 2.7 | `workflow_run.checkpoint_requested` | S→C | SLE-005 | Workflow run execution |
+| 2.8 | `workflow_run.checkpoint_cleared` | S→C | SLE-005 | Workflow run execution |
+| 2.9 | `workflow_run.committed` | S→C | SLE-005 | Workflow run execution |
 | 3.1 | `validation.category.started` | S→C | SLE-005 | Validation |
 | 3.2 | `validation.category.completed` | S→C | SLE-005 | Validation |
 | 3.3 | `gate.result` | S→C | SLE-005 | Validation |
@@ -852,10 +884,6 @@ originally defined.
 | 12.3 | `task.comment_added` | S→C | SLE-006 | Task / store |
 | 12.4 | `task.stale_detected` | S→C | SLE-006 | Task / store |
 | 12.5 | `task_store.sync` | S→C | SLE-006 | Task / store |
-| 2.7 | `cycle.flag_changed` | S→C | SLE-005 | DAG execution |
-| 2.8 | `dag.confirm_requested` | S→C | SLE-005 | DAG execution |
-| 2.9 | `dag.sharding_requested` | S→C | SLE-019 | DAG execution |
-| 2.10 | `dag.snapshot_locked` | S→C | SLE-005 | DAG execution |
 | 13.1 | `link.created` | S→C | SLE-025 | Document linking |
 | 13.2 | `link.deleted` | S→C | SLE-025 | Document linking |
 | 13.3 | `link.index_rebuilt` | S→C | SLE-025 | Document linking |
@@ -870,7 +898,7 @@ originally defined.
 
 **Totals:** 63 events (61 server→client, 2 client→server).
 
-**New events (Phase 4):** 39 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), task/store (§12), DAG control (§2), document linking (§13), and content/modules (§14).
+**New events (Phase 4):** 39 events from init/discovery (§9), intake/sharding (§10), job dispatch (§11), task/store (§12), workflow run execution (§2), document linking (§13), and content/modules (§14).
 
 **Prior events:** 24 events from Phases 1–3 (§1–§8).
 
@@ -881,7 +909,8 @@ originally defined.
 | ID | Decision | Effect on events |
 |----|----------|-----------------|
 | DDR-020 | Chat is orthogonal to system state | Chat events (§5) carry `session_id`, not system state. `chatting` is not a system state. |
-| DDR-021 | `confirming` is a flag, not a state | `system.state_changed` emits `awaiting_confirmation: boolean` in payload. System state stays `cycling`. |
-| DDR-026 | Sharding approval uses `cycle.awaiting_sharding_approval` | `action.required` with `action_type: 'sharding_approval'` is emitted. `approval.required` with `gate: 'sharding_review'` is also emitted for backward compatibility. |
+| DDR-021 | Confirmation is a per-run checkpoint, not a system-wide flag | `workflow_run.checkpoint_requested`/`checkpoint_cleared` (§2) carry `WorkflowRun.awaiting_checkpoint`. System state stays `idle`/`discovering` regardless (DDR-031). |
+| DDR-026 | Sharding approval is a `checkpoint` step like any other | `action.required` with `action_type: 'sharding_approval'` is emitted. `approval.required` with `gate: 'sharding_review'` is also emitted for backward compatibility. |
 | G5a | Consolidated event catalogue | This document. All WebSocket events from SLE-005, SLE-012, SLE-022 in one reference. |
 | G36 | `action.required` event for human action panel | §4.4 defines the full payload with action types, priorities, and available responses. |
+| DDR-031 | Workflow run generalization | §2 replaces all cycle/DAG-scoped events with workflow-run-scoped equivalents (`workflow_run.*`, `step.*`). Events carry `run_id` instead of `cycle`/`cycle_id` throughout, since N runs may be active concurrently. |

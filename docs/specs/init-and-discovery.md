@@ -1,12 +1,12 @@
 # Init and Discovery
 
 **Type:** spec · **Status:** draft · **Updated:** 2026-04-22
-**Depends on:** DDR-024, DDR-019, DDR-022, DDR-023
+**Depends on:** DDR-024, DDR-019, DDR-022, DDR-023, DDR-031
 **Source material:** SLE-009 (init sequence), SLE-011 (project discovery), init-specs/07-init-state.md
 
 ## Overview
 
-This spec covers two CLI commands that run before any development cycle:
+This spec covers two CLI commands that run before any workflow run:
 
 - **`sle init`** — one-time project setup. Creates `.sle/`, generates rule files,
   initialises the task store, clones the docs remote, produces `agent.md` and
@@ -14,13 +14,14 @@ This spec covers two CLI commands that run before any development cycle:
 
 - **`sle discover`** — guided discovery that produces foundational documents
   (product brief, constraints, vision, project plan, etc.) before the first
-  development cycle. Uses the Facilitator role in a multi-round interactive
-  conversation with the user.
+  workflow run that requires it. Uses the Facilitator role in a multi-round
+  interactive conversation with the user.
 
-Together they form the onboarding path: `sle init` → `sle discover` → `sle start`.
+Together they form the onboarding path: `sle init` → `sle discover` → `sle run`.
 
-The daemon refuses cycle start (`POST /cycle/start`) until `map.yaml → discovery.status`
-is `complete`, unless the caller passes `skip_discovery: true`.
+The daemon refuses to start a workflow run requiring discovery
+(`POST /api/v2/workflow-runs`) until `map.yaml → discovery.status` is
+`complete`, unless the caller passes `skip_discovery: true`.
 
 ### Key decisions reflected
 
@@ -262,8 +263,8 @@ Users customise after init. Rule files are plain YAML, never overwritten.
 #### Step 7 — agent.md + map.yaml generation
 
 `agent.md` — written once, never touched by the system again.
-`map.yaml` — written here, regenerated after every cycle. Contains:
-`meta` (`status: idle`, `cycle: 0`, `version_id: v0.0.0`), `project`,
+`map.yaml` — written here, regenerated after every workflow run. Contains:
+`meta` (`status: idle`, `completed_run_count: 0`, `version_id: v0.0.0`), `project`,
 `remotes`, `agents` (from `agents.yaml` defaults for all 10 roles), `discovery`
 (`status: not_started`), all other sections at post-init defaults.
 
@@ -401,7 +402,7 @@ project-root/
 
   .sle/lib/                    test-runner.ts, bench-runner.ts
   .beads/                      (Beads database — if task-store: beads)
-  .server/docs/                (empty — populated by discovery or first cycle)
+  .server/docs/                (empty — populated by discovery or first workflow run)
 ```
 
 ---
@@ -573,7 +574,7 @@ The Facilitator reads all 7 documents and produces `docs/project-plan.md`.
 Each phase has: **Scope** (what's included), **Exit criteria** (concrete "done
 when" conditions), **Tasks** (high-level work items becoming TaskStore tasks),
 **Dependencies** (prior phases), **Complexity** (Low/Medium/High), and
-**Suggested categories** (validation categories for cycles).
+**Suggested categories** (validation categories for workflow runs).
 
 User controls: **Approve** (accept as-is), **Reorder** (drag/drop phases),
 **Merge** (combine granular phases), **Split** (break large phases),
@@ -741,7 +742,7 @@ Init and discovery interact with these existing error ranges:
 
 | Range | Relevant codes | When |
 |---|---|---|
-| E001–E009 | E001 (daemon not running), E008 (discovery incomplete) | Post-init daemon checks; cycle start guard |
+| E001–E009 | E001 (daemon not running), E008 (discovery incomplete) | Post-init daemon checks; workflow run start guard |
 | E040–E047 | E040 (LLM timeout), E044 (LLM auth failure) | Facilitator LLM calls during discovery |
 | E066 | facilitator_discovery_interrupted | Discovery session interrupted |
 | E090–E099 | E090 (claim failed), E092 (sync failure) | TaskStore operations during discovery finalization |
@@ -764,14 +765,15 @@ Init and discovery interact with these existing error ranges:
    `map.yaml`. Changing provider requires `sle init --reset`. The daemon reads
    the provider at startup and instantiates the correct implementation.
 
-4. **Discovery is a prerequisite for cycles.** The daemon rejects
-   `POST /cycle/start` when `discovery.status ≠ complete` unless
-   `skip_discovery: true` is passed. This guard is checked in the state machine
-   transition T3.
+4. **Discovery is a prerequisite for workflow runs that require it.** The
+   daemon rejects `POST /api/v2/workflow-runs` for such workflows when
+   `discovery.status ≠ complete` unless `skip_discovery: true` is passed.
+   This guard is checked in the state machine transition T3.
 
-5. **Discovery uses the Facilitator role only.** No cycle agent roles
-   participate in discovery. The Facilitator operates outside the cycle DAG. It
-   does not see code, start cycles, or modify rule files.
+5. **Discovery uses the Facilitator role only.** No workflow agent roles
+   participate in discovery. The Facilitator operates outside the workflow
+   run model entirely (decision 11, DDR-031). It does not see code, start
+   workflow runs, or modify rule files.
 
 6. **Discovery artifacts are human-approved.** Every artifact produced during
    discovery must be explicitly approved by the user before the next round
@@ -794,8 +796,8 @@ Init and discovery interact with these existing error ranges:
     DoltHub or the docs git remote.
 
 11. **Phase planning is phase-level, not task-level.** The project plan defines
-    phases with exit criteria. Individual task breakdown happens in development
-    cycles where the Planner has codebase context. Discovery does not have
+    phases with exit criteria. Individual task breakdown happens in workflow
+    runs where the Planner has codebase context. Discovery does not have
     enough information to decompose tasks.
 
 12. **Solo mode is upgradeable.** A project started with `--solo` can upgrade to
@@ -825,6 +827,6 @@ Init and discovery interact with these existing error ranges:
 | ID-005 | Should `sle discover --from` accept multiple files or only one? | Intake pipeline coupling, multi-document projects | Open |
 | ID-006 | How does discovery interact with an existing `agent.md` that already describes the project? Should it extract information from it? | Context reuse, discover-after-edit workflow | Open |
 | ID-007 | Should the daemon block startup if TaskStore (Beads or local) is in an inconsistent state, or degrade gracefully? | Startup reliability, partial failure handling | Open |
-| ID-008 | What is the minimum set of discovery artifacts required for `skip_discovery: true` to produce a useful first cycle? | Cycle quality without discovery, prototyping support | Open |
+| ID-008 | What is the minimum set of discovery artifacts required for `skip_discovery: true` to produce a useful first workflow run? | Run quality without discovery, prototyping support | Open |
 | ID-009 | Should `sle init` validate LLM API key reachability (test call) or defer to first agent invocation? | Init failure rate, user feedback timing | Open |
 | ID-010 | Can the planning loop produce a phase with zero tasks (placeholder for future work), or must every phase have at least one task? | Plan flexibility, empty-phase handling | Open |

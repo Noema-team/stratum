@@ -20,11 +20,9 @@ export interface DAGNodeRunResult {
   error?: string;
 }
 
-// ─── DAG sequence (VS2, excludes CRITIQUE which is always skipped) ────────────
-
 export const DAG_SEQUENCE: readonly DAGNodeId[] = [
-  'SCOPING', 'DESIGN', 'PLAN', 'TEST', 'CONFIRM', 'BUILD',
-  'HISTORY', 'EXEC', 'VALIDATION_GATE', 'EVALUATE', 'SUMMARISE', 'SNAPSHOT',
+  'SCOPING', 'DESIGN', 'CRITIQUE', 'PLAN', 'TEST', 'SHARDING_APPROVAL', 'CONFIRM', 'BUILD',
+  'HISTORY', 'EXEC', 'VALIDATION_GATE', 'DEBUG', 'EVALUATE', 'SUMMARISE', 'SNAPSHOT',
 ] as const;
 
 export function nextNode(current: DAGNodeId): DAGNodeId | null {

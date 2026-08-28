@@ -22,16 +22,16 @@ happens. It combines fixed panels (Actions Required, Active Jobs, Tasks,
 Sharding Review, Recent Activity, Documents) with the extensible widget system
 defined in tasks-dashboard.md. Fixed panels always appear; widgets are
 user-configurable. The Chat page is a persistent Facilitator conversation
-independent of cycle state — it can discuss a CONFIRM plan but cannot approve or
-halt one. The Graph page renders the committed project artifact graph as a
-force-directed layout, reflecting stable state only. The Graph page data model
-is defined in project-overview.md.
+independent of workflow-run state — it can discuss a CONFIRM checkpoint but
+cannot approve or halt one. The Graph page renders the committed project
+artifact graph as a force-directed layout, reflecting stable state only. The
+Graph page data model is defined in project-overview.md.
 
 Gate panels are modal overlays, not page navigations. When the daemon emits
-`gate.awaiting_confirmation` or `cycle.awaiting_sharding_approval`, an overlay
-appears over whichever page the user is on. Approval and rejection actions
-happen inside the overlay and close it on completion. This keeps the user's
-navigation context intact during interruption.
+`workflow_run.checkpoint_requested` for a CONFIRM or SHARDING_APPROVAL
+checkpoint, an overlay appears over whichever page the user is on. Approval
+and rejection actions happen inside the overlay and close it on completion.
+This keeps the user's navigation context intact during interruption.
 
 ## Data model
 
@@ -50,6 +50,7 @@ interface ShellState {
   active_page: PageRoute
   daemon_connected: boolean
   system_state: SystemStatus
+  active_workflow_run_count: number
   active_overlay: OverlayKind | null
   graph_detail_node: string | null
 }
@@ -63,14 +64,13 @@ type OverlayKind =
 type SystemStatus =
   | 'idle'
   | 'discovering'
-  | 'cycling'
-  | 'halted'
-  | 'complete'
 ```
 
 `daemon_connected` tracks whether the WebSocket to `ws://localhost:7700/events`
-is open. `active_overlay` is `null` unless a gate event arrives or the user
-selects a graph node that opens the detail panel.
+is open. `system_state` is the project-wide state — per-run progress lives on
+each `WorkflowRun.status` in `ActiveJobsPanel`, not here (DDR-031 decision 5).
+`active_overlay` is `null` unless a gate event arrives or the user selects a
+graph node that opens the detail panel.
 
 ### Tasks panel data
 
@@ -93,14 +93,17 @@ load and refreshed on `task.claimed` / `task.resolved` WebSocket events.
 
 ```typescript
 interface ActiveJobsPanel {
-  cycles: Array<{
-    cycle_id: string
-    current_node: DAGNode
+  workflow_runs: Array<{
+    run_id: string
+    workflow_id: string
+    status: 'active' | 'halted' | 'complete'
+    current_step_id: string
     iteration: number
     revision: number
+    awaiting_checkpoint: string | null
     agents: Array<{
       name: string
-      node: DAGNode
+      step_id: string
       progress: number
       elapsed_ms: number
     }>
@@ -113,11 +116,12 @@ interface ActiveJobsPanel {
 }
 ```
 
-Populated initially from `GET /api/v2/cycles/{cycle_id}` and
-`GET /api/v2/cycles/{cycle_id}/dispatch`. Updated in real time by
-`cycle.started`, `cycle.completed`, `cycle.halted`, `dispatch.progress`,
-`validation.progress`, `node.started`, `node.completed`, and
-`run.artifact_written` WebSocket events.
+One entry per active `WorkflowRun` — multiple runs render as multiple cards
+(DDR-031 decision 5/9). Populated initially from `GET /api/v2/workflow-runs`
+and, per run, `GET /api/v2/workflow-runs/{run_id}/dispatch`. Updated in real
+time by `workflow_run.started`, `workflow_run.completed`, `workflow_run.halted`,
+`dispatch.progress`, `validation.progress`, `step.started`, `step.completed`,
+and `run.artifact_written` WebSocket events.
 
 ### Actions-required panel data
 
@@ -125,7 +129,7 @@ Populated initially from `GET /api/v2/cycles/{cycle_id}` and
 interface ActionsRequiredPanel {
   gates: Array<{
     kind: 'confirm' | 'gate_pass' | 'sharding_approval' | 'scoping'
-    cycle_id: string
+    run_id: string
     iteration: number
     revision: number
     priority: 'critical' | 'normal'
@@ -140,15 +144,15 @@ interface ActionsRequiredPanel {
 }
 ```
 
-`priority` is `critical` for any gate — the daemon is paused and waiting. Gates
-are derived from `GET /api/v2/system/state` (`awaiting_confirmation`,
-`awaiting_sharding_approval`, `awaiting_scoping` fields) and WebSocket events
-`gate.awaiting_confirmation`, `cycle.awaiting_sharding_approval`,
-`cycle.scoping_input_requested`.
+`priority` is `critical` for any gate — that run is paused and waiting. Gates
+are derived per run from `GET /api/v2/workflow-runs/{run_id}` (`awaiting_checkpoint`
+field) and the `workflow_run.checkpoint_requested` WebSocket event, which
+carries the `step_id` of the checkpoint (CONFIRM, SHARDING_APPROVAL, or
+SCOPING's checkpoint step) to determine `kind`.
 
-**Scoping gate** (`awaiting_scoping`):
+**Scoping gate** (`awaiting_checkpoint` pointing at SCOPING's checkpoint step):
 - Title: "Scoping Discussion"
-- Description: "Review and refine cycle scope with the Facilitator"
+- Description: "Review and refine workflow-run scope with the Facilitator"
 - Action: Opens chat page in scoping mode (FacilitatorMode `'scoping'`)
 
 ### Recent Activity panel data
@@ -157,18 +161,18 @@ are derived from `GET /api/v2/system/state` (`awaiting_confirmation`,
 interface RecentActivityPanel {
   events: Array<{
     id: string
-    kind: 'cycle_completed' | 'artifact_updated' | 'task_created' | 'task_resolved'
+    kind: 'workflow_run_completed' | 'artifact_updated' | 'task_created' | 'task_resolved'
     summary: string
     timestamp: string
-    cycle_id?: string
+    run_id?: string
     task_id?: string
   }>
 }
 ```
 
-Shows a reverse-chronological feed of cycle completions, artifact updates, and
-new/resolved tasks. Populated from WebSocket events and capped at the last 50
-entries.
+Shows a reverse-chronological feed of workflow-run completions, artifact
+updates, and new/resolved tasks. Populated from WebSocket events and capped
+at the last 50 entries.
 
 ### Documents panel data
 
@@ -201,7 +205,7 @@ interface ChatPanelState {
   }>
   context_indicator: {
     loaded_docs: string[]
-    cycle_state: string | null
+    workflow_run_state: string | null
   }
   input_text: string
 }
@@ -210,7 +214,7 @@ interface ChatPanelState {
 History loaded on page open from `GET /api/v2/chat/messages` (if session open).
 New messages arrive via `chat.message` WebSocket event. The context indicator
 shows which documents the Facilitator has loaded (derived from the last
-Facilitator response's `sources` field and current cycle state).
+Facilitator response's `sources` field and current workflow-run state).
 
 ### Graph panel data
 
@@ -249,7 +253,7 @@ content on the Graph page (not an overlay).
 
 ```typescript
 interface ConfirmGateOverlay {
-  cycle_id: string
+  run_id: string
   iteration: number
   revision: number
   plan_summary: {
@@ -271,14 +275,15 @@ interface ConfirmGateOverlay {
 }
 ```
 
-Populated from `dag.confirm_requested` WebSocket event plus
-`GET /api/v2/cycles/{cycle_id}` for step and coverage detail.
+Populated from `workflow_run.checkpoint_requested` WebSocket event (CONFIRM
+checkpoint) plus `GET /api/v2/workflow-runs/{run_id}` for step and coverage
+detail.
 
 ### Sharding approval overlay data
 
 ```typescript
 interface ShardingApprovalOverlay {
-  cycle_id: string
+  run_id: string
   proposal: {
     task_count: number
     tasks: Array<{
@@ -294,14 +299,15 @@ interface ShardingApprovalOverlay {
 }
 ```
 
-Populated from `cycle.awaiting_sharding_approval` WebSocket event plus
-`GET /api/v2/cycles/{cycle_id}` for the full sharding proposal.
+Populated from `workflow_run.checkpoint_requested` WebSocket event (SHARDING_APPROVAL
+checkpoint) plus `GET /api/v2/workflow-runs/{run_id}` for the full sharding
+proposal.
 
 ### Gate pass overlay data
 
 ```typescript
 interface GatePassOverlay {
-  cycle_id: string
+  run_id: string
   iteration: number
   validation_summary: {
     categories_total: number
@@ -313,32 +319,16 @@ interface GatePassOverlay {
 ```
 
 Shown after all validation passes. The user reviews the summary and locks a
-snapshot. Populated from `gate.result` WebSocket event plus
-`GET /api/v2/cycles/{cycle_id}` for validation detail. Referenced by
-user-flow.md.
+snapshot via the run's `commit` step. Populated from `gate.result` WebSocket
+event plus `GET /api/v2/workflow-runs/{run_id}` for validation detail.
+Referenced by user-flow.md.
 
-### DAGNode reference
+### Step kind reference
 
-```typescript
-type DAGNode =
-  | 'SCOPING'
-  | 'DESIGN'
-  | 'CRITIQUE'
-  | 'PLAN'
-  | 'TEST'
-  | 'SHARDING_APPROVAL'
-  | 'CONFIRM'
-  | 'BUILD'
-  | 'HISTORY'
-  | 'EXEC'
-  | 'VALIDATION_GATE'
-  | 'DEBUG'
-  | 'EVALUATE'
-  | 'SUMMARISE'
-  | 'SNAPSHOT'
-```
-
-See dag-node-reference.md for full node definitions.
+Steps within a run are identified by `step_id`, each backed by one of the
+six generic `StepKind` values (`gather`, `produce`, `review`, `checkpoint`,
+`execute`, `commit`). See step-kind-reference.md for the full reference and
+full-build's step-by-step mapping.
 
 ## Behavior
 
@@ -360,26 +350,26 @@ See dag-node-reference.md for full node definitions.
    │  GET /api/v2/tasks/ready     → TasksPanel.tasks (merged)
    │  GET /api/v2/links           → GraphPanelState.nodes, edges
    │  If session_open: GET /api/v2/chat/messages → ChatPanelState.messages
-   │  If cycling: GET /api/v2/cycles/{id}/dispatch → ActiveJobsPanel
+   │  GET /api/v2/workflow-runs (active) → ActiveJobsPanel
+   │  Per active run: GET /api/v2/workflow-runs/{id}/dispatch → ActiveJobsPanel
    │
    ▼
 4. Render Overview page (default landing page)
    │
    ▼
 5. Event loop — WebSocket messages drive re-renders
-   │  system.state_changed        → ShellState.system_state
-   │  cycle.started               → ActiveJobsPanel (add cycle)
-   │  cycle.completed             → ActiveJobsPanel (remove cycle)
-   │  cycle.halted                → ActiveJobsPanel (update)
-   │  dispatch.progress           → ActiveJobsPanel (agent progress)
-   │  node.started / node.completed → ActiveJobsPanel (DAG progress)
-   │  gate.awaiting_confirmation  → ActionsRequiredPanel + overlay
-   │  cycle.awaiting_sharding_approval → ActionsRequiredPanel + overlay
-   │  validation.progress         → ActiveJobsPanel (validation)
-   │  chat.message                → ChatPanelState.messages (append)
-   │  chat.session_changed        → ChatPanelState.session_open
-   │  link.index_updated          → GraphPanelState (re-fetch links)
-   │  run.artifact_written        → ActiveJobsPanel (progress)
+   │  system.state_changed         → ShellState.system_state
+   │  workflow_run.started         → ActiveJobsPanel (add run)
+   │  workflow_run.completed       → ActiveJobsPanel (remove run)
+   │  workflow_run.halted          → ActiveJobsPanel (update)
+   │  dispatch.progress            → ActiveJobsPanel (agent progress)
+   │  step.started / step.completed → ActiveJobsPanel (step progress)
+   │  workflow_run.checkpoint_requested → ActionsRequiredPanel + overlay
+   │  validation.progress          → ActiveJobsPanel (validation)
+   │  chat.message                 → ChatPanelState.messages (append)
+   │  chat.session_changed         → ChatPanelState.session_open
+   │  link.index_updated           → GraphPanelState (re-fetch links)
+   │  run.artifact_written         → ActiveJobsPanel (progress)
    │  task.claimed / task.resolved → TasksPanel (re-fetch tasks)
    │
    ▼
@@ -434,12 +424,12 @@ task detail, and acknowledging state changes.
 ├─────────────────────────────────────────────────┤
 │                                                  │
 │ ┌─ Actions Required ──────────────────────────┐ │
-│ │ ⚠ CONFIRM gate: cycle 4, iter 2 (12m ago)  │ │
+│ │ ⚠ CONFIRM checkpoint: full-build-4, iter 2 (12m ago) │ │
 │ │   [Review & Approve] [Modify] [Halt]        │ │
 │ └─────────────────────────────────────────────┘ │
 │                                                  │
 │ ┌─ Active Jobs ──────────────────────────────┐   │
-│ │ Cycle 4 · BUILD · iter 2 · rev 0           │   │
+│ │ full-build-4 · BUILD · iter 2 · rev 0      │   │
 │ │ Builder: ████████░░ 80% · 45s elapsed      │   │
 │ │ Validation:                                  │   │
 │ │   correctness: ✓ passed                     │   │
@@ -459,7 +449,7 @@ task detail, and acknowledging state changes.
 │ └─────────────────────────────────────────────┘   │
 │                                                  │
 │ ┌─ Recent Activity ──────────────────────────┐   │
-│ │ Cycle 3 completed · 12m ago                │   │
+│ │ full-build-3 completed · 12m ago           │   │
 │ │ Artifact: auth-middleware.md · 34m ago     │   │
 │ │ Task #T-29 resolved · 1h ago              │   │
 │ └─────────────────────────────────────────────┘   │
@@ -476,15 +466,17 @@ Panel priority order (top to bottom):
 
 1. **Actions Required** — always first, highest priority. Shows gates, blocked
    issues, and human decisions. Empty panel is hidden (not shown as blank).
-2. **Active Jobs** — live cycle progress. Empty when no cycle is active.
-   Renamed from "Jobs Processing" to align with user-flow.md terminology.
+2. **Active Jobs** — live progress for every active `WorkflowRun`. Empty when
+   no run is active. Renamed from "Jobs Processing" to align with
+   user-flow.md terminology.
 3. **Tasks** — Beads tasks. Always shown, even when empty ("No active tasks").
    Renamed from "Active Work" to align with user-flow.md terminology.
-4. **Sharding Review** — only visible when `awaiting_sharding_approval` is true
-   or a sharding proposal exists from the current cycle.
-5. **Recent Activity** — reverse-chronological feed of cycle completions,
-   artifact updates, and task changes. Always visible, capped at last 50
-   entries. Added per user-flow.md reference.
+4. **Sharding Review** — only visible when some active run's
+   `awaiting_checkpoint` points at a SHARDING_APPROVAL checkpoint, or a
+   sharding proposal exists from that run.
+5. **Recent Activity** — reverse-chronological feed of workflow-run
+   completions, artifact updates, and task changes. Always visible, capped at
+   last 50 entries. Added per user-flow.md reference.
 6. **Documents** — quick-access browser for recent artifacts. Always visible.
    Clicking an artifact opens the `artifact_detail` overlay. Added per
    user-flow.md reference.
@@ -496,7 +488,7 @@ user-configurable.
 ### Actions-required panel flow
 
 ```
-daemon emits gate.awaiting_confirmation
+daemon emits workflow_run.checkpoint_requested (CONFIRM checkpoint)
   │
   ▼
 ActionsRequiredPanel receives event
@@ -510,24 +502,24 @@ User clicks [Review & Approve] in panel (or overlay is already open)
 Confirm gate overlay renders with plan steps, test coverage, revision count
   │
   ├── User clicks [Approve]
-  │     POST /api/v2/cycles/{cycle_id}/approve
+  │     POST /api/v2/workflow-runs/{run_id}/approve
   │     On 200: close overlay, clear gate from panel
-  │     On 409: show error toast ("No gate awaiting approval")
+  │     On 409: show error toast ("No checkpoint awaiting approval")
   │
   ├── User clicks [Modify]
   │     Overlay switches to modify mode:
   │       - Editable plan steps (add/remove/reorder/edit)
   │       - Editable test criteria
-  │     On submit: POST /api/v2/cycles/{cycle_id}/revise
-  │     On 200: close overlay, Jobs panel shows TEST node
+  │     On submit: POST /api/v2/workflow-runs/{run_id}/revise
+  │     On 200: close overlay, Jobs panel shows the TEST step
   │     On 409: show error toast
   │
   └── User clicks [Halt]
-        POST /api/v2/cycles/{cycle_id}/halt
-        On 200: close overlay, system_state → halted
+        POST /api/v2/workflow-runs/{run_id}/halt
+        On 200: close overlay, that run's status → halted
         On 409: show error toast
 
-daemon emits cycle.awaiting_sharding_approval
+daemon emits workflow_run.checkpoint_requested (SHARDING_APPROVAL checkpoint)
   │
   ▼
 ActionsRequiredPanel receives event
@@ -538,14 +530,14 @@ ActionsRequiredPanel receives event
 Sharding approval overlay renders with task list, context declarations,
 coherence report summary
   │
-  ├── [Approve] → POST /api/v2/cycles/{cycle_id}/sharding/approve
+  ├── [Approve] → POST /api/v2/workflow-runs/{run_id}/sharding/approve
   │     On 200: close overlay, create Beads tasks, proceed to CONFIRM
   │
-  ├── [Reject] → POST /api/v2/cycles/{cycle_id}/sharding/reject
+  ├── [Reject] → POST /api/v2/workflow-runs/{run_id}/sharding/reject
   │     On 200: close overlay, Planner re-plans without sharding
   │
   └── [Modify] → Overlay enters edit mode (add/remove/edit tasks)
-        POST /api/v2/cycles/{cycle_id}/sharding/modify
+        POST /api/v2/workflow-runs/{run_id}/sharding/modify
         On 200: re-render updated proposal in overlay
 ```
 
@@ -573,18 +565,20 @@ coherence report summary
 └──────────────────────────────────────────────────┘
 ```
 
-The chat page is independent of cycle state. It works in `idle`, `discovering`,
-`cycling`, `halted`, and `complete`. The Facilitator can observe cycle state
-(read-only) but cannot trigger, modify, or halt cycles.
+The chat page is independent of workflow-run state. It works whether the
+system is `idle` or `discovering`, and regardless of how many workflow runs
+are active, halted, or complete. The Facilitator can observe workflow-run
+state (read-only) but cannot trigger, modify, or halt runs.
 
-**Approval separation:** The chat page can discuss a CONFIRM plan in freeform
-Q&A. Actual approval happens on the Overview page's Actions Required panel or
-via the gate overlay. The chat page renders a banner when a gate is active:
+**Approval separation:** The chat page can discuss a CONFIRM checkpoint in
+freeform Q&A. Actual approval happens on the Overview page's Actions Required
+panel or via the gate overlay. The chat page renders a banner when a gate is
+active:
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ ⚠ A CONFIRM gate is active. Review and approve   │
-│ on the Overview page.                            │
+│ ⚠ A CONFIRM checkpoint is active. Review and     │
+│ approve on the Overview page.                     │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -615,15 +609,16 @@ User closes browser or session timeout
   │  Session closes. History persisted in daemon-side chat-history.jsonl
 ```
 
-**Pre-cycle scoping UI (DDR-028):**
+**Pre-run scoping UI (DDR-028):**
 
-When the system is idle and the user wants to start a cycle:
+When the system is idle and the user wants to start a workflow run:
 - "Start scoping" button appears in the chat input area
 - Scope draft management: list existing scope drafts, create new one
-- Tag indicator panel: show which nodes/layers are tagged `#next-cycle`
-- When a cycle is in the SCOPING node: chat automatically switches to scoping
-  mode (`FacilitatorMode: 'scoping'`) via `cycle.scoping_input_requested`
-  WebSocket event
+- Tag indicator panel: show which nodes/layers are tagged `#next-run`
+- When a run is in one of full-build's SCOPING steps: chat automatically
+  switches to scoping mode (`FacilitatorMode: 'scoping'`) via the
+  `workflow_run.checkpoint_requested` WebSocket event for SCOPING's
+  checkpoint step
 
 ### Graph page behavior
 
@@ -656,21 +651,25 @@ document-linking.md. Node and edge types are defined in project-overview.md
 nodes with their lifecycle layers as a force-directed layout.
 
 **Committed state only.** The graph reflects artifacts that have been committed
-to the project (via SNAPSHOT node completing). In-progress cycle work does not
-appear. This prevents the graph from flickering during execution.
+via a run's `commit` step (e.g. full-build's SNAPSHOT step). In-progress
+workflow-run work does not appear. This prevents the graph from flickering
+during execution.
 
-**Cycle start UI (DDR-028, resolves UI-001):**
+**Workflow-run start UI (DDR-028, resolves UI-001):**
 
-A "New cycle" button appears on the Overview page (top-right of Active Jobs panel)
-and on the Chat page (when idle). Clicking it opens a dialog:
+A "New workflow run" button appears on the Overview page (top-right of Active
+Jobs panel) and on the Chat page (when idle). Clicking it opens a dialog:
+- Choose a workflow (e.g. `full-build`, `draft-artifact`, or a user-authored
+  workflow) and target
 - Choose scope draft (if any exist) or enter a quick-start goal
 - Option to set `version_bump` override
-- Starts cycle via `POST /api/v2/cycles` with `scope_draft_id` or `quick_start_goal`
+- Starts the run via `POST /api/v2/workflow-runs` with `workflow_id`, `target`,
+  and `scope_draft_id` or `quick_start_goal`
 
 **Tag indicators on graph nodes (DDR-028):**
 
 Tagged nodes show colored badges (see project-overview.md §Tag visual indicators).
-The filter bar includes a "Tagged for next cycle" filter option. Right-click
+The filter bar includes a "Tagged for next run" filter option. Right-click
 context menu includes tag actions (delegated to project-overview.md §Graph
 interactions).
 
@@ -715,7 +714,7 @@ user is viewing.
 ┌────────────────────────────────────────────────────────────┐
 │ ░░░░░░░░░░░░░░░░░░░░░░░ (dimmed page behind) ░░░░░░░░░░░ │
 │                                                            │
-│   ┌─ CONFIRM Gate — Cycle 4, Iteration 2 ──────────────┐  │
+│   ┌─ CONFIRM Checkpoint — full-build-4, Iteration 2 ───┐  │
 │   │                                                      │  │
 │   │ Plan: 6 steps · 12 tests · 87% coverage · Rev 0    │  │
 │   │                                                      │  │
@@ -751,9 +750,9 @@ The flow surfaces in two places: the Actions Required panel and the Sharding
 Review panel.
 
 ```
-Cycle enters SHARDING_APPROVAL node
-  │  cycle.awaiting_sharding_approval := true
-  │  daemon emits cycle.awaiting_sharding_approval event
+Run reaches its SHARDING_APPROVAL checkpoint step
+  │  WorkflowRun.awaiting_checkpoint := <sharding_approval step_id>
+  │  daemon emits workflow_run.checkpoint_requested event
   │
   ▼
 Actions Required panel adds sharding gate (priority: critical)
@@ -767,19 +766,19 @@ Sharding Review panel becomes visible on Overview page
   │       - Actions: [Approve] [Reject] [Modify]
   │
   ├── [Approve]
-  │     POST /api/v2/cycles/{cycle_id}/sharding/approve
-  │     On 200: overlay closes, Beads tasks created, cycle proceeds
+  │     POST /api/v2/workflow-runs/{run_id}/sharding/approve
+  │     On 200: overlay closes, Beads tasks created, run proceeds
   │     Active Jobs panel updates with new tasks
   │
   ├── [Reject]
-  │     POST /api/v2/cycles/{cycle_id}/sharding/reject
+  │     POST /api/v2/workflow-runs/{run_id}/sharding/reject
   │     On 200: overlay closes, Planner re-plans without sharding
   │
   └── [Modify]
         Overlay enters edit mode:
           - Add/remove/edit tasks
           - Edit context declarations per task
-        POST /api/v2/cycles/{cycle_id}/sharding/modify
+        POST /api/v2/workflow-runs/{run_id}/sharding/modify
         On 200: overlay re-renders with updated proposal
         User can then approve/reject/modify again
 ```
@@ -818,28 +817,25 @@ Browser opens WebSocket to ws://localhost:7700/events
 | Event | Target panel | Effect |
 |---|---|---|
 | `system.state_changed` | Nav bar status indicator | Update `system_state`, re-render status |
-| `cycle.started` | Active Jobs | Add cycle entry, render DAG progress |
-| `cycle.completed` | Active Jobs | Remove cycle entry, clear gate if present |
-| `cycle.halted` | Active Jobs | Update cycle status to halted |
-| `node.started` | Active Jobs | Update current DAG node, reset progress |
-| `node.completed` | Active Jobs | Update node outcome, advance node |
+| `workflow_run.started` | Active Jobs | Add run entry, render step progress |
+| `workflow_run.completed` | Active Jobs | Remove run entry, clear gate if present |
+| `workflow_run.halted` | Active Jobs | Update run status to halted |
+| `step.started` | Active Jobs | Update current step, reset progress |
+| `step.completed` | Active Jobs | Update step outcome, advance to next step |
 | `dispatch.progress` | Active Jobs | Update agent progress bar and elapsed time |
 | `validation.progress` | Active Jobs | Update per-category validation status |
 | `run.artifact_written` | Active Jobs | Increment artifact count in progress |
-| `gate.awaiting_confirmation` | Actions Required + Overlay | Add CONFIRM gate, auto-open overlay |
-| `cycle.awaiting_sharding_approval` | Actions Required + Overlay + Sharding | Add sharding gate, show panels |
+| `workflow_run.checkpoint_requested` | Actions Required + Overlay (+ Sharding, if SHARDING_APPROVAL) | Add gate, auto-open overlay |
+| `workflow_run.checkpoint_cleared` | Actions Required + Overlay | Clear gate from panel, close overlay |
 | `chat.message` | Chat | Append message to history |
 | `chat.session_changed` | Chat | Update session_open state |
 | `chat.decision_captured` | Chat | Mark decision as captured in history |
 | `link.index_updated` | Graph | Re-fetch links, re-render graph |
 | `graph.node_tagged` | Graph | Update node rendering (add badge/border) |
 | `graph.node_untagged` | Graph | Update node rendering (remove badge/border) |
-| `cycle.scoping_input_requested` | Chat | Switch chat to scoping mode |
 | `task.claimed` | Tasks | Re-fetch tasks |
 | `task.resolved` | Tasks | Re-fetch tasks |
-| `dag.confirm_requested` | Overlay | Populate confirm overlay data |
-| `dag.sharding_requested` | Overlay | Populate sharding overlay data |
-| `dag.snapshot_locked` | Active Jobs | Cycle complete, clear from panel |
+| `workflow_run.committed` | Active Jobs | Run complete, clear from panel |
 | `gate.result` | Active Jobs | Show pass/fail result |
 
 ## API contract
@@ -853,14 +849,15 @@ The UI shell consumes existing daemon endpoints. It does not define new ones.
 | `/api/v2/system/state` | `GET` | Nav bar, Overview | System status, flags, chat state |
 | `/api/v2/tasks` | `GET` | Tasks | All tasks |
 | `/api/v2/tasks/ready` | `GET` | Tasks | Tasks ready to claim (merged) |
-| `/api/v2/cycles/{cycle_id}` | `GET` | Active Jobs, Overlay | Cycle state, flags, DAG state |
-| `/api/v2/cycles/{cycle_id}/dispatch` | `GET` | Active Jobs | Agent progress, validation status |
-| `/api/v2/cycles/{cycle_id}/approve` | `POST` | Confirm Overlay | Approve CONFIRM gate |
-| `/api/v2/cycles/{cycle_id}/revise` | `POST` | Confirm Overlay | Modify plan at CONFIRM |
-| `/api/v2/cycles/{cycle_id}/halt` | `POST` | Confirm Overlay | Halt cycle |
-| `/api/v2/cycles/{cycle_id}/sharding/approve` | `POST` | Sharding Overlay | Approve sharding proposal |
-| `/api/v2/cycles/{cycle_id}/sharding/reject` | `POST` | Sharding Overlay | Reject sharding proposal |
-| `/api/v2/cycles/{cycle_id}/sharding/modify` | `POST` | Sharding Overlay | Modify sharding proposal |
+| `/api/v2/workflow-runs` | `GET` | Active Jobs | List active workflow runs |
+| `/api/v2/workflow-runs/{run_id}` | `GET` | Active Jobs, Overlay | Run state, `awaiting_checkpoint`, step state |
+| `/api/v2/workflow-runs/{run_id}/dispatch` | `GET` | Active Jobs | Agent progress, validation status |
+| `/api/v2/workflow-runs/{run_id}/approve` | `POST` | Confirm Overlay | Approve CONFIRM checkpoint |
+| `/api/v2/workflow-runs/{run_id}/revise` | `POST` | Confirm Overlay | Modify plan at CONFIRM |
+| `/api/v2/workflow-runs/{run_id}/halt` | `POST` | Confirm Overlay | Halt the workflow run |
+| `/api/v2/workflow-runs/{run_id}/sharding/approve` | `POST` | Sharding Overlay | Approve sharding proposal |
+| `/api/v2/workflow-runs/{run_id}/sharding/reject` | `POST` | Sharding Overlay | Reject sharding proposal |
+| `/api/v2/workflow-runs/{run_id}/sharding/modify` | `POST` | Sharding Overlay | Modify sharding proposal |
 | `/api/v2/chat/session/open` | `POST` | Chat | Open chat session |
 | `/api/v2/chat/session` | `DELETE` | Chat | Close chat session |
 | `/api/v2/chat/message` | `POST` | Chat | Send user message |
@@ -877,14 +874,14 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 | Event | Consumed by | Used fields |
 |---|---|---|
 | `system.state_changed` | Nav bar | `current`, `previous` |
-| `cycle.started` | Active Jobs | `cycle_id` |
-| `cycle.completed` | Active Jobs | `cycle_id`, `outcome` |
-| `cycle.halted` | Active Jobs | `cycle_id` |
-| `node.started` | Active Jobs | `node`, `iteration`, `revision` |
-| `node.completed` | Active Jobs | `node`, `outcome`, `duration_ms` |
+| `workflow_run.started` | Active Jobs | `run_id`, `workflow_id` |
+| `workflow_run.completed` | Active Jobs | `run_id`, `outcome` |
+| `workflow_run.halted` | Active Jobs | `run_id` |
+| `step.started` | Active Jobs | `run_id`, `step_id`, `iteration`, `revision` |
+| `step.completed` | Active Jobs | `run_id`, `step_id`, `outcome`, `duration_ms` |
 | `dispatch.progress` | Active Jobs | `agent_name`, `progress`, `elapsed_ms` |
-| `gate.awaiting_confirmation` | Actions Required | `cycle_id`, `plan_summary` |
-| `cycle.awaiting_sharding_approval` | Actions Required, Sharding | `cycle_id`, `task_count` |
+| `workflow_run.checkpoint_requested` | Actions Required, Overlay, Sharding | `run_id`, `step_id`, `plan_summary` or `task_count` |
+| `workflow_run.checkpoint_cleared` | Actions Required, Overlay | `run_id`, `step_id` |
 | `validation.progress` | Active Jobs | `category`, `phase`, `status` |
 | `chat.message` | Chat | `role`, `content`, `sources`, `decision_detected` |
 | `chat.session_changed` | Chat | `session_open` |
@@ -894,10 +891,7 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 | `task.claimed` | Tasks | `task_id` (triggers re-fetch) |
 | `task.resolved` | Tasks | `task_id` (triggers re-fetch) |
 | `gate.result` | Active Jobs | `passed`, `failed_categories`, `iteration` |
-| `dag.confirm_requested` | Overlay | `cycle_id`, `revision`, `plan_summary` |
-| `dag.sharding_requested` | Overlay | `cycle_id`, `task_count` |
-| `dag.snapshot_locked` | Active Jobs | `cycle_id`, `version_id` |
-| `cycle.flag_changed` | Actions Required | `flag`, `value` |
+| `workflow_run.committed` | Active Jobs | `run_id`, `version_id` |
 
 ### Data freshness guarantees
 
@@ -905,11 +899,11 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 |---|---|---|---|
 | System state | Page load | `system.state_changed` WS event | < 1s |
 | Tasks | Page load | `task.claimed`/`task.resolved` WS → re-fetch | < 2s |
-| Cycle state | Page load (if cycling) | `node.*` WS events | < 1s |
-| Dispatch progress | Page load (if cycling) | `dispatch.progress` WS event | < 500ms |
+| Workflow-run state | Page load (if any run active) | `step.*` WS events | < 1s |
+| Dispatch progress | Page load (if any run active) | `dispatch.progress` WS event | < 500ms |
 | Chat messages | Page load (if session open) | `chat.message` WS event | < 200ms |
 | Link index | Page load | `link.index_updated` WS → re-fetch | < 2s |
-| Gate status | `system.state` flags | `cycle.flag_changed` WS event | < 1s |
+| Gate status | Per-run `awaiting_checkpoint` | `workflow_run.checkpoint_requested`/`checkpoint_cleared` WS event | < 1s |
 
 ## Error cases
 
@@ -927,11 +921,11 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 
 | Error | Condition | Response | Recovery |
 |---|---|---|---|
-| `approve_conflict` | `POST /approve` returns 409 (no gate active) | Error toast: "No gate is awaiting approval" + close overlay | Re-fetch system state |
-| `revise_conflict` | `POST /revise` returns 409 (not awaiting confirmation) | Error toast: "CONFIRM gate is no longer active" | Re-fetch cycle state |
-| `halt_conflict` | `POST /halt` returns 409 (not cycling) | Error toast: "Cycle is no longer active" | Re-fetch system state |
-| `sharding_approve_conflict` | `POST /sharding/approve` returns 409 | Error toast: "Sharding approval is no longer pending" | Re-fetch cycle state |
-| `sharding_reject_conflict` | `POST /sharding/reject` returns 409 | Error toast: "Sharding approval is no longer pending" | Re-fetch cycle state |
+| `approve_conflict` | `POST /approve` returns 409 (`not_awaiting_checkpoint`) | Error toast: "No checkpoint is awaiting approval" + close overlay | Re-fetch run state |
+| `revise_conflict` | `POST /revise` returns 409 (`not_awaiting_checkpoint`) | Error toast: "CONFIRM checkpoint is no longer active" | Re-fetch run state |
+| `halt_conflict` | `POST /halt` returns 409 (`halt_not_active`) | Error toast: "Workflow run is no longer active" | Re-fetch run state |
+| `sharding_approve_conflict` | `POST /sharding/approve` returns 409 (`not_awaiting_checkpoint`) | Error toast: "Sharding approval is no longer pending" | Re-fetch run state |
+| `sharding_reject_conflict` | `POST /sharding/reject` returns 409 (`not_awaiting_checkpoint`) | Error toast: "Sharding approval is no longer pending" | Re-fetch run state |
 | `sharding_modify_invalid` | `POST /sharding/modify` returns 400 (invalid task edits) | Highlight invalid fields in overlay. Show validation errors. | User corrects and resubmits |
 | `gate_action_network_error` | REST call fails during gate action | Error toast: "Action failed. Check connection." Overlay stays open. | User retries action |
 
@@ -957,24 +951,25 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 | Error | Condition | Response | Recovery |
 |---|---|---|---|
 | `stale_overlay` | Overlay is open but system state changed (gate cleared externally) | Close overlay. Show info toast: "Gate was resolved externally." | Re-fetch full state |
-| `state_mismatch` | REST response contradicts WebSocket event (e.g., cycle completed but WS shows running) | REST response wins. Log mismatch at console warning level. | Re-fetch all state via REST |
+| `state_mismatch` | REST response contradicts WebSocket event (e.g., run completed but WS shows active) | REST response wins. Log mismatch at console warning level. | Re-fetch all state via REST |
 
 ## Constraints
 
 1. **No business logic in the shell.** The UI shell is a rendering layer. All
-   mutation goes through the daemon REST API. The shell does not compute DAG
-   state, validate plans, or make decisions about what to show — it renders
-   what the daemon tells it.
+   mutation goes through the daemon REST API. The shell does not compute
+   workflow-run step state, validate plans, or make decisions about what to
+   show — it renders what the daemon tells it.
 
 2. **Gate overlays are modal, not navigational.** Gate panels overlay the
    active page. They do not navigate to a new URL. The user's page context is
    preserved underneath the overlay. Dismissing the overlay returns to the
    previous page state.
 
-3. **Chat cannot trigger or modify cycles.** The chat page can observe cycle
-   state and discuss it in freeform Q&A, but it cannot call cycle start, halt,
-   approve, or revise endpoints. These actions are only available on the
-   Overview page's Actions Required panel and in gate overlays.
+3. **Chat cannot trigger or modify workflow runs.** The chat page can observe
+   workflow-run state and discuss it in freeform Q&A, but it cannot call
+   workflow-run start, halt, approve, or revise endpoints. These actions are
+   only available on the Overview page's Actions Required panel and in gate
+   overlays.
 
 4. **Approval happens on Overview, not in chat.** Even when a CONFIRM gate is
    active and the chat page is showing, the approve/modify/halt actions are not
@@ -982,13 +977,15 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
    on Overview via the overlay.
 
 5. **Graph reflects committed state only.** The graph page renders artifacts
-   that have been committed via the SNAPSHOT node. In-progress cycle work
-   (uncommitted plan, build output, test results) does not appear on the graph.
+   that have been committed via a `commit` step. In-progress workflow-run
+   work (uncommitted plan, build output, test results) does not appear on
+   the graph.
 
-6. **Sharding approval is separate from CONFIRM gate.** Two distinct human
-   checkpoints exist in the DAG. The UI surfaces them as separate overlays with
-   different actions. Sharding approval (approve/reject/modify) and CONFIRM
-   gate (approve/modify/halt) are never presented simultaneously.
+6. **Sharding approval is separate from the CONFIRM checkpoint.** Two
+   distinct human checkpoints exist in full-build's step graph. The UI
+   surfaces them as separate overlays with different actions. Sharding
+   approval (approve/reject/modify) and the CONFIRM checkpoint
+   (approve/modify/halt) are never presented simultaneously.
 
 7. **Three pages, flat navigation, no nested routes.** MVP has exactly three
    pages with a flat nav bar. No sub-routes, no breadcrumbs, no nested layout.
@@ -1035,9 +1032,9 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 
 | ID | Question | Impact | Status |
 |---|---|---|---|
-| UI-001 | ~~Where does the user trigger a new cycle from the UI?~~ Resolved by DDR-028: "New cycle" button on Chat page + Overview page. Opens dialog with scope draft selector or quick-start goal. | — | Resolved (DDR-028) |
-| UI-002 | How much detail should the CONFIRM gate overlay render for plan steps and test criteria? Full text or summary cards? | Overlay complexity, information density | Open |
-| UI-003 | Should the cycle graph (SLE-013) be a mode on the Graph page or a separate page/overlay? | Navigation structure, graph page scope | Open |
+| UI-001 | ~~Where does the user trigger a new workflow run from the UI?~~ Resolved by DDR-028: "New workflow run" button on Chat page + Overview page. Opens dialog with workflow/target selector, scope draft selector, or quick-start goal. | — | Resolved (DDR-028) |
+| UI-002 | How much detail should the CONFIRM checkpoint overlay render for plan steps and test criteria? Full text or summary cards? | Overlay complexity, information density | Open |
+| UI-003 | Should the workflow-run graph (SLE-013) be a mode on the Graph page or a separate page/overlay? | Navigation structure, graph page scope | Open |
 | UI-004 | What are the mobile/responsive breakpoints? When does the three-panel layout collapse? | Layout behavior, CSS architecture | Deferred |
 | UI-005 | How should the shell behave when multiple gates arrive in rapid succession (e.g., sharding approval immediately followed by CONFIRM)? | Overlay queueing, user flow | Open |
 | UI-006 | Should the chat page support markdown rendering, code highlighting, and file attachment preview? | Chat feature richness, library dependencies | Open |
@@ -1045,5 +1042,5 @@ daemon-api-endpoints.md are consumed. The shell does not emit WebSocket events
 | UI-008 | Should the shell persist user preferences (layout toggle, panel collapse state) in localStorage or daemon config? | Session continuity | Open |
 | UI-009 | What technology stack should the UI shell use? (React, Svelte, plain HTML, etc.) | Implementation path, bundle size | Open |
 | UI-010 | Should the graph detail panel allow inline artifact editing or remain read-only? | Graph page scope, mutation surface | Open |
-| UI-011 | How should the shell surface the cycle iteration history (past iterations' gate results)? | Debugging UX, information architecture | Open |
+| UI-011 | How should the shell surface a workflow run's iteration history (past iterations' gate results)? | Debugging UX, information architecture | Open |
 | UI-012 | Should there be a notification system for events that happen while the user is on a different page (e.g., gate arrives while on Graph)? | Cross-page awareness, distraction | Open |

@@ -12,7 +12,7 @@ between document authoring and the job dispatch layer, ensuring that every task
 the system creates is coherent, well-scoped, and declares exactly which artifact
 sections its executing agent will need.
 
-The pipeline is not a required step for every cycle. It activates when documents
+The pipeline is not a required step for every workflow run. It activates when documents
 exist in `.sle/project-docs/` or when the user explicitly requests it. When
 bypassed, the context manager operates in inference mode (role-based defaults)
 and the system degrades gracefully.
@@ -32,7 +32,7 @@ Coherence gate — static analysis, blocks on contradictions
 Task sharding — collaborative task decomposition
         │
         ▼
-Sharding approval — human checkpoint (cycle.awaiting_sharding_approval)
+Sharding approval — human checkpoint (workflow_run.awaiting_checkpoint set to the sharding step)
         │
         ▼
 Task creation — TaskStore.createTask per shard
@@ -45,7 +45,7 @@ Job system dispatch — context manager in declared mode
 ```
 
 **Canonical types:** [../reference/types.md](../reference/types.md) §11.
-**State machine:** [state-machine.md](state-machine.md) §Intra-cycle transitions.
+**State machine:** [state-machine.md](state-machine.md) §Per-run transitions.
 **DDR decisions:** [../decisions/DECISION-BRIEFS.md](../decisions/DECISION-BRIEFS.md).
 
 ---
@@ -79,7 +79,7 @@ interface IntakeDocument {
 | `filename` | Relative to `.sle/project-docs/`. |
 | `status` | Lifecycle state. `ungraphed` → `promoted` → `superseded`. |
 | `sections` | Parsed heading structure with token estimates per section. |
-| `promoted_to_node` | Set when the document enters a cycle's context for the first time. |
+| `promoted_to_node` | Set when the document enters a workflow run's context for the first time. |
 
 ### DocumentSection
 
@@ -145,8 +145,8 @@ interface ShardingProposal {
 
 The collaborative output of the sharding phase. Stored at
 `.sle/sharding-proposal.yaml`. Only created after the coherence gate passes.
-Mutually exclusive with non-sharded plan execution — a cycle either shards or
-it does not.
+Mutually exclusive with non-sharded plan execution — a workflow run either
+shards or it does not.
 
 ### SLETask
 
@@ -246,26 +246,26 @@ system. It is never mandatory.
 
 | Trigger | Mode | Intake runs? | Context mode |
 |---------|------|-------------|--------------|
-| `sle start` + docs in `project-docs/` | Inline (auto) | Yes, within PLAN node | Declared after approval |
-| `sle start --intake` | Forced | Yes, within PLAN node | Declared after approval |
-| `sle start --no-intake` | Bypassed | No | Inferred |
-| `sle start` + no docs | Bypassed (auto) | No | Inferred |
+| `sle run` + docs in `project-docs/` | Inline (auto) | Yes, within PLAN step | Declared after approval |
+| `sle run --intake` | Forced | Yes, within PLAN step | Declared after approval |
+| `sle run --no-intake` | Bypassed | No | Inferred |
+| `sle run` + no docs | Bypassed (auto) | No | Inferred |
 | `sle intake` standalone | Pre-prime | Yes, dedicated session | N/A (primes for later) |
 | `sle intake --auto-approve` | Pre-prime (non-interactive) | Yes | N/A |
 
-In inline mode, the intake sub-phase runs inside the PLAN node. It is not a
-separate DAG node — the Planner includes intake as part of its planning pass.
+In inline mode, the intake sub-phase runs inside the PLAN step. It is not a
+separate step — the Planner includes intake as part of its planning pass.
 When a sharding proposal emerges from the Planner, the `SHARDING_APPROVAL`
-DAG node activates (DDR-026).
+step activates (DDR-026).
 
 In bypassed mode, the context manager operates in inferred mode for the entire
-cycle. No coherence check runs, no sharding proposal is produced, and no
+run. No coherence check runs, no sharding proposal is produced, and no
 `TaskContextDeclaration` is attached to any task.
 
 ### Pipeline step 1 — Document intake
 
 Documents enter the system as free-floating files in `.sle/project-docs/`. They
-start as `ungraphed` — no node owns them, no cycle references them.
+start as `ungraphed` — no node owns them, no workflow run references them.
 
 ```
 .sle/
@@ -289,13 +289,14 @@ builds an `IntakeDocument` record for each file:
 
 **Promotion:**
 
-When a document enters a cycle's context — either because the Planner references
-it during intake or the user explicitly mentions it — the daemon promotes it:
+When a document enters a workflow run's context — either because the Planner
+references it during intake or the user explicitly mentions it — the daemon
+promotes it:
 
 1. Create a document node at `doc:{id}` in the project graph.
 2. Set `IntakeDocument.status` to `promoted`.
 3. Set `IntakeDocument.promoted_to_node` to the new node ID.
-4. All downstream nodes in that cycle auto-link back to the document.
+4. All downstream nodes in that run auto-link back to the document.
 5. The document receives backlinks from every node that references it.
 
 Promotion is automatic on use. The user does not manually promote documents.
@@ -429,10 +430,12 @@ Layer 2 coherence check on proposed tasks
 ### Pipeline step 4 — Sharding approval
 
 Sharding approval is a separate human checkpoint before the CONFIRM gate
-(DDR-026). It uses the `cycle.awaiting_sharding_approval` flag on the cycle
-record. `meta.status` stays `cycling`.
+(DDR-026). It uses `workflow_run.awaiting_checkpoint` on the run record,
+set to the sharding step's id. `meta.status` is unaffected — system-wide
+status only tracks `idle`/`discovering` (DDR-031); the pause is entirely a
+per-run concern.
 
-**DAG placement:**
+**Step placement:**
 
 ```
 ... → PLAN → TEST → SHARDING_APPROVAL → CONFIRM → BUILD → ...
@@ -446,14 +449,14 @@ record. `meta.status` stays `cycling`.
 > the sharded case — once during initial TEST and again after sharding modifies
 > task boundaries.
 
-The `SHARDING_APPROVAL` DAG node only activates when the Planner produced a
-sharding proposal. When the cycle runs without intake (bypassed mode), this
-node is skipped entirely.
+The `SHARDING_APPROVAL` step only activates when the Planner produced a
+sharding proposal. When the run executes without intake (bypassed mode), this
+step is skipped entirely.
 
 **Approval flow:**
 
 1. The Planner produces a `ShardingProposal`.
-2. The daemon sets `cycle.awaiting_sharding_approval = true`.
+2. The daemon sets `workflow_run.awaiting_checkpoint` to the sharding step's id.
 3. The Facilitator enters decision mode and presents the proposal.
 4. The user reviews task boundaries, context declarations, and dependencies.
 
@@ -589,7 +592,7 @@ assembleDeclared(task, role, config):
 
 When no `TaskContextDeclaration` exists, the context manager falls back to
 role-based slice defaults defined in the context manager spec. This is the
-path for cycles that bypass intake.
+path for workflow runs that bypass intake.
 
 ```
 assembleInferred(role, config):
@@ -609,7 +612,7 @@ resolveMode(task?, role):
     return 'inferred'
 ```
 
-The mode is per-invocation, not per-cycle. A cycle with multiple tasks may use
+The mode is per-invocation, not per-run. A workflow run with multiple tasks may use
 declared mode for some agent calls and inferred mode for others.
 
 ### Staleness tracking
@@ -652,7 +655,7 @@ ungraphed → promoted → superseded
 
 | Status | Meaning | Transition trigger |
 |--------|---------|-------------------|
-| `ungraphed` | Exists in `project-docs/` but not yet referenced by any cycle | → `promoted` on first use |
+| `ungraphed` | Exists in `project-docs/` but not yet referenced by any workflow run | → `promoted` on first use |
 | `promoted` | Has a graphed node; backlinks from consuming nodes | → `superseded` when replaced |
 | `superseded` | Replaced by a newer document; preserved for history | Terminal |
 
@@ -684,7 +687,7 @@ staleness on retry.
 
 ### Run intake pipeline
 
-Triggers the intake pipeline as a standalone operation, outside a cycle.
+Triggers the intake pipeline as a standalone operation, outside a workflow run.
 
 ```
 POST /api/v2/intake
@@ -706,7 +709,7 @@ Response 409:
 {
   "error":  "session_conflict",
   "state":  SystemStatus,
-  "reason": "Cannot run intake while a cycle is active."
+  "reason": "Cannot run intake while a workflow run targeting the same scope is active."
 }
 ```
 
@@ -736,7 +739,7 @@ Response 404:
 ```
 
 Returns the most recent coherence report, whether from a standalone intake run
-or from the intake sub-phase within a cycle.
+or from the intake sub-phase within a workflow run.
 
 ### Resolve coherence finding
 
@@ -823,8 +826,8 @@ not updated.
 
 ### Sharding approval actions
 
-These endpoints mirror the DAG-level sharding approval endpoints in
-dag-execution.md but are scoped to standalone intake sessions.
+These endpoints mirror the checkpoint-level sharding approval endpoints in
+workflow-execution.md but are scoped to standalone intake sessions.
 
 ```
 POST /api/v2/intake/sharding/approve
@@ -1001,7 +1004,7 @@ event: intake.task_stale
 
 | Error | Condition | Response |
 |-------|-----------|----------|
-| `session_conflict` | Standalone intake attempted while a cycle is active | 409 with current system state |
+| `session_conflict` | Standalone intake attempted while a workflow run targeting the same scope is active | 409 with current system state |
 | `intake_not_configured` | TaskStore provider not configured at init | Halt. Run `sle init` to configure. |
 | `stale_proposal` | Sharding approval attempted on a proposal whose coherence report is stale (documents changed) | Re-run coherence gate automatically. If still clean, proceed. If not, present new findings. |
 
@@ -1016,11 +1019,12 @@ event: intake.task_stale
 2. **Sharding before CONFIRM.** Sharding approval is a separate checkpoint
    that runs before the CONFIRM gate, not embedded within it (DDR-026).
 
-3. **Flag exclusivity.** At most one of `cycle.awaiting_confirmation` and
-   `cycle.awaiting_sharding_approval` may be `true` at a time.
+3. **Checkpoint exclusivity.** `WorkflowRun.awaiting_checkpoint` is a single
+   nullable pointer — a run can be paused at the CONFIRM checkpoint or the
+   sharding checkpoint, never both at once, by construction.
 
-4. **Flag scope.** Both flags are scoped to the active cycle. They reset to
-   `false` when the cycle ends.
+4. **Checkpoint scope.** `awaiting_checkpoint` is scoped to its own run. It
+   resets to `null` when the run ends.
 
 5. **One implementation target per task.** Each task owns exactly one scope.
    Two tasks must not declare the same scope.
@@ -1057,7 +1061,7 @@ event: intake.task_stale
     entries.
 
 15. **Document promotion is automatic.** Users do not manually promote
-    documents. Promotion happens on first use in a cycle.
+    documents. Promotion happens on first use in a workflow run.
 
 16. **Stale tasks are not dispatched.** The job system checks `task.stale`
     before dispatching. A stale task requires user action before it can proceed.
