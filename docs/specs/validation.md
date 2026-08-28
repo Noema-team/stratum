@@ -1,14 +1,17 @@
 # Validation
 
-**Type:** spec · **Status:** draft · **Updated:** 2026-04-17
-**Depends on:** DDR-022, DDR-023, DDR-028
+**Type:** spec · **Status:** draft · **Updated:** 2026-06-21
+**Depends on:** DDR-022, DDR-023, DDR-028, DDR-031, [step-kind-reference.md](step-kind-reference.md), [workflow-execution.md](workflow-execution.md)
 **Source material:** SLE-003 (renamed phases), SLE-022
 
 ## Overview
 
-The validation system determines whether a cycle's implementation meets its
-requirements. It runs three sequential sub-phases inside the EXEC node, then
-a deterministic VALIDATION gate evaluates the combined results.
+The validation system determines whether a `full-build` run's implementation
+meets its requirements. It runs three sequential sub-phases inside the EXEC
+step, then a deterministic gate — the `review` step configured as
+`full-build`'s VALIDATION_GATE (Step 10 in
+[step-kind-reference.md](step-kind-reference.md) Part 2) — evaluates the
+combined results.
 
 Validation is agent-separated, hybrid-TDD, tri-phase, and container-isolated:
 
@@ -16,7 +19,7 @@ Validation is agent-separated, hybrid-TDD, tri-phase, and container-isolated:
    Builder writes code to satisfy those tests. Neither sees the other's output
    during generation.
 
-2. **Hybrid TDD.** Tests are generated before the BUILD phase (from
+2. **Hybrid TDD.** Tests are generated before the BUILD step (from
    requirements), not during or after. The Builder receives the test suite as
    a contract it must satisfy.
 
@@ -28,7 +31,11 @@ Validation is agent-separated, hybrid-TDD, tri-phase, and container-isolated:
    per iteration. The container is destroyed after results are captured.
 
 The gate is deterministic — a pure function of sub-phase results with no LLM
-involvement, no user input, and no external services.
+involvement, no user input, and no external services. This is true of every
+`review`-kind step, not just VALIDATION_GATE, but VALIDATION_GATE is the only
+`review` step `full-build` declares (see
+[step-kind-reference.md](step-kind-reference.md) Part 1 for the generic
+`review` shape).
 
 ### Sub-phase naming (G10)
 
@@ -40,15 +47,20 @@ The original SLE-003 names "Phase 0 / Phase 1 / Phase 2" are replaced:
 | Phase 1 | `llm-check` | Semantic correctness via LLM reasoning |
 | Phase 2 | `exec-check` | Functional correctness via executable tests |
 
-### Relationship to DAG
+### Relationship to full-build's step graph
 
-Validation occurs at two DAG nodes:
+Validation occurs at two of `full-build`'s steps (DDR-031):
 
-1. **EXEC** — runs all three sub-phases inside the Docker container
-2. **VALIDATION_GATE** — evaluates results deterministically, no LLM
+1. **EXEC** (`execute` kind) — runs all three sub-phases inside the Docker
+   container
+2. **VALIDATION_GATE** (`review` kind) — evaluates results deterministically,
+   no LLM
 
-On gate pass → EVALUATE → SUMMARISE → SNAPSHOT. On fail → DEBUG → iteration
-loop back to PLAN. See [dag-execution.md](dag-execution.md) for the full flow.
+On gate pass → EVALUATE → SUMMARISE → SNAPSHOT. On fail → DEBUG (the
+`produce` step named by VALIDATION_GATE's `on_fail.target_step_id`) →
+iteration loop back to PLAN. See
+[step-kind-reference.md](step-kind-reference.md) Part 2 and
+[workflow-execution.md](workflow-execution.md) for the full step flow.
 
 ---
 
@@ -188,19 +200,25 @@ context for the Debugger and Planner.
 
 ```typescript
 interface FailureReport {
-  cycle: number
+  run_id: string
+  workflow_id: string
   iteration: number
   run_dir: string
-  run_id: string
   quick_summary: string
   failed_categories: string[]
   passed_categories: string[]
 }
 ```
 
-`run_dir` points to `.sle/runs/{run_id}/`. The context manager reads the
-manifest and context-pack from this directory directly. The report itself is a
-lightweight pointer with an orientation summary.
+This matches the canonical `FailureReport` shape in
+[step-kind-reference.md](step-kind-reference.md) and
+[../reference/types.md](../reference/types.md) §4 — `workflow_id` identifies
+which `WorkflowDefinition` produced the run (`full-build` for every run this
+spec describes), replacing the old project-wide `cycle` counter, which cannot
+identify a run uniquely once multiple workflow runs execute concurrently
+(DDR-031). `run_dir` points to `.sle/runs/{run_id}/`. The context manager
+reads the manifest and context-pack from this directory directly. The report
+itself is a lightweight pointer with an orientation summary.
 
 This replaces the SLE-003 inline version which carried `static_analysis` and
 `failed_categories` detail inline.
@@ -210,7 +228,7 @@ This replaces the SLE-003 inline version which carried `static_analysis` and
 ```typescript
 interface RunManifest {
   run_id: string
-  cycle: number
+  workflow_id: string
   iteration: number
   timestamp: string
   outcome: 'passed' | 'failed'
@@ -230,8 +248,9 @@ interface RunManifest {
 }
 ```
 
-Produced by the gate node after evaluating results. The context manager reads
-this first to locate all other artifacts.
+Produced by the VALIDATION_GATE `review` step after evaluating results. The
+context manager reads this first to locate all other artifacts. `workflow_id`
+replaces the old `cycle` field for the same reason as `FailureReport` above.
 
 ### Category run result
 
@@ -375,7 +394,7 @@ if static-check passed:
 
     llm-check and exec-check run in parallel per category
 
-EXEC node complete → VALIDATION_GATE evaluates
+EXEC step complete → VALIDATION_GATE (review step) evaluates
 ```
 
 ### static-check — deterministic mechanical verification
@@ -466,7 +485,7 @@ What it catches:
 
 ```
 .sle/runs/
-  {run_id}/                          ← c{cycle}-i{iteration}-{ISO8601}
+  {run_id}/                          ← {workflow_id}-{run_seq}-i{iteration}-{ISO8601}
     manifest.json                    ← always present
     ai/
       context-pack.md                ← always present
@@ -489,12 +508,14 @@ What it catches:
 
 ### context-pack.md — deterministic AI narrative
 
-Generated by the gate node from structured outputs. No LLM call. Assembled
-section by section:
+Generated by the VALIDATION_GATE `review` step from structured outputs. No
+LLM call. Assembled section by section:
 
-1. **Charter summary** — cycle-charter summary as the first section (DDR-028).
-   Gives the LLM validator clear context about what the cycle intended to
-   accomplish.
+1. **Charter summary** — the run's charter-equivalent artifact summary as the
+   first section (DDR-028). For `full-build`, this is the SCOPING-produced
+   charter artifact (see [artifact-registry.md](../reference/artifact-registry.md)
+   for the full-build-specific naming convention). Gives the LLM validator
+   clear context about what the run intended to accomplish.
 2. **Summary** — counts from `tests/summary.json`
 3. **Failed categories** — full detail: test results, metrics, trace summary,
    log excerpt (errors/warnings only, last 20 lines)
@@ -506,8 +527,9 @@ this when assembling failure context for the Planner on retry iterations.
 
 ### The VALIDATION gate
 
-The gate is DAG node `VALIDATION_GATE`. Deterministic: pure function of
-sub-phase results.
+The gate is `full-build`'s VALIDATION_GATE step — a `review`-kind step (Step
+10 in [step-kind-reference.md](step-kind-reference.md) Part 2). Deterministic:
+pure function of sub-phase results.
 
 #### Pass condition
 
@@ -549,7 +571,7 @@ Generate: `manifest.json`, `context-pack.md`, `tests/summary.json`,
 `reports/validation-latest.html`, `scripts/run-tests.ts` (user-runnable),
 `reports/changelog-{version}.md`.
 
-Destroy container → DAG → EVALUATE → SUMMARISE → SNAPSHOT.
+Destroy container → proceed to EVALUATE → SUMMARISE → SNAPSHOT (`commit` step).
 
 #### On FAIL
 
@@ -558,10 +580,11 @@ Update `map.yaml`: `gate.last_outcome: failed`, failed categories
 
 Generate: `manifest.json`, `context-pack.md`, `tests/summary.json`.
 
-Construct `FailureReport`: `{ cycle, iteration, run_dir, run_id, quick_summary,
-failed_categories, passed_categories }`.
+Construct `FailureReport`: `{ run_id, workflow_id, iteration, run_dir,
+quick_summary, failed_categories, passed_categories }`.
 
-Destroy container → DAG → DEBUG → `iteration++`. If
+Destroy container → proceed to DEBUG (the `produce` step named by
+VALIDATION_GATE's `on_fail.target_step_id`) → `iteration++`. If
 `iteration < max_iterations` → PLAN (FailureReport injected). If
 `iteration >= max_iterations` → HALT (`exit.yaml.on_cap_hit`).
 
@@ -582,7 +605,7 @@ proportional to what failed.
 
 1. Gate writes each category's `CategoryResult` to the run directory
 2. On next iteration, context manager loads passing categories' results
-3. EXEC node only runs sub-phases for `failed` or `pending` categories
+3. EXEC step only runs sub-phases for `failed` or `pending` categories
 4. Gate merges cached results with new results before evaluating
 
 **What is cached vs not:**
@@ -594,8 +617,8 @@ proportional to what failed.
 
 **Invalidation:**
 
-- Scoped to the current cycle
-- Invalidated on plan revision (CONFIRM modify)
+- Scoped to the current workflow run
+- Invalidated on plan revision (CONFIRM `checkpoint` modify)
 - Invalidated on structural failure escalation (DEBUG → DESIGN)
 - Survives iteration increments (normal retry)
 
@@ -655,10 +678,13 @@ to `validation.yaml`. Examples: `accessibility`, `data_integrity`,
 
 ### Per-category llm-check artifact slices
 
-The cycle-charter (`doc:cycle-charter`) is available as additional context for
-all llm-check evaluations (DDR-028). The charter provides scope and purpose
-context that helps the LLM judge whether outputs meet the cycle's goals. It is
-loaded as a `summary_only` slice by default for llm-check.
+The charter artifact (`doc:cycle-charter` in `full-build`'s SCOPING-step output
+contract — a full-build-specific ref pattern, not a universal one; see
+[artifact-registry.md](../reference/artifact-registry.md)) is available as
+additional context for all llm-check evaluations (DDR-028). The charter
+provides scope and purpose context that helps the LLM judge whether outputs
+meet the run's goals. It is loaded as a `summary_only` slice by default for
+llm-check.
 
 | Category | Artifacts | Focus |
 |---|---|---|
@@ -687,11 +713,11 @@ requirement-to-test mapping, pass criteria.
 
 **Hard constraints:** Never sees Builder implementation or Designer architecture.
 Scripts are self-contained (no LLM/network calls). Each test tagged with
-requirement ID. Does not run tests — EXEC node handles execution.
+requirement ID. Does not run tests — the EXEC `execute` step handles execution.
 
 **Test script contract:** JSON to stdout, exit 0/1, tagged with `testId` and
-`requirementId`, user-runnable after cycle. Builder receives scripts as a
-contract — may instrument but may not modify pass criteria.
+`requirementId`, user-runnable after the run completes. Builder receives
+scripts as a contract — may instrument but may not modify pass criteria.
 
 ---
 
@@ -700,7 +726,7 @@ contract — may instrument but may not modify pass criteria.
 ### Get validation status
 
 ```
-GET /api/v2/cycles/{cycle_id}/validation
+GET /api/v2/workflow-runs/{run_id}/validation
 
 Response 200:
 {
@@ -728,13 +754,16 @@ Response 200:
 }
 
 Response 404:
-{ "error": "cycle_not_found" }
+{ "error": "run_not_found" }
 ```
+
+This endpoint is meaningful only for runs of a workflow that declares a
+VALIDATION_GATE-equivalent `review` step — currently only `full-build`.
 
 ### Get run artifacts
 
 ```
-GET /api/v2/cycles/{cycle_id}/runs/{run_id}
+GET /api/v2/workflow-runs/{run_id}/runs/{exec_run_id}
 
 Response 200:
 {
@@ -744,13 +773,17 @@ Response 200:
 }
 
 Response 404:
-{ "error": "run_not_found" }
+{ "error": "exec_run_not_found" }
 ```
+
+`{run_id}` identifies the `WorkflowRun`; `{exec_run_id}` identifies one
+EXEC-step execution within it (a single iteration may produce multiple EXEC
+runs via rerun).
 
 ### Get run artifact file
 
 ```
-GET /api/v2/cycles/{cycle_id}/runs/{run_id}/files/{path}
+GET /api/v2/workflow-runs/{run_id}/runs/{exec_run_id}/files/{path}
 
 Response 200:
   Content-Type based on file extension
@@ -766,7 +799,7 @@ Response 404:
 ### Rerun categories
 
 ```
-POST /api/v2/cycles/{cycle_id}/validation/rerun
+POST /api/v2/workflow-runs/{run_id}/validation/rerun
 
 Request:
 { "categories": string[] }
@@ -775,7 +808,7 @@ Response 200:
 { "run_id": string, "categories": string[], "status": "started" }
 
 Response 409:
-{ "error": "not_cycling", "reason": "Can only rerun validation during an active cycle." }
+{ "error": "run_not_active", "reason": "Can only rerun validation while the workflow run is active." }
 
 Response 422:
 { "error": "invalid_categories", "unknown": string[], "valid_categories": string[] }
@@ -788,13 +821,16 @@ from the previous run are preserved (category caching applies).
 
 | Event | Payload | When |
 |---|---|---|
-| `run.phase_completed` | `cycle_id, run_id, phase, passed, timestamp` | Each sub-phase finishes |
-| `run.category_completed` | `cycle_id, run_id, category, passed, timestamp` | Each category finishes |
-| `run.manifest_ready` | `cycle_id, run_id, manifest` | Manifest written |
-| `run.context_pack_ready` | `cycle_id, run_id` | Context pack written |
-| `gate.result` | `cycle_id, passed, failed_categories, iteration, timestamp` | Gate evaluates |
+| `run.phase_completed` | `run_id, exec_run_id, phase, passed, timestamp` | Each sub-phase finishes |
+| `run.category_completed` | `run_id, exec_run_id, category, passed, timestamp` | Each category finishes |
+| `run.manifest_ready` | `run_id, exec_run_id, manifest` | Manifest written |
+| `run.context_pack_ready` | `run_id, exec_run_id` | Context pack written |
+| `gate.result` | `run_id, passed, failed_categories, iteration, timestamp` | VALIDATION_GATE `review` step evaluates |
 
-Full event catalogue: [../reference/websocket-events.md](../reference/websocket-events.md).
+`gate.result` is the same event named in
+[workflow-execution.md](workflow-execution.md)'s WebSocket events table —
+emitted by any `review` step, not exclusive to validation. Full event
+catalogue: [../reference/websocket-events.md](../reference/websocket-events.md).
 
 ---
 
@@ -810,18 +846,23 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 | `llm_provider_error` | `llm-check` | Provider 5xx or rate limit | Retry (3x backoff), then halt |
 | `test_assertion_failure` | `exec-check` | Test case failed | Category failed |
 | `test_runtime_error` | `exec-check` | Script crash or timeout | Category failed, error captured |
-| `test_script_missing` | `exec-check` | Script not found in container | Halt cycle |
-| `docker_unavailable` | `static-check` | Docker daemon not running | Halt cycle |
-| `container_start_failed` | `static-check` | Container creation failed | Halt cycle |
+| `test_script_missing` | `exec-check` | Script not found in container | Halt run |
+| `docker_unavailable` | `static-check` | Docker daemon not running | Halt run |
+| `container_start_failed` | `static-check` | Container creation failed | Halt run |
 
 ### Gate errors
 
 | Error | Condition | Response |
 |---|---|---|
-| `invalid_transition` | Gate evaluation outside EXEC completion | 409 |
-| `missing_category_result` | Active category with no result | Halt cycle |
+| `invalid_transition` | Gate evaluation outside EXEC step completion | 409 |
+| `missing_category_result` | Active category with no result | Halt run |
 | `manifest_write_failed` | Cannot write manifest.json | Halt, preserve partial |
 | `context_pack_generation_failed` | Cannot assemble context-pack | Proceed without it |
+
+These errors halt the `WorkflowRun` (see
+[workflow-execution.md](workflow-execution.md) and
+[state-machine.md](state-machine.md) for halt semantics) — they do not affect
+any other concurrently executing workflow run.
 
 ---
 
@@ -885,11 +926,11 @@ Full event catalogue: [../reference/websocket-events.md](../reference/websocket-
 | ID | Question | Impact | Status |
 |---|---|---|---|
 | VAL-001 | Should `static-check` produce per-file granularity in the context-pack, or is the aggregate count sufficient for the Planner? | Planner context window, fix specificity | Open |
-| VAL-002 | What is the maximum wall-clock timeout for the entire EXEC node before forcing a halt? | Resource bounding | Open |
+| VAL-002 | What is the maximum wall-clock timeout for the entire `execute` step before forcing a halt? | Resource bounding | Open |
 | VAL-003 | Should `llm-check` results be cacheable across iterations if the artifact slice has not changed? | LLM cost optimization | Open |
 | VAL-004 | Should a category that consistently fails with the same root cause across iterations escalate differently? | Iteration efficiency | Open |
-| VAL-005 | Should the user be able to waive a failing category for the current cycle without using `force_pass`? | User control granularity | Open |
-| VAL-006 | DDR-023: When should automatic gap detection run during validation? Possible timing: after `static-check` fail, after gate fail, or as part of the DEBUG node. | Gap detection timing, iteration integration | Resolved by DDR-028: gap detection runs during SCOPING node's guided discussion, not during validation |
+| VAL-005 | Should the user be able to waive a failing category for the current workflow run without using `force_pass`? | User control granularity | Open |
+| VAL-006 | DDR-023: When should automatic gap detection run during validation? Possible timing: after `static-check` fail, after gate fail, or as part of the failure-path `produce` step. | Gap detection timing, iteration integration | Resolved by DDR-028: gap detection runs during SCOPING's guided discussion, not during validation |
 | VAL-007 | Should run artifact directories be gitignored by default, or committed as project history? | Repository size, audit persistence | Open |
 | VAL-008 | What happens when `llm-check` and `exec-check` disagree for the same category (LLM says pass, tests fail, or vice versa)? | Gate semantics, trust hierarchy | Open |
 | VAL-009 | Should the Tester have access to previous iteration FailureReports to avoid regenerating tests that fail the same way? | Tester context scope | Open |

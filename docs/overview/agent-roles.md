@@ -1,7 +1,7 @@
 # Agent Roles
 
 **Type:** overview · **Status:** draft · **Updated:** 2026-04-17
-**Related:** [cycle-model.md](cycle-model.md), [../reference/artifact-registry.md](../reference/artifact-registry.md)
+**Related:** [workflow-model.md](workflow-model.md), [../reference/artifact-registry.md](../reference/artifact-registry.md)
 
 ## What this is
 
@@ -53,41 +53,43 @@ Two groups exist:
 | Group | Session types | Roles |
 |-------|---------------|-------|
 | **Discovery + Chat** | `sle discover`, `sle chat` | Facilitator |
-| **Cycle** | `sle start "intent"` | Explorer, Designer, Planner, Tester, Builder, Debugger, Evaluator, Critic, Historian |
+| **Workflow run** | Chat-routed, or `sle run <workflow-id> <target>` | Explorer, Designer, Planner, Tester, Builder, Debugger, Evaluator, Critic, Historian |
 
-The Facilitator never participates in cycle nodes. Cycle roles never
-participate in discovery or chat. The only overlap is context: cycle roles
-read the artifacts the Facilitator produced during discovery.
+The Facilitator never participates in workflow steps. Workflow-run roles
+never participate in discovery or chat. The only overlap is context:
+workflow-run roles read the artifacts the Facilitator produced during
+discovery.
 
-### Role isolation is enforced at the DAG level
+### Role isolation is enforced at the step level
 
-The DAG (defined in [cycle-model.md](cycle-model.md)) controls which nodes
-execute and in what order. Each node activates exactly one agent role
-(except DESIGN, which activates Designer and optionally Critic). The daemon
-assembles the context slice for each role before the LLM call. The agent
-never chooses its own inputs.
+The step-graph (defined per workflow in
+[workflow-model.md](workflow-model.md), worked example: `full-build`)
+controls which steps execute and in what order. Each step activates exactly
+one agent role (except DESIGN, which activates Designer and optionally
+Critic). The daemon assembles the context slice for each role before the
+LLM call. The agent never chooses its own inputs.
 
 ### Outputs become the next role's inputs
 
-The DAG is a data-flow pipeline. The Designer's output becomes the Planner's
-input, the Planner's output becomes the Tester's input, and so on. A late
-change to one role's output format cascades downstream, making artifact
-ownership a first-class concern.
+The step-graph is a data-flow pipeline. The Designer's output becomes the
+Planner's input, the Planner's output becomes the Tester's input, and so on.
+A late change to one role's output format cascades downstream, making
+artifact ownership a first-class concern.
 
 ## The ten roles — summary
 
-| Role | DAG node(s) | Session | Primary purpose | Produces |
+| Role | Step(s) (full-build) | Session | Primary purpose | Produces |
 |------|-------------|---------|-----------------|----------|
 | Facilitator | — (discovery/chat) | Discovery, Chat | Ask questions, capture decisions | Discovery docs, decisions |
-| Explorer | SCOPING (conditional) | Cycle | Research design space, run spikes | Research findings |
-| Designer | DESIGN | Cycle | Define what to build | `architecture.md`, `requirements.md` |
-| Planner | PLAN | Cycle | Define how to build it | `plan.md`, `test-plan.md` |
-| Tester | TEST | Cycle | Write unbiased test scripts | Test scripts per category |
-| Builder | BUILD | Cycle | Implement code to satisfy tests | Implementation code |
-| Debugger | DEBUG (on gate fail) | Cycle | Diagnose root cause of failures | Fix recommendation |
-| Evaluator | EVALUATE | Cycle | Judge if intent was satisfied | `evaluation.md` |
-| Critic | DESIGN (post-Designer) | Cycle | Review architecture for issues | Blocking issues, warnings |
-| Historian | HISTORY | Cycle | Record audit trail | `decisions.md` entries |
+| Explorer | SCOPING's gather step (conditional) | Workflow run | Research design space, run spikes | Research findings |
+| Designer | DESIGN (produce) | Workflow run | Define what to build | `architecture.md`, `requirements.md` |
+| Planner | PLAN (produce) | Workflow run | Define how to build it | `plan.md`, `test-plan.md` |
+| Tester | TEST (produce) | Workflow run | Write unbiased test scripts | Test scripts per category |
+| Builder | BUILD (produce) | Workflow run | Implement code to satisfy tests | Implementation code |
+| Debugger | VALIDATION_GATE's `on_fail` produce step | Workflow run | Diagnose root cause of failures | Fix recommendation |
+| Evaluator | EVALUATE (produce) | Workflow run | Judge if intent was satisfied | `evaluation.md` |
+| Critic | DESIGN (post-Designer, review) | Workflow run | Review architecture for issues | Blocking issues, warnings |
+| Historian | SNAPSHOT's `logs_decision: true` commit | Workflow run | Record audit trail | `decisions.md` entries |
 
 ## Role definitions
 
@@ -97,8 +99,8 @@ ownership a first-class concern.
 questions, surfaces context, structures answers, and captures decisions. It
 does not plan, build, or evaluate.
 
-**DAG node:** None. The Facilitator operates outside the cycle DAG, in
-discovery and chat sessions.
+**Step:** None. The Facilitator operates outside any workflow's step-graph,
+in discovery and chat sessions.
 
 **Reads:**
 
@@ -107,7 +109,7 @@ discovery and chat sessions.
 | `agent.md` + `map.yaml` | Bootstrap pair — every call |
 | Discovery documents (in progress) | During discovery rounds |
 | `.sle/chat-history.jsonl` | Chat session resumption |
-| Cycle artifacts (read-only) | Decision mode: architecture, plan, evaluation |
+| Workflow-run artifacts (read-only) | Decision mode: architecture, plan, evaluation |
 
 **Produces:**
 
@@ -125,13 +127,13 @@ discovery and chat sessions.
 
 **Key constraints:**
 
-- Cannot write or modify code, start or stop cycles, or modify rule files
-  or `map.yaml`.
-- Cannot modify cycle artifacts (architecture, plan, implementation).
+- Cannot write or modify code, start or stop workflow runs, or modify rule
+  files or `map.yaml`.
+- Cannot modify workflow-run artifacts (architecture, plan, implementation).
 - Two operational modes (DDR-020):
-  - **Chat mode** — freeform Q&A with project and cycle context
-  - **Decision mode** — triggered by pending actions (gates, approvals);
-    user can act, ask questions, or add context before deciding
+  - **Chat mode** — freeform Q&A with project and workflow-run context
+  - **Decision mode** — triggered by pending actions (checkpoints, gates,
+    approvals); user can act, ask questions, or add context before deciding
 
 **DDR changes:** DDR-020 redefined the Facilitator from a single-mode
 discovery role into a dual-mode role (chat + decision). The context manager
@@ -143,16 +145,16 @@ now assembles different slices depending on which mode is active.
 before committing to a design. The Explorer produces research findings that
 inform the Designer's architecture decisions.
 
-**DAG node:** Triggered by SCOPING (conditional, before DESIGN).
+**Step:** Triggered by SCOPING's gather step (conditional, before DESIGN).
 
 **Reads:**
 
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From SCOPING node (via cycle-charter) |
+| User intent | From SCOPING's gather step (via cycle-charter) |
 | Discovery documents | Full set |
-| Prior evaluation | If revisiting a cycle |
+| Prior evaluation | If revisiting a workflow run |
 
 **Produces:**
 
@@ -167,7 +169,7 @@ inform the Designer's architecture decisions.
   based on heuristics or planning depth.
 - Interactive process: rounds of discussion between user and Explorer,
   guided by the user's questions.
-- Runs before DESIGN, between cycles, or on demand.
+- Runs before DESIGN, between workflow runs, or on demand.
 - Does not produce architecture, plans, or implementation.
 - Cost is user-visible and user-controlled.
 - Automatic gap detection is a separate system — not the Explorer (DDR-023).
@@ -183,14 +185,14 @@ user intent and discovery context into an architecture and a requirements
 document. It owns the "what" — system shape, component boundaries, and the
 contract between intent and implementation.
 
-**DAG node:** DESIGN.
+**Step:** DESIGN (produce).
 
 **Reads:**
 
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From SCOPING node (via cycle-charter) |
+| User intent | From SCOPING's gather step (via cycle-charter) |
 | Discovery documents | Full set |
 | Prior architecture | If revisiting |
 | `docs/decisions.md` | Last 3 entries |
@@ -222,7 +224,7 @@ the execution plan.
 translates architecture and requirements into step-level implementation
 instructions and a test plan.
 
-**DAG node:** PLAN.
+**Step:** PLAN (produce).
 
 **Reads:**
 
@@ -261,7 +263,7 @@ ownership of `plan.md` and `test-plan.md`.
 requirements — without seeing the implementation. The Tester is the TDD
 enforcement mechanism: tests derived from requirements, not from code.
 
-**DAG node:** TEST.
+**Step:** TEST (produce).
 
 **Reads:**
 
@@ -300,7 +302,7 @@ exclude all Builder output.
 test scripts. The Builder receives the architecture, requirements, and test
 scripts as its contract and produces implementation code.
 
-**DAG node:** BUILD.
+**Step:** BUILD (produce).
 
 **Reads:**
 
@@ -327,7 +329,7 @@ scripts as its contract and produces implementation code.
   criteria.
 - Never sees Tester's internal reasoning — only the final test scripts.
 - Output is validated by the Execution Plane (L4), not by another agent.
-- Runs only after user approval if the CONFIRM gate is active.
+- Runs only after user approval if the CONFIRM checkpoint is active.
 
 **DDR changes:** DDR-007 removed test authoring from the Builder. The
 Builder now receives test scripts as a contract rather than writing them
@@ -337,9 +339,11 @@ itself.
 
 **Purpose:** Diagnose why the validation gate failed. The Debugger is the
 first role to read run artifacts after a gate failure. It diagnoses only —
-it does not plan or build. Its output feeds the next PLAN node.
+it does not plan or build. Its output feeds the next PLAN step.
 
-**DAG node:** DEBUG (activated only on VALIDATION gate failure).
+**Step:** VALIDATION_GATE's `on_fail` produce step (activated only on
+validation failure; this is not a standalone step kind — it's a `review`
+step's designated retry-producer).
 
 **Reads:**
 
@@ -358,14 +362,14 @@ it does not plan or build. Its output feeds the next PLAN node.
 
 **Key constraints:**
 
-- Only activates when the VALIDATION gate fails. Never runs on a passing
-  cycle.
+- Only activates when VALIDATION_GATE fails. Never runs on a passing
+  workflow run.
 - Does not produce implementation code or tests — diagnosis only.
 - Does not modify artifacts directly. Its output is injected into the
   Planner's context for the next iteration.
-- The FailureReport feeds the next PLAN node: DEBUG → PLAN → TEST → BUILD →
-  EXEC → VALIDATION gate.
-- Does not run if the cycle hits the iteration cap — the cycle halts.
+- The FailureReport feeds the next PLAN step: DEBUG → PLAN → TEST → BUILD →
+  EXEC → VALIDATION_GATE.
+- Does not run if the workflow run hits the iteration cap — the run halts.
 
 **DDR changes:** None. The Debugger role is unchanged from SLE-024.
 
@@ -376,16 +380,16 @@ intent. The Evaluator runs after the validation gate passes — it does not
 check code quality (the gate's job) but whether the result matches what the
 user asked for.
 
-**DAG node:** EVALUATE.
+**Step:** EVALUATE (produce).
 
 **Reads:**
 
 | Artifact | When |
 |----------|------|
 | `agent.md` + `map.yaml` | Bootstrap pair |
-| User intent | From SCOPING node (via cycle-charter) |
+| User intent | From SCOPING's gather step (via cycle-charter) |
 | `docs/requirements.md` | Designer's output |
-| `docs/evaluation.md` | Prior cycle evaluation (if revisiting) |
+| `docs/evaluation.md` | Prior workflow-run evaluation (if revisiting) |
 | `docs/test-plan.md` | Planner's output |
 | Run artifacts | Manifest + context pack |
 
@@ -397,10 +401,10 @@ user asked for.
 
 **Key constraints:**
 
-- Runs after the VALIDATION gate passes — never on a failed cycle.
+- Runs after VALIDATION_GATE passes — never on a failed workflow run.
 - Does not re-run tests or check code style (the gate already did that).
-- Produces a structured verdict that the next cycle's Planner reads.
-- Output is human-readable and surfaces in the cycle summary.
+- Produces a structured verdict that the next workflow run's Planner reads.
+- Output is human-readable and surfaces in the workflow-run summary.
 
 **DDR changes:** None. The Evaluator role is unchanged from SLE-024.
 
@@ -410,7 +414,8 @@ user asked for.
 structural issues before planning begins. The Critic catches flawed
 architecture early, preventing wasted work in PLAN, TEST, and BUILD.
 
-**DAG node:** DESIGN (after Designer completes, before PLAN begins — DDR-022).
+**Step:** DESIGN (after Designer's produce step completes, before PLAN
+begins — DDR-022; modeled as a `review` step).
 
 **Reads:**
 
@@ -431,7 +436,8 @@ architecture early, preventing wasted work in PLAN, TEST, and BUILD.
 
 **Key constraints:**
 
-- Triggered after DESIGN node completes, before PLAN node begins (DDR-022).
+- Triggered after the DESIGN step completes, before the PLAN step begins
+  (DDR-022).
 - Only runs at `depth: deep` or `depth: research` planning depth.
   At `depth: minimal` and `depth: standard`, the Critic is inactive.
 - Does NOT review the Planner's output — plan issues surface during
@@ -439,11 +445,12 @@ architecture early, preventing wasted work in PLAN, TEST, and BUILD.
 - Reviews architecture + requirements, not plan + test-plan (DDR-022).
 - At `depth: research`, the Critic performs multi-pass review. At
   `depth: deep`, a single review pass.
-- Can block the cycle (raise blocking issues that force a DESIGN re-run).
+- Can block the workflow run (raise blocking issues that force a DESIGN
+  re-run, via `review`'s `on_fail` path).
 
 **DDR changes:** DDR-022 moved the Critic from post-PLAN to post-DESIGN.
 Catching flawed architecture before planning is higher leverage than catching
-plan-level issues after planning. The DAG flow changed from
+plan-level issues after planning. The step flow changed from
 `... → PLAN → CRITIQUE → ...` to `... → DESIGN → CRITIQUE → PLAN → ...`.
 
 ### 10. Historian
@@ -452,14 +459,15 @@ plan-level issues after planning. The DAG flow changed from
 `decisions.md` after every agent turn, creating a persistent log of what
 decisions were made and why.
 
-**DAG node:** HISTORY.
+**Step:** Folded into SNAPSHOT's `logs_decision: true` commit step — not a
+standalone step kind. It was always a non-blocking side effect of the write.
 
 **Reads:**
 
 | Artifact | When |
 |----------|------|
 | `docs/decisions.md` | Full document (append target) |
-| Current node context | Whatever the preceding agent produced |
+| Current step context | Whatever the preceding agent produced |
 
 **Produces:**
 
@@ -471,7 +479,7 @@ decisions were made and why.
 
 - Append-only. Never modifies or deletes existing entries.
 - Produces concise entries (2–3 sentences).
-- Runs after every agent turn — not just at cycle end.
+- Runs after every agent turn — not just at workflow-run end.
 - Future is under review (SLE-024 §9). Its audit-trail function may be
   function may be achievable without a real-time LLM call, potentially
   replaced by structured logging and periodic summarisation.
@@ -486,7 +494,7 @@ its long-term status is under review.
 | DDR-007 | Tester is a separate agent from Builder | Builder wrote both implementation and tests | Tester writes tests from requirements only; Builder produces implementation only |
 | DDR-019 | Designer/Planner ownership split | Single "Planner" produced architecture, requirements, plan, test-plan | Designer owns `architecture.md` + `requirements.md`; Planner owns `plan.md` + `test-plan.md` |
 | DDR-020 | Facilitator has two modes | Facilitator was discovery-only, single mode | Facilitator operates in chat mode (freeform Q&A) and decision mode (gate actions, approvals) |
-| DDR-022 | Critic runs at DESIGN node | Critic reviewed post-PLAN | Critic reviews architecture + requirements at DESIGN, before planning |
+| DDR-022 | Critic runs at DESIGN step | Critic reviewed post-PLAN | Critic reviews architecture + requirements at DESIGN, before planning |
 | DDR-023 | Explorer is user-initiated only | EXPLORE was "conditional — when unknowns flagged" (ambiguous trigger) | EXPLORE is explicitly user-initiated; automatic gap detection is a separate daemon mechanism |
 
 ## Role interaction map
@@ -505,7 +513,7 @@ User intent
                             ┌──────────┘
                             │
                        ┌────▼─────┐
-                       │  Critic  │ (DDR-022: at DESIGN node,
+                       │  Critic  │ (DDR-022: at DESIGN step,
                        │          │  deep/research depth only)
                        └────┬─────┘
                             │ review output
@@ -541,7 +549,7 @@ User intent
                           ┌──────────┐        │ Debugger │──► FailureReport
                           │Evaluator │        └──────────┘     │
                           └────┬─────┘                          ▼
-                               │                          next PLAN node
+                               │                          next PLAN step
                                ▼
                      ┌───────────────┐
                      │   Historian   │ (every turn, append-only)
@@ -558,12 +566,12 @@ User intent
 | `docs/test-plan.md` | Planner | Tester, Builder, Evaluator |
 | Test scripts (`test_{cat}.ts`) | Tester | Builder (as contract), EXEC (L4) |
 | Implementation code | Builder | EXEC (L4), Debugger (via run artifacts) |
-| `docs/evaluation.md` | Evaluator | Planner (next cycle), Critic |
+| `docs/evaluation.md` | Evaluator | Planner (next workflow run), Critic |
 | `docs/decisions.md` | Historian, Facilitator | All roles (last 3 for Planner) |
 | Research findings | Explorer | Designer |
 | FailureReport | Debugger | Planner (next iteration) |
 | Review output | Critic | Designer (if blocking), Planner |
-| Discovery documents (8 files) | Facilitator | All cycle roles |
+| Discovery documents (8 files) | Facilitator | All workflow-run roles |
 
 ## Context isolation summary
 
@@ -573,21 +581,21 @@ User intent
 | Builder never sees Tester's reasoning | Builder, Tester | Context manager (SLE-007) |
 | Planner does not write architecture or requirements | Planner | DDR-019, output contract |
 | Designer does not write plans or test plans | Designer | DDR-019, output contract |
-| Explorer is user-initiated only | Explorer | DDR-023, DAG trigger logic |
-| Critic only reviews at DESIGN node | Critic | DDR-022, DAG node placement |
-| Debugger only activates on gate failure | Debugger | DAG trigger logic |
-| Facilitator cannot modify cycle artifacts | Facilitator | DDR-020, output contract |
+| Explorer is user-initiated only | Explorer | DDR-023, workflow trigger logic |
+| Critic only reviews at DESIGN step | Critic | DDR-022, step placement |
+| Debugger only activates on gate failure | Debugger | Workflow trigger logic |
+| Facilitator cannot modify workflow-run artifacts | Facilitator | DDR-020, output contract |
 | Historian is append-only | Historian | Output contract |
 
 ## How it fits
 
 Agent roles sit at **Layer 3 (Agent runtime)**. The daemon (**Layer 2**)
-invokes them at DAG nodes. Outputs flow through the artifact store (Layer 2)
-to downstream roles or the Execution Plane (**Layer 4**).
+invokes them at workflow steps. Outputs flow through the artifact store
+(Layer 2) to downstream roles or the Execution Plane (**Layer 4**).
 
 | Specification | Relationship to agent roles |
 |--------------|---------------------------|
-| [cycle-model.md](cycle-model.md) | Defines the DAG nodes that activate each role |
+| [workflow-model.md](workflow-model.md) | Defines the steps that activate each role |
 | [../reference/artifact-registry.md](../reference/artifact-registry.md) | Defines the schemas for artifacts each role produces |
 | SLE-007 (Context manager) | Assembles the artifact slice each role reads |
 | SLE-004 (Rule files) | Configures planning depth, which affects Critic activation |
@@ -602,5 +610,5 @@ to downstream roles or the Execution Plane (**Layer 4**).
 - [DDR-022](../decisions/ddr-022-critic-timing.md) — Critic at DESIGN node
 - [DDR-023](../decisions/ddr-023-explore-trigger.md) — Explorer user-initiated trigger
 - [SLE-024](../../vision/SLE-024-system-reference.md) — System reference (original role definitions)
-- [cycle-model.md](cycle-model.md) — DAG node sequence and gate definitions
+- [workflow-model.md](workflow-model.md) — step sequence and checkpoint/gate definitions
 - [../reference/artifact-registry.md](../reference/artifact-registry.md) — Artifact schemas and locations

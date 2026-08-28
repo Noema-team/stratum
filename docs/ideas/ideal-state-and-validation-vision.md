@@ -520,6 +520,6 @@ This gets loaded into every future Planner and Builder call. The validation syst
 | [specs/rule-files.md](../specs/rule-files.md) | 7 YAML rule file schemas |
 | [overview/what-is-sle.md](../overview/what-is-sle.md) | Core concepts |
 | [overview/agent-roles.md](../overview/agent-roles.md) | All 10 agent roles |
-| [overview/cycle-model.md](../overview/cycle-model.md) | DAG execution model |
+| [overview/workflow-model.md](../overview/workflow-model.md) | Workflow-run execution model |
 | [hermes-stratum-integration.md](hermes-stratum-integration.md) | Hermes integration levels |
 | [space-agent-research.md](../research/space-agent-research.md) | Prompt includes, self-writing memory |

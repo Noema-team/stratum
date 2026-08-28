@@ -23,8 +23,8 @@ Beads solves three problems for SLE:
 
 The integration surface is narrow: the daemon calls into a `TaskStore`
 implementation, which either delegates to `bd` CLI commands (BeadsTaskStore) or
-reads/writes `.sle/tasks.yaml` (LocalTaskStore). The DAG runner never shells
-out to `bd` directly.
+reads/writes `.sle/tasks.yaml` (LocalTaskStore). The workflow run engine never
+shells out to `bd` directly.
 
 **Three-remote model (context):**
 
@@ -112,7 +112,7 @@ interface SessionState {
   daemon_pid: number
   claimed_task: string
   claimed_at: string
-  cycle: number
+  workflow_run_id: string
   iteration: number
 }
 ```
@@ -120,6 +120,19 @@ interface SessionState {
 Stored at `.sle/session-state.json`. Written immediately after a task is
 claimed. Deleted on clean exit after claim resolution. Its presence on daemon
 start indicates the previous session exited uncleanly.
+
+### Relationship to artifact claims (DDR-031)
+
+Beads task claiming (`bd update --claim`, atomic at the Dolt layer) is
+unchanged by the workflow generalization — it is a separate mechanism from
+the daemon's own artifact claims. What generalizes is the surrounding
+*pattern*: `SessionState`'s "one file, presence means claimed, absence means
+clean" convention is the same pattern `ArtifactClaim` storage uses at
+`.sle/claims/{artifact-ref-slug}.json` (types.md §4), just generalized from
+"one global session-state file" to "one file per claimed artifact," since N
+workflow runs may now hold claims concurrently rather than one workflow run
+holding the implicit project-wide lock. Stale-claim detection on daemon restart
+(below) is the template both mechanisms follow.
 
 ### ResolveExit outcome
 
@@ -138,8 +151,8 @@ user-initiated halts nor daemon crashes.
 
 | Outcome | Condition | Store action |
 |---|---|---|
-| `completed` | SNAPSHOT locked, all validation passed | `closeTask` with version ID |
-| `halted` | VALIDATION gate cap hit or unrecoverable error | `unclaim` + comment with failure context |
+| `completed` | The run's `commit` step locked a version, all validation passed | `closeTask` with version ID |
+| `halted` | Validation review step hit the iteration cap, or unrecoverable error | `unclaim` + comment with failure context |
 | `user_halt` | `sle halt` issued by user | `unclaim` + comment with halt context |
 | `error` | Infrastructure failure (E013, E025, E032, E044) | `unclaim` + comment with error details |
 | `crash` | Daemon process killed, no `finally` ran | Stale claim resolution on next start (E091) |
@@ -172,9 +185,9 @@ in multi-project setups. Local task IDs use format `local-{random_8char}`.
 
 ## Behavior
 
-### DAG integration points
+### Workflow run integration points
 
-The DAG runner integrates with the task store at four points.
+The workflow run engine integrates with the task store at four points.
 
 #### 1. Before Planner — getReadyTasks
 
@@ -188,7 +201,7 @@ context manager
 
 The context manager injects the ready task list into the Planner's context.
 The Planner selects which ready task to work on. If no tasks are returned,
-the daemon halts the cycle: "No ready tasks. Create issues first."
+the daemon halts the run: "No ready tasks. Create issues first."
 
 In declared mode, each task's `context_declarations` override the Planner's
 default artifact slices. In inferred mode, the Planner uses role defaults.
@@ -217,18 +230,18 @@ historian writes decisions.md delta
 Gives the task its own thread of progress notes. In local mode, comments are
 stored under the task's `comments` field and are never compacted.
 
-#### 4. After cycle exit — resolveExit
+#### 4. After workflow run exit — resolveExit
 
-Every cycle exit path calls `resolveExit` in a `finally` block:
+Every workflow run exit path calls `resolveExit` in a `finally` block:
 
 ```typescript
 try {
-  await runCycle(intent, config)
+  await runWorkflow(workflowId, target, config)
 } finally {
-  await resolveExit(sessionState.claimed_task, cycle.outcome, {
-    version_id: cycle.version_id,
-    reason: cycle.exit_reason,
-    report_path: cycle.report_path
+  await resolveExit(sessionState.claimed_task, run.outcome, {
+    version_id: run.version_id,
+    reason: run.exit_reason,
+    report_path: run.report_path
   })
   await deleteSessionState()
 }
@@ -251,8 +264,9 @@ handled by stale claim detection on next daemon start.
 
 On every non-completion exit, the task returns to `open` with a comment.
 `blocked` is never set by SLE — it is reserved for Beads dependency wiring.
-A failed SLE cycle is not a dependency issue; the work is available to retry.
-This ensures tasks are never permanently hidden from `getReadyTasks()`.
+A failed workflow run is not a dependency issue; the work is available to
+retry. This ensures tasks are never permanently hidden from
+`getReadyTasks()`.
 
 ### Stale claim recovery
 
@@ -269,15 +283,15 @@ detectStaleClaimsOnStart():
   if isProcessAlive(sessionState.daemon_pid):
     return                               // another daemon is running
 
-  resolveStaleClaim(sessionState.claimed_task, sessionState.cycle, sessionState.iteration)
+  resolveStaleClaim(sessionState.claimed_task, sessionState.workflow_run_id, sessionState.iteration)
 ```
 
 **Resolution:**
 
 ```
-resolveStaleClaim(taskId, cycle, iteration):
+resolveStaleClaim(taskId, runId, iteration):
   post comment to taskId:
-    "SLE daemon crashed during cycle {cycle}, iteration {iteration}.
+    "SLE daemon crashed during workflow run {runId}, iteration {iteration}.
      Work is incomplete. Task returned to open pool."
   taskStore.updateStatus(taskId, 'open')
   deleteSessionState()
@@ -452,7 +466,7 @@ Beads sync operates independently of git sync.
 | After `closeTask` | `bd push origin` | No-op |
 | On error | Sync deferred, retry later | N/A |
 
-Sync failures (E092) are non-blocking. The cycle continues with local state.
+Sync failures (E092) are non-blocking. The run continues with local state.
 
 ### Agent memory
 
@@ -462,7 +476,7 @@ Sync failures (E092) are non-blocking. The cycle continues with local state.
 Full content is replaced by the summary and marked as compacted.
 
 SLE triggers compaction automatically:
-- After every 10 completed cycles
+- After every 10 completed workflow runs
 - When `.beads/beads.db` exceeds configured size threshold
 - On `sle beads compact` (manual)
 
@@ -478,8 +492,9 @@ BeadsTaskStore: bd prime
 LocalTaskStore: generate handoff from .sle/tasks.yaml
 ```
 
-The handoff contains open tasks, recent activity, blocked tasks, and last
-cycle outcome. Included in the user-facing summary after version snapshot.
+The handoff contains open tasks, recent activity, blocked tasks, and the last
+workflow run's outcome. Included in the user-facing summary after the run
+commits.
 
 ### Issue hierarchy
 
@@ -519,7 +534,7 @@ All task-related REST endpoints are defined in [daemon-api-endpoints.md](daemon-
 | `POST` | `/api/v2/tasks` | Create task |
 | `POST` | `/api/v2/tasks/{task_id}/claim` | Claim task |
 | `POST` | `/api/v2/tasks/{task_id}/close` | Close task |
-| `POST` | `/api/v2/tasks/{task_id}/resolve-exit` | Resolve cycle exit |
+| `POST` | `/api/v2/tasks/{task_id}/resolve-exit` | Resolve workflow run exit |
 | `POST` | `/api/v2/tasks/{task_id}/comments` | Comment on task |
 | `GET` | `/api/v2/tasks/store` | Get task store status |
 
@@ -576,10 +591,10 @@ event: task_store.sync
 | E090 | Claim fails — task already claimed or status changed | Select next ready task. Halt if none remain. |
 | E091 | Stale claim on daemon start | Auto-resolve: comment + unclaim before user prompt. |
 | E097 | `resolveExit` fails — store unreachable | Session state preserved. Next start resolves via E091. |
-| E092 | `bd push`/`bd pull` non-zero exit | Sync deferred. Cycle continues with local state. |
+| E092 | `bd push`/`bd pull` non-zero exit | Sync deferred. Run continues with local state. |
 | E093 | Task ID not found in store | Claim: select next. Comment/close: skip and log. |
 | E094 | Dependency graph inconsistent | Skip unresolvable tasks, return available ones. |
-| E095 | `bd compact` fails | Compaction skipped. No cycle impact. |
+| E095 | `bd compact` fails | Compaction skipped. No impact on the active run. |
 | E096 | `bd` subprocess unexpected exit or invalid JSON | Bridge method fails. Caller retries or degrades. |
 | E098 | `bd create` fails during sharding | Successful tasks remain. Failed logged. No rollback. |
 | E099 | `bd dep add` fails during wiring | Skip failed dependency. May affect `bd ready` ordering. |
@@ -600,21 +615,21 @@ event: task_store.sync
 | E013, E025, E032, E044 | `error` | unclaim + comment with error details |
 | E043 (persistent) | `error` | unclaim + comment noting rate limit |
 | E002, E015 | `crash` | stale claim resolution on next start (E091) |
-| (successful cycle) | `completed` | close with version ID |
+| (successful run) | `completed` | close with version ID |
 
 ---
 
 ## Constraints
 
-1. **Provider abstraction.** The DAG runner and context manager interact only
-   with the `TaskStore` interface. Provider-specific code is isolated in the two
-   implementations.
+1. **Provider abstraction.** The workflow run engine and context manager
+   interact only with the `TaskStore` interface. Provider-specific code is
+   isolated in the two implementations.
 
 2. **Single provider per session.** Selected at `sle init`, immutable within a
    daemon session.
 
 3. **Same schema, both providers.** Both produce and consume `SLETask`. The
-   context manager and DAG runner are provider-agnostic.
+   context manager and workflow run engine are provider-agnostic.
 
 4. **Unclaim on failure, never block.** On every non-completion exit, the task
    returns to `open`. `blocked` is reserved for Beads dependency wiring.
@@ -625,12 +640,12 @@ event: task_store.sync
 6. **Session state is ephemeral.** `.sle/session-state.json` is written after
    claim, deleted after `resolveExit`. Never committed to git.
 
-7. **Sync is best-effort.** Sync failure (E092) does not block the cycle. The
+7. **Sync is best-effort.** Sync failure (E092) does not block the run. The
    system continues with local state.
 
 8. **Error outcome is distinct.** `error` covers infrastructure failures.
-   `halted` covers cap hits and unrecoverable DAG errors. `user_halt` covers
-   explicit user action. `crash` covers process termination. Not
+   `halted` covers cap hits and unrecoverable workflow-run errors. `user_halt`
+   covers explicit user action. `crash` covers process termination. Not
    interchangeable (G37).
 
 9. **Local mode has no compaction.** `.sle/tasks.yaml` grows unbounded.

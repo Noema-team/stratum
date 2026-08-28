@@ -4,7 +4,7 @@
 |------|--------|---------|
 | Spec | Draft | 2026-05-01 |
 
-**Depends on:** ui-shell.md, document-linking.md, daemon-api-endpoints.md, dag-execution.md
+**Depends on:** ui-shell.md, document-linking.md, daemon-api-endpoints.md, workflow-execution.md
 **Source material:** vision/SLE-016-project-overview.md
 **Resolves:** —
 
@@ -39,9 +39,9 @@ through archival, carry health metadata, and can be pinned to prevent
 AI/system modifications. The system supports 8 baseline layers plus
 user-approved custom layers.
 
-The graph renders committed state only — in-progress cycle work is invisible
-until the cycle completes and artifacts are committed. This ensures the graph
-always reflects a consistent, reviewable snapshot.
+The graph renders committed state only — in-progress workflow run work is
+invisible until the run completes and artifacts are committed. This ensures
+the graph always reflects a consistent, reviewable snapshot.
 
 ## Data model
 
@@ -106,7 +106,7 @@ interface ProjectGroup {
 interface GroupHealth {
   layer_completion: number
   test_coverage?: number
-  last_cycle_outcome?: 'pass' | 'fail' | 'halted'
+  last_run_outcome?: 'pass' | 'fail' | 'halted'
   open_issues: number
 }
 ```
@@ -115,7 +115,7 @@ interface GroupHealth {
 |-------|-------|-------------|
 | `layer_completion` | 0–100 | Percentage of applicable layers that are `filled`. Partial layers count proportionally. |
 | `test_coverage` | 0–100 | Optional. Only populated when the group has Code layer nodes with test associations. |
-| `last_cycle_outcome` | enum | Result of the most recent cycle that touched this group. Absent if no cycle has run. |
+| `last_run_outcome` | enum | Result of the most recent workflow run that touched this group. Absent if no run has touched it yet. |
 | `open_issues` | ≥ 0 | Count of unresolved issues tagged against this group. |
 
 ### LayerNode
@@ -211,7 +211,7 @@ interface ProjectStatistics {
   project_type: ProjectType
   groups: number
   layers_filled_ratio: number
-  cycles_completed: number
+  workflow_runs_completed: number
   api_stats?: ApiStatistics
   library_stats?: LibraryStatistics
   common_stats: CommonStatistics
@@ -238,7 +238,7 @@ interface LibraryStatistics {
 interface CommonStatistics {
   groups_count: number
   layers_filled_ratio: number
-  cycles_completed: number
+  workflow_runs_completed: number
   code_lines: number
   failing_tests: number
   uncovered_requirements: number
@@ -304,7 +304,7 @@ created → populated → active → frozen → archived
 |------------|---------|--------|
 | `→ created` | User creates a group, AI suggests one (accepted), or system auto-derives one | Empty group with no layers. Appears in graph as a single hollow node. |
 | `created → populated` | First `LayerNode` is added to any layer | Group becomes visible in the document overview. Health computation begins. |
-| `populated → active` | Group has nodes in ≥2 layers OR a cycle targets this group | Group is considered active for statistics and edge inference. |
+| `populated → active` | Group has nodes in ≥2 layers OR a workflow run targets this group | Group is considered active for statistics and edge inference. |
 | `active → frozen` | User explicitly freezes the group (or AI suggests freeze, accepted) | No new nodes can be added. Existing nodes are read-only. Health snapshot is preserved. |
 | `frozen → archived` | User archives the group | Group is hidden from default graph view. Available via filter. Edges are preserved but grayed out. |
 
@@ -341,7 +341,7 @@ Tagged nodes display colored badges or borders:
 
 | Tag | Visual |
 |-----|--------|
-| `#next-cycle` | Highlighted border (orange) |
+| `#next-run` | Highlighted border (orange) |
 | `#scope:{id}` | Subtle badge linking to scope draft |
 | `#area:{name}` | Categorical badge |
 
@@ -355,7 +355,7 @@ The graph responds to standard input patterns:
 | Double-click | Group stack | Focus: zoom to group, dim all other groups, highlight connected edges |
 | Click | Layer node | Open node detail panel: label, artifact content, backlinks, metadata |
 | Drag | Group stack | Reposition. Position persisted to `layout.json` on drag end. |
-| Right-click | Any | Context menu with actions: add note, create spike, start cycle, pin/unpin, **"Tag for next cycle"** (adds `#next-cycle`), **"Tag for scope..."** (opens scope draft selector → adds `#scope:{draft-id}`), **"Remove tag..."** (shows current tags, allows removal) |
+| Right-click | Any | Context menu with actions: add note, create spike, start workflow run, pin/unpin, **"Tag for next run"** (adds `#next-run`), **"Tag for scope..."** (opens scope draft selector → adds `#scope:{draft-id}`), **"Remove tag..."** (shows current tags, allows removal) |
 | Hover | Edge | Show tooltip with edge type and dependency description |
 | Scroll | Canvas | Zoom in/out. Zoom level persisted in `GraphLayout.viewport`. |
 | Pan | Canvas background | Move viewport. Position persisted in `GraphLayout.viewport`. |
@@ -378,22 +378,22 @@ Edges are derived from two sources:
 2. Explicit `ProjectEdge` entries in `edges.json` — user-created or
    auto-derived edges not present in the link index.
 
-### Cycle → artifact auto-mapping priority
+### Workflow run → artifact auto-mapping priority
 
-When a cycle produces artifacts, the system maps them to groups using a 5-level
-priority chain. The first matching level wins:
+When a workflow run produces artifacts, the system maps them to groups using a
+5-level priority chain. The first matching level wins:
 
 | Priority | Level | Match method | Example |
 |----------|-------|-------------|---------|
-| 1 | Explicit assignment | `--group` flag on cycle command | `sle cycle --group rate-limiting` |
+| 1 | Explicit assignment | `--group` flag on the run command | `sle run full-build --group rate-limiting` |
 | 2 | Planner mapping | Plan references a group by name | Plan section titled "Rate Limiting" maps to `rate-limiting` group |
 | 3 | File path matching | Output directory belongs to an existing group | `src/rate-limiting/middleware.ts` → `rate-limiting` group |
 | 4 | Requirement matching | Requirement section matches a group's Design layer | Requirement "Rate limiting on API endpoints" matches `rate-limiting` design docs |
 | 5 | Unmatched | Auto-derived group with user review prompt | New group `rate-limiter` created, flagged `auto_derived`, user prompted to confirm or merge |
 
-**Tag-aware context loading:** Nodes tagged `#next-cycle` are included in the
+**Tag-aware context loading:** Nodes tagged `#next-run` are included in the
 mapping priority chain. Tagged nodes are loaded first into the Planner's context,
-ensuring the cycle targets the user's indicated priorities.
+ensuring the run targets the user's indicated priorities.
 
 Auto-derived groups (priority 5) appear in the graph with a dashed border and a
 review badge. They transition to `populated` only after user acceptance. If the
@@ -404,7 +404,7 @@ existing group or deletion.
 
 Statistics are recomputed on:
 - Graph open (full computation)
-- Cycle completion (incremental: affected groups only)
+- Workflow run completion (incremental: affected groups only)
 - Manual refresh via `POST /api/v2/graph/statistics/refresh`
 
 The computation reads from the file-based store and the link index. It does not
@@ -415,7 +415,7 @@ invoke the knowledge engine.
 ```
 1. groups_count = count(groups where status in ['populated', 'active', 'frozen'])
 2. layers_filled_ratio = sum(layer_completion) / count(applicable groups)
-3. cycles_completed = max(group.health.last_cycle_count) across all groups
+3. workflow_runs_completed = max(group.health.last_run_count) across all groups
 4. code_lines = sum(line_count for Code layer nodes with artifact_path)
 5. failing_tests = count(test_file nodes where last_run_outcome == 'fail')
 6. uncovered_requirements = count(requirement nodes with no test backlink)
@@ -474,8 +474,8 @@ The graph is refreshed from the file-based store at these points:
 
 1. **On open** — full read of `groups.json`, per-group layer files, `edges.json`,
    and `layout.json`
-2. **On cycle completion** — incremental: read only groups whose `last_modified`
-   is newer than the cached timestamp
+2. **On workflow run completion** — incremental: read only groups whose
+   `last_modified` is newer than the cached timestamp
 3. **On manual refresh** — `POST /api/v2/graph/refresh` forces full re-read
 4. **On file watcher event** — if a change occurs in `.sle/project-graph/`,
    schedule a debounced refresh (500ms)
@@ -509,12 +509,12 @@ endpoints below are specified here and will be added to daemon-api-endpoints.md.
 | `/api/v2/graph/statistics/refresh` | POST | Force statistics recomputation | Project graph |
 | `/api/v2/graph/refresh` | POST | Force full graph re-read from store | Project graph |
 | `/api/v2/graph/hosting/{group_id}/plan` | POST | Send a message to the hosting planner conversation | Project graph |
-| `/api/v2/cycles/{cycle_id}/lock-snapshot` | POST | Lock cycle snapshot (gate pass) — triggers graph refresh on completion | Cycles (user-flow.md) |
-| `/api/v2/cycles/{cycle_id}/run-tests-locally` | POST | Run tests locally (gate pass) — cycle completion triggers graph update | Cycles (user-flow.md) |
+| `/api/v2/workflow-runs/{run_id}/approve` | POST | Approve gate pass checkpoint — triggers graph refresh on completion | Workflow runs (user-flow.md) |
+| `/api/v2/workflow-runs/{run_id}/run-tests-locally` | POST | Run tests locally (gate pass) — run completion triggers graph update | Workflow runs (user-flow.md) |
 | `/api/v2/tags?type={TagPrefix}&scope={group_id}` | GET | List tags, optionally filtered by type and scope | Tags (DDR-028) |
 | `/api/v2/tags` | POST | Add tag to a node (`node_id` + `tag` in body) | Tags (DDR-028) |
 | `/api/v2/tags/{node_id}/{tag_prefix}/{value?}` | DELETE | Remove tag from a node | Tags (DDR-028) |
-| `/api/v2/tags/next-cycle` | GET | List all nodes tagged #next-cycle | Tags (DDR-028) |
+| `/api/v2/tags/next-run` | GET | List all nodes tagged #next-run | Tags (DDR-028) |
 
 ### List groups
 
@@ -809,25 +809,28 @@ event: graph.node_untagged
 
 ### Gate pass endpoints (from user-flow.md)
 
-Cycle completion triggers graph updates (incremental refresh of affected
-groups). The Graph page listens for these gate pass endpoints defined in
-user-flow.md:
+Workflow run completion triggers graph updates (incremental refresh of
+affected groups). The Graph page listens for the gate pass endpoint defined
+in workflow-execution.md and restated in user-flow.md — gate pass approval
+uses the same generic checkpoint-approval endpoint as any other checkpoint,
+not a dedicated snapshot-lock endpoint:
 
 ```
-POST /api/v2/cycles/{cycle_id}/lock-snapshot
+POST /api/v2/workflow-runs/{run_id}/approve
 
 Response 200:
 {
-  "ok": true,
-  "data": {
-    "snapshot_id": string,
-    "locked_at": string
-  }
+  "run_id":          string,
+  "current_step_id": string
 }
 ```
 
+The version commit itself happens asynchronously inside the run's `commit`
+step once the checkpoint clears, surfaced via the `workflow_run.committed`
+WebSocket event (carrying the new version id).
+
 ```
-POST /api/v2/cycles/{cycle_id}/run-tests-locally
+POST /api/v2/workflow-runs/{run_id}/run-tests-locally
 
 Response 200:
 {
@@ -840,8 +843,8 @@ Response 200:
 }
 ```
 
-On cycle completion, the daemon emits a `graph.refreshed` WebSocket event
-and the Graph page performs an incremental refresh of affected groups.
+On workflow run completion, the daemon emits a `graph.refreshed` WebSocket
+event and the Graph page performs an incremental refresh of affected groups.
 
 ## Error cases
 
@@ -861,20 +864,20 @@ and the Graph page performs an incremental refresh of affected groups.
 | `hosting_layer_not_available` | Hosting planner invoked for a group with no Hosting layer | 400 with group ID | Add Hosting layer nodes first |
 | `graph_store_corrupt` | `groups.json` or layer file fails to parse on startup | Logged as error, graph shows empty state with warning | Manual reindex or `POST /graph/refresh` |
 | `layout_persistence_failed` | `layout.json` write fails (disk full, permissions) | 200 with `saved: false`, logged as warning | Layout reverts to default on next load |
-| `auto_mapping_ambiguous` | Cycle artifact matches multiple groups at the same priority level | Artifact placed in first match, warning logged | User reassigns via group node API |
+| `auto_mapping_ambiguous` | Workflow run artifact matches multiple groups at the same priority level | Artifact placed in first match, warning logged | User reassigns via group node API |
 | `statistics_computation_timeout` | Statistics recomputation exceeds 5 seconds | Partial statistics returned, warning logged | Retry with `POST /graph/statistics/refresh` |
 
 ## Constraints
 
 1. **Committed state only.** The graph renders artifacts that have been committed
-   to the project graph store. In-progress cycle work, uncommitted agent outputs,
-   and draft artifacts are invisible until the cycle completes and the artifacts
-   are written to `.sle/project-graph/`.
+   to the project graph store. In-progress workflow run work, uncommitted agent
+   outputs, and draft artifacts are invisible until the producing run completes
+   and the artifacts are written to `.sle/project-graph/`.
 
-2. **Auto-mapping follows 5-level priority chain.** Cycle artifacts are assigned
-   to groups using the priority chain defined in §Cycle → artifact auto-mapping
-   priority. The chain is evaluated top-to-bottom; the first match wins. No
-   heuristic scoring or multi-match merging occurs.
+2. **Auto-mapping follows 5-level priority chain.** Workflow run artifacts are
+   assigned to groups using the priority chain defined in §Workflow run →
+   artifact auto-mapping priority. The chain is evaluated top-to-bottom; the
+   first match wins. No heuristic scoring or multi-match merging occurs.
 
 3. **Custom layers require user approval.** Custom layers beyond the 8 baseline
    layers must be explicitly approved by the user at the project level. AI and
@@ -913,10 +916,10 @@ and the Graph page performs an incremental refresh of affected groups.
    the last successfully persisted layout.
 
 10. **Statistics are eventually consistent.** Statistics are not recomputed on
-    every mutation. They are recomputed on graph open, cycle completion, and
-    manual refresh. Between computations, displayed statistics may be stale by
-    up to one cycle. This is acceptable — statistics are informational, not
-    transactional.
+    every mutation. They are recomputed on graph open, workflow run completion,
+    and manual refresh. Between computations, displayed statistics may be
+    stale by up to one workflow run. This is acceptable — statistics are
+    informational, not transactional.
 
 11. **Graph node count target: 10–50 groups.** The graph rendering is optimized
     for 10–50 group nodes with stacked-card components. Beyond 50 groups, the
@@ -947,6 +950,6 @@ and the Graph page performs an incremental refresh of affected groups.
 | PO-007 | How should the graph handle merge operations when a user wants to combine two groups? Should edges be re-routed, or should one group absorb the other and inherit all edges? | Group management workflow, edge consistency | Open |
 | PO-008 | Should the conversational hosting planner maintain conversation history across sessions, or is it truly ephemeral (discarded on panel close)? | Hosting planner UX, storage requirements | Open |
 | PO-009 | Should the graph support export to standard formats (Graphviz DOT, Mermaid, SVG) for documentation and sharing outside the SLE environment? | Interoperability, documentation workflows | Open |
-| PO-010 | What is the expected behavior when a group's status is `frozen` but a cycle produces artifacts that would auto-map to it? Reject the mapping, queue for review after unfreeze, or create a new group? | Frozen group semantics, cycle reliability | Open |
-| PO-011 | ~~How should cycle scoping work before a cycle starts?~~ Resolved by DDR-028: tag system + pre-cycle scoping UI with scope drafts. | — | Resolved (DDR-028) |
-| PO-012 | ~~Should the graph support multi-node selection for scoped cycles?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-cycle`, replacing the need for ad-hoc multi-node selection (UF-007 in user-flow.md). | — | Resolved (DDR-028) |
+| PO-010 | What is the expected behavior when a group's status is `frozen` but a workflow run produces artifacts that would auto-map to it? Reject the mapping, queue for review after unfreeze, or create a new group? | Frozen group semantics, workflow run reliability | Open |
+| PO-011 | ~~How should cycle scoping work before a cycle starts?~~ Resolved by DDR-028: tag system + pre-run scoping UI with scope drafts. | — | Resolved (DDR-028) |
+| PO-012 | ~~Should the graph support multi-node selection for scoped cycles?~~ Resolved by DDR-028: tag system allows tagging multiple nodes independently with `#next-run`, replacing the need for ad-hoc multi-node selection (UF-007 in user-flow.md). | — | Resolved (DDR-028) |

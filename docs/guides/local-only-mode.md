@@ -17,7 +17,7 @@ reading and writing tasks to a flat YAML file at `.sle/tasks.yaml`.
 
 **What you keep:**
 
-- Full cycle execution through the DAG runner
+- Full workflow run execution through the workflow runner
 - Artifact generation and validation
 - Discovery, intake, and sharding
 - Crash recovery and stale claim detection
@@ -142,7 +142,7 @@ daemon ignores Beads entirely — no hooks fire, no connectivity checks.
 
 ## Beads hooks
 
-Hooks are scripts that run at specific points in the SLE cycle. They are
+Hooks are scripts that run at specific points in the SLE workflow run. They are
 available in both Beads and local-only modes, though some hooks are more useful
 with Beads enabled.
 
@@ -150,9 +150,9 @@ with Beads enabled.
 
 | Hook | When it fires | Typical use |
 |------|--------------|-------------|
-| `pre_cycle` | Before the DAG runner starts a cycle | Validate environment, notify external systems |
-| `post_cycle` | After cycle completes (any outcome) | Log results, trigger CI, send notifications |
-| `on_failure` | When a cycle exits with `halted`, `error`, or `crash` | Alert on-call, capture diagnostics |
+| `pre_run` | Before the workflow runner starts a run | Validate environment, notify external systems |
+| `post_run` | After run completes (any outcome) | Log results, trigger CI, send notifications |
+| `on_failure` | When a run exits with `halted`, `error`, or `crash` | Alert on-call, capture diagnostics |
 | `on_artifact_change` | After any artifact is written or updated | Sync to external storage, trigger builds |
 
 ### Configuring hooks
@@ -162,11 +162,11 @@ Add hooks to `map.yaml` under `beads.hooks`:
 ```yaml
 beads:
   hooks:
-    pre_cycle:
-      command: ".sle/hooks/pre-cycle.sh"
+    pre_run:
+      command: ".sle/hooks/pre-run.sh"
       timeout_ms: 5000
-    post_cycle:
-      command: ".sle/hooks/post-cycle.sh"
+    post_run:
+      command: ".sle/hooks/post-run.sh"
       timeout_ms: 10000
     on_failure:
       command: ".sle/hooks/on-failure.sh"
@@ -178,7 +178,7 @@ beads:
 
 Each hook specifies a command (path to an executable script) and an optional
 timeout. If a hook exceeds its timeout, the daemon logs a warning and continues
-the cycle. Hook failures never halt the cycle.
+the run. Hook failures never halt the run.
 
 ### Writing a hook script
 
@@ -186,23 +186,23 @@ Hook scripts receive context through environment variables:
 
 | Variable | Contents | Available in |
 |----------|----------|-------------|
-| `SLE_CYCLE_ID` | Current cycle identifier | All hooks |
-| `SLE_TASK_ID` | Claimed task ID (or `none`) | `pre_cycle`, `post_cycle`, `on_failure` |
-| `SLE_OUTCOME` | Cycle outcome (`completed`, `halted`, `error`, `crash`) | `post_cycle`, `on_failure` |
-| `SLE_VERSION_ID` | Snapshot version (e.g., `v1.2.3`) | `post_cycle` (completed only) |
+| `SLE_RUN_ID` | Current workflow run identifier | All hooks |
+| `SLE_TASK_ID` | Claimed task ID (or `none`) | `pre_run`, `post_run`, `on_failure` |
+| `SLE_OUTCOME` | Run outcome (`completed`, `halted`, `error`, `crash`) | `post_run`, `on_failure` |
+| `SLE_VERSION_ID` | Snapshot version (e.g., `v1.2.3`) | `post_run` (completed only) |
 | `SLE_ARTIFACT_PATH` | Path to the changed artifact | `on_artifact_change` |
 | `SLE_ARTIFACT_TYPE` | Artifact type prefix (`doc:`, `code:`, `test:`) | `on_artifact_change` |
 | `SLE_PROJECT_ROOT` | Absolute path to project root | All hooks |
 | `SLE_EXIT_REASON` | Human-readable exit reason | `on_failure` |
-| `SLE_REPORT_PATH` | Path to cycle report | `on_failure` |
+| `SLE_REPORT_PATH` | Path to run report | `on_failure` |
 
-Example `post_cycle` hook:
+Example `post_run` hook:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-echo "$(date -Iseconds) cycle=${SLE_CYCLE_ID} task=${SLE_TASK_ID} outcome=${SLE_OUTCOME} version=${SLE_VERSION_ID:-none}" \
-  >> "${SLE_PROJECT_ROOT}/.sle/cycle-log.tsv"
+echo "$(date -Iseconds) run=${SLE_RUN_ID} task=${SLE_TASK_ID} outcome=${SLE_OUTCOME} version=${SLE_VERSION_ID:-none}" \
+  >> "${SLE_PROJECT_ROOT}/.sle/run-log.tsv"
 ```
 
 Example `on_failure` hook:
@@ -212,15 +212,15 @@ Example `on_failure` hook:
 set -euo pipefail
 curl -sf -X POST "https://hooks.example.com/alert" \
   -H "Content-Type: application/json" \
-  -d "{\"text\": \"SLE cycle ${SLE_CYCLE_ID} failed: ${SLE_OUTCOME}\"}" \
+  -d "{\"text\": \"SLE run ${SLE_RUN_ID} failed: ${SLE_OUTCOME}\"}" \
   || true
 ```
 
 ### Hook execution order
 
 When multiple hooks are configured for the same event, they run in
-configuration order. If `on_failure` fires, it runs before `post_cycle` — both
-fire on a failed cycle, but `on_failure` executes first.
+configuration order. If `on_failure` fires, it runs before `post_run` — both
+fire on a failed run, but `on_failure` executes first.
 
 ### Hooks in local-only mode
 
@@ -248,8 +248,8 @@ Project
 - **Epic** — corresponds to a discovery phase (see specs/init-and-discovery
   §Planning loop). The Planner creates epic-level issues via `createTask` with
   a `parent` field.
-- **Task** — maps to an `SLETask` claimed and resolved during a cycle. The DAG
-  runner claims one task per cycle via `taskStore.updateStatus(id,
+- **Task** — maps to an `SLETask` claimed and resolved during a workflow run. The workflow
+  runner claims one task per run via `taskStore.updateStatus(id,
   'in_progress')`.
 - **Sub-task** — optional further decomposition within a task. Not created
   automatically by SLE; managed manually via `bd create --parent {id}`.
@@ -285,7 +285,7 @@ by ID reference: `getReadyTasks()` returns only tasks whose dependencies are all
 represented.
 
 Both providers produce the same `SLETask` shape (see specs/beads-integration
-§SLETask), so the DAG runner and context manager are provider-agnostic. They
+§SLETask), so the workflow runner and context manager are provider-agnostic. They
 call `getReadyTasks()` and receive `SLETask[]` regardless of the backing store.
 
 ### Dependency handling
@@ -309,7 +309,7 @@ features, remote sync, or semantic compaction.
 - Install the `bd` CLI (Beads binary)
 - Create a DoltHub account and repository for issues
 - Ensure `.sle/tasks.yaml` has no tasks with status `in_progress` (complete or
-  halt any active cycles first)
+  halt any active workflow runs first)
 
 ### Migration to Beads
 
@@ -364,7 +364,7 @@ sle daemon start
 ### No data loss guarantee
 
 Artifacts and `map.yaml` are independent of the task store. Switching providers
-does not affect generated artifacts (`.server/docs/`), cycle history in
+does not affect generated artifacts (`.server/docs/`), run history in
 `map.yaml`, rule files (`.sle/rules/`), agent prompts (`.sle/prompts/`), or
 `agent.md`. The local `.sle/tasks.yaml` file is preserved after migration —
 delete it manually once you have verified the Beads issues are correct.
@@ -404,7 +404,7 @@ or authentication problem with the DoltHub remote. Verify the remote URL in
 `map.yaml → remotes.issues.url`, test with `bd pull origin`, and check
 authentication with `bd remote`.
 
-Sync errors are non-blocking — the cycle continues with local state and retries
+Sync errors are non-blocking — the workflow run continues with local state and retries
 on the next `getReadyTasks()` call.
 
 ### Corrupted tasks.yaml

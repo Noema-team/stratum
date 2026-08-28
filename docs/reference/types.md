@@ -26,14 +26,14 @@ export type PlanningDepth = 'minimal' | 'standard' | 'deep' | 'research'
 Controls reasoning passes, Critic activation, and artifact slice size.
 
 ```typescript
-export type SystemStatus = 'idle' | 'discovering' | 'cycling' | 'halted' | 'complete'
+export type SystemStatus = 'idle' | 'discovering'
 ```
-⚡ **DDR-020, DDR-021.** `chatting` removed (orthogonal session layer); `confirming` removed (flag on cycle record). Was `'idle' | 'running' | 'awaiting_approval' | 'halted'` in init-specs.
+⚡ **DDR-020, DDR-021, DDR-031.** `chatting` removed (orthogonal session layer); `confirming` removed (flag on a run record). `cycling`/`halted`/`complete` removed: under concurrent workflow runs there is no single project-wide "running" state. Per-run progress lives entirely on `WorkflowRun.status` (§4). `SystemStatus` now describes only the discovery lifecycle; clients derive "is any work in progress" from `active_workflow_run_count` (§4), not from `meta.status`.
 
 ```typescript
-export type CycleOutcome = 'cycling' | 'completed' | 'halted'
+export type WorkflowRunStatus = 'active' | 'halted' | 'complete'
 ```
-⚡ **DDR-020, DDR-021.** `awaiting_approval` removed; approval waiting is expressed via `cycle.awaiting_confirmation` flag. Aligns with SLE-024 §5 naming (G18).
+⚡ **DDR-031.** Replaces `CycleOutcome`. Scoped to a single `WorkflowRun`, not the system. `awaiting_*` is no longer a separate axis — see `WorkflowRun.awaiting_checkpoint` (§4).
 
 ```typescript
 export type DiscoveryStatus = 'not_started' | 'in_progress' | 'complete'
@@ -80,7 +80,7 @@ What happens when user approval times out.
 ```typescript
 export type SummaryFormat = 'markdown' | 'html' | 'json'
 ```
-Output format for the user-facing cycle summary.
+Output format for the user-facing workflow-run summary.
 
 ```typescript
 export type TestCommandFormat = 'shell' | 'npm_script' | 'makefile'
@@ -98,7 +98,7 @@ export type OutputType = 'executable' | 'html' | 'markdown'
 Kind of generated output.
 
 ```typescript
-export type GeneratedAt = 'gate_pass' | 'cycle_end' | 'always'
+export type GeneratedAt = 'gate_pass' | 'run_end' | 'always'
 ```
 When a generated output is produced.
 
@@ -123,14 +123,14 @@ export type ContextAssemblyMode = 'declared' | 'inferred'
 How the context manager assembles slices. `declared` uses Beads task declarations; `inferred` uses role-based defaults.
 
 ```typescript
-export type SourceWeight = 'user_defined' | 'cycle_produced' | 'inferred'
+export type SourceWeight = 'user_defined' | 'workflow_run_produced' | 'inferred'
 ```
-Priority order for context truncation: `user_defined` truncated last, `inferred` truncated first. DDR-028 SC-005.
+Priority order for context truncation: `user_defined` truncated last, `inferred` truncated first. DDR-028 SC-005. ⚡ **DDR-031.** Was `cycle_produced`.
 
 ```typescript
-export type TagPrefix = 'next-cycle' | 'scope' | 'area'
+export type TagPrefix = 'next-run' | 'scope' | 'area'
 ```
-DDR-028. Extensible tag prefix for the node tagging system. `#next-cycle` marks nodes as priority for upcoming cycle. `#scope:{draft-id}` links to a scope draft. `#area:{name}` for categorization.
+DDR-028. Extensible tag prefix for the node tagging system. `#next-run` marks nodes as priority for the upcoming workflow run. `#scope:{draft-id}` links to a scope draft. `#area:{name}` for categorization. ⚡ **DDR-031.** Was `next-cycle`.
 
 ```typescript
 export interface NodeTag {
@@ -145,7 +145,7 @@ DDR-028. Tag applied to nodes, layers, or groups. Tags are applied by users, the
 ```typescript
 export type VersionBump = 'major' | 'minor' | 'patch'
 ```
-Semver bump type for cycle completion. DDR-028 SC-014.
+Semver bump type for a workflow run's terminal commit. DDR-028 SC-014.
 
 ```typescript
 export type SubPhase = 'static-check' | 'llm-check' | 'exec-check'
@@ -170,14 +170,7 @@ export interface ChatState {
 ```
 ⚡ **DDR-020.** Chat is tracked as an orthogonal session layer, not a system state.
 
-```typescript
-export interface CycleFlags {
-  awaiting_scoping: boolean
-  awaiting_confirmation: boolean
-  awaiting_sharding_approval: boolean
-}
-```
-⚡ **DDR-021, DDR-026, DDR-028.** Pause-point flags on the cycle record. `awaiting_scoping` added for Phase 1 scoping. `meta.status` remains `cycling` when these are true.
+⚡ **DDR-021, DDR-026, DDR-028, DDR-031.** The fixed 3-flag set (`awaiting_scoping` / `awaiting_confirmation` / `awaiting_sharding_approval`) is removed. Any workflow can declare any number of checkpoint steps, so a fixed enum of flag names no longer fits. Replaced by `WorkflowRun.awaiting_checkpoint: string | null` (§4) — a single nullable pointer to the id of the step currently paused. This preserves the old exclusivity rule (at most one pause point active at a time) by construction rather than by convention.
 
 ---
 
@@ -198,7 +191,7 @@ LLM provider settings for a single agent role.
 ```typescript
 export interface AgentRoleConfig {
   active: boolean
-  node: string | null
+  step_id: string | null
   llm: AgentLLMConfig
   temperature: number
   max_tokens: number
@@ -210,7 +203,7 @@ export interface AgentRoleConfig {
   constraints?: string[]
   append_only?: boolean
   session_types?: string[]
-  trigger_node?: string
+  trigger_step_id?: string
 }
 ```
 Configuration for one agent role in `agents.yaml`.
@@ -263,91 +256,102 @@ Output from a single agent invocation.
 | Evaluator | `requirements.md` + `evaluation.md` + `test-plan.md` + run artifacts | Structured verdict |
 | Critic | `architecture.md` + `evaluation.md` | Blocking issues / warnings |
 | Historian | `decisions.md` (full, append target) | Audit entry |
-| Facilitator | Project context + cycle context (mode-dependent) | Triggers: Decision captures (written by Historian) |
+| Facilitator | Project context + workflow-run context (mode-dependent) | Triggers: Decision captures (written by Historian) |
 
 ---
 
-## 4 — DAG & Cycle
+## 4 — Workflow execution
+
+⚡ **DDR-031.** This section replaces the old "DAG & Cycle" section. The fixed
+15-value `DAGNode` enum and the singular `CycleState` record are gone — see
+[workflow-execution.md](../specs/workflow-execution.md) for the full model and
+[step-kind-reference.md](../specs/step-kind-reference.md) for the per-kind
+behavior reference. `full-build` (the old fixed DAG) and `draft-artifact` are
+now `WorkflowDefinition`s built on the six `StepKind` values below, not
+hard-coded pipeline stages.
 
 ```typescript
-export enum DAGNode {
-  SCOPING = 'SCOPING',
-  DESIGN = 'DESIGN',
-  CRITIQUE = 'CRITIQUE',
-  PLAN = 'PLAN',
-  TEST = 'TEST',
-  SHARDING_APPROVAL = 'SHARDING_APPROVAL',
-  CONFIRM = 'CONFIRM',
-  BUILD = 'BUILD',
-  HISTORY = 'HISTORY',
-  EXEC = 'EXEC',
-  VALIDATION_GATE = 'VALIDATION_GATE',
-  DEBUG = 'DEBUG',
-  EVALUATE = 'EVALUATE',
-  SUMMARISE = 'SUMMARISE',
-  SNAPSHOT = 'SNAPSHOT',
+export type StepKind = 'gather' | 'produce' | 'review' | 'checkpoint' | 'execute' | 'commit'
+```
+⚡ **DDR-031.** Replaces `DAGNode`. `gather` assembles context (no artifact produced). `produce` is LLM-driven artifact generation. `review` is pass/fail evaluation, deterministic where possible, and declares an `on_fail` route. `checkpoint` pauses for human input. `execute` runs code/tests, non-LLM. `commit` writes + version-bumps + releases a claim, with an optional decision-log append (`logs_decision`) — this folds in the old HISTORY node's behavior rather than keeping it as a separate stage. The old DEBUG node is not a 7th kind either: it is any `review` step's `on_fail: { action: 'produce', target_step_id }` failure path.
+
+```typescript
+export interface WorkflowStep {
+  id: string
+  kind: StepKind
+  agent_role?: AgentRole
+  prompt_template?: string
+  input_context: ArtifactRef[]
+  output_artifact?: ArtifactOutputSpec
+  on_fail?: { action: 'halt' | 'produce'; target_step_id?: string }
+  logs_decision?: boolean
 }
 ```
-⚡ **DDR-028.** Replaced INTENT, CONTEXT_ASSEMBLY, EXPLORE with SCOPING. Was 17 nodes, now 15.
+⚡ **DDR-031.** One step in a `WorkflowDefinition`. `agent_role` is required for `gather`/`produce`/`review`, absent for `checkpoint`/`execute`-only/`commit`-only steps. `on_fail` is meaningful only on `review` steps. `logs_decision` is meaningful only on `commit` steps.
 
 ```typescript
-export interface DAGState {
-  current: DAGNode
-  iteration: number
-  max_iterations: number
-  started_at: string
-  history: DAGEvent[]
+export interface ArtifactOutputSpec {
+  ref_pattern: string
+  scope: ArtifactScope
 }
 ```
-Current position and history of the DAG runner.
+⚡ **DDR-031.** What a step writes and where — e.g. `node:{group}:architecture` at `scope: 'group'`, or `doc:cycle-charter` at `scope: 'run'`.
 
 ```typescript
-export interface DAGEvent {
-  node: DAGNode
-  type: 'enter' | 'exit' | 'error' | 'skip'
-  timestamp: string
-  data?: unknown
+export interface WorkflowDefinition {
+  id: string
+  version: number
+  trigger: { description: string; examples?: string[] }
+  steps: WorkflowStep[]
+  checkpoints: string[]
+  output_contract: { artifacts: ArtifactOutputSpec[] }
+  created_by: 'builtin' | 'user'
+  created_at: string
 }
 ```
-An event recorded as the DAG runner moves between nodes.
+⚡ **DDR-031.** A skill-style document describing one composable unit of work. `trigger.description` is matched against free-form chat by the workflow-select router (see conversation.md). `checkpoints` is the subset of `steps[].id` where `kind === 'checkpoint'`. Stored per-project at `.sle/workflows/{id}.md` (front-matter mirrors this shape; per-step instruction bodies live in the markdown body — see workflow-authoring.md). `full-build` and `draft-artifact` are `created_by: 'builtin'` and their ids are reserved.
 
 ```typescript
-export interface CycleState {
-  number: number
+export interface WorkflowRun {
+  run_id: string
+  workflow_id: string
+  target: { group?: string; layer?: string; node_key?: string }
+  status: WorkflowRunStatus
+  current_step_id: string
   iteration: number
   revision: number
-  max_iterations: number
-  planning_depth: PlanningDepth
+  awaiting_checkpoint: string | null
+  claimed_artifacts: ArtifactClaim[]
   started_at: string
-  completed_at?: string
-  outcome: CycleOutcome
-  approval_gate: 'after_planning' | 'after_gate_pass' | null
-  awaiting_scoping: boolean
-  awaiting_confirmation: boolean
-  awaiting_sharding_approval: boolean
-  last_summary?: { path: string; generated_at: string }
+  updated_at: string
 }
 ```
-⚡ **DDR-021, DDR-026.** Added `revision`, `awaiting_confirmation`, `awaiting_sharding_approval`. Removed `status` — system state is tracked at `meta.status`.
+⚡ **DDR-031.** Replaces `CycleState`. One instance of a `WorkflowDefinition` executing against a specific target. Multiple `WorkflowRun`s may be `active` simultaneously, each tracked independently — there is no project-wide singular run record. `run_id` format: `{workflow_id}-{run_seq}-i{iteration}-{ISO8601}`, where `run_seq` is a per-`workflow_id` monotonic counter (replaces the old `c{cycle}-i{iteration}-{ISO8601}`, which depended on a single global cycle counter that no longer exists under concurrency).
 
 ```typescript
-export interface CycleExecutionSummary {
-  version_id: string
-  cycle: number
-  nodes_completed: DAGNode[]
-  iterations_used: number
-  total_revisions: number
-  failed_at?: { node: DAGNode; reason: string }
-  duration_ms: number
-  agent_runs: Record<AgentRole, number>
+export interface ArtifactClaim {
+  artifact_ref: ArtifactRef
+  claimed_by_run_id: string
+  claimed_at: string
+  artifact_version_at_claim: number
 }
 ```
-Condensed DAG execution trace stored in `history[]` on SNAPSHOT. DDR-028 SC-014 D4.
+⚡ **DDR-031.** Generalizes the `concurrent_modification` optimistic-concurrency pattern (intake-and-sharding.md) and the Beads atomic task claim (beads-integration.md) from "tasks only" to "any artifact a workflow run is about to write." Stored at `.sle/claims/{artifact-ref-slug}.json`, one file per claimed artifact, deleted on release. A claim attempt that conflicts with another active run's claim is rejected immediately (`claim_conflict`) — not retried with backoff, unlike `concurrent_modification`'s transient-race retry, because a claim is held for an entire step's duration and represents real contention, not a brief read/write race.
+
+```typescript
+export interface ArtifactVersion {
+  artifact_ref: ArtifactRef
+  version: number
+  committed_by_run_id: string | null
+  committed_at: string | null
+}
+```
+⚡ **DDR-031.** Version numbers live on the artifact's own metadata (front-matter `version:` for docs, a sibling `.meta.json` for node content) — this type describes that metadata's shape, it is not a separate store. A commit step verifies `artifact.version === claim.artifact_version_at_claim` before writing; mismatch (should not occur under the dispatch-time-rejection model above except via a bug or manual edit) is the distinct error `stale_claim_commit`, which halts the run without auto-retry.
 
 ```typescript
 export interface VersionSnapshot {
   version_id: string
-  cycle: number
+  workflow_run_id: string
   iteration: number
   revision: number
   locked_at: string
@@ -356,10 +360,10 @@ export interface VersionSnapshot {
   outcome: 'completed' | 'halted'
   version_bump: VersionBump
   deployable: boolean
-  changed_nodes: string[]
+  changed_artifacts: string[]
 }
 ```
-DDR-028 SC-014. Immutable snapshot of a completed cycle, stored in `.sle/versions/{version_id}/`. `artifact_hashes` maps artifact keys to content hashes for provenance. `deployable` is `true` only when `outcome === 'completed'` and all categories pass.
+DDR-028 SC-014. Immutable snapshot produced by a workflow run's terminal `commit` step, stored in `.sle/versions/{version_id}/`. `artifact_hashes` maps artifact keys to content hashes for provenance. `deployable` is `true` only when `outcome === 'completed'` and all categories pass. ⚡ **DDR-031.** `cycle` → `workflow_run_id`, `changed_nodes` → `changed_artifacts`.
 
 ---
 
@@ -545,7 +549,6 @@ Aggregated result from the VALIDATION gate.
 
 ```typescript
 export interface FailureReport {
-  cycle: number
   iteration: number
   run_dir: string
   run_id: string
@@ -855,7 +858,7 @@ export const SummaryFormatEnum = z.enum(['markdown', 'html', 'json'])
 export const TestCommandFormatEnum = z.enum(['shell', 'npm_script', 'makefile'])
 export const ArtifactFormatEnum = z.enum(['markdown', 'json', 'yaml'])
 export const OutputTypeEnum = z.enum(['executable', 'html', 'markdown'])
-export const GeneratedAtEnum = z.enum(['gate_pass', 'cycle_end', 'always'])
+export const GeneratedAtEnum = z.enum(['gate_pass', 'run_end', 'always'])
 ```
 
 ```typescript
@@ -1030,7 +1033,7 @@ const AgentLLMConfigSchema = z.object({
 
 const AgentRoleConfigSchema = z.object({
   active: z.boolean(),
-  node: z.string().nullable(),
+  step_id: z.string().nullable(),
   llm: AgentLLMConfigSchema,
   temperature: z.number(),
   max_tokens: z.number().int(),
@@ -1042,7 +1045,7 @@ const AgentRoleConfigSchema = z.object({
   constraints: z.array(z.string().min(1)).optional(),
   append_only: z.boolean().optional(),
   session_types: z.array(z.string().min(1)).optional(),
-  trigger_node: z.string().optional(),
+  trigger_step_id: z.string().optional(),
 })
 
 export const AgentsSchema = z.object({

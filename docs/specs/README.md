@@ -5,8 +5,9 @@ Primary build reference — what to implement.
 | Doc | Description |
 |-----|-------------|
 | [state-machine.md](state-machine.md) | System states, transitions, orthogonal chat |
-| [dag-execution.md](dag-execution.md) | DAG flow, iteration rules, scheduling |
-| [dag-node-reference.md](dag-node-reference.md) | Per-node definitions for all 15 DAG nodes (split from dag-execution.md) |
+| [workflow-execution.md](workflow-execution.md) | Workflow-run flow, iteration rules, scheduling, artifact claims (merges former dag-execution.md) |
+| [step-kind-reference.md](step-kind-reference.md) | Per-step-kind definitions for all 6 step kinds, full-build worked example (merges former dag-node-reference.md) |
+| [workflow-authoring.md](workflow-authoring.md) | Authoring a WorkflowDefinition as a skill-style document; draft-artifact as the workflow creator |
 | [validation.md](validation.md) | static-check, llm-check, exec-check, gates |
 | [context-manager.md](context-manager.md) | Assembly algorithm, slices per role, budgets |
 | [rule-files.md](rule-files.md) | All 7 YAML schemas (including agents.yaml) |

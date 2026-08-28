@@ -6,6 +6,6 @@ Entry-point docs — read once to build mental models of the system.
 |-----|-------------|
 | [what-is-sle.md](what-is-sle.md) | Core concept, principles, intent-to-validated flow |
 | [architecture.md](architecture.md) | Platform layers, daemon, component diagram |
-| [cycle-model.md](cycle-model.md) | Conceptual cycle walkthrough |
+| [workflow-model.md](workflow-model.md) | Conceptual workflow-run walkthrough |
 | [agent-roles.md](agent-roles.md) | All 10 roles, artifact ownership |
 | [glossary.md](glossary.md) | Terms and definitions |

@@ -14,10 +14,12 @@ The knowledge engine is an **optional** semantic search and knowledge graph laye
 that augments the deterministic context manager (context-manager.md). When enabled,
 it provides three capabilities: semantic artifact search across all generated
 artifacts, cross-session memory that persists across context window resets, and
-knowledge distillation that extracts reusable patterns from completed cycles.
+knowledge distillation that extracts reusable patterns from completed workflow
+runs.
 
-It is never in the critical path. When disabled or unreachable, every SLE cycle
-completes identically to a system without it. The `KnowledgeProvider` interface
+It is never in the critical path. When disabled or unreachable, every SLE
+workflow run completes identically to a system without it. The
+`KnowledgeProvider` interface
 has a `NoopProvider` that is used when the service is off, making the knowledge
 engine transparent to all other subsystems.
 
@@ -159,7 +161,7 @@ they know; consumers filter on what they need.
 export interface UnifiedMetadata {
   role?: AgentRole | 'discovery'
   artifact?: string
-  cycle?: string
+  workflow_run?: string
   project?: string
   path?: string
   link_type?: string
@@ -174,7 +176,7 @@ export interface UnifiedMetadata {
 |-------|-------------|---------|
 | `role` | Knowledge engine ingestion | Agent role that generated the artifact |
 | `artifact` | Knowledge engine ingestion | Artifact type key (`requirements`, `architecture`, etc.) |
-| `cycle` | Knowledge engine ingestion | Cycle ID string |
+| `workflow_run` | Knowledge engine ingestion | Workflow run ID string |
 | `project` | Knowledge engine ingestion | Project name for multi-project isolation |
 | `path` | Knowledge engine ingestion | File path (Builder artifacts only) |
 | `link_type` | Link index (SLE-017) | Structural/semantic link classification |
@@ -185,12 +187,12 @@ export interface UnifiedMetadata {
 
 When the knowledge engine ingests a link from the SLE-017 link index, it
 preserves `link_type`, `link_source`, `link_target`, and `link_weight` alongside
-the SLE-014 `role`, `artifact`, and `cycle` fields. An agent can then query
+the SLE-014 `role`, `artifact`, and `workflow_run` fields. An agent can then query
 Cognee for "all structural links from the planner role" by filtering on both
 `link_type=structural_dag` and `role=planner`.
 
 Conversely, when the link index surfaces knowledge-engine-originated entities,
-it can use `role` and `cycle` for filtering. Neither system needs to understand
+it can use `role` and `workflow_run` for filtering. Neither system needs to understand
 all fields — they ignore fields they do not use.
 
 ### KnowledgeSlice
@@ -216,7 +218,7 @@ dataset: "{config.dataset_prefix}{project_name}"
 
 Default: `sle-my-api`. All artifacts for a project are ingested into the same
 dataset. Metadata fields enable filtering without separate datasets per role or
-cycle.
+workflow run.
 
 ### AssembledContext extension
 
@@ -247,14 +249,14 @@ joined with double newlines. It is absent when:
 
 ```typescript
 export interface IngestionTag {
-  dag_node: DAGNode
+  step_id: string
   artifact_keys: string[]
   fire_and_forget: boolean
 }
 ```
 
-Defines which artifacts are ingested at each DAG integration point. All
-ingestion is fire-and-forget — failures are logged but never block the cycle.
+Defines which artifacts are ingested at each workflow integration point. All
+ingestion is fire-and-forget — failures are logged but never block the workflow run.
 
 ---
 
@@ -274,7 +276,7 @@ ingestion is fire-and-forget — failures are logged but never block the cycle.
         iv.  If health passes → return CogneeClient
 
 2. Daemon runtime
-   a. Provider is injected into context manager and DAG runner
+   a. Provider is injected into context manager and workflow runner
    b. Every context assembly call checks provider.health() first
    c. Ingestion calls are fire-and-forget (no await on failure)
    d. Circuit breaker state is local to CogneeClient instance
@@ -284,95 +286,96 @@ ingestion is fire-and-forget — failures are logged but never block the cycle.
    b. No state to persist — Cognee owns its data
 ```
 
-### DAG integration points
+### Workflow integration points
 
-The DAG runner calls the knowledge provider at five points during a cycle.
-All calls are fire-and-forget. The cycle proceeds regardless of outcome.
+The workflow runner calls the knowledge provider at five points during a
+workflow run. All calls are fire-and-forget. The run proceeds regardless of
+outcome.
 
-#### Point 1 — After DESIGN node
+#### Point 1 — After DESIGN step
 
 The Designer produces `requirements.md` and `architecture.md`. Both are
 ingested with the Designer's role metadata.
 
 ```
-onNodeExit(DAGNode.DESIGN):
+onStepExit('DESIGN'):
   for artifact in ['requirements', 'architecture']:
     content = readArtifact(artifact)
     knowledge.ingest(content, {
       role: 'designer',
       artifact,
-      cycle: cycleState.id,
+      workflow_run: run.id,
       project: map.project.name,
       group: ''                    // empty for project-scoped docs
     })
 ```
 
-#### Point 2 — After PLAN node
+#### Point 2 — After PLAN step
 
 The Planner produces `plan.md` and `test-plan.md`.
 
 ```
-onNodeExit(DAGNode.PLAN):
+onStepExit('PLAN'):
   for artifact in ['plan', 'test-plan']:
     content = readArtifact(artifact)
     knowledge.ingest(content, {
       role: 'planner',
       artifact,
-      cycle: cycleState.id,
+      workflow_run: run.id,
       project: map.project.name,
       group: ''
     })
 ```
 
-#### Point 3 — After BUILD node
+#### Point 3 — After BUILD step
 
 The Builder produces implementation files. Each file is ingested individually
 with its file path as metadata.
 
 ```
-onNodeExit(DAGNode.BUILD):
+onStepExit('BUILD'):
   for (path, content) in builderOutput.fileMap:
     knowledge.ingest(content, {
       role: 'builder',
       artifact: 'implementation',
       path,
-      cycle: cycleState.id,
+      workflow_run: run.id,
       project: map.project.name,
-      group: currentGroup            // from task or cycle context
+      group: currentGroup            // from task or workflow-run context
     })
 ```
 
-#### Point 4 — After HISTORY node
+#### Point 4 — After the terminal commit step (`logs_decision: true`)
 
 The Historian produces a decisions delta. Only the delta (not the full
 decisions file) is ingested.
 
 ```
-onNodeExit(DAGNode.HISTORY):
+onStepExit('SNAPSHOT'):
   delta = readArtifactDelta('decisions', sinceLastIngestion)
   knowledge.ingest(delta, {
     role: 'historian',
     artifact: 'decisions',
-    cycle: cycleState.id,
+    workflow_run: run.id,
     project: map.project.name,
     group: ''
   })
 ```
 
-#### Point 5 — After cycle exit
+#### Point 5 — After workflow-run exit
 
 Cognify builds or updates the knowledge graph from all data ingested during
-the cycle. This is an async LLM-powered pipeline that runs in the Cognee
-container. The daemon initiates it but does not await completion.
+the workflow run. This is an async LLM-powered pipeline that runs in the
+Cognee container. The daemon initiates it but does not await completion.
 
 ```
-onCycleExit(outcome):
+onWorkflowRunExit(outcome):
   knowledge.cognify()
 ```
 
-The daemon logs cognify initiation. If cognify fails, the next cycle's search
-results may be stale — this is acceptable because deterministic slices from
-context-manager.md always provide correct context.
+The daemon logs cognify initiation. If cognify fails, the next workflow run's
+search results may be stale — this is acceptable because deterministic slices
+from context-manager.md always provide correct context.
 
 ### Context enhancement
 
@@ -442,23 +445,23 @@ Component 6 is only present when all four conditions are true:
 ### Discovery ingestion
 
 During discovery (init-and-discovery.md), the knowledge engine ingests discovery
-artifacts as they are produced. This enables the first cycle to benefit from
-semantic search over discovery documents.
+artifacts as they are produced. This enables the first workflow run to benefit
+from semantic search over discovery documents.
 
 ```
 onDiscoveryArtifactApproved(artifactPath, content):
   knowledge.ingest(content, {
     role: 'discovery',
     artifact: pathToArtifactKey(artifactPath),
-    cycle: '',
+    workflow_run: '',
     project: map.project.name,
     group: ''
   })
 ```
 
 Discovery artifacts are ingested with the `discovery` pseudo-role. They become
-searchable before any cycle runs, allowing the Designer's context enhancement
-to surface relevant discovery insights.
+searchable before any workflow run executes, allowing the Designer's context
+enhancement to surface relevant discovery insights.
 
 ### Search result formatting
 
@@ -512,8 +515,8 @@ not part of the daemon's external API.
 
 | Cognee endpoint | Method | Purpose | When called |
 |-----------------|--------|---------|-------------|
-| `/api/v1/add` | POST | Ingest data into a dataset | After DESIGN, PLAN, BUILD, HISTORY nodes |
-| `/api/v1/cognify` | POST | Run knowledge graph pipeline | After cycle exit (fire-and-forget) |
+| `/api/v1/add` | POST | Ingest data into a dataset | After DESIGN, PLAN, BUILD steps, and the terminal commit step |
+| `/api/v1/cognify` | POST | Run knowledge graph pipeline | After workflow-run exit (fire-and-forget) |
 | `/api/v1/search` | POST | Semantic search | During context enhancement |
 | `/api/v1/health` | GET | Health check | Startup + per-enhancement |
 | `/api/v1/datasets` | GET | List datasets | Status endpoint only |
@@ -530,28 +533,28 @@ behaviour defined in §CogneeClient.
 
 | Error | Condition | Response |
 |-------|-----------|----------|
-| `ingest_timeout` | Cognee does not respond within `timeout_ms` | Retry up to 3 times with exponential backoff. Log on final failure. Cycle continues. |
-| `ingest_connection_refused` | Cognee container is down or not started | Increment circuit breaker counter. Log warning. Cycle continues. |
-| `ingest_500` | Cognee returns HTTP 500 | Retry up to 3 times. Log on final failure. Cycle continues. |
+| `ingest_timeout` | Cognee does not respond within `timeout_ms` | Retry up to 3 times with exponential backoff. Log on final failure. Workflow run continues. |
+| `ingest_connection_refused` | Cognee container is down or not started | Increment circuit breaker counter. Log warning. Workflow run continues. |
+| `ingest_500` | Cognee returns HTTP 500 | Retry up to 3 times. Log on final failure. Workflow run continues. |
 | `ingest_circuit_open` | Circuit breaker has opened (5+ consecutive failures) | Skip ingestion entirely. No network call. Circuit resets after 60s. |
 
-**Invariant:** Ingestion failures are never visible to the user or the cycle.
-They are logged at `warn` level and silently skipped.
+**Invariant:** Ingestion failures are never visible to the user or the workflow
+run. They are logged at `warn` level and silently skipped.
 
 ### Search failures
 
 | Error | Condition | Response |
 |-------|-----------|----------|
 | `search_timeout` | Cognee search does not respond within `timeout_ms` | Return empty results. Context assembly proceeds without knowledge slice. |
-| `search_connection_refused` | Cognee unreachable at context assembly time | Return empty results. No warning to cycle — graceful degradation. |
-| `search_empty_dataset` | Dataset exists but contains no relevant results | Return empty results. Normal condition on first cycle. |
+| `search_connection_refused` | Cognee unreachable at context assembly time | Return empty results. No warning to the workflow run — graceful degradation. |
+| `search_empty_dataset` | Dataset exists but contains no relevant results | Return empty results. Normal condition on the first workflow run. |
 | `search_no_dataset` | Dataset does not exist yet (no prior ingestion) | Return empty results. Normal condition before first cognify. |
 
 ### Cognify failures
 
 | Error | Condition | Response |
 |-------|-----------|----------|
-| `cognify_timeout` | Cognify call times out | Log warning. Next cycle may have stale graph. Self-corrects on next cognify. |
+| `cognify_timeout` | Cognify call times out | Log warning. Next workflow run may have stale graph. Self-corrects on next cognify. |
 | `cognify_failed` | Cognee reports pipeline failure | Log warning with error details. No user-visible effect. |
 
 Cognify is always fire-and-forget. The daemon does not track cognify completion.
@@ -576,14 +579,14 @@ always provide correct baseline context.
 
 ## Constraints
 
-1. **Never in the critical path.** Every SLE cycle completes successfully
-   whether Cognee is running or not. If Cognee is unreachable at context
-   assembly time, the context manager returns deterministic slices exactly as
-   specified in context-manager.md.
+1. **Never in the critical path.** Every SLE workflow run completes
+   successfully whether Cognee is running or not. If Cognee is unreachable at
+   context assembly time, the context manager returns deterministic slices
+   exactly as specified in context-manager.md.
 
 2. **Fire-and-forget ingestion.** All ingestion and cognify calls are
-   non-blocking. The DAG runner does not await their completion. Failures are
-   logged and silently skipped — they never halt a cycle.
+   non-blocking. The workflow runner does not await their completion. Failures
+   are logged and silently skipped — they never halt a workflow run.
 
 3. **Provider interface exclusivity.** The SLE daemon never imports or depends
    on Cognee's Python code. All communication is HTTP through the
@@ -621,8 +624,8 @@ always provide correct baseline context.
     period (60 seconds).
 
 11. **Cognify does not block.** Cognify is an async LLM-powered pipeline that
-    runs in the Cognee container. The daemon initiates it after cycle exit but
-    never awaits completion. Stale graph data is the worst case — it
+    runs in the Cognee container. The daemon initiates it after workflow-run
+    exit but never awaits completion. Stale graph data is the worst case — it
     self-corrects on the next cognify call.
 
 12. **Docker Compose profile activation.** The Cognee container does not start
@@ -632,7 +635,8 @@ always provide correct baseline context.
 
 13. **Discovery ingestion uses pseudo-role.** Discovery artifacts are ingested
     with `role: 'discovery'`, matching the `GeneratorRole` type from types.md.
-    This distinguishes them from cycle-generated artifacts in search results.
+    This distinguishes them from workflow-run-generated artifacts in search
+    results.
 
 ---
 
@@ -641,11 +645,11 @@ always provide correct baseline context.
 | ID | Question | Impact | Status |
 |----|----------|--------|--------|
 | KE-001 | Should the knowledge engine use Meilisearch for full-text search, Postgres FTS on the existing PG16 instance, or defer to Cognee's built-in hybrid search for all retrieval patterns? Meilisearch adds operational overhead but provides superior typo-tolerance and faceted filtering. Postgres FTS has zero infra cost but limited semantic capabilities. Cognee alone may not handle keyword-dominant queries well. | Search quality, infrastructure footprint, operational complexity | Open — defer to P5 evaluation per DDR-005 |
-| KE-002 | Should `cognify` be triggered after every cycle exit, or batched (e.g., after every N cycles or on a timer)? Batching reduces Cognee LLM costs but increases staleness. | Cognee LLM costs, knowledge freshness | Open |
+| KE-002 | Should `cognify` be triggered after every workflow-run exit, or batched (e.g., after every N runs or on a timer)? Batching reduces Cognee LLM costs but increases staleness. | Cognee LLM costs, knowledge freshness | Open |
 | KE-003 | Should the context enhancement step use `insights` search type exclusively, or should it switch to `graph` for certain roles (e.g., Historian) or planning depths (e.g., `research`)? | Context relevance per role, implementation complexity | Open |
 | KE-004 | How should the knowledge engine handle multi-group artifacts (DDR-025) in search queries? Should results be filtered by group, or should all groups be searchable? | Multi-group context assembly, search precision | Open |
 | KE-005 | Should the `UnifiedMetadata` schema be validated at ingestion time, or should invalid metadata be accepted with a warning? Strict validation catches errors early but may reject valid edge cases. | Data quality, ingestion robustness | Open |
 | KE-006 | What is the expected resource usage ceiling for Cognee with <10k artifacts? DDR-005 targets <2GB RAM steady state. Should the daemon monitor Cognee resource usage and warn? | Production monitoring, operational visibility | Open — defer to P5 evaluation |
 | KE-007 | Should the knowledge engine index implementation file contents (Builder artifacts) in full, or only structural metadata (function signatures, class definitions, imports)? Full indexing increases search surface but consumes more storage and cognify time. | Search quality, storage costs, cognify latency | Open |
-| KE-008 | Should the context enhancement step cache search results within a cycle (same task, same role) to avoid redundant queries? Caching reduces latency but may miss data ingested mid-cycle. | Performance, result freshness | Open |
-| KE-009 | How should the daemon handle a situation where Cognee is enabled and healthy at startup but becomes unreachable mid-cycle? The circuit breaker handles this, but should the daemon emit a WebSocket event for the UI to show a degradation indicator? | User experience, observability | Open |
+| KE-008 | Should the context enhancement step cache search results within a workflow run (same task, same role) to avoid redundant queries? Caching reduces latency but may miss data ingested mid-run. | Performance, result freshness | Open |
+| KE-009 | How should the daemon handle a situation where Cognee is enabled and healthy at startup but becomes unreachable mid-run? The circuit breaker handles this, but should the daemon emit a WebSocket event for the UI to show a degradation indicator? | User experience, observability | Open |

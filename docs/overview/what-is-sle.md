@@ -1,22 +1,24 @@
 # What is SLE?
 
 **Type:** overview · **Status:** draft · **Updated:** 2026-04-22
-**Related:** [architecture.md](architecture.md), [cycle-model.md](cycle-model.md)
+**Related:** [architecture.md](architecture.md), [workflow-model.md](workflow-model.md)
 
 ## What this is
 
 The Software Lifecycle Engine (SLE) is a closed-loop system that transforms
 human intent into working, validated software — and keeps it working over time.
 It is not a code generator, a chat interface, or a task runner. It is an
-orchestration layer that manages a living codebase through repeated cycles of
-designing, building, validating, and evolving, where each cycle produces a
-locked, versioned, tested artifact set. The user drives intent. The system
+orchestration layer that manages a living codebase through composable
+**workflow runs** — designing, building, validating, and evolving — where
+each run produces a locked, versioned artifact set sized to the work it was
+asked to do. The user drives intent, usually through chat. The system
 drives execution.
 
 ```
-intent → design → plan → build → validate → evaluate → snapshot
-         ↑                                              │
-         └──────── failure feedback (bounded loop) ─────┘
+intent → workflow selection → workflow run → committed artifact(s)
+                                  ↑                    │
+                                  └── failure feedback ┘
+                                      (bounded loop, workflow-defined)
 ```
 
 ## Why it exists
@@ -28,16 +30,20 @@ of what it built last week, no awareness of the project's architecture
 constraints, and no structured way to validate that its output actually works.
 
 SLE exists to close that gap. It gives the LLM a project-sized memory (the
-artifact store), a structured execution path (the DAG), bounded iteration
-(gates and caps), and a human in the loop at decision points. The result is
-a system where the developer states what they want, the system figures out
-how to build it and prove it works, and every step is auditable.
+artifact store), structured execution paths (workflow definitions), bounded
+iteration (gates and caps), and a human in the loop at decision points. The
+result is a system where the developer states what they want, the system
+figures out how to build it and prove it works, and every step is auditable.
 
 The core insight: **intent is cheap, validation is expensive, and the loop
 between them must be bounded.** An unbounded LLM loop either diverges or
-consumes unpredictable resources. SLE replaces that with a deterministic DAG
-where every cycle either completes (all validation categories pass) or halts
-cleanly (iteration cap hit, partial report generated, user notified).
+consumes unpredictable resources. SLE replaces that with deterministic
+workflow step-graphs where every run either completes (its review steps
+pass) or halts cleanly (iteration cap hit, partial report generated, user
+notified). Not all work needs the same graph — drafting one spec file from a
+template is a different shape of work than a full build-test-review pass,
+and the system lets multiple runs of different shapes proceed concurrently as
+long as they don't claim the same artifact.
 
 ## Key ideas
 
@@ -53,11 +59,14 @@ Intent flows through three session types, each with different outputs:
 | Session | Trigger | What it produces |
 |---------|---------|-------------------|
 | Discovery | `sle discover` | Foundational project documents (product brief, constraints, system description, project plan) |
-| Chat | `sle chat` | Decisions captured to `decisions.md`; optional context for the next cycle |
-| Cycle | `sle start "intent"` | A versioned, validated artifact snapshot |
+| Chat | `sle chat` | Decisions captured to `decisions.md`; routes free-text intent to a matching workflow run |
+| Workflow run | Chat-routed, or `sle run <workflow-id> <target>` | A versioned, committed artifact set — shape depends on the workflow |
 
-Discovery runs once per project. Cycles run repeatedly. Chat is always
-available regardless of what else is happening.
+Discovery runs once per project. Workflow runs happen repeatedly and may run
+concurrently. Chat is always available regardless of what else is happening,
+and is the primary way intent reaches a workflow: the user describes what
+they want, the system matches it to a workflow definition, and confirms
+before dispatching.
 
 ### 2. Autonomous agents in bounded roles
 
@@ -68,15 +77,15 @@ the project:
 | Role | Purpose | When active |
 |------|---------|-------------|
 | **Facilitator** | Asks questions, captures decisions, structures discovery output | Discovery, Chat |
-| **Explorer** | Investigates unknowns, runs spikes, produces research findings | Triggered by SCOPING (conditional, DDR-028) |
-| **Designer** | Owns requirements and architecture documents | DESIGN node |
-| **Critic** | Reviews architecture for flaws before planning proceeds | CRITIQUE node (deep/research depth) |
-| **Planner** | Produces step-level implementation plan and test-plan | PLAN node |
-| **Tester** | Writes executable test scripts from requirements alone (never sees implementation) | TEST node |
-| **Builder** | Produces implementation code and instrumented test scripts | BUILD node |
-| **Debugger** | Diagnoses gate failures from run artifacts | DEBUG node (on validation failure) |
-| **Evaluator** | Produces structured verdict on whether intent was satisfied | EVALUATE node |
-| **Historian** | Maintains append-only decision audit trail | HISTORY node |
+| **Explorer** | Investigates unknowns, runs spikes, produces research findings | Triggered by SCOPING's gather step (conditional, DDR-028) |
+| **Designer** | Owns requirements and architecture documents | DESIGN step (`produce`) |
+| **Critic** | Reviews architecture for flaws before planning proceeds | CRITIQUE step (`review`, deep/research depth) |
+| **Planner** | Produces step-level implementation plan and test-plan | PLAN step (`produce`) |
+| **Tester** | Writes executable test scripts from requirements alone (never sees implementation) | TEST step (`produce`) |
+| **Builder** | Produces implementation code and instrumented test scripts | BUILD step (`produce`) |
+| **Debugger** | Diagnoses gate failures from run artifacts | VALIDATION_GATE's `on_fail` produce step |
+| **Evaluator** | Produces structured verdict on whether intent was satisfied | EVALUATE step (`produce`) |
+| **Historian** | Maintains append-only decision audit trail | SNAPSHOT's `logs_decision: true` commit step |
 
 Each role receives only the artifact slice it needs — the Tester never sees
 the architecture, the Builder never sees the Tester's reasoning. This
@@ -86,34 +95,39 @@ gate proves the match.
 
 ### 3. Human in the loop at decision points
 
-The system runs autonomously within a cycle but pauses for human judgment at
-configured gates:
+The system runs autonomously within a workflow run but pauses for human
+judgment at configured checkpoints — `WorkflowRun.awaiting_checkpoint` is set
+to the id of the paused step:
 
-- **CONFIRM gate** (after TEST, before BUILD) — the human reviews the plan
-  and test suite. They can approve, request modifications (which return to
-  TEST for re-derivation), or halt the cycle entirely.
-- **VALIDATION gate** (after EXEC) — this is machine-driven (deterministic
-  boolean logic on all category results, no LLM involvement), but the human
-  can configure what happens on failure: retry with feedback, prompt for
-  input, or halt with a report.
+- **CONFIRM checkpoint** (after TEST, before BUILD, in `full-build`) — the
+  human reviews the plan and test suite. They can approve, request
+  modifications (which return to TEST for re-derivation), or halt the run
+  entirely.
+- **VALIDATION_GATE review** (after EXEC) — this is machine-driven
+  (deterministic boolean logic on all category results, no LLM involvement),
+  but the human can configure what happens on failure: retry with feedback,
+  prompt for input, or halt with a report.
 
 The Facilitator serves as the interface at these pause points. It has two
 modes ([DDR-020](../decisions/ddr-020-state-machine-chat.md)):
 
-- **Chat mode** — freeform Q&A with project and cycle context. Always
+- **Chat mode** — freeform Q&A with project and workflow-run context. Always
   available, regardless of system state.
-- **Decision mode** — triggered by pending actions (gate approval, sharding
-  approval, halt resolution). The user can act immediately, ask clarifying
-  questions, or add context before deciding.
+- **Decision mode** — triggered by pending actions (checkpoint approval,
+  sharding approval, halt resolution). The user can act immediately, ask
+  clarifying questions, or add context before deciding.
 
 This is not a suggestion — the default configuration requires human approval
-at the CONFIRM gate. Fully automated runs are possible but opt-in.
+at the CONFIRM checkpoint. Fully automated runs are possible but opt-in.
 
 ### 4. Validation-first execution
 
-Every cycle ends with validation, not with code. The system does not consider
-a cycle complete until every configured validation category passes. Categories
-are defined in `validation.yaml` and can be extended per project.
+`full-build` ends with validation, not with code. The system does not
+consider that workflow run complete until every configured validation
+category passes. Categories are defined in `validation.yaml` and can be
+extended per project. Smaller workflows (like `draft-artifact`) define their
+own, lighter review steps — validation rigor is a property of the workflow,
+not a system-wide constant.
 
 Each category runs through sub-phases:
 
@@ -152,7 +166,7 @@ Optional integrations enhance but are not required:
 | **Beads** (Dolt) | Issue tracking, agent memory, cross-device task sync | Local task fallback via `.sle/tasks.yaml` ([DDR-024](../decisions/ddr-024-beads-required-or-optional.md)) |
 | **Code remote** (Git) | Source code versioning, rule file storage | No code history |
 | **Docs remote** (Git) | Independent documentation versioning | Docs share code repo history |
-| **LLM provider** | Agent reasoning | System cannot run cycles |
+| **LLM provider** | Agent reasoning | System cannot run workflows |
 
 The `TaskStore` provider interface abstracts over Beads and local mode. The
 context manager reads from whichever store is active — no code changes in
@@ -172,7 +186,7 @@ All system behavior is governed by seven YAML rule files in `.sle/rules/`:
 | `planning.yaml` | Depth levels, iteration cap, reasoning passes, artifact slice sizes |
 | `validation.yaml` | Active categories, methods, pass criteria, prompt templates |
 | `artifacts.yaml` | Which documents to generate, format, required flag |
-| `exit.yaml` | Cycle exit conditions, cap behavior, halt policy |
+| `exit.yaml` | Workflow-run exit conditions, cap behavior, halt policy |
 | `user_validation.yaml` | When to pause for human approval, prompt template, timeout |
 | `summary.yaml` | User-facing summary format, sections, test command style |
 | `agents.yaml` | Agent roles, system prompts, LLM provider config per role |
@@ -188,14 +202,14 @@ and predictable regardless of LLM output.
 
 ### 7. Git-native artifact versioning
 
-Every completed cycle produces a locked snapshot — an immutable, versioned
-copy of all artifacts. Snapshots live under `.sle/snapshots/{version}/` and
-are never modified after creation. This means every cycle's output can be
-audited, compared, and rolled back to.
+Every workflow run that reaches a `commit` step produces a locked snapshot —
+an immutable, versioned copy of the artifacts it committed. Snapshots live
+under `.sle/snapshots/{version}/` and are never modified after creation.
+This means every run's output can be audited, compared, and rolled back to.
 
 Artifacts themselves are tracked in `map.yaml`, which the daemon regenerates
-after every DAG node. The full artifact registry — who produces what, who
-consumes it, and where it lives — is documented in
+after every workflow step. The full artifact registry — who produces what,
+who consumes it, and where it lives — is documented in
 [../reference/artifact-registry.md](../reference/artifact-registry.md).
 
 ## How it fits
@@ -212,8 +226,8 @@ repeatable, auditable process.
 │  ┌──────────┐    ┌─────────────────────────────────┐    ┌────────┐ │
 │  │  Intent  │───►│              SLE                │───►│  Code  │ │
 │  │          │    │                                 │    │  base  │ │
-│  │ "Build   │    │  Discovery → Chat → Cycles      │    │        │ │
-│  │  auth    │    │  10 roles · DAG · gates · snaps  │    │ (git   │ │
+│  │ "Build   │    │  Discovery → Chat → Workflow runs│    │        │ │
+│  │  auth    │    │  10 roles · workflows · checkpoints│  │ (git   │ │
 │  │  system" │    │  validation · rules · artifacts  │    │  repo) │ │
 │  └──────────┘    └─────────────────────────────────┘    └────────┘ │
 │       │                        │                           │       │
@@ -231,77 +245,84 @@ repeatable, auditable process.
 
 ### System states
 
-The system is always in exactly one of five states:
+The system-wide state machine only tracks discovery — it no longer tracks
+work, because multiple workflow runs can be active at once:
 
 ```
 idle ──► discovering ──► idle
-  │                            ▲
-  ├──► cycling ──► complete ───┘
-  │       │
-  │       └──► halted ────────┘
   │
   └──► (chat is always available, orthogonal to system state)
+       (workflow runs proceed independently, tracked per-run)
 ```
 
 | State | Meaning |
 |-------|---------|
-| `idle` | No active session. Daemon running, ready for work. |
+| `idle` | No discovery session active. Daemon running, ready for work. |
 | `discovering` | A discovery session is producing foundational documents. |
-| `cycling` | A development cycle is executing through the DAG. |
-| `halted` | Cycle stopped — cap hit, user halt, or unrecoverable error. |
-| `complete` | Cycle finished — all validation passed, snapshot locked. Returns to `idle`. |
+
+A derived `active_workflow_run_count` is shown for display, but progress
+itself lives on each run: `WorkflowRun.status` is `active`, `halted`, or
+`complete`, and `WorkflowRun.awaiting_checkpoint` (a step id or `null`) marks
+whether that specific run is paused for human input. Two runs can be in
+different states simultaneously — one `active`, one `halted` — as long as
+they don't claim the same artifact.
 
 Chat is not a system state. It is an orthogonal session layer with its own
 open/closed state, independent of whatever the system is doing. A user can
-chat during `cycling`, `discovering`, or `idle` without affecting the system
-state machine ([DDR-020](../decisions/ddr-020-state-machine-chat.md)).
+chat while any number of workflow runs are active, during `discovering`, or
+during `idle`, without affecting the system state machine
+([DDR-020](../decisions/ddr-020-state-machine-chat.md)).
 
-### The cycle DAG
+### The full-build workflow
 
-A development cycle is a single pass through a fixed DAG of nodes. This is
-the system's execution backbone — every cycle follows this path:
+`full-build` is the built-in workflow that replaces what used to be "the
+cycle" — a single pass through a fixed step-graph, still the system's
+heaviest and most thorough execution path:
 
 ```
-SCOPING ─────────── daemon builds cycle-charter; may trigger Explorer
+SCOPING ─────────── gather → produce → checkpoint: builds cycle-charter; may trigger Explorer
   ↓
-DESIGN ─────────── Designer produces requirements + architecture
+DESIGN ─────────── produce: Designer produces requirements + architecture
   ↓
-CRITIQUE ───────── Critic reviews (deep/research depth only)
+CRITIQUE ───────── review: Critic reviews (deep/research depth only)
   ↓
-PLAN ───────────── Planner produces plan + test-plan
+PLAN ───────────── produce: Planner produces plan + test-plan
   ↓
-TEST ───────────── Tester writes executable scripts from requirements
+TEST ───────────── produce: Tester writes executable scripts from requirements
   ↓
-CONFIRM ─────────── human approves or modifies before build
+CONFIRM ─────────── checkpoint: human approves or modifies before build
   ↓
-BUILD ──────────── Builder produces implementation + instrumented tests
+BUILD ──────────── produce: Builder produces implementation + instrumented tests
   ↓
-HISTORY ────────── Historian appends audit entries
+EXEC ───────────── execute: validation fan-out (parallel, Docker, no LLM)
   ↓
-EXEC ───────────── validation fan-out (parallel, Docker, no LLM)
+VALIDATION_GATE ─── review: deterministic — all pass → continue, any fail → retry
   ↓
-VALIDATION GATE ─── deterministic: all pass → continue, any fail → retry
+EVALUATE ────────── produce: Evaluator produces structured verdict
   ↓
-EVALUATE ────────── Evaluator produces structured verdict
+SUMMARISE ───────── produce: user-facing summary of what was built
   ↓
-SUMMARISE ───────── user-facing summary of what was built
-  ↓
-SNAPSHOT ────────── locked, versioned artifact set → cycle complete
+SNAPSHOT ────────── commit (logs_decision: true): locked, versioned artifact set → run complete
 ```
 
-On validation failure, the Debugger diagnoses the root cause from run
-artifacts, and the system loops back to PLAN with a `FailureReport` injected
-into the Planner's context. The iteration counter increments. When the cap
-is hit, the cycle halts with a partial report.
+HISTORY is no longer a standalone step — it's folded into SNAPSHOT's
+`logs_decision: true` flag, since it was always a non-blocking side effect of
+the commit. On validation failure, the Debugger diagnoses the root cause from
+run artifacts as VALIDATION_GATE's `on_fail` produce step, and the system
+loops back to PLAN with a `FailureReport` injected into the Planner's
+context. The iteration counter increments. When the cap is hit, the run
+halts with a partial report. Other workflows — like `draft-artifact` — use a
+much shorter step-graph; see [workflow-model.md](workflow-model.md) for the
+full picture.
 
-The DAG has two counters that must not be confused:
+The full-build run has two counters that must not be confused:
 
 - **Revision** — increments when the user modifies the plan at the CONFIRM
-  gate. Resets when the cycle starts fresh. Happens *before* build.
-- **Iteration** — increments when the VALIDATION gate fails. Resets when a
-  new cycle begins. Happens *after* validation.
+  checkpoint. Resets when the run starts fresh. Happens *before* build.
+- **Iteration** — increments when VALIDATION_GATE fails. Resets when a new
+  run begins. Happens *after* validation.
 
-A cycle can have many revisions within iteration 1 and still be iteration 1.
+A run can have many revisions within iteration 1 and still be iteration 1.
 
 ### Planning depth: the speed-quality dial
 
@@ -316,9 +337,9 @@ runs, and how much context each agent receives:
 | `deep` | 3 | Yes (1 pass) | Production systems |
 | `research` | 4+ | Yes (multi-pass) | Complex architecture, high stakes |
 
-Depth is set in `planning.yaml` and can be overridden per cycle with
+Depth is set in `planning.yaml` and can be overridden per workflow run with
 `--depth`. It does not control the Explorer — the Explorer is now triggered
-conditionally by SCOPING (DDR-028), not as a standalone node.
+conditionally by SCOPING's gather step (DDR-028), not as a standalone step.
 
 ### Agent bootstrap
 
@@ -327,11 +348,11 @@ Every agent session begins with two files:
 1. **`agent.md`** — human-authored project intent, conventions, and
    constraints. Written once at `sle init`, never modified by the system.
 2. **`map.yaml`** — auto-generated system state. Regenerated after every
-   DAG node, never hand-edited by the human.
+   workflow step, never hand-edited by the human.
 
 Together they answer every question an agent needs before doing work: what
-the project is, where the current cycle stands, which artifacts exist, which
-rules are active, and which tasks are available. No agent starts work
+the project is, where active workflow runs stand, which artifacts exist,
+which rules are active, and which tasks are available. No agent starts work
 without reading both.
 
 ### The context window
@@ -352,7 +373,7 @@ Context assembly has two modes:
   defaults from `map.yaml`, truncating to fit the token budget.
 
 Declared mode is always preferred. Inferred mode is the fallback for ad-hoc
-cycles without task declarations.
+workflow runs without task declarations.
 
 ## What SLE is not
 
@@ -364,12 +385,12 @@ The Builder generates whatever the project requires — Node.js, shell scripts,
 TypeScript, configuration files.
 
 **Not an agent.** SLE orchestrates agents but is not itself an agent. The
-daemon executes cycles; the Facilitator provides conversation. These are
-distinct concerns.
+daemon executes workflow runs; the Facilitator provides conversation. These
+are distinct concerns.
 
 **Not autonomous without oversight.** SLE requires human approval at
 configured checkpoints. Fully automated runs are possible but opt-in. The
-default is human-in-the-loop at the CONFIRM gate.
+default is human-in-the-loop at the CONFIRM checkpoint.
 
 **Not dependent on any single service.** The system works locally with no
 external accounts. Beads, remote repos, and specific LLM providers are all
@@ -379,7 +400,7 @@ optional integrations, not requirements
 ## See also
 
 - [architecture.md](architecture.md) — platform layers, daemon internals, component diagram
-- [cycle-model.md](cycle-model.md) — conceptual cycle walkthrough
+- [workflow-model.md](workflow-model.md) — conceptual workflow-run walkthrough
 - [agent-roles.md](agent-roles.md) — all 10 roles, artifact ownership, context slices
 - [glossary.md](glossary.md) — terms and definitions
 - [../reference/types.md](../reference/types.md) — authoritative TypeScript type reference

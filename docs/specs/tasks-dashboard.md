@@ -42,7 +42,7 @@ with level scoping, priority ranking, pinning, and source attribution.
 
 ```typescript
 interface TaskLink {
-  target_type: 'artifact' | 'document' | 'task' | 'cycle'
+  target_type: 'artifact' | 'document' | 'task' | 'workflow_run'
   target_id: string
   relationship: 'blocks' | 'blocked_by' | 'related_to' | 'produces' | 'consumes'
 }
@@ -55,7 +55,7 @@ interface Task {
   status: 'todo' | 'in_progress' | 'done' | 'cancelled'
   priority: 'low' | 'medium' | 'high' | 'critical'
   pinned: boolean
-  source: 'user' | 'cycle' | 'ai_suggestion'
+  source: 'user' | 'workflow_run' | 'ai_suggestion'
   assignee: string | null
   parent_group_id?: string
   parent_node_id?: string
@@ -145,13 +145,13 @@ auto-unpinned. User pins persist across status changes until manually removed.
 ### Task source
 
 ```typescript
-type TaskSource = 'user' | 'cycle' | 'ai_suggestion'
+type TaskSource = 'user' | 'workflow_run' | 'ai_suggestion'
 ```
 
 | Source | Origin | Initial status |
 |---|---|---|
 | `user` | Manual creation via UI or CLI | `todo` |
-| `cycle` | SLE cycle produces artifacts with incomplete coverage | `todo` |
+| `workflow_run` | SLE workflow run produces artifacts with incomplete coverage | `todo` |
 | `ai_suggestion` | Planner/Critic identifies gaps | Pre-acceptance (suggested) |
 
 AI-suggested tasks start in a pre-acceptance state: `suggested: true` and status
@@ -174,7 +174,7 @@ interface DashboardWidget {
 type WidgetType =
   | 'group_health_strip'
   | 'test_coverage_trend'
-  | 'cycle_history'
+  | 'workflow_run_history'
   | 'uncovered_requirements'
   | 'recent_activity'
   | 'code_stats'
@@ -186,7 +186,7 @@ type WidgetType =
   | 'pinned_groups'
   | 'document_browser'
   | 'scope_draft_list'
-  | 'next_cycle_targets'
+  | 'next_run_targets'
 ```
 
 `position` uses a grid coordinate system where `x` and `y` are column/row
@@ -203,8 +203,8 @@ dismiss, or customize them.
 | Widget | Trigger | Data source |
 |---|---|---|
 | `group_health_strip` | Always | `GET /api/v2/map` — group layer-completion dots |
-| `test_coverage_trend` | Tests exist | Cycle report history |
-| `cycle_history` | Cycles completed | `GET /api/v2/cycles` — pass/fail/halted |
+| `test_coverage_trend` | Tests exist | Workflow-run report history |
+| `workflow_run_history` | Workflow runs completed | `GET /api/v2/workflow-runs` — pass/fail/halted |
 | `uncovered_requirements` | Requirements without tests | `GET /api/v2/artifacts` + link index |
 | `recent_activity` | Always | File changes + task mutations since last visit |
 | `code_stats` | Code exists | File index — lines, files, deps |
@@ -224,7 +224,7 @@ User widgets are explicitly added from the widget palette. They are stored in
 | `pinned_groups` | Expanded view of specific groups | `{ group_ids: string[] }` |
 | `document_browser` | Searchable document tree | `{ root_scope: string }` |
 | `scope_draft_list` | Active scope drafts with node counts and tag counts (DDR-028) | `{ }` |
-| `next_cycle_targets` | Nodes tagged `#next-cycle`, grouped by group (DDR-028) | `{ }` |
+| `next_run_targets` | Nodes tagged `#next-run`, grouped by group (DDR-028) | `{ }` |
 
 ### QuickWriteEntry
 
@@ -339,7 +339,7 @@ On load, the dashboard performs the following sequence:
 
 1. `GET /api/v2/system/state` — determine current daemon state
 2. `GET /api/v2/tasks` — load all tasks
-3. `GET /api/v2/cycles?limit=10` — load recent cycle history
+3. `GET /api/v2/workflow-runs?limit=10` — load recent workflow-run history
 4. `GET /api/v2/map` — load group and artifact metadata
 5. Read `.sle/dashboard/layout.json` — load persisted widget layout
 6. Read `.sle/dashboard/preferences.json` — load user preferences
@@ -384,8 +384,8 @@ in a fourth column.
 
 **Tag filtering (DDR-028):**
 
-The filter bar includes a "Tagged #next-cycle" filter option. When active:
-- Only tasks linked to nodes tagged `#next-cycle` are shown
+The filter bar includes a "Tagged #next-run" filter option. When active:
+- Only tasks linked to nodes tagged `#next-run` are shown
 - Task cards linked to tagged nodes show a tag indicator (orange dot)
 - Tagged tasks are visually prioritized at the top of their column
 
@@ -398,7 +398,7 @@ The filter bar includes a "Tagged #next-cycle" filter option. When active:
 | Pinned | Pin icon at top-right |
 | AI suggestion | Dashed border + "Suggested" badge |
 | Done | `✓` with completion timestamp |
-| Source | Subtle icon (user=circle, cycle=arrow, AI=spark) |
+| Source | Subtle icon (user=circle, workflow_run=arrow, AI=spark) |
 
 **Sorting within columns:**
 
@@ -488,20 +488,22 @@ load and updated on every pin/unpin action.
 Dispositions are always user-chosen. The system suggests but never auto-applies
 a disposition.
 
-### Task targeting for cycles
+### Task targeting for workflow runs
 
-When starting a cycle from the dashboard, the user can target a specific task:
+When starting a workflow run from the dashboard, the user can target a
+specific task:
 
-1. User clicks "Start cycle" on a task card or from the cycle control bar
-2. Dashboard passes task ID to the cycle start flow: `sle start "..." --task {task_id}`
-3. The daemon claims the task and runs the cycle
-4. WebSocket events (`task.claimed`, `dispatch.progress`, `cycle.completed`) update the dashboard in real time
+1. User clicks "Start workflow run" on a task card or from the workflow-run control bar
+2. Dashboard passes task ID to the workflow-run start flow: `sle run "..." --task {task_id}`
+3. The daemon claims the task and runs the workflow
+4. WebSocket events (`task.claimed`, `dispatch.progress`, `workflow_run.completed`) update the dashboard in real time
 
-This integrates with the daemon's cycle start endpoint:
+This integrates with the daemon's workflow-run start endpoint:
 
 ```
-POST /api/v2/cycles
+POST /api/v2/workflow-runs
 {
+  "workflow_id"?: string,
   "quick_start_goal"?: string,
   "task_id"?: string,
   "scope_draft_id"?: string,
@@ -512,9 +514,9 @@ POST /api/v2/cycles
 **Scope draft integration (DDR-028):**
 
 - A task can be linked to a scope draft via `scope_draft_id`
-- "Start cycle" button on task cards now opens the scope draft selector
+- "Start workflow run" button on task cards now opens the scope draft selector
   (if scope drafts exist) or falls back to quick-start goal entry
-- `POST /api/v2/cycles` with `scope_draft_id` instead of just `goal`
+- `POST /api/v2/workflow-runs` with `scope_draft_id` instead of just `goal`
 
 ### Beads sync for tasks
 
@@ -538,10 +540,10 @@ The dashboard subscribes to WebSocket events and updates widgets in-place:
 
 | Event | Widgets affected | Update |
 |---|---|---|
-| `cycle.started` | cycle_history, task_summary | Add cycle entry |
-| `cycle.completed` | cycle_history, task_summary, recent_activity | Update cycle status, task counts |
-| `cycle.halted` | cycle_history, recent_activity | Mark cycle as halted |
-| `dispatch.progress` | cycle_history (if cycle widget visible) | Update progress bar |
+| `workflow_run.started` | workflow_run_history, task_summary | Add workflow-run entry |
+| `workflow_run.completed` | workflow_run_history, task_summary, recent_activity | Update workflow-run status, task counts |
+| `workflow_run.halted` | workflow_run_history, recent_activity | Mark workflow run as halted |
+| `dispatch.progress` | workflow_run_history (if workflow-run widget visible) | Update progress bar |
 | `task.claimed` | task_board, task_summary | Move task to In Progress, auto-pin |
 | `task.resolved` | task_board, task_summary | Move task to Done, auto-unpin if system pin |
 | `task.stale_detected` | task_board, task_summary | Show stale warning badge |
@@ -563,11 +565,11 @@ The AI assistant widget provides project-aware chat:
 5. Response streams via WebSocket `chat.message` events on the shared
    connection (`ws://localhost:7700/events`), with streaming tokens delivered
    incrementally
-6. Action buttons in the response (e.g., "Create task", "Start cycle") dispatch
+6. Action buttons in the response (e.g., "Create task", "Start workflow run") dispatch
    to the appropriate API endpoint
 
 The AI assistant has access to project context via the daemon's context manager.
-It can suggest tasks, explain cycle outcomes, and propose dashboard arrangements.
+It can suggest tasks, explain workflow-run outcomes, and propose dashboard arrangements.
 
 AI actions that mutate state require explicit user confirmation. Read-only
 queries (e.g., "What tasks are overdue?") execute without confirmation.
@@ -584,7 +586,7 @@ Auto-generated widgets default to collapsed on phone breakpoint. The user can
 expand individual widgets. Collapsed widgets show a single-line summary:
 
 - `task_summary`: "12 tasks: 3 todo, 2 in progress, 7 done"
-- `cycle_history`: "Last cycle: completed (3 iterations)"
+- `workflow_run_history`: "Last run: completed (3 iterations)"
 - `code_stats`: "1,247 lines across 34 files"
 
 The grid system recalculates widget positions on breakpoint change. Widget
@@ -618,21 +620,21 @@ truth.
 | Endpoint | Method | Purpose | Dashboard usage |
 |---|---|---|---|
 | `/api/v2/tasks` | GET | List all tasks | Task board, task summary widget |
-| `/api/v2/tasks/ready` | GET | Tasks ready to claim | "Start cycle" task picker |
+| `/api/v2/tasks/ready` | GET | Tasks ready to claim | "Start workflow run" task picker |
 | `/api/v2/tasks` | POST | Create task | Task creation form, quick-write |
 | `/api/v2/tasks/{task_id}` | GET | Task detail | Task detail panel |
 | `/api/v2/tasks/{task_id}/claim` | POST | Claim task | Start work action |
 | `/api/v2/tasks/{task_id}/close` | POST | Close task | Complete task action |
-| `/api/v2/tasks/{task_id}/resolve-exit` | POST | Resolve with exit code | Cycle completion handling |
+| `/api/v2/tasks/{task_id}/resolve-exit` | POST | Resolve with exit code | Workflow-run completion handling |
 
 ### System endpoints consumed
 
 | Endpoint | Method | Purpose | Dashboard usage |
 |---|---|---|---|
-| `/api/v2/system/state` | GET | Project status | Dashboard header, cycle controls |
-| `/api/v2/cycles` | GET | Cycle history | Cycle history widget |
-| `/api/v2/cycles/{cycle_id}` | GET | Cycle details | Cycle detail view |
-| `/api/v2/cycles` | POST | Start cycle | "Start cycle" button |
+| `/api/v2/system/state` | GET | Project status | Dashboard header, workflow-run controls |
+| `/api/v2/workflow-runs` | GET | Workflow-run history | Workflow-run history widget |
+| `/api/v2/workflow-runs/{run_id}` | GET | Workflow-run details | Workflow-run detail view |
+| `/api/v2/workflow-runs` | POST | Start workflow run | "Start workflow run" button |
 | `/api/v2/map` | GET | Project map | Group health strip, document browser |
 | `/api/v2/artifacts` | GET | List artifacts | Code stats, document browser widgets |
 
@@ -776,8 +778,8 @@ Response 200:
     },
     "overdue_tasks": number,
     "pinned_count": number,
-    "active_cycle": string | null,
-    "last_cycle_outcome": string | null,
+    "active_workflow_run": string | null,
+    "last_run_outcome": string | null,
     "group_health": Array<{
       "group_id": string,
       "layers": Array<"complete" | "incomplete" | "not_started">
@@ -825,25 +827,26 @@ Response 404: task_not_found
 ### WebSocket events consumed
 
 ```
-event: cycle.started
+event: workflow_run.started
 {
-  "cycle_id": string,
+  "run_id": string,
+  "workflow_id": string,
   "goal": string,
   "task_id": string | null,
   "timestamp": string
 }
 
-event: cycle.completed
+event: workflow_run.completed
 {
-  "cycle_id": string,
+  "run_id": string,
   "outcome": "completed",
   "iterations": number,
   "timestamp": string
 }
 
-event: cycle.halted
+event: workflow_run.halted
 {
-  "cycle_id": string,
+  "run_id": string,
   "outcome": "halted" | "user_halt" | "error",
   "reason": string,
   "timestamp": string
@@ -851,7 +854,7 @@ event: cycle.halted
 
 event: dispatch.progress
 {
-  "cycle_id": string,
+  "run_id": string,
   "total_jobs": number,
   "completed_jobs": number,
   "failed_jobs": number,
@@ -907,7 +910,7 @@ event: chat.message
   "session_id": string,
   "message_id": string,
   "delta": { "content": string },
-  "actions": Array<{ "type": "create_task" | "start_cycle" | "pin_task", "params": object }>,
+  "actions": Array<{ "type": "create_task" | "start_workflow_run" | "pin_task", "params": object }>,
   "done": boolean
 }
 ```
@@ -1009,7 +1012,7 @@ the `actions` array and rendered for user confirmation.
     resolved by the client using last-write-wins with user notification.
 
 12. **AI actions require confirmation.** Any AI assistant action that mutates
-    state (create task, start cycle, modify artifact) requires explicit user
+    state (create task, start workflow run, modify artifact) requires explicit user
     confirmation. Read-only queries execute without confirmation.
 
 13. **The `cancelled` status is dashboard-only.** The daemon has no `cancelled`
@@ -1041,9 +1044,9 @@ the `actions` array and rendered for user confirmation.
 | TD-008 | Should group health strip dots be clickable to navigate to the group detail view? | Navigation design, widget interactivity | Open |
 | TD-009 | Should the dashboard support custom widget plugins from users? | Extensibility, security sandboxing | Open |
 | TD-010 | What happens when the daemon is unreachable but the UI shell is running? | Offline mode, cached data display | Open |
-| TD-011 | Should the cycle history widget support filtering by outcome (pass/fail/halted)? | Widget complexity, API pagination | Open |
+| TD-011 | Should the workflow-run history widget support filtering by outcome (pass/fail/halted)? | Widget complexity, API pagination | Open |
 | TD-012 | Is there a maximum number of pinned tasks before the pinned section requires scrolling? | Layout overflow, pin UX | Open |
 | TD-013 | Should the dashboard expose a CLI equivalent for all dashboard actions (e.g., `sle dashboard pin task-042`)? | CLI/UI feature parity, automation | Open |
 | TD-014 | Should node-level tasks that are promoted to Beads retain their node-level scoping metadata, or does it become a standard Beads task? | Data model consistency, round-trip fidelity | Open |
 | TD-015 | What is the retry strategy for failed widget data loads? | UX resilience, network error handling | Open |
-| TD-016 | ~~How should cycle scoping work from the tasks dashboard?~~ Resolved by DDR-028: scope draft selector on "Start cycle" button, `scope_draft_id` parameter on `POST /api/v2/cycles`. | — | Resolved (DDR-028) |
+| TD-016 | ~~How should workflow-run scoping work from the tasks dashboard?~~ Resolved by DDR-028: scope draft selector on "Start workflow run" button, `scope_draft_id` parameter on `POST /api/v2/workflow-runs`. | — | Resolved (DDR-028) |

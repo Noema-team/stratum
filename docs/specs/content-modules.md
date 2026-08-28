@@ -14,7 +14,7 @@ attach to a single graph layer, read node content, and produce annotations,
 derived nodes, or attachments without modifying the core graph.
 
 This is a post-MVP extension. The content store and layer modules are not
-required for the core cycle loop. This spec exists as a design reference for
+required for the core workflow-run loop. This spec exists as a design reference for
 when the core system is running and users need pluggable analysis capabilities.
 
 DDR-013 establishes the document/node split: nodes have group scope, documents
@@ -37,7 +37,7 @@ export type TriggerType =
   | 'on_node_created'
   | 'on_content_written'
   | 'on_node_state_changed'
-  | 'on_cycle_complete'
+  | 'on_workflow_run_complete'
   | 'on_user_action'
   | 'on_schedule'
   | 'on_demand'
@@ -295,7 +295,7 @@ graph:
       enabled: true
       layer: 0
       config:
-        baseline_cycles: 3
+        baseline_runs: 3
         alert_threshold_pct: 15
       triggers:
         - type: on_node_created
@@ -331,7 +331,7 @@ export type NodeType =
   | 'chat_session' | 'decision' | 'trade_off' | 'discovery_round' | 'synthesis'
   | 'requirements' | 'architecture' | 'test-plan' | 'design_decision'
   | 'code_change' | 'test_script' | 'generated_artifact' | 'changelog'
-  | 'validation_llm' | 'validation_exec' | 'gate' | 'version_snapshot' | 'cycle_complete'
+  | 'validation_llm' | 'validation_exec' | 'gate' | 'version_snapshot' | 'workflow_run_complete'
 
 export type EdgeType =
   | 'data_flow' | 'dependency' | 'derived_from' | 'informed_by'
@@ -419,7 +419,7 @@ expires, then all accumulated candidate nodes are processed in a single call.
 | `on_node_created` | New node added to the layer | Auto-analyze new code |
 | `on_content_written` | Content written to a node in the layer | Auto-index documents |
 | `on_node_state_changed` | Node state transition in the layer | React to failures |
-| `on_cycle_complete` | A cycle finishes | Post-cycle analysis |
+| `on_workflow_run_complete` | A workflow run finishes | Post-run analysis |
 | `on_user_action` | User clicks a toolbar button | Manual analysis |
 | `on_schedule` | Cron-like interval | Periodic health checks |
 | `on_demand` | Explicit API call | Programmatic trigger |
@@ -585,7 +585,7 @@ split:
 
 Modules can reference documents and source files via `[[wikilink]]` syntax but
 cannot write content to them through the content store. Document modification
-requires the user approval pathway defined in the core cycle spec.
+requires the user approval pathway defined in the core workflow-execution spec.
 
 The `group_id` filter (G34) in `ModuleTrigger` aligns with node group scope. A
 module with `filter.group_id: "auth-module"` only processes nodes in the
@@ -727,7 +727,7 @@ endpoints below are defined there. This table provides cross-references.
     GET endpoint. Clients can check `size_bytes` from the node content metadata
     to decide whether to use streaming.
 
-15. **Post-MVP status.** This spec is not required for the core cycle loop.
+15. **Post-MVP status.** This spec is not required for the core workflow-run loop.
     The daemon must function identically whether the content store and modules
     are enabled or not. When no modules are registered, the graph module
     system is a no-op.

@@ -13,19 +13,20 @@ of the five-component context window (see [specs/context-manager.md](../specs/co
 §Five-component window). The total window targets under 3,500 tokens, and the system
 prompt occupies ~500 of those.
 
-There are eleven prompt templates — one per role — covering the full DAG lifecycle:
+There are eleven prompt templates — one per role — covering the full-build
+workflow's step lifecycle:
 
-| File | Role | DAG node |
+| File | Role | Step (full-build) |
 |------|------|----------|
-| `designer.md` | Designer | DESIGN |
-| `explorer.md` | Explorer | SCOPING (conditional) |
-| `planner.md` | Planner | PLAN |
-| `tester.md` | Tester | TEST |
-| `builder.md` | Builder | BUILD |
-| `debugger.md` | Debugger | DEBUG |
-| `evaluator.md` | Evaluator | EVALUATE |
-| `critic.md` | Critic | CRITIQUE |
-| `historian.md` | Historian | HISTORY |
+| `designer.md` | Designer | DESIGN (produce) |
+| `explorer.md` | Explorer | SCOPING's gather step (conditional) |
+| `planner.md` | Planner | PLAN (produce) |
+| `tester.md` | Tester | TEST (produce) |
+| `builder.md` | Builder | BUILD (produce) |
+| `debugger.md` | Debugger | VALIDATION_GATE's on_fail produce step |
+| `evaluator.md` | Evaluator | EVALUATE (produce) |
+| `critic.md` | Critic | DESIGN's review step (CRITIQUE) |
+| `historian.md` | Historian | SNAPSHOT's logs_decision: true commit step |
 | `facilitator-chat.md` | Facilitator (chat) | — |
 | `facilitator-decision.md` | Facilitator (decision) | — |
 
@@ -91,7 +92,7 @@ builds the full window in this order:
 
 1. **System prompt** (~500 tokens) — your template
 2. **Artifact slices** (~2,000 tokens) — documents and files relevant to the role
-3. **State summary** (~300 tokens) — current cycle, iteration, depth
+3. **State summary** (~300 tokens) — current workflow run, iteration, depth
 4. **Task** (~200 tokens) — the specific instruction for this turn
 5. **Failure context** (~400 tokens) — FailureReport, only on retry
 
@@ -128,7 +129,7 @@ instructions and a test plan. You do NOT produce architecture or requirements
 | doc:requirements | read | Designer's output |
 | doc:architecture | read | Designer's output |
 | doc:decisions | read | Last 3 entries |
-| doc:evaluation | read | Prior cycle evaluation |
+| doc:evaluation | read | Prior workflow-run evaluation |
 | doc:critique-report | read | Critic output if Critic ran (DDR-022) |
 | doc:debug-diagnosis | read | FailureReport, only on retry |
 | doc:plan | write | Step-level implementation plan |
@@ -179,7 +180,7 @@ cover. Common scenarios:
 - You want to narrow a role's scope for a particular project type
 - You need the agent to produce output in a specific format beyond the default
 
-Do not customize prompts to change DAG wiring, artifact access rules, or which
+Do not customize prompts to change step wiring, artifact access rules, or which
 artifacts a role reads. Those are controlled by `agents.yaml` and the context
 manager's slice rules, not by the prompt template.
 
@@ -299,7 +300,7 @@ and whether compliance requirements are met.
 
 ## Behavioral constraints
 - MUST produce evaluation.md on every invocation
-- MUST run only after VALIDATION gate passes — never on a failed cycle
+- MUST run only after VALIDATION_GATE passes — never on a failed workflow run
 - MUST NOT re-run tests or check code style
 - MUST evaluate against the original user intent, not just requirements
 - MUST NOT modify any artifact other than evaluation.md
@@ -328,7 +329,7 @@ authentication, or regulatory constraints.
 Read original intent first. Then check each requirement against run results.
 For requirements involving PII, authentication, or regulatory constraints, verify
 that the implementation explicitly addresses data handling, retention, and access
-control — not just that tests pass. A cycle can pass all tests and still fail
+control — not just that tests pass. A workflow run can pass all tests and still fail
 compliance if data handling is implicit.
 ```
 
@@ -348,7 +349,7 @@ configuration block (reference/types.md §3.1 — `AgentRoleConfig`):
 agents:
   custom-reviewer:
     active: true
-    node: CUSTOM_REVIEW
+    step_id: custom_review
     llm:
       provider: openai_compatible
       model: gpt-4o
@@ -396,15 +397,19 @@ Read requirements and architecture first. Apply project-specific review criteria
 Be specific — reference exact sections and requirement IDs.
 ```
 
-### 3. Wire the role into the DAG
+### 3. Wire the role into a workflow's step graph
 
-This is the limitation. The DAG defines the execution order of agent calls, and
-DAG nodes are enumerated in `DAGNode` (reference/types.md §4). Adding a new node
-requires daemon code changes — it is not possible through configuration alone.
+This is the limitation. A `WorkflowDefinition`'s steps define the execution
+order of agent calls, and step kinds are enumerated in `StepKind`
+(reference/types.md §4). Adding a new step to a built-in workflow (`full-build`,
+`draft-artifact`) requires daemon code changes — it is not possible through
+configuration alone.
 
-If your new role runs at an existing DAG node, you can assign the `node` field in
-`agents.yaml` to that node. If it requires a new node in the execution graph, you
-need to extend the DAG runner.
+If your new role runs at an existing step, you can assign the `step_id` field in
+`agents.yaml` to that step. If it requires a new step in the execution graph,
+you need to extend the workflow runner — or author a new `WorkflowDefinition`
+entirely (see workflow-authoring.md) if the step belongs to a different shape
+of work rather than full-build.
 
 For most customization needs, overriding an existing role's prompt is sufficient.
 Adding new roles is for cases where the existing roles genuinely cannot be adapted.
@@ -414,8 +419,8 @@ Adding new roles is for cases where the existing roles genuinely cannot be adapt
 ## Validation prompt templates
 
 Validation prompt templates are separate from role prompts. They are used during
-the `llm-check` sub-phase of the validation pipeline, not during the main DAG
-execution. Each template corresponds to one validation category (correctness,
+the `llm-check` sub-phase of the validation pipeline, not during the main
+workflow-run execution. Each template corresponds to one validation category (correctness,
 performance, security, and so on).
 
 ### Where they live
@@ -595,9 +600,9 @@ Security validation is handled by the `security_check.md` validation template an
 the Evaluator. Cross-cutting concerns belong in validation categories, not in role
 prompts.
 
-### Test with a single cycle first
+### Test with a single workflow run first
 
-After customizing a prompt, run a single cycle with `max_iterations: 1` and observe
+After customizing a prompt, run a single workflow run with `max_iterations: 1` and observe
 the agent's output. Check:
 
 - Does the output match the format your template specifies?

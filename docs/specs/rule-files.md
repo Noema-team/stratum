@@ -17,7 +17,7 @@ The seven files (DDR-002):
 | `planning.yaml` | Reasoning depth, iteration caps, token budgets | Depth, iterations, slice size, critic |
 | `validation.yaml` | Static analysis, container config, validation categories | Category set per type |
 | `artifacts.yaml` | Document declarations, generators, generated outputs | None |
-| `exit.yaml` | Cycle completion conditions, cap-hit and error behavior | None |
+| `exit.yaml` | Workflow-run completion conditions, cap-hit and error behavior | None |
 | `user_validation.yaml` | Approval gates, prompts, timeouts | None |
 | `summary.yaml` | Summary format, sections, output path | None |
 | `agents.yaml` | Agent roles, LLM providers, per-role overrides | None (DDR-002) |
@@ -57,7 +57,7 @@ Per-project-type default values:
 ### Loading order
 
 The rule loader runs once at daemon start and produces a single `RuntimeConfig`
-object injected into the DAG runner. Files are loaded in dependency order:
+object injected into the workflow runner. Files are loaded in dependency order:
 
 ```
 1. planning.yaml      (depth, critic_enabled → affect which agents activate)
@@ -151,7 +151,7 @@ export interface PlanningConfig {
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `depth` | enum | `standard` | Planning depth for this project |
-| `max_iterations` | integer | `5` | Iteration cap before exit.yaml fires |
+| `max_iterations` | integer | `5` | Iteration cap before exit.yaml fires (per workflow run, DDR-031) |
 | `artifact_slice_size` | integer | `2000` | Token budget per artifact in context |
 | `summary_max_tokens` | integer | `400` | Token budget for decisions.md injection |
 | `system_prompt_max_tokens` | integer | `500` | Token budget for system prompt |
@@ -312,7 +312,7 @@ export interface AgentLLMConfig {
 
 export interface AgentRoleConfig {
   active: boolean
-  node: string | null
+  step_id: string | null
   llm: AgentLLMConfig
   temperature: number
   max_tokens: number
@@ -324,7 +324,7 @@ export interface AgentRoleConfig {
   constraints?: string[]
   append_only?: boolean
   session_types?: string[]
-  trigger_node?: string
+  trigger_step_id?: string
 }
 
 export interface AgentsConfig {
@@ -354,7 +354,7 @@ The rule loader runs once at daemon start:
 2. Validate each file against its schema (see Validation below)
 3. Deep merge in order: global defaults → `.sle/rules/` → `.sle/overrides/`
 4. Resolve cross-file references (e.g., `critic_enabled` affects agent activation)
-5. Produce `RuntimeConfig` and inject into DAG runner
+5. Produce `RuntimeConfig` and inject into workflow runner
 
 If any file is invalid, the daemon refuses to start and reports the exact field
 and line number of the error.
@@ -411,28 +411,29 @@ checks the caller identity and field path before committing.
 1. If `critic_enabled: true` → Critic runs
 2. If `critic_enabled: false` → Critic does not run
 3. If `critic_enabled: null` → infer from `depth`:
-   - `deep` or `research` → Critic runs at DESIGN node
+   - `deep` or `research` → Critic runs at DESIGN step
    - `minimal` or `standard` → Critic does not run
 
-When active, the Critic runs at the DESIGN node (DDR-022), reviewing the
-Designer's output (architecture + requirements). DAG flow becomes:
+When active, the Critic runs at the DESIGN step (DDR-022), reviewing the
+Designer's output (architecture + requirements). `full-build`'s step order
+becomes:
 `SCOPING (conditional) → DESIGN → CRITIQUE → PLAN → TEST → CONFIRM → BUILD → ...`
 
 **SCOPING / Explorer trigger (DDR-023, updated DDR-028):**
 
 `planning.depth` does NOT auto-trigger the Explorer. The Explorer is now
-triggered by the SCOPING node (DDR-028) when unknowns are flagged. Automatic gap
+triggered by the SCOPING step group (DDR-028) when unknowns are flagged. Automatic gap
 detection is a separate mechanism — see [validation.md](validation.md).
 
 **Depth change mid-project:**
 
 `on_depth_change` controls what happens when the user changes `depth` between
-cycles:
+workflow runs:
 
 | Value | Behavior |
 |---|---|
 | `re_plan` | Discard current plan, re-plan from scratch with new depth |
-| `continue` | Continue with existing plan, new depth applies to next cycle only |
+| `continue` | Continue with existing plan, new depth applies to next workflow run only |
 
 **Token budget enforcement:**
 
@@ -529,13 +530,13 @@ BUILD starts.
 Identical across all project types. Variance comes from `validation.yaml`
 controlling which categories run.
 
-**Required artifacts block cycle completion.** If a required artifact's file
-does not exist when the cycle attempts to complete, the cycle fails.
+**Required artifacts block workflow-run completion.** If a required artifact's
+file does not exist when the workflow run attempts to complete, the run fails.
 
 **Append-only artifacts** are never overwritten — the system only appends new
 entries. `decisions.md` uses this to maintain a chronological log.
 
-**Generated outputs** are produced at specific lifecycle points:
+**Generated outputs** are produced at specific points in the run:
 
 | ID | Type | Generated at |
 |---|---|---|
@@ -547,23 +548,23 @@ entries. `decisions.md` uses this to maintain a chronological log.
 
 | Value | Meaning |
 |---|---|
-| `gate_pass` | After validation gate passes |
-| `cycle_end` | After cycle completes (pass or fail) |
+| `gate_pass` | After the VALIDATION_GATE review step passes |
+| `run_end` | After the workflow run completes (pass or fail) |
 | `always` | After every iteration |
 
 `build-plan` is optional and only generated at `deep` or `research` depth. `plan` is always produced at all depths.
 
 ### exit.yaml — behavioral rules
 
-**Cycle completion requires both conditions:**
+**Workflow-run completion requires both conditions:**
 
-1. `all_categories_pass: true` — the validation gate must pass
+1. `all_categories_pass: true` — the VALIDATION_GATE review step must pass
 2. `requirements_met: true` — a post-gate LLM sanity check reads
    `requirements.md` and the evaluation report and confirms the implementation
    satisfies the stated requirements
 
-If `requirements_met` fails after gate pass, the cycle returns to the gate as a
-special retry with only the requirements alignment context injected.
+If `requirements_met` fails after gate pass, the run returns to VALIDATION_GATE
+as a special retry with only the requirements alignment context injected.
 
 **Iteration cap behavior:**
 
@@ -572,7 +573,7 @@ When `planning.yaml → max_iterations` is reached without passing:
 | `on_cap_hit` | Behavior |
 |---|---|
 | `halt_with_report` | Write partial report, notify user, block snapshot |
-| `user_prompt` | Pause cycle, ask user: continue or halt |
+| `user_prompt` | Pause workflow run, ask user: continue or halt |
 | `force_pass` | Lock snapshot despite failures (not recommended) |
 
 **Halt behavior:**
@@ -597,28 +598,29 @@ start failure.
 
 ### user_validation.yaml — behavioral rules
 
-**Approval gates:**
+**Approval checkpoints:**
 
 When `approval_required: true`, the system pauses at configured review points:
 
 | Point | When | Template variables |
 |---|---|---|
 | `after_planning` | After Planner produces categories, before BUILD | `{{categories}}` |
-| `after_gate_pass` | After validation passes, before version snapshot | `{{cycle}}`, `{{summary}}`, `{{version_id}}` |
+| `after_gate_pass` | After validation passes, before version snapshot | `{{run_id}}`, `{{summary}}`, `{{version_id}}` |
 
-The user can accept, modify, or reject at each gate.
+The user can accept, modify, or reject at each checkpoint.
 
 **Disabling approval:**
 
-Setting `approval_required: false` skips all gate points. The system completes
-cycles without pausing. Useful in CI pipelines or for low-stakes automation.
+Setting `approval_required: false` skips all checkpoint points. The system
+completes workflow runs without pausing. Useful in CI pipelines or for
+low-stakes automation.
 
 **Timeout behavior:**
 
 | `on_timeout` | Action when user doesn't respond within `timeout_minutes` |
 |---|---|
 | `auto_approve` | Proceed as if user approved |
-| `halt` | Stop the cycle |
+| `halt` | Stop the workflow run |
 | `notify_and_wait` | Re-notify and continue waiting |
 
 `auto_approve_on_rerun: false` ensures automated re-runs (e.g., CI) still
@@ -663,7 +665,7 @@ Full schema: [reference/agents-yaml-schema.md](../reference/agents-yaml-schema.m
 
 **10 agent roles:**
 
-| Role | Node | Conditional | Trigger | Active by default |
+| Role | Step | Conditional | Trigger | Active by default |
 |---|---|---|---|---|
 | Designer | `design` | No | — | Yes |
 | Explorer | `explore` | Yes | `user_initiated` (DDR-023) | No |
@@ -685,9 +687,9 @@ Full schema: [reference/agents-yaml-schema.md](../reference/agents-yaml-schema.m
 - **Tester** has constraint `never_sees_builder_output` — TDD separation
 - **Builder** has the highest token budget (16000) and receives test scripts as
   a contract
-- **Debugger** only activates on gate failure; diagnoses only — never plans or
-  builds
-- **Critic** runs at the DESIGN node (DDR-022), reviews architecture +
+- **Debugger** only activates on validation review failure; diagnoses only —
+  never plans or builds
+- **Critic** runs at the DESIGN step (DDR-022), reviews architecture +
   requirements. Only at `deep` or `research` depth
 - **Historian** is append-only — never overwrites decisions.md
 - **Facilitator** operates in discovery and chat sessions only, never builds
@@ -857,7 +859,7 @@ Response 200:
 ```
 
 Returns the fully merged `RuntimeConfig` as loaded by the rule loader. This is
-the exact object injected into the DAG runner.
+the exact object injected into the workflow runner.
 
 ### WebSocket events
 
@@ -899,7 +901,7 @@ the exact object injected into the DAG runner.
 | `unauthorized_caller` | Non-planner attempts to append category | 403 |
 | `duplicate_category` | Category name already exists in `categories[]` | 409 |
 | `immutable_category` | Attempt to modify existing category entry | 403 |
-| `write_during_cycle` | Write to rule file while cycle is active | 409, write queued until cycle completes |
+| `write_during_run` | Write to rule file while a workflow run is active | 409, write queued until run completes |
 
 ### Cross-file consistency errors
 
@@ -939,7 +941,7 @@ the exact object injected into the DAG runner.
    the error before the daemon can start.
 
 8. **Critic activation follows depth (DDR-022).** When `critic_enabled: null`,
-   the Critic runs at DESIGN node for `deep` and `research` depth only. Explicit
+   the Critic runs at DESIGN step for `deep` and `research` depth only. Explicit
    `true` or `false` overrides depth inference.
 
 9. **Explorer is triggered by SCOPING (DDR-023, updated DDR-028).**
@@ -949,11 +951,11 @@ the exact object injected into the DAG runner.
 
 10. **Category caching across iterations.** Passing categories are never re-run
     on retry. Invalidation occurs on plan revision or structural failure
-    escalation. Cache is scoped to the current cycle.
+    escalation. Cache is scoped to the current workflow run.
 
-11. **Required artifacts block completion.** A cycle cannot complete if any
-    artifact with `required: true` is missing. Append-only artifacts are never
-    overwritten.
+11. **Required artifacts block completion.** A workflow run cannot complete if
+    any artifact with `required: true` is missing. Append-only artifacts are
+    never overwritten.
 
 12. **Container isolation for validation.** All test execution runs inside a
     fresh Docker container per iteration. Container is destroyed after results
@@ -962,9 +964,9 @@ the exact object injected into the DAG runner.
 13. **All categories must pass.** Mode is `all_must_pass`. No partial pass, no
     weighted scoring (except `force_pass` in `exit.yaml`).
 
-14. **RuntimeConfig is immutable during a cycle.** Once loaded, the
-    RuntimeConfig is frozen. Changes during a cycle are queued and applied at
-    the next daemon restart.
+14. **RuntimeConfig is immutable during a workflow run.** Once loaded, the
+    RuntimeConfig is frozen. Changes during a workflow run are queued and
+    applied at the next daemon restart.
 
 15. **agents.yaml is identical across project types (DDR-002).** Users
     customize by editing `llm.provider`, `llm.base_url`, `llm.model`, and
@@ -987,7 +989,7 @@ the exact object injected into the DAG runner.
 | RF-002 | Should `.sle/overrides/` support partial files (e.g., only `agents.designer.llm` without the full `agents` schema)? | Override ergonomics | Open |
 | RF-003 | What is the maximum allowed size for a rule file before the loader rejects it? | Memory, parse time | Open |
 | RF-004 | Should the API support rolling back a rule file change to the previous version? | Undo, safety | Open |
-| RF-005 | Should `planning.yaml` support a `depth_overrides` map for per-cycle depth changes without modifying the file? | Temporary depth changes | Open |
+| RF-005 | Should `planning.yaml` support a `depth_overrides` map for per-workflow-run depth changes without modifying the file? | Temporary depth changes | Open |
 | RF-006 | Should `agents.yaml` support custom agent roles beyond the 10 built-in roles? | Extensibility | Open |
 | RF-007 | How many LLM-defined categories can the Planner add before the system flags potential runaway? | Resource bounding | Open |
 | RF-008 | Should the gated write API support batch category appends (multiple categories in one call)? | LLM planning efficiency | Open |
