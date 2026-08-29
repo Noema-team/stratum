@@ -216,6 +216,13 @@ const MIGRATIONS: string[] = [
     created_at  TEXT NOT NULL
   );
   `,
+
+  // Migration 4: add trust fields to evidence (DDR-032 §20 — candidateRef SHA
+  // binding and collectorId provenance). Append-only; existing rows get NULL.
+  `
+  ALTER TABLE evidence ADD COLUMN candidate_ref TEXT;
+  ALTER TABLE evidence ADD COLUMN collector_id  TEXT;
+  `,
 ];
 
 // ============================================================================
