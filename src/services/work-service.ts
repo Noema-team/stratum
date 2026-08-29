@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 import type { WorkItem, WorkItemState, DomainEvent, Decision } from '../domain/index.js';
+import type { PolicyEvaluation } from '../domain/policy.js';
 import { isWorkItemTerminal } from '../domain/index.js';
 import { WorkItemRepository, DecisionRepository, EventRepository } from '../storage/repositories.js';
 
@@ -115,18 +116,27 @@ export interface FailRequest {
 // WorkService
 // ============================================================================
 
+export interface WorkServiceOptions {
+  // When provided, WorkService.complete() calls this to verify evidence policy.
+  // If the guard returns 'deny', the transition is rejected with EVIDENCE_POLICY_DENIED.
+  evidenceGuard?: (workItem: WorkItem) => PolicyEvaluation;
+}
+
 export class WorkService {
   private readonly items: WorkItemRepository;
   private readonly decisions: DecisionRepository;
   private readonly events: EventRepository;
+  private readonly evidenceGuard?: (workItem: WorkItem) => PolicyEvaluation;
 
   constructor(
     private readonly db: Database.Database,
     private readonly workspaceId: string,
+    opts: WorkServiceOptions = {},
   ) {
     this.items = new WorkItemRepository(db);
     this.decisions = new DecisionRepository(db);
     this.events = new EventRepository(db);
+    this.evidenceGuard = opts.evidenceGuard;
   }
 
   // --------------------------------------------------------------------------
@@ -163,6 +173,15 @@ export class WorkService {
     return this.transition(req.workItemId, 'completed', {
       guardFn: (item) => {
         this.assertNoPendingDecisions(item);
+        if (this.evidenceGuard) {
+          const evaluation = this.evidenceGuard(item);
+          if (evaluation.outcome !== 'allow') {
+            throw new WorkServiceError(
+              `Completion blocked by evidence policy: ${evaluation.reason}`,
+              'EVIDENCE_POLICY_DENIED',
+            );
+          }
+        }
       },
       eventType: 'work.completed',
     });

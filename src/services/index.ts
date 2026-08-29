@@ -10,4 +10,7 @@ export type {
   ResumeRequest,
   CancelRequest,
   FailRequest,
+  WorkServiceOptions,
 } from './work-service.js';
+
+export { EvidenceService } from './evidence-service.js';
