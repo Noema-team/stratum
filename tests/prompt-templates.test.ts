@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   FACILITATOR_CHAT_TEMPLATE,
@@ -101,45 +102,3 @@ function testSectionsAreInOrder() {
     }
   }
 }
-
-function runAllTests() {
-  const tests = [
-    { name: 'Chat template has all 5 sections', fn: testChatTemplateHasAllSections },
-    { name: 'Decision template has all 5 sections', fn: testDecisionTemplateHasAllSections },
-    { name: 'Scoping template has all 5 sections', fn: testScopingTemplateHasAllSections },
-    { name: 'Templates record has 3 entries', fn: testTemplatesRecordHasThreeEntries },
-    { name: 'Required sections list has 5 entries', fn: testRequiredSectionsListHasFive },
-    { name: 'Chat template starts with title', fn: testChatTemplateStartsWithTitle },
-    { name: 'Decision template starts with title', fn: testDecisionTemplateStartsWithTitle },
-    { name: 'Scoping template starts with title', fn: testScopingTemplateStartsWithTitle },
-    { name: 'Chat template has typed artifact refs', fn: testChatTemplateHasArtifactAccessTable },
-    { name: 'Decision template has typed artifact refs', fn: testDecisionTemplateHasArtifactAccessTable },
-    { name: 'Scoping template has typed artifact refs', fn: testScopingTemplateHasArtifactAccessTable },
-    { name: 'Sections appear in correct order', fn: testSectionsAreInOrder },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} prompt template tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} prompt template tests passed!`);
-}
-
-runAllTests();

@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
@@ -9,7 +10,7 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-run-test-'));
 }
 
-async function testCreateRunDir() {
+test('testCreateRunDir', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
 
@@ -19,9 +20,9 @@ async function testCreateRunDir() {
   const entries = await fs.readdir(join(root, '.sle', 'runs', '1-1'));
   assert.ok(entries.includes('validation'));
   assert.ok(entries.includes('node-outputs'));
-}
+});
 
-async function testCreateManifest() {
+test('testCreateManifest', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -43,9 +44,9 @@ async function testCreateManifest() {
   assert.ok(Array.isArray(manifest.nodes));
   assert.strictEqual(manifest.nodes.length, CORE_DAG_NODES.length);
   assert.ok(typeof manifest.started_at === 'string');
-}
+});
 
-async function testManifestInitializesAllNodesAsPending() {
+test('testManifestInitializesAllNodesAsPending', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -61,9 +62,9 @@ async function testManifestInitializesAllNodesAsPending() {
   assert.ok(ids.includes('SCOPING'));
   assert.ok(ids.includes('DESIGN'));
   assert.ok(ids.includes('SNAPSHOT'));
-}
+});
 
-async function testUpdateNodeStatusRunning() {
+test('testUpdateNodeStatusRunning', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -80,9 +81,9 @@ async function testUpdateNodeStatusRunning() {
   // Other nodes unaffected
   const design = manifest.nodes.find((n) => n.id === 'DESIGN');
   assert.strictEqual(design!.status, 'pending');
-}
+});
 
-async function testUpdateNodeStatusComplete() {
+test('testUpdateNodeStatusComplete', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -105,9 +106,9 @@ async function testUpdateNodeStatusComplete() {
   assert.strictEqual(design!.duration_ms, 5432);
   assert.strictEqual(design!.tokens_used, 1024);
   assert.deepStrictEqual(design!.artifacts_written, ['docs/requirements.md', 'docs/architecture.md']);
-}
+});
 
-async function testUpdateNodeUnknownIdThrows() {
+test('testUpdateNodeUnknownIdThrows', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -121,9 +122,9 @@ async function testUpdateNodeUnknownIdThrows() {
   for (const node of manifest.nodes) {
     assert.strictEqual(node.status, 'pending');
   }
-}
+});
 
-async function testFinalizeManifestComplete() {
+test('testFinalizeManifestComplete', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -134,9 +135,9 @@ async function testFinalizeManifestComplete() {
   const manifest = await mgr.readManifest(1, 1);
   assert.strictEqual(manifest.outcome, 'complete');
   assert.ok(typeof manifest.completed_at === 'string');
-}
+});
 
-async function testFinalizeManifestHalted() {
+test('testFinalizeManifestHalted', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -147,9 +148,9 @@ async function testFinalizeManifestHalted() {
   const manifest = await mgr.readManifest(1, 1);
   assert.strictEqual(manifest.outcome, 'halted');
   assert.ok(typeof manifest.completed_at === 'string');
-}
+});
 
-async function testWriteAndReadContextPack() {
+test('testWriteAndReadContextPack', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(2, 3);
@@ -171,18 +172,18 @@ async function testWriteAndReadContextPack() {
 
   const read = await mgr.readContextPack(2, 3);
   assert.deepStrictEqual(read, pack);
-}
+});
 
-async function testReadContextPackMissing() {
+test('testReadContextPackMissing', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
 
   const pack = await mgr.readContextPack(1, 1);
   assert.deepStrictEqual(pack, {});
-}
+});
 
-async function testWriteNodeOutput() {
+test('testWriteNodeOutput', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
@@ -191,22 +192,22 @@ async function testWriteNodeOutput() {
 
   const content = await fs.readFile(join(root, '.sle', 'runs', '1-1', 'node-outputs', 'design.md'), 'utf-8');
   assert.strictEqual(content, '# Design Output\n\nSome content here.');
-}
+});
 
-async function testDirExistsTrue() {
+test('testDirExistsTrue', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 2);
   assert.strictEqual(await mgr.dirExists(1, 2), true);
-}
+});
 
-async function testDirExistsFalse() {
+test('testDirExistsFalse', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   assert.strictEqual(await mgr.dirExists(1, 2), false);
-}
+});
 
-async function testMultipleIterations() {
+test('testMultipleIterations', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
 
@@ -225,9 +226,9 @@ async function testMultipleIterations() {
   await mgr.updateNodeStatus(1, 2, 'SCOPING', { status: 'running' });
   const m1After = await mgr.readManifest(1, 1);
   assert.strictEqual(m1After.nodes.find((n) => n.id === 'SCOPING')!.status, 'pending');
-}
+});
 
-async function testInitialDAGNodesHelper() {
+test('testInitialDAGNodesHelper', async () => {
   const nodes = initialDAGNodes();
   assert.strictEqual(Object.keys(nodes).length, 14);
   assert.strictEqual(nodes['SCOPING'].status, 'pending');
@@ -235,53 +236,6 @@ async function testInitialDAGNodesHelper() {
   for (const v of Object.values(nodes)) {
     assert.strictEqual(v.status, 'pending');
   }
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  console.log('Running Phase B (Run Artifacts) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'createRunDir creates validation/ and node-outputs/', fn: testCreateRunDir },
-    { name: 'createManifest writes valid JSON', fn: testCreateManifest },
-    { name: 'manifest initializes all 14 nodes as pending', fn: testManifestInitializesAllNodesAsPending },
-    { name: 'updateNodeStatus: pending → running', fn: testUpdateNodeStatusRunning },
-    { name: 'updateNodeStatus: running → complete with metadata', fn: testUpdateNodeStatusComplete },
-    { name: 'updateNodeStatus: unknown node is no-op', fn: testUpdateNodeUnknownIdThrows },
-    { name: 'finalizeManifest: complete outcome', fn: testFinalizeManifestComplete },
-    { name: 'finalizeManifest: halted outcome', fn: testFinalizeManifestHalted },
-    { name: 'writeContextPack + readContextPack round-trip', fn: testWriteAndReadContextPack },
-    { name: 'readContextPack: returns {} when missing', fn: testReadContextPackMissing },
-    { name: 'writeNodeOutput writes to node-outputs/', fn: testWriteNodeOutput },
-    { name: 'dirExists: true when created', fn: testDirExistsTrue },
-    { name: 'dirExists: false when not created', fn: testDirExistsFalse },
-    { name: 'multiple iterations are independent', fn: testMultipleIterations },
-    { name: 'initialDAGNodes helper returns 14 pending nodes', fn: testInitialDAGNodesHelper },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase B tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase B tests passed!`);
-}
-
-runAllTests();

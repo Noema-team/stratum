@@ -1,10 +1,11 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { generateDefaults, validateRuleFile, type RuleFileName } from '../src/rule-files.js';
 import type { ProjectType } from '../src/types.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
-async function testGenerateDefaultsCreatesAllSections() {
+test('testGenerateDefaultsCreatesAllSections', async () => {
   const config = generateDefaults('api');
   assert.ok(config.planning);
   assert.ok(config.validation);
@@ -13,16 +14,16 @@ async function testGenerateDefaultsCreatesAllSections() {
   assert.ok(config.user_validation);
   assert.ok(config.summary);
   assert.ok(config.agents);
-}
+});
 
-async function testGeneratedPlanningPassesValidation() {
+test('testGeneratedPlanningPassesValidation', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('planning', config.planning);
   assert.strictEqual(result.success, true);
   assert.strictEqual(result.errors.length, 0);
-}
+});
 
-async function testGeneratedAgentsIncludesAllRoles() {
+test('testGeneratedAgentsIncludesAllRoles', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('agents', config.agents);
   assert.strictEqual(result.success, true);
@@ -42,16 +43,16 @@ async function testGeneratedAgentsIncludesAllRoles() {
   assert.ok(agents.critic, 'missing critic');
   assert.ok(agents.historian, 'missing historian');
   assert.ok(agents.facilitator, 'missing facilitator');
-}
+});
 
-async function testValidateDetectsInvalidYAML() {
+test('testValidateDetectsInvalidYAML', async () => {
   const invalid = { planning_depth: 'invalid_depth' };
   const result = validateRuleFile('planning', invalid);
   assert.strictEqual(result.success, false);
   assert.ok(result.errors.length > 0);
-}
+});
 
-async function testGenerateDefaultsAllTypesHavePlanning() {
+test('testGenerateDefaultsAllTypesHavePlanning', async () => {
   const types: ProjectType[] = ['api', 'ui', 'library', 'research', 'custom'];
   for (const type of types) {
     const config = generateDefaults(type);
@@ -59,39 +60,39 @@ async function testGenerateDefaultsAllTypesHavePlanning() {
     assert.ok(config.planning, `planning missing for ${type}`);
     assert.ok(config.planning.depth, `planning.depth missing for ${type}`);
   }
-}
+});
 
-async function testValidateWrongRuleFile() {
+test('testValidateWrongRuleFile', async () => {
   const result = validateRuleFile('planning' as RuleFileName, {});
   assert.strictEqual(result.success, false);
   assert.ok(result.errors.length > 0);
-}
+});
 
-async function testValidateUnknownFile() {
+test('testValidateUnknownFile', async () => {
   const result = validateRuleFile('unknown' as RuleFileName, {});
   assert.strictEqual(result.success, false);
-}
+});
 
-async function testGeneratedExitConfigDefaults() {
+test('testGeneratedExitConfigDefaults', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('exit', config.exit);
   assert.strictEqual(result.success, true);
   assert.strictEqual(config.exit.on_cap_hit, 'halt_with_report');
-}
+});
 
-async function testGeneratedSummaryConfig() {
+test('testGeneratedSummaryConfig', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('summary', config.summary);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testGeneratedValidationConfig() {
+test('testGeneratedValidationConfig', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('validation', config.validation);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testGenerateAllTypesHasAllSections() {
+test('testGenerateAllTypesHasAllSections', async () => {
   const types: ProjectType[] = ['api', 'ui', 'library', 'research', 'custom'];
   const sections = ['planning', 'validation', 'artifacts', 'exit', 'user_validation', 'summary', 'agents'];
   for (const type of types) {
@@ -101,46 +102,6 @@ async function testGenerateAllTypesHasAllSections() {
       assert.ok(content, `Missing section '${section}' for type ${type}`);
     }
   }
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  const tests = [
-    { name: 'Generate defaults creates all 7 rule sections', fn: testGenerateDefaultsCreatesAllSections },
-    { name: 'Generated planning.yaml passes Zod validation', fn: testGeneratedPlanningPassesValidation },
-    { name: 'Generated agents.yaml includes all 10+ roles', fn: testGeneratedAgentsIncludesAllRoles },
-    { name: 'Validate detects invalid rule config', fn: testValidateDetectsInvalidYAML },
-    { name: 'Generate defaults for all types has planning_depth', fn: testGenerateDefaultsAllTypesHavePlanning },
-    { name: 'Validate empty config fails', fn: testValidateWrongRuleFile },
-    { name: 'Validate unknown file returns success false', fn: testValidateUnknownFile },
-    { name: 'Generated exit config has correct defaults', fn: testGeneratedExitConfigDefaults },
-    { name: 'Generated summary config validates', fn: testGeneratedSummaryConfig },
-    { name: 'Generated validation config validates', fn: testGeneratedValidationConfig },
-    { name: 'Generate all types produces all 7 sections', fn: testGenerateAllTypesHasAllSections },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase E rule-loader tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}: ${f.error}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase E rule-loader tests passed!`);
-}
-
-runAllTests();

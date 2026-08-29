@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
@@ -131,88 +132,88 @@ function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateC
 
 // ─── validateOutputPath tests ─────────────────────────────────────────────────
 
-async function testDesignerAllowedPaths() {
+test('testDesignerAllowedPaths', async () => {
   assert.strictEqual(validateOutputPath('docs/requirements.md', 'designer'), true);
   assert.strictEqual(validateOutputPath('docs/architecture.md', 'designer'), true);
-}
+});
 
-async function testDesignerRejectedPaths() {
+test('testDesignerRejectedPaths', async () => {
   assert.strictEqual(validateOutputPath('docs/plan.md', 'designer'), false);
   assert.strictEqual(validateOutputPath('src/index.ts', 'designer'), false);
   assert.strictEqual(validateOutputPath('docs/decisions.md', 'designer'), false);
-}
+});
 
-async function testPlannerAllowedPaths() {
+test('testPlannerAllowedPaths', async () => {
   assert.strictEqual(validateOutputPath('docs/plan.md', 'planner'), true);
   assert.strictEqual(validateOutputPath('docs/test-plan.md', 'planner'), true);
-}
+});
 
-async function testPlannerCannotWriteRequirements() {
+test('testPlannerCannotWriteRequirements', async () => {
   assert.strictEqual(validateOutputPath('docs/requirements.md', 'planner'), false);
   assert.strictEqual(validateOutputPath('docs/architecture.md', 'planner'), false);
-}
+});
 
-async function testBuilderAllowsSrcDeniesDocsAndSle() {
+test('testBuilderAllowsSrcDeniesDocsAndSle', async () => {
   assert.strictEqual(validateOutputPath('src/controller.ts', 'builder'), true);
   assert.strictEqual(validateOutputPath('src/deep/nested/file.ts', 'builder'), true);
   assert.strictEqual(validateOutputPath('docs/anything.md', 'builder'), false);
   assert.strictEqual(validateOutputPath('.sle/map.yaml', 'builder'), false);
-}
+});
 
-async function testFacilitatorOnlyCharterPath() {
+test('testFacilitatorOnlyCharterPath', async () => {
   assert.strictEqual(validateOutputPath('docs/cycle-charter.md', 'facilitator'), true);
   assert.strictEqual(validateOutputPath('docs/requirements.md', 'facilitator'), false);
-}
+});
 
 // ─── nextNode tests ───────────────────────────────────────────────────────────
 
-async function testNextNodeSequence() {
+test('testNextNodeSequence', async () => {
   assert.strictEqual(nextNode('SCOPING'), 'DESIGN');
   assert.strictEqual(nextNode('DESIGN'), 'CRITIQUE');
   assert.strictEqual(nextNode('CRITIQUE'), 'PLAN');
   assert.strictEqual(nextNode('PLAN'), 'TEST');
   assert.strictEqual(nextNode('SNAPSHOT'), null);
-}
+});
 
-async function testNextNodeUnknownReturnsNull() {
+test('testNextNodeUnknownReturnsNull', async () => {
   assert.strictEqual(nextNode('UNKNOWN'), null);
-}
+});
 
 // ─── shouldSkipAtDepth tests ──────────────────────────────────────────────────
 
-async function testCritiqueSkippedAtStandard() {
+test('testCritiqueSkippedAtStandard', async () => {
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'standard'), true);
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'minimal'), true);
-}
+});
 
-async function testCritiqueNotSkippedAtDeep() {
+test('testCritiqueNotSkippedAtDeep', async () => {
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'deep'), false);
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'research'), false);
-}
+});
 
-async function testOtherNodesNotSkipped() {
+test('testOtherNodesNotSkipped', async () => {
   assert.strictEqual(shouldSkipAtDepth('DESIGN', 'standard'), false);
   assert.strictEqual(shouldSkipAtDepth('BUILD', 'minimal'), false);
-}
+});
 
 // ─── DAG_SEQUENCE tests ───────────────────────────────────────────────────────
 
-async function testDagSequenceContainsAllCoreNodes() {
+test('testDagSequenceContainsAllCoreNodes', async () => {
   assert.ok(DAG_SEQUENCE.includes('SCOPING'));
   assert.ok(DAG_SEQUENCE.includes('DESIGN'));
   assert.ok(DAG_SEQUENCE.includes('CRITIQUE'));
   assert.ok(DAG_SEQUENCE.includes('PLAN'));
   assert.ok(DAG_SEQUENCE.includes('SNAPSHOT'));
   assert.strictEqual(DAG_SEQUENCE.length, 15);
-}
+});
 
-async function testDagSequenceContainsCritique() {
+test('testDagSequenceContainsCritique', async () => {
   assert.ok(DAG_SEQUENCE.includes('CRITIQUE'));
-}
+});
 
 // ─── updateArtifactEntries tests ──────────────────────────────────────────────
 
-async function testUpdateArtifactEntriesAddsNewEntries() {
+test('testUpdateArtifactEntriesAddsNewEntries', async () => {
   const mgr = new InMemoryMapManager();
   await updateArtifactEntries(mgr, ['docs/requirements.md', 'docs/architecture.md'], 'designer');
 
@@ -222,9 +223,9 @@ async function testUpdateArtifactEntriesAddsNewEntries() {
   assert.strictEqual(map.artifacts[0].generator, 'designer');
   assert.strictEqual(map.artifacts[0].dirty, false);
   assert.ok(typeof map.artifacts[0].last_updated === 'string');
-}
+});
 
-async function testUpdateArtifactEntriesUpdatesExisting() {
+test('testUpdateArtifactEntriesUpdatesExisting', async () => {
   const mgr = new InMemoryMapManager();
   const baseMap = await mgr.read();
   baseMap.artifacts = [{ path: 'docs/requirements.md', generator: 'old-gen', required: true, last_updated: '2020-01-01T00:00:00Z', dirty: true }];
@@ -236,18 +237,18 @@ async function testUpdateArtifactEntriesUpdatesExisting() {
   assert.strictEqual(map.artifacts.length, 1);
   assert.strictEqual(map.artifacts[0].generator, 'designer');
   assert.strictEqual(map.artifacts[0].dirty, false);
-}
+});
 
-async function testUpdateArtifactEntriesNoOpForEmptyPaths() {
+test('testUpdateArtifactEntriesNoOpForEmptyPaths', async () => {
   const mgr = new InMemoryMapManager();
   await updateArtifactEntries(mgr, [], 'designer');
   const map = await mgr.read();
   assert.strictEqual(map.artifacts.length, 0);
-}
+});
 
 // ─── DAGRunner.runNode tests ──────────────────────────────────────────────────
 
-async function testRunNodeDesignSuccess() {
+test('testRunNodeDesignSuccess', async () => {
   const root = makeTempDir();
   const lOutput = `<!-- SLE-OUTPUT
 role: designer
@@ -294,9 +295,9 @@ Use microservices.`;
   assert.strictEqual(result.next_node, 'CRITIQUE');
   assert.deepStrictEqual(result.artifacts_written, ['docs/requirements.md', 'docs/architecture.md']);
   assert.strictEqual(result.tokens_used, 250);
-}
+});
 
-async function testRunNodeUpdatesManifestRunning() {
+test('testRunNodeUpdatesManifestRunning', async () => {
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/requirements.md'],
     tokens_used: 10, duration_ms: 5, raw_output_path: '',
@@ -310,9 +311,9 @@ async function testRunNodeUpdatesManifestRunning() {
   // Should have seen 'running' then 'complete' status updates
   assert.ok('status' in (ram.nodeStatuses['DESIGN'] ?? {}));
   assert.strictEqual(ram.nodeStatuses['DESIGN'].status, 'complete');
-}
+});
 
-async function testRunNodeUpdatesDagCurrentNode() {
+test('testRunNodeUpdatesDagCurrentNode', async () => {
   const runner = new MockAgentRunner({
     success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '',
   });
@@ -326,9 +327,9 @@ async function testRunNodeUpdatesDagCurrentNode() {
   // After DESIGN completes, current_node should advance to CRITIQUE
   assert.strictEqual(map.meta.dag?.current_node, 'CRITIQUE');
   assert.ok(map.meta.dag?.completed_nodes.includes('DESIGN'));
-}
+});
 
-async function testRunNodeUpdatesArtifactEntriesInMap() {
+test('testRunNodeUpdatesArtifactEntriesInMap', async () => {
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/requirements.md', 'docs/architecture.md'],
     tokens_used: 100, duration_ms: 500, raw_output_path: '',
@@ -342,9 +343,9 @@ async function testRunNodeUpdatesArtifactEntriesInMap() {
   const map = await mgr.read();
   assert.ok(map.artifacts.some((a) => a.path === 'docs/requirements.md' && a.generator === 'designer'));
   assert.ok(map.artifacts.some((a) => a.path === 'docs/architecture.md' && a.generator === 'designer'));
-}
+});
 
-async function testRunNodeFailureMarkedInManifest() {
+test('testRunNodeFailureMarkedInManifest', async () => {
   const runner = new MockAgentRunner({
     success: false, artifacts_written: [], tokens_used: 5, duration_ms: 100, raw_output_path: '',
     error: 'Output parsing failed',
@@ -359,9 +360,9 @@ async function testRunNodeFailureMarkedInManifest() {
   assert.strictEqual(result.next_node, null);
   assert.ok(result.error?.includes('Output parsing failed'));
   assert.strictEqual(ram.nodeStatuses['DESIGN'].status, 'failed');
-}
+});
 
-async function testSkipNodeIsNoOpForUnknownNode() {
+test('testSkipNodeIsNoOpForUnknownNode', async () => {
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
   const mgr = new InMemoryMapManager();
   const ram = new InMemoryRunArtifactManager();
@@ -369,15 +370,15 @@ async function testSkipNodeIsNoOpForUnknownNode() {
 
   // CRITIQUE is not in manifest — skipNode should not throw
   await assert.doesNotReject(() => dagRunner.skipNode('CRITIQUE', 1, 1, 'depth'));
-}
+});
 
-async function testCritiqueSkippedAtStandardDepthPattern() {
+test('testCritiqueSkippedAtStandardDepthPattern', async () => {
   // Verify the pattern: at standard depth, CRITIQUE is skipped before PLAN
   assert.strictEqual(shouldSkipAtDepth('CRITIQUE', 'standard'), true);
   assert.strictEqual(nextNode('DESIGN'), 'CRITIQUE');
-}
+});
 
-async function testWritePathValidationBlocksDesignerFromPlanPath() {
+test('testWritePathValidationBlocksDesignerFromPlanPath', async () => {
   const runner = new MockAgentRunner({
     success: false,
     artifacts_written: [],
@@ -395,62 +396,6 @@ async function testWritePathValidationBlocksDesignerFromPlanPath() {
   assert.strictEqual(result.success, false);
   assert.ok(result.error?.includes("not permitted"));
   assert.strictEqual(result.next_node, null);
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  console.log('Running Phase F (DAG Runner + DESIGN Node) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'validateOutputPath: designer allowed paths', fn: testDesignerAllowedPaths },
-    { name: 'validateOutputPath: designer rejected paths', fn: testDesignerRejectedPaths },
-    { name: 'validateOutputPath: planner allowed paths', fn: testPlannerAllowedPaths },
-    { name: 'validateOutputPath: planner cannot write requirements', fn: testPlannerCannotWriteRequirements },
-    { name: 'validateOutputPath: builder allows src/, denies docs/ and .sle/', fn: testBuilderAllowsSrcDeniesDocsAndSle },
-    { name: 'validateOutputPath: facilitator only charter path', fn: testFacilitatorOnlyCharterPath },
-    { name: 'nextNode: full sequence', fn: testNextNodeSequence },
-    { name: 'nextNode: unknown node returns null', fn: testNextNodeUnknownReturnsNull },
-    { name: 'shouldSkipAtDepth: CRITIQUE skipped at standard/minimal', fn: testCritiqueSkippedAtStandard },
-    { name: 'shouldSkipAtDepth: CRITIQUE not skipped at deep/research', fn: testCritiqueNotSkippedAtDeep },
-    { name: 'shouldSkipAtDepth: other nodes not skipped', fn: testOtherNodesNotSkipped },
-    { name: 'DAG_SEQUENCE: contains all 12 core nodes', fn: testDagSequenceContainsAllCoreNodes },
-    { name: 'DAG_SEQUENCE: contains CRITIQUE', fn: testDagSequenceContainsCritique },
-    { name: 'updateArtifactEntries: adds new entries', fn: testUpdateArtifactEntriesAddsNewEntries },
-    { name: 'updateArtifactEntries: updates existing entries', fn: testUpdateArtifactEntriesUpdatesExisting },
-    { name: 'updateArtifactEntries: no-op for empty paths', fn: testUpdateArtifactEntriesNoOpForEmptyPaths },
-    { name: 'DAGRunner.runNode: DESIGN success → next=CRITIQUE', fn: testRunNodeDesignSuccess },
-    { name: 'DAGRunner.runNode: updates manifest running→complete', fn: testRunNodeUpdatesManifestRunning },
-    { name: 'DAGRunner.runNode: advances dag current_node', fn: testRunNodeUpdatesDagCurrentNode },
-    { name: 'DAGRunner.runNode: updates artifact entries in map', fn: testRunNodeUpdatesArtifactEntriesInMap },
-    { name: 'DAGRunner.runNode: failure marked in manifest', fn: testRunNodeFailureMarkedInManifest },
-    { name: 'DAGRunner.skipNode: no-op for CRITIQUE (not in manifest)', fn: testSkipNodeIsNoOpForUnknownNode },
-    { name: 'CRITIQUE skipped at standard depth → DESIGN→CRITIQUE', fn: testCritiqueSkippedAtStandardDepthPattern },
-    { name: 'write path validation blocks designer from plan.md', fn: testWritePathValidationBlocksDesignerFromPlanPath },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase F tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase F tests passed!`);
-}
-
-runAllTests();

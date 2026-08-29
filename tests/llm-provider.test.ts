@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   OpenAICompatibleProvider,
@@ -50,7 +51,7 @@ function restoreFetch(): void {
   if (f.__restore) f.__restore();
 }
 
-async function testOpenAICompatibleProviderReturnsStructuredResponse() {
+test('testOpenAICompatibleProviderReturnsStructuredResponse', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key-123';
   const provider = new OpenAICompatibleProvider(TEST_CONFIG);
 
@@ -75,33 +76,33 @@ async function testOpenAICompatibleProviderReturnsStructuredResponse() {
     restoreFetch();
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testOpenAICompatibleProviderUsesApiKeyFromEnv() {
+test('testOpenAICompatibleProviderUsesApiKeyFromEnv', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key-123';
   const provider = new OpenAICompatibleProvider(TEST_CONFIG);
   assert.ok(provider instanceof OpenAICompatibleProvider);
   delete process.env.TEST_LLM_API_KEY;
-}
+});
 
-async function testOpenAICompatibleProviderFallsBackToSleKey() {
+test('testOpenAICompatibleProviderFallsBackToSleKey', async () => {
   delete process.env.TEST_LLM_API_KEY;
   process.env.SLE_LLM_API_KEY = 'fallback-key';
   const provider = new OpenAICompatibleProvider(TEST_CONFIG);
   assert.ok(provider instanceof OpenAICompatibleProvider);
   delete process.env.SLE_LLM_API_KEY;
-}
+});
 
-async function testOpenAICompatibleProviderThrowsOnMissingKey() {
+test('testOpenAICompatibleProviderThrowsOnMissingKey', async () => {
   delete process.env.TEST_LLM_API_KEY;
   delete process.env.SLE_LLM_API_KEY;
   assert.throws(
     () => new OpenAICompatibleProvider(TEST_CONFIG),
     /API key not found/
   );
-}
+});
 
-async function testOpenAICompatibleProviderThrowsOnApiError() {
+test('testOpenAICompatibleProviderThrowsOnApiError', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new OpenAICompatibleProvider(TEST_CONFIG);
 
@@ -121,9 +122,9 @@ async function testOpenAICompatibleProviderThrowsOnApiError() {
     restoreFetch();
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testOpenAICompatibleProviderHandlesEmptyChoices() {
+test('testOpenAICompatibleProviderHandlesEmptyChoices', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new OpenAICompatibleProvider(TEST_CONFIG);
 
@@ -143,9 +144,9 @@ async function testOpenAICompatibleProviderHandlesEmptyChoices() {
     restoreFetch();
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testOpenAICompatibleProviderUsesCustomBaseUrl() {
+test('testOpenAICompatibleProviderUsesCustomBaseUrl', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const config: AgentLLMConfig = {
     provider: 'openai_compatible',
@@ -181,9 +182,9 @@ async function testOpenAICompatibleProviderUsesCustomBaseUrl() {
     globalThis.fetch = originalFetch;
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testAnthropicProviderReturnsStructuredResponse() {
+test('testAnthropicProviderReturnsStructuredResponse', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
 
@@ -207,9 +208,9 @@ async function testAnthropicProviderReturnsStructuredResponse() {
     restoreFetch();
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testAnthropicProviderSeparatesSystemMessage() {
+test('testAnthropicProviderSeparatesSystemMessage', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
 
@@ -243,9 +244,9 @@ async function testAnthropicProviderSeparatesSystemMessage() {
     globalThis.fetch = originalFetch;
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testAnthropicProviderSendsCorrectHeaders() {
+test('testAnthropicProviderSendsCorrectHeaders', async () => {
   process.env.TEST_LLM_API_KEY = 'my-anthropic-key';
   const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
 
@@ -273,9 +274,9 @@ async function testAnthropicProviderSendsCorrectHeaders() {
     globalThis.fetch = originalFetch;
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testAnthropicProviderThrowsOnApiError() {
+test('testAnthropicProviderThrowsOnApiError', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const provider = new AnthropicProvider(ANTHROPIC_CONFIG);
 
@@ -295,18 +296,18 @@ async function testAnthropicProviderThrowsOnApiError() {
     restoreFetch();
     delete process.env.TEST_LLM_API_KEY;
   }
-}
+});
 
-async function testAnthropicProviderThrowsOnMissingKey() {
+test('testAnthropicProviderThrowsOnMissingKey', async () => {
   delete process.env.TEST_LLM_API_KEY;
   delete process.env.SLE_LLM_API_KEY;
   assert.throws(
     () => new AnthropicProvider(ANTHROPIC_CONFIG),
     /API key not found/
   );
-}
+});
 
-async function testCreateLLMProviderReturnsCorrectType() {
+test('testCreateLLMProviderReturnsCorrectType', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const openai = createLLMProvider(TEST_CONFIG);
   assert.ok(openai instanceof OpenAICompatibleProvider);
@@ -331,9 +332,9 @@ async function testCreateLLMProviderReturnsCorrectType() {
   assert.ok(openrouter instanceof OpenAICompatibleProvider);
 
   delete process.env.TEST_LLM_API_KEY;
-}
+});
 
-async function testDynamicLLMProviderDelegatesAndSwaps() {
+test('testDynamicLLMProviderDelegatesAndSwaps', async () => {
   const mock1: ILLMProvider = {
     complete: async () => ({ content: 'response-1', tokens_used: 10, duration_ms: 50 })
   };
@@ -360,16 +361,16 @@ async function testDynamicLLMProviderDelegatesAndSwaps() {
   });
   assert.strictEqual(res2.content, 'response-2');
   assert.strictEqual(dynamicProvider.getProvider(), mock2);
-}
+});
 
-async function testCreateLLMProviderThrowsOnUnknownProvider() {
+test('testCreateLLMProviderThrowsOnUnknownProvider', async () => {
   assert.throws(
     () => createLLMProvider({ provider: 'unknown' as 'openai_compatible', api_key_env: 'KEY', model: 'm' }),
     /Unknown LLM provider/
   );
-}
+});
 
-async function testLLMCompletionParamsSchema() {
+test('testLLMCompletionParamsSchema', async () => {
   const valid = {
     model: 'gpt-4o',
     messages: [{ role: 'system' as const, content: 'You are helpful' }],
@@ -396,9 +397,9 @@ async function testLLMCompletionParamsSchema() {
   };
   const result3 = LLMCompletionParamsSchema.safeParse(noMessages);
   assert(!result3.success, 'Empty messages should fail');
-}
+});
 
-async function testLLMCompletionResultSchema() {
+test('testLLMCompletionResultSchema', async () => {
   const valid = { content: 'hello', tokens_used: 10, duration_ms: 100 };
   const result = LLMCompletionResultSchema.safeParse(valid);
   assert(result.success, 'Valid result should pass');
@@ -406,51 +407,4 @@ async function testLLMCompletionResultSchema() {
   const negativeTokens = { content: 'hello', tokens_used: -1, duration_ms: 100 };
   const result2 = LLMCompletionResultSchema.safeParse(negativeTokens);
   assert(!result2.success, 'Negative tokens_used should fail');
-}
-
-async function runAllTests() {
-  const tests = [
-    { name: 'OpenAICompatibleProvider returns structured response', fn: testOpenAICompatibleProviderReturnsStructuredResponse },
-    { name: 'OpenAICompatibleProvider uses API key from env', fn: testOpenAICompatibleProviderUsesApiKeyFromEnv },
-    { name: 'OpenAICompatibleProvider falls back to SLE_LLM_API_KEY', fn: testOpenAICompatibleProviderFallsBackToSleKey },
-    { name: 'OpenAICompatibleProvider throws on missing key', fn: testOpenAICompatibleProviderThrowsOnMissingKey },
-    { name: 'OpenAICompatibleProvider throws on API error', fn: testOpenAICompatibleProviderThrowsOnApiError },
-    { name: 'OpenAICompatibleProvider handles empty choices', fn: testOpenAICompatibleProviderHandlesEmptyChoices },
-    { name: 'OpenAICompatibleProvider uses custom base_url', fn: testOpenAICompatibleProviderUsesCustomBaseUrl },
-    { name: 'AnthropicProvider returns structured response', fn: testAnthropicProviderReturnsStructuredResponse },
-    { name: 'AnthropicProvider separates system message', fn: testAnthropicProviderSeparatesSystemMessage },
-    { name: 'AnthropicProvider sends correct headers', fn: testAnthropicProviderSendsCorrectHeaders },
-    { name: 'AnthropicProvider throws on API error', fn: testAnthropicProviderThrowsOnApiError },
-    { name: 'AnthropicProvider throws on missing key', fn: testAnthropicProviderThrowsOnMissingKey },
-    { name: 'createLLMProvider returns correct type', fn: testCreateLLMProviderReturnsCorrectType },
-    { name: 'createLLMProvider throws on unknown provider', fn: testCreateLLMProviderThrowsOnUnknownProvider },
-    { name: 'LLMCompletionParamsSchema validates correctly', fn: testLLMCompletionParamsSchema },
-    { name: 'LLMCompletionResultSchema validates correctly', fn: testLLMCompletionResultSchema },
-    { name: 'DynamicLLMProvider delegates and swaps correctly', fn: testDynamicLLMProviderDelegatesAndSwaps },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} LLM provider tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} LLM provider + AnthropicProvider tests passed!`);
-}
-
-runAllTests();
+});

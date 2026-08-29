@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
@@ -128,7 +129,7 @@ function makeFsMock(files: Record<string, string> = {}): {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-async function testBeginCallsAgentRunnerWithScopingNode() {
+test('testBeginCallsAgentRunnerWithScopingNode', async () => {
   const root = makeTempDir();
   const charterContent = '# Cycle Charter: 1\n\n## Intent\nBuild a widget system';
   const charterPath = join(root, 'docs', 'cycle-charter.md');
@@ -153,9 +154,9 @@ async function testBeginCallsAgentRunnerWithScopingNode() {
   assert.strictEqual(runner.calls[0].state.current_node, 'SCOPING');
   assert.strictEqual(result.awaiting_scoping, true);
   assert.strictEqual(result.charter_path, 'docs/cycle-charter.md');
-}
+});
 
-async function testBeginForcesCurrentNodeToScoping() {
+test('testBeginForcesCurrentNodeToScoping', async () => {
   const root = makeTempDir();
   const charterPath = join(root, 'docs', 'cycle-charter.md');
   await fs.mkdir(join(root, 'docs'), { recursive: true });
@@ -172,9 +173,9 @@ async function testBeginForcesCurrentNodeToScoping() {
 
   // Even if cycleState had DESIGN, begin should override to SCOPING
   assert.strictEqual(runner.calls[0].state.current_node, 'SCOPING');
-}
+});
 
-async function testBeginSetsAwaitingScopingTrueInMap() {
+test('testBeginSetsAwaitingScopingTrueInMap', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
@@ -190,9 +191,9 @@ async function testBeginSetsAwaitingScopingTrueInMap() {
   await svc.begin(1, 1, makeCycleState());
 
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, true);
-}
+});
 
-async function testBeginThrowsWhenAgentRunnerFails() {
+test('testBeginThrowsWhenAgentRunnerFails', async () => {
   const root = makeTempDir();
   const runner = new MockAgentRunner({
     success: false,
@@ -209,9 +210,9 @@ async function testBeginThrowsWhenAgentRunnerFails() {
     () => svc.begin(1, 1, makeCycleState()),
     /SCOPING node failed/
   );
-}
+});
 
-async function testGetDraftReadsCharterFromDisk() {
+test('testGetDraftReadsCharterFromDisk', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   const expected = '# Cycle Charter\n\n## Intent\nBuild a widget';
@@ -223,9 +224,9 @@ async function testGetDraftReadsCharterFromDisk() {
 
   const draft = await svc.getDraft();
   assert.strictEqual(draft, expected);
-}
+});
 
-async function testGetDraftReturnsNullWhenFileAbsent() {
+test('testGetDraftReturnsNullWhenFileAbsent', async () => {
   const root = makeTempDir();
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -233,9 +234,9 @@ async function testGetDraftReturnsNullWhenFileAbsent() {
 
   const draft = await svc.getDraft();
   assert.strictEqual(draft, null);
-}
+});
 
-async function testSubmitResponseStoresPendingResponse() {
+test('testSubmitResponseStoresPendingResponse', async () => {
   const root = makeTempDir();
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -244,9 +245,9 @@ async function testSubmitResponseStoresPendingResponse() {
   assert.strictEqual(svc.getPendingResponse(), null);
   await svc.submitResponse('Feature A should be async.');
   assert.strictEqual(svc.getPendingResponse(), 'Feature A should be async.');
-}
+});
 
-async function testApproveClearsAwaitingScopingFlag() {
+test('testApproveClearsAwaitingScopingFlag', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(
@@ -266,9 +267,9 @@ async function testApproveClearsAwaitingScopingFlag() {
   assert.strictEqual(result.awaiting_scoping, false);
   assert.strictEqual(result.charter_path, 'docs/cycle-charter.md');
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, false);
-}
+});
 
-async function testApproveThrowsWhenNoDraftExists() {
+test('testApproveThrowsWhenNoDraftExists', async () => {
   const root = makeTempDir();
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -278,9 +279,9 @@ async function testApproveThrowsWhenNoDraftExists() {
     () => svc.approve(1, 1),
     /No scoping draft available/
   );
-}
+});
 
-async function testApproveClearsPendingResponse() {
+test('testApproveClearsPendingResponse', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(
@@ -298,9 +299,9 @@ async function testApproveClearsPendingResponse() {
 
   await svc.approve(1, 1);
   assert.strictEqual(svc.getPendingResponse(), null);
-}
+});
 
-async function testBeginLoadsNextCycleTaggedRefsIntoEphemeral() {
+test('testBeginLoadsNextCycleTaggedRefsIntoEphemeral', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
@@ -321,9 +322,9 @@ async function testBeginLoadsNextCycleTaggedRefsIntoEphemeral() {
   assert.ok(state.ephemeral?.next_cycle_tagged_refs, 'ephemeral context should include tagged refs');
   assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('node:rate-limiting'));
   assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('doc:architecture'));
-}
+});
 
-async function testBeginWithoutTagServiceOmitsTaggedContext() {
+test('testBeginWithoutTagServiceOmitsTaggedContext', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
@@ -337,9 +338,9 @@ async function testBeginWithoutTagServiceOmitsTaggedContext() {
   await svc.begin(1, 1, makeCycleState());
 
   assert.strictEqual(runner.calls[0].state.ephemeral, undefined);
-}
+});
 
-async function testApproveClearsNextCycleTags() {
+test('testApproveClearsNextCycleTags', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(
@@ -362,9 +363,9 @@ async function testApproveClearsNextCycleTags() {
   const areaTags = await tagService.getTagged('area');
   assert.strictEqual(nextCycleTags.length, 0, '#next-cycle tags should be cleared after approval');
   assert.strictEqual(areaTags.length, 1, 'other prefix tags should be untouched');
-}
+});
 
-async function testFullScopingLifecycle() {
+test('testFullScopingLifecycle', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   const charterContent = `# Cycle Charter: 1
@@ -411,9 +412,9 @@ All widget CRUD operations working.`;
   assert.strictEqual(approveResult.awaiting_scoping, false);
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, false);
   assert.strictEqual(svc.getPendingResponse(), null);
-}
+});
 
-async function testApproveThrowsWhenCharterMissingSections() {
+test('testApproveThrowsWhenCharterMissingSections', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter\n\nSome unstructured text.', 'utf-8');
@@ -426,9 +427,9 @@ async function testApproveThrowsWhenCharterMissingSections() {
     () => svc.approve(1, 1),
     /Scope and\/or Purpose/
   );
-}
+});
 
-async function testProcessResponseIncrementsRoundCount() {
+test('testProcessResponseIncrementsRoundCount', async () => {
   const root = makeTempDir();
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -439,9 +440,9 @@ async function testProcessResponseIncrementsRoundCount() {
   assert.strictEqual(svc.getRoundCount(), 1);
   await svc.processResponse('Round 2 answer', makeCycleState());
   assert.strictEqual(svc.getRoundCount(), 2);
-}
+});
 
-async function testProcessResponseThrowsWhenMaxRoundsExceeded() {
+test('testProcessResponseThrowsWhenMaxRoundsExceeded', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, '.sle', 'rules'), { recursive: true });
   await fs.writeFile(join(root, '.sle', 'rules', 'planning.yaml'), 'scoping:\n  max_rounds: 2\n', 'utf-8');
@@ -457,9 +458,9 @@ async function testProcessResponseThrowsWhenMaxRoundsExceeded() {
     () => svc.processResponse('Round 3', makeCycleState()),
     /max rounds/
   );
-}
+});
 
-async function testSubmitResponseWithCycleStateRunsFacilitator() {
+test('testSubmitResponseWithCycleStateRunsFacilitator', async () => {
   const root = makeTempDir();
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
@@ -470,56 +471,6 @@ async function testSubmitResponseWithCycleStateRunsFacilitator() {
   assert.strictEqual(runner.calls.length, 1);
   assert.strictEqual(runner.calls[0].node, 'SCOPING');
   assert.strictEqual(runner.calls[0].state.ephemeral?.scoping_response, 'Add auth.');
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  console.log('Running Phase E (Scoping Service) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'begin: calls AgentRunner with SCOPING node', fn: testBeginCallsAgentRunnerWithScopingNode },
-    { name: 'begin: forces current_node to SCOPING', fn: testBeginForcesCurrentNodeToScoping },
-    { name: 'begin: sets awaiting_scoping=true in map', fn: testBeginSetsAwaitingScopingTrueInMap },
-    { name: 'begin: throws when AgentRunner fails', fn: testBeginThrowsWhenAgentRunnerFails },
-    { name: 'getDraft: reads charter from disk', fn: testGetDraftReadsCharterFromDisk },
-    { name: 'getDraft: returns null when file absent', fn: testGetDraftReturnsNullWhenFileAbsent },
-    { name: 'submitResponse: stores pending response', fn: testSubmitResponseStoresPendingResponse },
-    { name: 'approve: clears awaiting_scoping flag', fn: testApproveClearsAwaitingScopingFlag },
-    { name: 'approve: throws when no draft exists', fn: testApproveThrowsWhenNoDraftExists },
-    { name: 'approve: clears pending response', fn: testApproveClearsPendingResponse },
-    { name: 'approve: throws when charter missing Scope/Purpose sections', fn: testApproveThrowsWhenCharterMissingSections },
-    { name: 'processResponse: increments round count', fn: testProcessResponseIncrementsRoundCount },
-    { name: 'processResponse: throws scoping_timeout when max rounds exceeded', fn: testProcessResponseThrowsWhenMaxRoundsExceeded },
-    { name: 'submitResponse: with cycleState runs facilitator with response in ephemeral context', fn: testSubmitResponseWithCycleStateRunsFacilitator },
-    { name: 'begin: loads #next-cycle tagged refs into ephemeral context', fn: testBeginLoadsNextCycleTaggedRefsIntoEphemeral },
-    { name: 'begin: without tagService omits tagged context', fn: testBeginWithoutTagServiceOmitsTaggedContext },
-    { name: 'approve: clears #next-cycle tags but leaves other prefixes', fn: testApproveClearsNextCycleTags },
-    { name: 'full scoping lifecycle: begin → getDraft → response → approve', fn: testFullScopingLifecycle },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase E tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase E tests passed!`);
-}
-
-runAllTests();

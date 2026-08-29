@@ -544,7 +544,7 @@ const AGENTS_DEFAULT: AgentsConfig = {
 };
 
 export function generateDefaults(projectType: ProjectType): RuntimeConfig {
-  return {
+  return JSON.parse(JSON.stringify({
     planning: PLANNING_DEFAULTS[projectType],
     validation: {
       static_analysis: STATIC_ANALYSIS_DEFAULT,
@@ -556,7 +556,7 @@ export function generateDefaults(projectType: ProjectType): RuntimeConfig {
     user_validation: USER_VALIDATION_DEFAULT,
     summary: SUMMARY_DEFAULT,
     agents: AGENTS_DEFAULT,
-  };
+  })) as RuntimeConfig;
 }
 
 export function deepMerge<T extends Record<string, unknown>>(

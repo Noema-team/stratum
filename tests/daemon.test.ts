@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { request as httpRequest } from 'node:http';
 import { DaemonServer } from '../src/daemon.js';
@@ -254,15 +255,15 @@ function startServer(): Promise<DaemonServer> {
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
-async function testServerStartsAndResponds() {
+test('testServerStartsAndResponds', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/health');
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testHealthEndpoint() {
+test('testHealthEndpoint', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/health');
   assert.strictEqual(res.statusCode, 200);
@@ -270,9 +271,9 @@ async function testHealthEndpoint() {
   assert.strictEqual(data.status, 'healthy');
   assert.strictEqual(typeof data.uptime_ms, 'number');
   await server.stop();
-}
+});
 
-async function testInfoEndpoint() {
+test('testInfoEndpoint', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/info');
   assert.strictEqual(res.statusCode, 200);
@@ -280,70 +281,70 @@ async function testInfoEndpoint() {
   assert.strictEqual(data.version, '0.1.0');
   assert.strictEqual(typeof data.pid, 'number');
   await server.stop();
-}
+});
 
-async function testStateEndpoint() {
+test('testStateEndpoint', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/system/state');
   assert.strictEqual(res.statusCode, 200);
   const data = (res.body as { data: { state: string } }).data;
   assert.strictEqual(data.state, 'idle');
   await server.stop();
-}
+});
 
-async function testTransitionRejectsInvalid() {
+test('testTransitionRejectsInvalid', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/system/state/transition', { target: 'halted', trigger: 'invalid' });
   assert.strictEqual((res.body as { ok: boolean }).ok, false);
   await server.stop();
-}
+});
 
-async function testTransitionAppliesValid() {
+test('testTransitionAppliesValid', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/system/state/transition', { target: 'discovering', trigger: 'sle discover' });
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testInitCreatesStructure() {
+test('testInitCreatesStructure', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/init', { project_name: 'test', project_type: 'api', task_store: 'local', daemon_port: 7700, docs_remote: null, non_interactive: true });
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testInitState() {
+test('testInitState', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/init', { project_name: 'test', project_type: 'api', task_store: 'local', daemon_port: 7700, docs_remote: null, non_interactive: true });
   const res = await makeRequest(server, 'GET', '/api/v2/init/state');
   assert.strictEqual((res.body as { data: { initialised: boolean } }).data.initialised, true);
   await server.stop();
-}
+});
 
-async function testDiscoveryStart() {
+test('testDiscoveryStart', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/discovery/start', { mode: 'solo' });
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testDiscoveryRoundResponse() {
+test('testDiscoveryRoundResponse', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/discovery/round/1/response?session_id=abc');
   assert.strictEqual((res.body as { data: { round: number } }).data.round, 1);
   await server.stop();
-}
+});
 
-async function testDiscoveryRoundApprove() {
+test('testDiscoveryRoundApprove', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/discovery/round/1/approve?session_id=abc');
   assert.strictEqual((res.body as { data: { approved: boolean } }).data.approved, true);
   await server.stop();
-}
+});
 
-async function testJsonParseErrorReturns500() {
+test('testJsonParseErrorReturns500', async () => {
   const server = await startServer();
   const res = await new Promise<{ statusCode: number }>((resolve, reject) => {
     const req = httpRequest(
@@ -359,25 +360,25 @@ async function testJsonParseErrorReturns500() {
   });
   assert.strictEqual(res.statusCode, 500);
   await server.stop();
-}
+});
 
-async function testUnknownRouteReturns404() {
+test('testUnknownRouteReturns404', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/nonexistent/route');
   assert.strictEqual(res.statusCode, 404);
   await server.stop();
-}
+});
 
-async function testInitIdempotent() {
+test('testInitIdempotent', async () => {
   const server = await startServer();
   const body = { project_name: 'test', project_type: 'api', task_store: 'local', daemon_port: 7700, docs_remote: null, non_interactive: true };
   await makeRequest(server, 'POST', '/api/v2/init', body);
   const res = await makeRequest(server, 'POST', '/api/v2/init', body);
   assert.strictEqual((res.body as { ok: boolean }).ok, false);
   await server.stop();
-}
+});
 
-async function testCycleStart() {
+test('testCycleStart', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/start', {
     intent: 'Add user authentication to the API',
@@ -388,35 +389,35 @@ async function testCycleStart() {
   assert.ok(typeof body.data.cycle_id === 'string');
   assert.strictEqual(body.data.initial_node, 'SCOPING');
   await server.stop();
-}
+});
 
-async function testCycleStartAlreadyActive() {
+test('testCycleStartAlreadyActive', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'A second concurrent intent here' });
   assert.strictEqual(res.statusCode, 409);
   assert.strictEqual((res.body as { error: { code: string } }).error.code, 'cycle_already_active');
   await server.stop();
-}
+});
 
-async function testCycleGetCurrent() {
+test('testCycleGetCurrent', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/current');
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testCycleHalt() {
+test('testCycleHalt', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/halt');
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: { halted: boolean } }).data.halted, true);
   await server.stop();
-}
+});
 
-async function testCycleAcknowledgeHalt() {
+test('testCycleAcknowledgeHalt', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   await makeRequest(server, 'POST', '/api/v2/cycles/halt');
@@ -424,9 +425,9 @@ async function testCycleAcknowledgeHalt() {
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: { acknowledged: boolean } }).data.acknowledged, true);
   await server.stop();
-}
+});
 
-async function testCycleResume() {
+test('testCycleResume', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   await makeRequest(server, 'POST', '/api/v2/cycles/halt');
@@ -434,17 +435,17 @@ async function testCycleResume() {
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: { resumed: boolean } }).data.resumed, true);
   await server.stop();
-}
+});
 
-async function testCycleDAGNotCycling() {
+test('testCycleDAGNotCycling', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/dag');
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: null }).data, null);
   await server.stop();
-}
+});
 
-async function testCycleDAGWhenCycling() {
+test('testCycleDAGWhenCycling', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/dag');
@@ -453,17 +454,17 @@ async function testCycleDAGWhenCycling() {
   assert.strictEqual(data.current_node, null);
   assert.ok(data.nodes !== undefined);
   await server.stop();
-}
+});
 
-async function testCycleRunNotCycling() {
+test('testCycleRunNotCycling', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/run');
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: null }).data, null);
   await server.stop();
-}
+});
 
-async function testCycleRunWhenCycling() {
+test('testCycleRunWhenCycling', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/current/run');
@@ -473,9 +474,9 @@ async function testCycleRunWhenCycling() {
   assert.strictEqual(data.cycle_id, 'c1');
   assert.strictEqual(data.outcome, 'in_progress');
   await server.stop();
-}
+});
 
-async function testScopingDraftAfterStart() {
+test('testScopingDraftAfterStart', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/scoping/draft');
@@ -484,27 +485,27 @@ async function testScopingDraftAfterStart() {
   assert.strictEqual(body.ok, true);
   assert.ok(body.data.content.includes('Cycle Charter'));
   await server.stop();
-}
+});
 
-async function testScopingDraftNotFound() {
+test('testScopingDraftNotFound', async () => {
   const server = await startServer();
   // No cycle started — draft is null
   const res = await makeRequest(server, 'GET', '/api/v2/cycles/scoping/draft');
   assert.strictEqual(res.statusCode, 404);
   assert.strictEqual((res.body as { error: { code: string } }).error.code, 'no_scoping_draft');
   await server.stop();
-}
+});
 
-async function testScopingSubmitResponse() {
+test('testScopingSubmitResponse', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/response', { text: 'Please add rate limiting.' });
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { data: { recorded: boolean } }).data.recorded, true);
   await server.stop();
-}
+});
 
-async function testScopingApprove() {
+test('testScopingApprove', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/cycles/start', { intent: 'Add user authentication to the API' });
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/approve');
@@ -514,17 +515,17 @@ async function testScopingApprove() {
   assert.strictEqual(body.data.charter_path, 'docs/cycle-charter.md');
   assert.strictEqual(body.data.awaiting_scoping, false);
   await server.stop();
-}
+});
 
-async function testScopingApproveFailsWithNoDraft() {
+test('testScopingApproveFailsWithNoDraft', async () => {
   const server = await startServer();
   // No start — no draft
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/scoping/approve');
   assert.strictEqual(res.statusCode, 409);
   await server.stop();
-}
+});
 
-async function testTagsAddAndList() {
+test('testTagsAddAndList', async () => {
   const server = await startServer();
   const addRes = await makeRequest(server, 'POST', '/api/v2/tags', {
     prefix: 'next-cycle',
@@ -541,23 +542,23 @@ async function testTagsAddAndList() {
   const listBody = listRes.body as { ok: boolean; data: { tags: unknown[]; count: number } };
   assert.strictEqual(listBody.data.count, 1);
   await server.stop();
-}
+});
 
-async function testTagsListInvalidPrefix() {
+test('testTagsListInvalidPrefix', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/tags?tag=bogus');
   assert.strictEqual(res.statusCode, 400);
   await server.stop();
-}
+});
 
-async function testTagsAddInvalidPayload() {
+test('testTagsAddInvalidPayload', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/tags', { prefix: 'next-cycle' });
   assert.strictEqual(res.statusCode, 422);
   await server.stop();
-}
+});
 
-async function testTagsDelete() {
+test('testTagsDelete', async () => {
   const server = await startServer();
   await makeRequest(server, 'POST', '/api/v2/tags', {
     prefix: 'next-cycle',
@@ -576,9 +577,9 @@ async function testTagsDelete() {
   const listBody = listRes.body as { data: { count: number } };
   assert.strictEqual(listBody.data.count, 0);
   await server.stop();
-}
+});
 
-async function testTagsDeleteNotFound() {
+test('testTagsDeleteNotFound', async () => {
   const server = await startServer();
   const res = await makeRequest(
     server,
@@ -587,9 +588,9 @@ async function testTagsDeleteNotFound() {
   );
   assert.strictEqual(res.statusCode, 404);
   await server.stop();
-}
+});
 
-async function testTemplatesList() {
+test('testTemplatesList', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/templates');
   assert.strictEqual(res.statusCode, 200);
@@ -597,9 +598,9 @@ async function testTemplatesList() {
   assert.strictEqual(body.ok, true);
   assert.strictEqual(body.data.templates.length, 2);
   await server.stop();
-}
+});
 
-async function testTemplatesGetByRole() {
+test('testTemplatesGetByRole', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/templates/builder');
   assert.strictEqual(res.statusCode, 200);
@@ -607,25 +608,25 @@ async function testTemplatesGetByRole() {
   assert.strictEqual(body.data.role, 'builder');
   assert.ok(body.data.content.includes('Builder'));
   await server.stop();
-}
+});
 
-async function testTemplatesGetInvalidRole() {
+test('testTemplatesGetInvalidRole', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/templates/not-a-role');
   assert.strictEqual(res.statusCode, 400);
   await server.stop();
-}
+});
 
-async function testTemplatesGetMissingTemplate() {
+test('testTemplatesGetMissingTemplate', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'GET', '/api/v2/templates/critic');
   assert.strictEqual(res.statusCode, 404);
   const body = res.body as { error: { code: string } };
   assert.strictEqual(body.error.code, 'template_missing');
   await server.stop();
-}
+});
 
-async function testConfirmApprove() {
+test('testConfirmApprove', async () => {
   const server = await startServer();
   // Gate must be set first so MockConfirmService.approve() doesn't throw
   await makeRequest(server, 'POST', '/api/v2/cycles/confirm', { action: 'approve' });
@@ -641,9 +642,9 @@ async function testConfirmApprove() {
   const badRes = await makeRequest(server2, 'POST', '/api/v2/cycles/confirm', { action: 'invalid' });
   assert.strictEqual(badRes.statusCode, 400);
   await server2.stop();
-}
+});
 
-async function testConfirmApproveSuccess() {
+test('testConfirmApproveSuccess', async () => {
   // Verify approve returns 200 with correct shape after gate
   const server = await startServer();
   // MockConfirmService: gate is not called via HTTP, so _awaiting=false → approve throws
@@ -652,25 +653,25 @@ async function testConfirmApproveSuccess() {
   assert.strictEqual(res.statusCode, 409);
   assert.strictEqual((res.body as { ok: boolean }).ok, false);
   await server.stop();
-}
+});
 
-async function testConfirmRevise() {
+test('testConfirmRevise', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/confirm', { action: 'revise', note: 'Add auth' });
   // MockConfirmService._awaiting=false → throws not_awaiting_confirmation
   assert.strictEqual(res.statusCode, 409);
   await server.stop();
-}
+});
 
-async function testConfirmInvalidAction() {
+test('testConfirmInvalidAction', async () => {
   const server = await startServer();
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/confirm', { action: 'unknown' });
   assert.strictEqual(res.statusCode, 400);
   assert.strictEqual((res.body as { error: { code: string } }).error.code, 'invalid_action');
   await server.stop();
-}
+});
 
-async function testConfirmHaltCallsCycleHalt() {
+test('testConfirmHaltCallsCycleHalt', async () => {
   const server = await startServer();
   // cycle service starts not cycling, so halt will throw
   // First start a cycle
@@ -679,97 +680,24 @@ async function testConfirmHaltCallsCycleHalt() {
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual((res.body as { ok: boolean }).ok, true);
   await server.stop();
-}
+});
 
-async function testCurrentApprove409WhenNotAwaiting() {
+test('testCurrentApprove409WhenNotAwaiting', async () => {
   const server = await startServer();
   // MockConfirmService._awaiting=false → approve throws not_awaiting_confirmation
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/current/approve');
   assert.strictEqual(res.statusCode, 409);
   assert.strictEqual((res.body as { ok: boolean }).ok, false);
   await server.stop();
-}
+});
 
-async function testCurrentRevise409WhenNotAwaiting() {
+test('testCurrentRevise409WhenNotAwaiting', async () => {
   const server = await startServer();
   // MockConfirmService._awaiting=false → revise throws not_awaiting_confirmation
   const res = await makeRequest(server, 'POST', '/api/v2/cycles/current/revise', { note: 'Add auth' });
   assert.strictEqual(res.statusCode, 409);
   assert.strictEqual((res.body as { ok: boolean }).ok, false);
   await server.stop();
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  const tests = [
-    { name: 'InMemoryDaemon starts and responds to health check', fn: testServerStartsAndResponds },
-    { name: 'GET /api/v2/health returns 200 with healthy status', fn: testHealthEndpoint },
-    { name: 'GET /api/v2/info returns DaemonInfo shape', fn: testInfoEndpoint },
-    { name: 'GET /api/v2/system/state returns StateContext', fn: testStateEndpoint },
-    { name: 'POST /api/v2/system/state/transition rejects invalid transition', fn: testTransitionRejectsInvalid },
-    { name: 'POST /api/v2/system/state/transition applies valid transition', fn: testTransitionAppliesValid },
-    { name: 'POST /api/v2/init creates .sle/ structure', fn: testInitCreatesStructure },
-    { name: 'GET /api/v2/init/state returns init progress', fn: testInitState },
-    { name: 'POST /api/v2/discovery/start transitions to discovering', fn: testDiscoveryStart },
-    { name: 'POST /api/v2/discovery/round/1/response returns draft', fn: testDiscoveryRoundResponse },
-    { name: 'POST /api/v2/discovery/round/1/approve approves the round', fn: testDiscoveryRoundApprove },
-    { name: 'JSON parse error handling returns 500', fn: testJsonParseErrorReturns500 },
-    { name: 'Unknown route returns 404', fn: testUnknownRouteReturns404 },
-    { name: 'Init idempotent (second call fails)', fn: testInitIdempotent },
-    { name: 'POST /api/v2/cycles/start returns cycle record', fn: testCycleStart },
-    { name: 'POST /api/v2/cycles/start returns 409 when already active', fn: testCycleStartAlreadyActive },
-    { name: 'GET /api/v2/cycles/current returns cycle record', fn: testCycleGetCurrent },
-    { name: 'POST /api/v2/cycles/halt returns halted', fn: testCycleHalt },
-    { name: 'POST /api/v2/cycles/acknowledge-halt returns acknowledged', fn: testCycleAcknowledgeHalt },
-    { name: 'POST /api/v2/cycles/resume returns resumed', fn: testCycleResume },
-    { name: 'GET /api/v2/cycles/current/dag returns null when not cycling', fn: testCycleDAGNotCycling },
-    { name: 'GET /api/v2/cycles/current/dag returns dag state when cycling', fn: testCycleDAGWhenCycling },
-    { name: 'GET /api/v2/cycles/current/run returns null when not cycling', fn: testCycleRunNotCycling },
-    { name: 'GET /api/v2/cycles/current/run returns manifest when cycling', fn: testCycleRunWhenCycling },
-    { name: 'GET /api/v2/cycles/scoping/draft returns draft after start', fn: testScopingDraftAfterStart },
-    { name: 'GET /api/v2/cycles/scoping/draft returns 404 with no draft', fn: testScopingDraftNotFound },
-    { name: 'POST /api/v2/cycles/scoping/response records response', fn: testScopingSubmitResponse },
-    { name: 'POST /api/v2/cycles/scoping/approve returns charter path', fn: testScopingApprove },
-    { name: 'POST /api/v2/cycles/scoping/approve 409 with no draft', fn: testScopingApproveFailsWithNoDraft },
-    { name: 'POST /api/v2/tags + GET /api/v2/tags lists tagged refs', fn: testTagsAddAndList },
-    { name: 'GET /api/v2/tags with invalid prefix returns 400', fn: testTagsListInvalidPrefix },
-    { name: 'POST /api/v2/tags with invalid payload returns 422', fn: testTagsAddInvalidPayload },
-    { name: 'DELETE /api/v2/tags/{ref} removes tag', fn: testTagsDelete },
-    { name: 'DELETE /api/v2/tags/{ref} 404 when not found', fn: testTagsDeleteNotFound },
-    { name: 'GET /api/v2/templates lists all templates', fn: testTemplatesList },
-    { name: 'GET /api/v2/templates/{role} returns template content', fn: testTemplatesGetByRole },
-    { name: 'GET /api/v2/templates/{role} 400 with invalid role', fn: testTemplatesGetInvalidRole },
-    { name: 'GET /api/v2/templates/{role} 404 when template missing', fn: testTemplatesGetMissingTemplate },
-    { name: 'POST /api/v2/cycles/confirm invalid action returns 400', fn: testConfirmInvalidAction },
-    { name: 'POST /api/v2/cycles/confirm approve 409 when not awaiting', fn: testConfirmApproveSuccess },
-    { name: 'POST /api/v2/cycles/confirm revise 409 when not awaiting', fn: testConfirmRevise },
-    { name: 'POST /api/v2/cycles/confirm halt delegates to cycle halt', fn: testConfirmHaltCallsCycleHalt },
-    { name: 'POST /api/v2/cycles/current/approve 409 when not awaiting', fn: testCurrentApprove409WhenNotAwaiting },
-    { name: 'POST /api/v2/cycles/current/revise 409 when not awaiting', fn: testCurrentRevise409WhenNotAwaiting },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase E daemon tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}: ${f.error}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase A+E+H daemon tests passed!`);
-}
-
-runAllTests();

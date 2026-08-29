@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { StateAPI } from '../src/state-api.js';
 import type {
@@ -152,7 +153,7 @@ function createAPI(map: RuntimeMap): StateAPI {
   });
 }
 
-async function testHealthReturns200() {
+test('testHealthReturns200', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.health();
   assert.strictEqual(result.ok, true);
@@ -163,9 +164,9 @@ async function testHealthReturns200() {
   assert.ok(result.meta);
   assert.ok(result.meta!.request_id);
   assert.ok(result.meta!.timestamp);
-}
+});
 
-async function testInfoReturnsDaemonInfo() {
+test('testInfoReturnsDaemonInfo', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.info();
   assert.strictEqual(result.ok, true);
@@ -177,9 +178,9 @@ async function testInfoReturnsDaemonInfo() {
   assert.strictEqual(typeof result.data.pid, 'number');
   assert.ok(result.data.pid > 0);
   assert.strictEqual(typeof result.data.uptime_ms, 'number');
-}
+});
 
-async function testGetStateReturnsIdle() {
+test('testGetStateReturnsIdle', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.getSystemState();
   assert.strictEqual(result.ok, true);
@@ -194,90 +195,90 @@ async function testGetStateReturnsIdle() {
   assert.strictEqual(data.awaiting_confirmation, false);
   assert.strictEqual(data.awaiting_sharding_approval, false);
   assert.strictEqual(data.chat.session_open, false);
-}
+});
 
-async function testGetStateReturnsDiscovering() {
+test('testGetStateReturnsDiscovering', async () => {
   const api = createAPI(makeDiscoveringMap());
   const result = await api.getSystemState();
   assert.strictEqual(result.ok, true);
   const data = result.data as FullState;
   assert.strictEqual(data.state, 'discovering');
   assert.strictEqual(data.discovery_status, 'in_progress');
-}
+});
 
-async function testGetStateReturnsCycling() {
+test('testGetStateReturnsCycling', async () => {
   const api = createAPI(makeCyclingMap());
   const result = await api.getSystemState();
   assert.strictEqual(result.ok, true);
   const data = result.data as FullState;
   assert.strictEqual(data.state, 'cycling');
   assert.strictEqual(data.iteration, 1);
-}
+});
 
-async function testTransitionIdleToDiscovering() {
+test('testTransitionIdleToDiscovering', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'discovering', trigger: 'sle discover' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'idle');
   assert.strictEqual(data.current, 'discovering');
-}
+});
 
-async function testTransitionDiscoveringToIdle() {
+test('testTransitionDiscoveringToIdle', async () => {
   const api = createAPI(makeDiscoveringMap());
   const result = await api.transition({ target: 'idle', trigger: 'discovery_complete' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'discovering');
   assert.strictEqual(data.current, 'idle');
-}
+});
 
-async function testTransitionIdleToCycling() {
+test('testTransitionIdleToCycling', async () => {
   const api = createAPI(makeDiscoveryCompleteMap());
   const result = await api.transition({ target: 'cycling', trigger: 'sle start' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'idle');
   assert.strictEqual(data.current, 'cycling');
-}
+});
 
-async function testTransitionCyclingToHalted() {
+test('testTransitionCyclingToHalted', async () => {
   const api = createAPI(makeCyclingMap());
   const result = await api.transition({ target: 'halted', trigger: 'sle halt' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'cycling');
   assert.strictEqual(data.current, 'halted');
-}
+});
 
-async function testTransitionHaltedToIdle() {
+test('testTransitionHaltedToIdle', async () => {
   const api = createAPI(makeHaltedMap());
   const result = await api.transition({ target: 'idle', trigger: 'acknowledge' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'halted');
   assert.strictEqual(data.current, 'idle');
-}
+});
 
-async function testTransitionHaltedToCycling() {
+test('testTransitionHaltedToCycling', async () => {
   const api = createAPI(makeHaltedMap());
   const result = await api.transition({ target: 'cycling', trigger: 'sle resume' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'halted');
   assert.strictEqual(data.current, 'cycling');
-}
+});
 
-async function testTransitionCompleteToIdle() {
+test('testTransitionCompleteToIdle', async () => {
   const api = createAPI(makeCompleteMap());
   const result = await api.transition({ target: 'idle', trigger: 'acknowledge' });
   assert.strictEqual(result.ok, true);
   const data = result.data as TransitionResponseData;
   assert.strictEqual(data.previous, 'complete');
   assert.strictEqual(data.current, 'idle');
-}
+});
 
-async function testInvalidTransitionReturns409() {
+test('testInvalidTransitionReturns409', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'halted', trigger: 'invalid' });
   assert.strictEqual(result.ok, false);
@@ -287,33 +288,33 @@ async function testInvalidTransitionReturns409() {
   assert.strictEqual(err.error.details.to, 'halted');
   assert.ok(err.error.details.allowed.includes('discovering'));
   assert.ok(err.error.details.allowed.includes('cycling'));
-}
+});
 
-async function testInvalidTransitionFromIdleToComplete() {
+test('testInvalidTransitionFromIdleToComplete', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'complete', trigger: 'invalid' });
   assert.strictEqual(result.ok, false);
   const err = result as { ok: false; error: { code: string } };
   assert.strictEqual(err.error.code, 'invalid_transition');
-}
+});
 
-async function testInvalidTransitionFromIdleToHalted() {
+test('testInvalidTransitionFromIdleToHalted', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'halted', trigger: 'invalid' });
   assert.strictEqual(result.ok, false);
   const err = result as { ok: false; error: { code: string } };
   assert.strictEqual(err.error.code, 'invalid_transition');
-}
+});
 
-async function testInvalidTransitionIdleToCyclingWithoutDiscovery() {
+test('testInvalidTransitionIdleToCyclingWithoutDiscovery', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'cycling', trigger: 'sle start' });
   assert.strictEqual(result.ok, false);
   const err = result as { ok: false; error: { code: string } };
   assert.ok(err.error.code === 'discovery_required' || err.error.code === 'invalid_transition');
-}
+});
 
-async function testStateChangedEventEmitted() {
+test('testStateChangedEventEmitted', async () => {
   const api = createAPI(makeBaseMap());
   const events: StateChangedEvent[] = [];
   api.onStateChanged((e) => events.push(e));
@@ -327,9 +328,9 @@ async function testStateChangedEventEmitted() {
   assert.ok(events[0].timestamp);
   const parsed = new Date(events[0].timestamp);
   assert.ok(!isNaN(parsed.getTime()));
-}
+});
 
-async function testStateChangedEventForMultipleTransitions() {
+test('testStateChangedEventForMultipleTransitions', async () => {
   const api = createAPI(makeBaseMap());
   const events: StateChangedEvent[] = [];
   api.onStateChanged((e) => events.push(e));
@@ -340,9 +341,9 @@ async function testStateChangedEventForMultipleTransitions() {
   assert.strictEqual(events.length, 2);
   assert.strictEqual(events[0].current, 'discovering');
   assert.strictEqual(events[1].current, 'idle');
-}
+});
 
-async function testUnsubscribeFromEvents() {
+test('testUnsubscribeFromEvents', async () => {
   const api = createAPI(makeBaseMap());
   const events: StateChangedEvent[] = [];
   const unsub = api.onStateChanged((e) => events.push(e));
@@ -353,9 +354,9 @@ async function testUnsubscribeFromEvents() {
   unsub();
   await api.transition({ target: 'idle', trigger: 'discovery_complete' });
   assert.strictEqual(events.length, 1);
-}
+});
 
-async function testResponseMetaFields() {
+test('testResponseMetaFields', async () => {
   const api = createAPI(makeBaseMap());
   const health = await api.health();
   assert.ok(health.meta);
@@ -366,9 +367,9 @@ async function testResponseMetaFields() {
   assert.ok(info.meta);
   assert.ok(info.meta!.request_id);
   assert.notStrictEqual(health.meta!.request_id, info.meta!.request_id);
-}
+});
 
-async function testErrorResponseMetaFields() {
+test('testErrorResponseMetaFields', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'cycling', trigger: 'invalid' });
   assert.strictEqual(result.ok, false);
@@ -376,73 +377,21 @@ async function testErrorResponseMetaFields() {
   assert.ok(err.meta);
   assert.ok(err.meta.request_id);
   assert.ok(err.meta.timestamp);
-}
+});
 
-async function testAllowedTargetsList() {
+test('testAllowedTargetsList', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'halted', trigger: 'invalid' });
   assert.strictEqual(result.ok, false);
   const err = result as { ok: false; error: { details: { allowed: string[] } } };
   assert.ok(err.error.details.allowed.includes('discovering'));
   assert.ok(!err.error.details.allowed.includes('halted'));
-}
+});
 
-async function testDiscoveryRequiredErrorForT3() {
+test('testDiscoveryRequiredErrorForT3', async () => {
   const api = createAPI(makeBaseMap());
   const result = await api.transition({ target: 'cycling', trigger: 'sle start' });
   assert.strictEqual(result.ok, false);
   const err = result as { ok: false; error: { code: string } };
   assert.strictEqual(err.error.code, 'discovery_required');
-}
-
-async function runAllTests() {
-  const tests = [
-    { name: 'health returns 200 with correct shape', fn: testHealthReturns200 },
-    { name: 'info returns DaemonInfo fields', fn: testInfoReturnsDaemonInfo },
-    { name: 'getSystemState returns idle state', fn: testGetStateReturnsIdle },
-    { name: 'getSystemState returns discovering state', fn: testGetStateReturnsDiscovering },
-    { name: 'getSystemState returns cycling state', fn: testGetStateReturnsCycling },
-    { name: 'transition T1 idle->discovering succeeds', fn: testTransitionIdleToDiscovering },
-    { name: 'transition T2 discovering->idle succeeds', fn: testTransitionDiscoveringToIdle },
-    { name: 'transition T3 idle->cycling succeeds', fn: testTransitionIdleToCycling },
-    { name: 'transition T5 cycling->halted succeeds', fn: testTransitionCyclingToHalted },
-    { name: 'transition T10 halted->idle succeeds', fn: testTransitionHaltedToIdle },
-    { name: 'transition T12 halted->cycling succeeds', fn: testTransitionHaltedToCycling },
-    { name: 'transition T9 complete->idle succeeds', fn: testTransitionCompleteToIdle },
-    { name: 'invalid transition returns 409 with allowed list', fn: testInvalidTransitionReturns409 },
-    { name: 'idle->complete returns invalid_transition', fn: testInvalidTransitionFromIdleToComplete },
-    { name: 'idle->halted returns invalid_transition', fn: testInvalidTransitionFromIdleToHalted },
-    { name: 'idle->cycling without discovery returns error', fn: testInvalidTransitionIdleToCyclingWithoutDiscovery },
-    { name: 'state_changed event emitted on transition', fn: testStateChangedEventEmitted },
-    { name: 'state_changed events for multiple transitions', fn: testStateChangedEventForMultipleTransitions },
-    { name: 'unsubscribe from state_changed events', fn: testUnsubscribeFromEvents },
-    { name: 'response meta fields present', fn: testResponseMetaFields },
-    { name: 'error response meta fields present', fn: testErrorResponseMetaFields },
-    { name: 'allowed targets list in error details', fn: testAllowedTargetsList },
-    { name: 'discovery_required error for T3 precondition', fn: testDiscoveryRequiredErrorForT3 },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase F tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase F tests passed!`);
-}
-
-runAllTests();
+});
