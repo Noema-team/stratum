@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 
 const MIGRATIONS: string[] = [
   // Migration 1: initial control-plane schema (DDR-032 §15, §28 Phase 2)
+  // Migration 2: scheduler leases table (DDR-032 §28 Phase 5)
   `
   CREATE TABLE workspaces (
     id         TEXT PRIMARY KEY,
@@ -160,6 +161,23 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_events_work_item        ON events(work_item_id);
   CREATE INDEX idx_events_occurred_at      ON events(occurred_at);
   CREATE INDEX idx_events_type             ON events(type);
+  `,
+
+  // Migration 2: scheduler lease table for repository write safety (DDR-032 §16.2, §28 Phase 5)
+  `
+  CREATE TABLE scheduler_leases (
+    id            TEXT PRIMARY KEY,
+    work_item_id  TEXT NOT NULL REFERENCES work_items(id),
+    repository_id TEXT,
+    lease_type    TEXT NOT NULL CHECK(lease_type IN ('write', 'read')),
+    acquired_at   TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    heartbeat_at  TEXT NOT NULL
+  );
+
+  CREATE INDEX idx_scheduler_leases_repo      ON scheduler_leases(repository_id, lease_type);
+  CREATE INDEX idx_scheduler_leases_work_item ON scheduler_leases(work_item_id);
+  CREATE INDEX idx_scheduler_leases_expires   ON scheduler_leases(expires_at);
   `,
 ];
 

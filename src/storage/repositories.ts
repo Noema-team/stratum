@@ -231,6 +231,10 @@ export class WorkItemRepository {
   private readonly byId: Database.Statement;
   private readonly byProject: Database.Statement;
   private readonly byState: Database.Statement;
+  private readonly allByState: Database.Statement;
+  private readonly countForProject: Database.Statement;
+  private readonly countAll: Database.Statement;
+  private readonly unmetDepsCount: Database.Statement;
   private readonly stateStmt: Database.Statement;
   private readonly addDep: Database.Statement;
   private readonly removeDep: Database.Statement;
@@ -247,6 +251,14 @@ export class WorkItemRepository {
     this.byId = db.prepare('SELECT * FROM work_items WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM work_items WHERE project_id = ? ORDER BY priority DESC, created_at');
     this.byState = db.prepare('SELECT * FROM work_items WHERE project_id = ? AND state = ? ORDER BY priority DESC, created_at');
+    this.allByState = db.prepare('SELECT * FROM work_items WHERE state = ? ORDER BY priority DESC, created_at');
+    this.countForProject = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE project_id = ? AND state = ?');
+    this.countAll = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE state = ?');
+    this.unmetDepsCount = db.prepare(`
+      SELECT COUNT(*) as count FROM work_dependencies wd
+      JOIN work_items wi ON wi.id = wd.depends_on_id
+      WHERE wd.work_item_id = ? AND wi.state != 'completed'
+    `);
     this.stateStmt = db.prepare('UPDATE work_items SET state = ?, updated_at = ? WHERE id = ?');
     this.addDep = db.prepare('INSERT INTO work_dependencies (work_item_id, depends_on_id) VALUES (?, ?)');
     this.removeDep = db.prepare('DELETE FROM work_dependencies WHERE work_item_id = ? AND depends_on_id = ?');
@@ -287,6 +299,28 @@ export class WorkItemRepository {
       const deps = (this.getDeps.all(r.id as string) as { depends_on_id: string }[]).map(d => d.depends_on_id);
       return rowToWorkItem(r, deps);
     });
+  }
+
+  // All items globally with the given state — used by the scheduler.
+  listAllByState(state: WorkItemState): WorkItem[] {
+    return (this.allByState.all(state) as Record<string, unknown>[]).map(r => {
+      const deps = (this.getDeps.all(r.id as string) as { depends_on_id: string }[]).map(d => d.depends_on_id);
+      return rowToWorkItem(r, deps);
+    });
+  }
+
+  countByStateForProject(projectId: string, state: WorkItemState): number {
+    return ((this.countForProject.get(projectId, state) as { count: number }).count);
+  }
+
+  countAllByState(state: WorkItemState): number {
+    return ((this.countAll.get(state) as { count: number }).count);
+  }
+
+  // True if all blocking dependencies are in the 'completed' state.
+  areDependenciesMet(workItemId: string): boolean {
+    const row = this.unmetDepsCount.get(workItemId) as { count: number };
+    return row.count === 0;
   }
 
   updateState(id: string, state: WorkItemState, updatedAt: string): void {
@@ -332,6 +366,7 @@ export class StepExecutionRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly byWorkflowRun: Database.Statement;
+  private readonly activeByWorkItem: Database.Statement;
   private readonly stateStmt: Database.Statement;
 
   constructor(db: Database.Database) {
@@ -344,6 +379,9 @@ export class StepExecutionRepository {
     this.byId = db.prepare('SELECT * FROM step_executions WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM step_executions WHERE work_item_id = ? ORDER BY started_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM step_executions WHERE workflow_run_id = ? ORDER BY started_at');
+    this.activeByWorkItem = db.prepare(
+      "SELECT * FROM step_executions WHERE work_item_id = ? AND state IN ('dispatched', 'running') LIMIT 1"
+    );
     this.stateStmt = db.prepare(`
       UPDATE step_executions
       SET state = ?, started_at = COALESCE(?, started_at), completed_at = ?, failure_json = COALESCE(?, failure_json)
@@ -373,6 +411,12 @@ export class StepExecutionRepository {
 
   listByWorkflowRun(workflowRunId: string): StepExecution[] {
     return (this.byWorkflowRun.all(workflowRunId) as Record<string, unknown>[]).map(rowToStepExecution);
+  }
+
+  // Returns a dispatched or running execution for this work item, if any.
+  findActiveByWorkItem(workItemId: string): StepExecution | undefined {
+    const r = this.activeByWorkItem.get(workItemId) as Record<string, unknown> | undefined;
+    return r ? rowToStepExecution(r) : undefined;
   }
 
   updateState(
