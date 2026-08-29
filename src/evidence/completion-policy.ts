@@ -94,12 +94,11 @@ export class CompletionPolicy {
       return false;
     }
 
-    // If collectorId is present, it must be from a known trusted collector.
-    if (evidence.collectorId !== undefined) {
-      return TRUSTED_COLLECTOR_IDS.has(evidence.collectorId);
-    }
-
-    return true;
+    // collectorId must be present and from a known trusted collector.
+    // Absent collectorId → deny; this closes the permissive legacy path
+    // where missing collectorId was silently treated as trusted.
+    if (evidence.collectorId === undefined) return false;
+    return TRUSTED_COLLECTOR_IDS.has(evidence.collectorId);
   }
 
   private buildDenyReason(req: EvidenceRequirement, evidence: Evidence[]): string {
