@@ -1,15 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { CycleStateContext } from '../context-manager.js';
-import type { CriticAgent } from '../critic-agent.js';
-import type { ConfirmService } from '../confirm-service.js';
-import type { ExecService, ValidationGateService } from '../exec-gate.js';
-import type { SnapshotService } from '../snapshot-service.js';
-import type { SummariseService } from '../summarise-service.js';
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
-import type { ShardingService } from '../sharding-service.js';
-import type { ScopingService } from '../scoping-service.js';
-import type { FailureReport } from '../types.js';
 import type {
   WorkflowDefinition,
   WorkflowRunResult,
@@ -20,32 +12,7 @@ import type {
   StepRunContext,
 } from './types.js';
 import { getWorkflow } from './registry.js';
-import yaml from 'js-yaml';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-
-// Inlined from dag-runner.ts to remove the cross-module dependency.
-async function updateArtifactEntries(
-  mapManager: RuntimeMapManager,
-  paths: string[],
-  role: string,
-): Promise<void> {
-  if (paths.length === 0) return;
-  const now = new Date().toISOString();
-  await mapManager.update(m => ({
-    ...m,
-    artifacts: (() => {
-      const updated = [...(m.artifacts ?? [])];
-      for (const artifactPath of paths) {
-        const idx = updated.findIndex(a => a.path === artifactPath);
-        const entry = { path: artifactPath, generator: role, required: true, last_updated: now, dirty: false };
-        if (idx >= 0) updated[idx] = { ...updated[idx], ...entry };
-        else updated.push(entry as typeof updated[number]);
-      }
-      return updated;
-    })(),
-  }));
-}
+import { updateArtifactEntries } from './artifact-utils.js';
 
 // ============================================================================
 // WorkflowEngine dependencies
@@ -53,39 +20,21 @@ async function updateArtifactEntries(
 
 export interface WorkflowEngineDeps {
   stepRunner: StepRunner;
-  confirmService: ConfirmService;
-  execService: ExecService;
-  validationGateService: ValidationGateService;
-  snapshotService: SnapshotService;
-  summariseService: SummariseService;
   mapManager: RuntimeMapManager;
   runArtifacts: RunArtifactManager;
   projectRoot?: string;
-  criticAgent?: CriticAgent;
-  shardingService?: ShardingService;
-  scopingService?: ScopingService;
 }
 
 export interface WorkflowEngineOptions {
-  /** Called when a checkpoint step is entered; resolves when user approves/halts */
+  // Generic checkpoint callback — invoked for checkpoint steps when the runner
+  // does not provide handleCheckpoint. Resolves to 'approve' (continue) or
+  // 'halt' (pause the run).
   onCheckpoint: (
     runId: string,
     stepId: string,
     cycleNumber: number,
     iteration: number,
   ) => Promise<'approve' | 'halt'>;
-
-  /** Called specifically for CONFIRM checkpoint — supports approve/revise/halt */
-  onConfirmGate: (
-    cycleNumber: number,
-    iteration: number,
-  ) => Promise<'approve' | 'revise' | 'halt'>;
-
-  /** Called for SHARDING_APPROVAL checkpoint */
-  onShardingGate: (
-    cycleNumber: number,
-    iteration: number,
-  ) => Promise<'approve' | 'reject' | 'modify'>;
 }
 
 // ============================================================================
@@ -137,8 +86,6 @@ export class WorkflowEngine {
 
     let stepIndex = startIndex;
     let cycleState = cycleStateCtx;
-    let criticPasses = 0;
-    let failureReport: FailureReport | undefined;
 
     while (stepIndex < def.steps.length) {
       const step = def.steps[stepIndex];
@@ -151,16 +98,13 @@ export class WorkflowEngine {
         planningDepth: cycleState.planning_depth,
       };
 
-      // Evaluate skip condition
       if (step.skip_if?.(stepCtx)) {
         await this.skipStep(step, cycleNumber, cycleState.iteration);
         stepIndex++;
         continue;
       }
 
-      const result = await this.executeStep(
-        step, def, cycleNumber, cycleId, cycleState, failureReport, criticPasses,
-      );
+      const result = await this.executeStep(step, def, cycleNumber, cycleState);
 
       if (result.outcome === 'failed') {
         return {
@@ -173,7 +117,6 @@ export class WorkflowEngine {
       }
 
       if (result.outcome === 'checkpoint_set') {
-        // Checkpoint — run is paused; caller is responsible for resuming via API
         return {
           run_id: runId,
           status: 'halted',
@@ -183,9 +126,7 @@ export class WorkflowEngine {
         };
       }
 
-      // Handle on_fail routing for review steps
       if (result.outcome === 'completed' && result.next_step_id && result.next_step_id !== '__next__') {
-        // on_fail route — jump to the named step
         const targetIndex = def.steps.findIndex(s => s.id === result.next_step_id);
         if (targetIndex === -1) {
           return {
@@ -197,16 +138,13 @@ export class WorkflowEngine {
           };
         }
 
-        // Handle iteration loop metadata from the engine state communicated via result
         if ('_iterate' in (result as any)) {
           const updatedMap = await this.deps.mapManager.read();
           cycleState = { ...cycleState, iteration: updatedMap.cycle.iteration };
 
-          // Check iteration cap
-          const capResult = await this.checkIterationCap(def, updatedMap.cycle.iteration, runId, cycleState);
+          const capResult = await this.checkIterationCap(def, updatedMap.cycle.iteration, runId, step.id);
           if (capResult) return capResult;
 
-          // Create new iteration run artifacts
           try {
             await this.deps.runArtifacts.createRunDir(cycleNumber, cycleState.iteration);
             await this.deps.runArtifacts.createManifest({
@@ -224,9 +162,7 @@ export class WorkflowEngine {
         continue;
       }
 
-      // Advance to next step
       if (result.next_step_id === null) {
-        // Workflow complete
         return {
           run_id: runId,
           status: 'complete',
@@ -254,18 +190,15 @@ export class WorkflowEngine {
     step: WorkflowStep,
     def: WorkflowDefinition,
     cycleNumber: number,
-    cycleId: string,
     cycleState: CycleStateContext,
-    failureReport: FailureReport | undefined,
-    criticPasses: number,
   ): Promise<StepResult & { _iterate?: true }> {
     switch (step.kind) {
-      case 'gather':   return this.executeGather(step, cycleNumber, cycleState);
-      case 'produce':  return this.executeProduce(step, cycleNumber, cycleState);
-      case 'review':   return this.executeReview(step, def, cycleNumber, cycleId, cycleState, failureReport, criticPasses);
+      case 'gather':     return this.executeGather(step, cycleNumber, cycleState);
+      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState);
+      case 'review':     return this.executeReview(step, cycleNumber, cycleState);
       case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, cycleState);
-      case 'execute':  return this.executeExec(step, cycleNumber, cycleState);
-      case 'commit':   return this.executeCommit(step, cycleNumber, cycleState);
+      case 'execute':    return this.executeExec(step, cycleNumber, cycleState);
+      case 'commit':     return this.executeCommit(step, cycleNumber, cycleState);
     }
   }
 
@@ -277,7 +210,6 @@ export class WorkflowEngine {
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    // Gather is a no-artifact assembly step; context manager does the work on the next produce call.
     await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
@@ -318,109 +250,24 @@ export class WorkflowEngine {
   }
 
   // -- review ----------------------------------------------------------------
+  // Generic: delegates to stepRunner.run() and routes on failure via on_fail.
+  // Full-build-specific review logic (critique, validation_gate) lives in
+  // FullBuildStepRunner.run(), not here.
 
   private async executeReview(
     step: WorkflowStep,
-    def: WorkflowDefinition,
     cycleNumber: number,
-    cycleId: string,
     cycleState: CycleStateContext,
-    _failureReport: FailureReport | undefined,
-    criticPasses: number,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
 
-    // CRITIQUE — uses CriticAgent directly (DDR-022)
-    if (step.id === 'critique') {
-      return this.executeCritiqueReview(step, cycleNumber, cycleState, criticPasses, start);
-    }
-
-    // VALIDATION_GATE — deterministic pass/fail (DDR-031 constraint 9)
-    if (step.id === 'validation_gate') {
-      return this.executeValidationGateReview(step, def, cycleNumber, cycleId, cycleState, start);
-    }
-
-    // Generic review — delegates to stepRunner directly
     const ctx = this.makeStepRunContext(cycleNumber, cycleState);
     const result = await this.deps.stepRunner.run(step, ctx);
+
     if (!result.success) {
-      return { outcome: 'failed', next_step_id: null, error: result.error };
-    }
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
-    return { outcome: 'completed', next_step_id: '__next__', duration_ms: Date.now() - start };
-  }
-
-  private async executeCritiqueReview(
-    step: WorkflowStep,
-    cycleNumber: number,
-    cycleState: CycleStateContext,
-    criticPasses: number,
-    start: number,
-  ): Promise<StepResult> {
-    const projectRoot = this.deps.projectRoot ?? process.cwd();
-
-    const [architecture, requirements, contextSummary, decisions, priorEvaluation] = await Promise.all([
-      this.safeReadFile(path.join(projectRoot, 'docs/architecture.md')),
-      this.safeReadFile(path.join(projectRoot, 'docs/requirements.md')),
-      this.safeReadFile(path.join(projectRoot, 'docs/discovery-summary.md')),
-      this.safeReadFile(path.join(projectRoot, 'docs/decisions.md')),
-      this.safeReadFile(path.join(projectRoot, 'docs/evaluation.md')),
-    ]);
-
-    if (!this.deps.criticAgent) {
-      throw new Error('CriticAgent is required for the critique review step');
-    }
-
-    const result = await this.deps.criticAgent.critique({
-      architecture, requirements, contextSummary, decisions, priorEvaluation,
-    });
-
-    const content = `# Critique\n\n## Blocking Issues\n${
-      result.blocking_issues.map(i => `- ${i}`).join('\n') || 'None'
-    }\n\n## Warnings\n${
-      result.warnings.map(w => `- ${w}`).join('\n') || 'None'
-    }\n\n## Suggestions\n${
-      result.suggestions.map(s => `- ${s}`).join('\n') || 'None'
-    }`;
-
-    const written = ['docs/cycle-critique.md'];
-    await this.safeWriteFile(path.join(projectRoot, 'docs/cycle-critique.md'), content);
-    if (cycleState.planning_depth === 'deep' || cycleState.planning_depth === 'research') {
-      written.push('docs/critique-report.md');
-      await this.safeWriteFile(path.join(projectRoot, 'docs/critique-report.md'), content);
-    }
-
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, written);
-    await updateArtifactEntries(this.deps.mapManager, written, 'critic');
-
-    const passLimit = cycleState.planning_depth === 'deep' ? 1 : 3;
-    if (!result.pass && criticPasses < passLimit) {
-      return {
-        outcome: 'completed',
-        next_step_id: step.on_fail?.target_step_id ?? '__next__',
-        artifacts_written: written,
-        duration_ms: Date.now() - start,
-      };
-    }
-
-    return { outcome: 'completed', next_step_id: '__next__', artifacts_written: written, duration_ms: Date.now() - start };
-  }
-
-  private async executeValidationGateReview(
-    step: WorkflowStep,
-    _def: WorkflowDefinition,
-    cycleNumber: number,
-    cycleId: string,
-    cycleState: CycleStateContext,
-    start: number,
-  ): Promise<StepResult & { _iterate?: true }> {
-    const result = await this.deps.validationGateService.run(cycleNumber, cycleState.iteration, cycleId);
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
-
-    if (!result.passed) {
+      await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
       if (step.on_fail?.iteration_loop) {
-        // Increment iteration counter
         await this.deps.mapManager.update(m => ({
           ...m,
           cycle: { ...m.cycle, iteration: m.cycle.iteration + 1 },
@@ -434,165 +281,64 @@ export class WorkflowEngine {
       } as StepResult & { _iterate?: true };
     }
 
+    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
     return { outcome: 'completed', next_step_id: '__next__', duration_ms: Date.now() - start };
   }
 
   // -- checkpoint ------------------------------------------------------------
+  // Delegates to stepRunner.handleCheckpoint if defined; otherwise calls the
+  // generic onCheckpoint callback. Full-build checkpoint logic lives in
+  // FullBuildStepRunner.handleCheckpoint().
 
   private async executeCheckpoint(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
-    // SHARDING_APPROVAL — skip if no proposal file exists
-    if (step.id === 'sharding_approval') {
-      return this.executeShardingApproval(step, cycleNumber, cycleState);
+    if (this.deps.stepRunner.handleCheckpoint) {
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      return this.deps.stepRunner.handleCheckpoint(step, ctx);
     }
-
-    // CONFIRM — supports approve/revise/halt
-    if (step.id === 'confirm') {
-      return this.executeConfirmCheckpoint(step, cycleNumber, cycleState);
-    }
-
-    // SCOPING checkpoint — generic
-    if (step.id === 'scoping.checkpoint') {
-      return this.executeScopingCheckpoint(step, cycleNumber, cycleState);
-    }
-
-    // Generic checkpoint
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
     const action = await this.opts.onCheckpoint(randomUUID(), step.id, cycleNumber, cycleState.iteration);
-    if (action === 'halt') {
-      return { outcome: 'checkpoint_set', next_step_id: null };
-    }
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
-    return { outcome: 'completed', next_step_id: '__next__' };
-  }
-
-  private async executeScopingCheckpoint(
-    step: WorkflowStep,
-    cycleNumber: number,
-    cycleState: CycleStateContext,
-  ): Promise<StepResult> {
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-
-    if (!this.deps.scopingService) {
-      throw new Error('ScopingService is required for the scoping checkpoint step');
-    }
-
-    await this.deps.mapManager.update(m => ({
-      ...m,
-      cycle: { ...m.cycle, awaiting_scoping: true },
-    }));
-
-    const action = await this.opts.onCheckpoint(randomUUID(), step.id, cycleNumber, cycleState.iteration);
-
-    await this.deps.mapManager.update(m => ({
-      ...m,
-      cycle: { ...m.cycle, awaiting_scoping: false },
-    }));
-
-    if (action === 'halt') {
-      return { outcome: 'checkpoint_set', next_step_id: null };
-    }
-
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
-    return { outcome: 'completed', next_step_id: '__next__' };
-  }
-
-  private async executeShardingApproval(
-    step: WorkflowStep,
-    cycleNumber: number,
-    cycleState: CycleStateContext,
-  ): Promise<StepResult> {
-    const projectRoot = this.deps.projectRoot ?? process.cwd();
-    const proposalPath = path.join(projectRoot, '.sle', 'sharding-proposal.yaml');
-
-    const proposalContent = await this.safeReadFile(proposalPath);
-    if (!proposalContent) {
-      await this.skipStep(step, cycleNumber, cycleState.iteration, 'no_sharding_proposal');
-      return { outcome: 'skipped', next_step_id: '__next__', skip_reason: 'no_sharding_proposal' };
-    }
-
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    await this.deps.mapManager.update(m => ({
-      ...m,
-      cycle: { ...m.cycle, awaiting_sharding_approval: true },
-    }));
-
-    const action = await this.opts.onShardingGate(cycleNumber, cycleState.iteration);
-
-    await this.deps.mapManager.update(m => ({
-      ...m,
-      cycle: { ...m.cycle, awaiting_sharding_approval: false },
-    }));
-
-    if (action === 'approve') {
-      if (!this.deps.shardingService) {
-        throw new Error('ShardingService is required for SHARDING_APPROVAL approve');
-      }
-      const proposal = yaml.load(proposalContent) as any;
-      await this.deps.shardingService.createTasksFromProposal(proposal);
-      await this.markComplete(step.id, cycleNumber, cycleState.iteration, ['.sle/tasks.yaml']);
-    } else if (action === 'reject') {
-      try { await fs.unlink(proposalPath); } catch {}
-      await this.skipStep(step, cycleNumber, cycleState.iteration, 'user_rejected_sharding');
-    } else {
-      // modify — loop back to this checkpoint
-      return { outcome: 'completed', next_step_id: step.id };
-    }
-
-    return { outcome: 'completed', next_step_id: '__next__' };
-  }
-
-  private async executeConfirmCheckpoint(
-    _step: WorkflowStep,
-    cycleNumber: number,
-    cycleState: CycleStateContext,
-  ): Promise<StepResult> {
-    await this.deps.confirmService.gate(cycleNumber, cycleState.iteration);
-    const action = await this.opts.onConfirmGate(cycleNumber, cycleState.iteration);
-
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-
-    if (action === 'revise') {
-      const reviseResult = await this.deps.confirmService.revise(cycleNumber, cycleState.iteration);
-      return { outcome: 'completed', next_step_id: this.confirmNodeToStepId(reviseResult.next_node) };
-    }
-
-    await this.deps.confirmService.approve(cycleNumber, cycleState.iteration);
+    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   // -- execute ---------------------------------------------------------------
+  // Delegates to stepRunner.handleExecute if defined; otherwise no-ops and
+  // advances. Full-build execute logic (sandbox) lives in FullBuildStepRunner.
 
   private async executeExec(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
+    if (this.deps.stepRunner.handleExecute) {
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      return this.deps.stepRunner.handleExecute(step, ctx);
+    }
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    await this.deps.execService.run(cycleNumber, cycleState.iteration);
     await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   // -- commit ----------------------------------------------------------------
+  // Delegates to stepRunner.handleCommit if defined; otherwise marks complete
+  // and ends the workflow. Full-build commit logic (snapshot) lives in
+  // FullBuildStepRunner.handleCommit().
 
   private async executeCommit(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-
-    if (step.id === 'snapshot') {
-      await this.deps.snapshotService.run(cycleNumber, cycleState.iteration);
-      await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
-      return { outcome: 'completed', next_step_id: null }; // workflow complete
+    if (this.deps.stepRunner.handleCommit) {
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      return this.deps.stepRunner.handleCommit(step, ctx);
     }
-
-    // Generic commit — writes claim-acquired artifacts and releases claims
+    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
     await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
     return { outcome: 'completed', next_step_id: null };
   }
@@ -650,39 +396,16 @@ export class WorkflowEngine {
     def: WorkflowDefinition,
     iteration: number,
     runId: string,
-    _cycleState: CycleStateContext,
+    stepId: string,
   ): Promise<WorkflowRunResult | null> {
     const maxIterations = def.max_iterations ?? Infinity;
     if (iteration < maxIterations) return null;
-
     return {
       run_id: runId,
       status: 'halted',
-      final_step_id: 'validation_gate',
+      final_step_id: stepId,
       iterations_used: iteration,
       error: `Iteration cap (${maxIterations}) reached`,
     };
-  }
-
-  // Translate a legacy DAGNodeId returned by ConfirmService.revise() into a step id.
-  // Only used in executeConfirmCheckpoint; new code should not call this.
-  private confirmNodeToStepId(nodeId: string | null): string | null {
-    if (!nodeId) return null;
-    const MAP: Record<string, string> = {
-      'TEST': 'test',
-      'PLAN': 'plan',
-      'DESIGN': 'design',
-      'CONFIRM': 'confirm',
-      'BUILD': 'build',
-    };
-    return MAP[nodeId] ?? nodeId.toLowerCase();
-  }
-
-  private async safeReadFile(filePath: string): Promise<string> {
-    try { return await fs.readFile(filePath, 'utf8'); } catch { return ''; }
-  }
-
-  private async safeWriteFile(filePath: string, content: string): Promise<void> {
-    try { await fs.writeFile(filePath, content, 'utf8'); } catch {}
   }
 }

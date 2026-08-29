@@ -39,6 +39,27 @@ test('src/workflow/** must not import dag-runner or cycle-runner', () => {
   assert.deepEqual(violations, [], `Legacy seam violations found:\n${violations.join('\n')}`);
 });
 
+// WorkflowEngine must contain no hardcoded full-build step IDs. All
+// full-build-specific step ID branches have moved to FullBuildStepRunner.
+test('src/workflow/engine.ts must not contain hardcoded full-build step IDs', () => {
+  const enginePath = path.resolve(fileURLToPath(import.meta.url), '../../src/workflow/engine.ts');
+  const src = readFileSync(enginePath, 'utf8');
+  const FULL_BUILD_STEP_IDS = [
+    'critique', 'validation_gate', 'sharding_approval', 'confirm',
+    'scoping.checkpoint', 'snapshot',
+  ];
+  const violations: string[] = [];
+  for (const id of FULL_BUILD_STEP_IDS) {
+    // Detect string literal comparisons like step.id === 'critique' or
+    // step.id === "sharding_approval". Comments and imports are acceptable.
+    const pattern = new RegExp(`step\\.id\\s*===?\\s*['"]${id}['"]|['"]${id}['"]\\s*===?\\s*step\\.id`);
+    if (pattern.test(src)) {
+      violations.push(`engine.ts contains hardcoded step ID '${id}'`);
+    }
+  }
+  assert.deepEqual(violations, [], `Engine step-ID leakage:\n${violations.join('\n')}`);
+});
+
 test('src/workflow/** must not import agent-runner (step execution is via StepRunner interface)', () => {
   const files = collectTsFiles(ROOT);
   const violations: string[] = [];

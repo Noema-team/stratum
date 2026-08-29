@@ -165,23 +165,6 @@ function makeStubDeps(overrides: Partial<WorkflowEngineDeps> = {}): WorkflowEngi
         duration_ms: 1,
       }),
     } as any,
-    confirmService: {
-      gate: async () => {},
-      approve: async () => ({ next_node: 'BUILD' }),
-      revise: async () => ({ next_node: 'TEST' }),
-    } as any,
-    execService: {
-      run: async () => ({ next_node: 'VALIDATION_GATE' }),
-    } as any,
-    validationGateService: {
-      run: async () => ({ passed: true, next_node: 'EVALUATE', failure_report: undefined }),
-    } as any,
-    snapshotService: {
-      run: async () => ({ snapshot_dir: '/tmp/snap' }),
-    } as any,
-    summariseService: {
-      run: async () => ({ success: true }),
-    } as any,
     mapManager: {
       read: async () => ({ cycle: { iteration: 1, max_iterations: 3 } }),
       update: async () => {},
@@ -199,8 +182,6 @@ function makeStubDeps(overrides: Partial<WorkflowEngineDeps> = {}): WorkflowEngi
 function makeStubOpts(overrides: Partial<WorkflowEngineOptions> = {}): WorkflowEngineOptions {
   return {
     onCheckpoint: async () => 'approve',
-    onConfirmGate: async () => 'approve',
-    onShardingGate: async () => 'approve',
     ...overrides,
   };
 }
@@ -276,7 +257,6 @@ export async function testEngineSkipsConditionalStep() {
     stepRunner: {
       run: async (step: any) => { visited.push(String(step.id)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
     } as any,
-    snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
@@ -309,7 +289,7 @@ export async function testConfirmCheckpointApproveAdvances() {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'confirm', kind: 'checkpoint', label: 'CONFIRM' },
     { id: 'build', kind: 'produce', agentRole: 'builder' },
-    { id: 'snapshot', kind: 'commit', logs_decision: true },
+    { id: 'done', kind: 'commit' },
   ]));
 
   const visited: string[] = [];
@@ -317,12 +297,11 @@ export async function testConfirmCheckpointApproveAdvances() {
     stepRunner: {
       run: async (step: any) => { visited.push(String(step.id)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
     } as any,
-    snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
 
-  const engine = new WorkflowEngine(deps, makeStubOpts({ onConfirmGate: async () => 'approve' }));
+  // Generic onCheckpoint 'approve' advances through all checkpoints, including 'confirm'.
+  const engine = new WorkflowEngine(deps, makeStubOpts({ onCheckpoint: async () => 'approve' }));
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'complete');
-  // Build step should have been called with its step id 'build'
   assert.ok(visited.some(v => v === 'build'), 'build step should have run after CONFIRM approval');
 }

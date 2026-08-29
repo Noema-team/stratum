@@ -127,6 +127,13 @@ export interface StepRunOutcome {
 
 export interface StepRunner {
   run(step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome>;
+  // Optional overrides for non-produce/review kinds. When defined, the engine
+  // fully delegates that kind to the runner. When absent, the engine uses its
+  // generic fallback (generic checkpoint via onCheckpoint; no-op execute; workflow-
+  // end commit).
+  handleCheckpoint?(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult>;
+  handleExecute?(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult>;
+  handleCommit?(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult>;
 }
 
 // Execution context passed to StepRunner — a forward-compatible replacement for
