@@ -37,7 +37,7 @@ export class WorkspaceRepository {
   private readonly byId: Database.Statement;
   private readonly all: Database.Statement;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(db: Database.Database) {
     this.insert = db.prepare(
       'INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)'
     );
@@ -71,18 +71,18 @@ export class ProjectRepository {
   private readonly insert: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byWorkspace: Database.Statement;
-  private readonly updateStatus: Database.Statement;
-  private readonly updatePriority: Database.Statement;
+  private readonly statusStmt: Database.Statement;
+  private readonly priorityStmt: Database.Statement;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(db: Database.Database) {
     this.insert = db.prepare(`
       INSERT INTO projects (id, workspace_id, name, description, status, priority, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM projects WHERE id = ?');
     this.byWorkspace = db.prepare('SELECT * FROM projects WHERE workspace_id = ? ORDER BY priority DESC, created_at');
-    this.updateStatus = db.prepare('UPDATE projects SET status = ?, updated_at = ? WHERE id = ?');
-    this.updatePriority = db.prepare('UPDATE projects SET priority = ?, updated_at = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE projects SET status = ?, updated_at = ? WHERE id = ?');
+    this.priorityStmt = db.prepare('UPDATE projects SET priority = ?, updated_at = ? WHERE id = ?');
   }
 
   save(p: Project): void {
@@ -99,11 +99,11 @@ export class ProjectRepository {
   }
 
   updateStatus(id: string, status: Project['status'], updatedAt: string): void {
-    this.updateStatus.run(status, updatedAt, id);
+    this.statusStmt.run(status, updatedAt, id);
   }
 
   updatePriority(id: string, priority: number, updatedAt: string): void {
-    this.updatePriority.run(priority, updatedAt, id);
+    this.priorityStmt.run(priority, updatedAt, id);
   }
 }
 
@@ -128,7 +128,7 @@ export class RepositoryRepository {
   private readonly insert: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byProject: Database.Statement;
-  private readonly updateStatus: Database.Statement;
+  private readonly statusStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -137,7 +137,7 @@ export class RepositoryRepository {
     `);
     this.byId = db.prepare('SELECT * FROM repositories WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM repositories WHERE project_id = ? ORDER BY remote');
-    this.updateStatus = db.prepare('UPDATE repositories SET status = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE repositories SET status = ? WHERE id = ?');
   }
 
   save(r: Repository): void {
@@ -154,7 +154,7 @@ export class RepositoryRepository {
   }
 
   updateStatus(id: string, status: Repository['status']): void {
-    this.updateStatus.run(status, id);
+    this.statusStmt.run(status, id);
   }
 }
 
@@ -178,7 +178,7 @@ export class ObjectiveRepository {
   private readonly insert: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byProject: Database.Statement;
-  private readonly updateStatus: Database.Statement;
+  private readonly statusStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -187,7 +187,7 @@ export class ObjectiveRepository {
     `);
     this.byId = db.prepare('SELECT * FROM objectives WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM objectives WHERE project_id = ? ORDER BY priority DESC, title');
-    this.updateStatus = db.prepare('UPDATE objectives SET status = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE objectives SET status = ? WHERE id = ?');
   }
 
   save(o: Objective): void {
@@ -205,7 +205,7 @@ export class ObjectiveRepository {
   }
 
   updateStatus(id: string, status: Objective['status']): void {
-    this.updateStatus.run(status, id);
+    this.statusStmt.run(status, id);
   }
 }
 
@@ -231,7 +231,7 @@ export class WorkItemRepository {
   private readonly byId: Database.Statement;
   private readonly byProject: Database.Statement;
   private readonly byState: Database.Statement;
-  private readonly updateState: Database.Statement;
+  private readonly stateStmt: Database.Statement;
   private readonly addDep: Database.Statement;
   private readonly removeDep: Database.Statement;
   private readonly getDeps: Database.Statement;
@@ -247,7 +247,7 @@ export class WorkItemRepository {
     this.byId = db.prepare('SELECT * FROM work_items WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM work_items WHERE project_id = ? ORDER BY priority DESC, created_at');
     this.byState = db.prepare('SELECT * FROM work_items WHERE project_id = ? AND state = ? ORDER BY priority DESC, created_at');
-    this.updateState = db.prepare('UPDATE work_items SET state = ?, updated_at = ? WHERE id = ?');
+    this.stateStmt = db.prepare('UPDATE work_items SET state = ?, updated_at = ? WHERE id = ?');
     this.addDep = db.prepare('INSERT INTO work_dependencies (work_item_id, depends_on_id) VALUES (?, ?)');
     this.removeDep = db.prepare('DELETE FROM work_dependencies WHERE work_item_id = ? AND depends_on_id = ?');
     this.getDeps = db.prepare('SELECT depends_on_id FROM work_dependencies WHERE work_item_id = ?');
@@ -290,7 +290,7 @@ export class WorkItemRepository {
   }
 
   updateState(id: string, state: WorkItemState, updatedAt: string): void {
-    this.updateState.run(state, updatedAt, id);
+    this.stateStmt.run(state, updatedAt, id);
   }
 
   addDependency(workItemId: string, dependsOnId: string): void {
@@ -332,7 +332,7 @@ export class StepExecutionRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly byWorkflowRun: Database.Statement;
-  private readonly updateState: Database.Statement;
+  private readonly stateStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -344,7 +344,7 @@ export class StepExecutionRepository {
     this.byId = db.prepare('SELECT * FROM step_executions WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM step_executions WHERE work_item_id = ? ORDER BY started_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM step_executions WHERE workflow_run_id = ? ORDER BY started_at');
-    this.updateState = db.prepare(`
+    this.stateStmt = db.prepare(`
       UPDATE step_executions
       SET state = ?, started_at = COALESCE(?, started_at), completed_at = ?, failure_json = COALESCE(?, failure_json)
       WHERE id = ?
@@ -380,7 +380,7 @@ export class StepExecutionRepository {
     state: StepExecutionState,
     opts: { startedAt?: string; completedAt?: string; failure?: StepExecution['failure'] },
   ): void {
-    this.updateState.run(
+    this.stateStmt.run(
       state, opts.startedAt ?? null, opts.completedAt ?? null,
       opts.failure ? JSON.stringify(opts.failure) : null, id,
     );
@@ -414,7 +414,7 @@ export class DecisionRepository {
   private readonly byProject: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly pending: Database.Statement;
-  private readonly updateStatus: Database.Statement;
+  private readonly statusStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -428,7 +428,7 @@ export class DecisionRepository {
     this.byProject = db.prepare('SELECT * FROM decisions WHERE project_id = ? ORDER BY urgency DESC, status');
     this.byWorkItem = db.prepare('SELECT * FROM decisions WHERE work_item_id = ? ORDER BY urgency DESC');
     this.pending = db.prepare("SELECT * FROM decisions WHERE project_id = ? AND status = 'pending' ORDER BY urgency DESC");
-    this.updateStatus = db.prepare('UPDATE decisions SET status = ?, resolution_json = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE decisions SET status = ?, resolution_json = ? WHERE id = ?');
   }
 
   save(d: Decision): void {
@@ -460,7 +460,7 @@ export class DecisionRepository {
   }
 
   updateStatus(id: string, status: DecisionStatus, resolution?: Decision['resolution']): void {
-    this.updateStatus.run(status, resolution ? JSON.stringify(resolution) : null, id);
+    this.statusStmt.run(status, resolution ? JSON.stringify(resolution) : null, id);
   }
 }
 
@@ -628,7 +628,7 @@ function rowToArtifact(r: Record<string, unknown>): ArtifactRecord {
 // ============================================================================
 
 export class EventRepository {
-  private readonly append: Database.Statement;
+  private readonly insertStmt: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byWorkspace: Database.Statement;
   private readonly byWorkItem: Database.Statement;
@@ -636,7 +636,7 @@ export class EventRepository {
   private readonly byType: Database.Statement;
 
   constructor(db: Database.Database) {
-    this.append = db.prepare(`
+    this.insertStmt = db.prepare(`
       INSERT INTO events
         (id, schema_version, type, workspace_id, project_id, work_item_id, workflow_run_id, occurred_at, payload_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -653,7 +653,7 @@ export class EventRepository {
   }
 
   append(event: DomainEvent): void {
-    this.append.run(
+    this.insertStmt.run(
       event.id, event.schemaVersion, event.type,
       event.workspaceId, event.projectId ?? null,
       event.workItemId ?? null, event.workflowRunId ?? null,
