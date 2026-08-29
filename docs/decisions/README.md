@@ -35,3 +35,4 @@ Architectural Decision Records — why we chose X over Y.
 | [ddr-029-agent-output-contracts.md](ddr-029-agent-output-contracts.md) | Typed AgentOutput discriminated union, BuilderOutput declarative file operations schema, per-role output schemas |
 | [ddr-030-agent-runtime-environment.md](ddr-030-agent-runtime-environment.md) | Agent runner, LLM provider interface, multi-turn read-request mechanism, per-role read permissions, turn budgets |
 | [ddr-031-workflow-generalization.md](ddr-031-workflow-generalization.md) | Cycle → workflow run: 6 generic step kinds, concurrent runs via artifact-level claims, chat-router workflow selection, full-build/draft-artifact built-in presets |
+| [ddr-032-control-plane-migration.md](ddr-032-control-plane-migration.md) | Control plane above the workflow kernel: multi-project WorkItem orchestration, StepExecution adapters, Decision/attention model wrapping checkpoints, SQLite + durable events, evidence-based completion |
