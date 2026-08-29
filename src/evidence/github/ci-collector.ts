@@ -32,6 +32,8 @@ export class GithubCiCollector implements EvidenceCollector {
         stepExecutionId: req.stepExecutionId,
         type: 'github.ci',
         source: 'github',
+        collectorId: 'github.ci',
+        candidateRef: commitRef.sha,
         subjectRef: commitRef.sha,
         status: evidenceStatus,
         payload: status as unknown as Record<string, unknown>,
@@ -49,6 +51,8 @@ export class GithubCiCollector implements EvidenceCollector {
           stepExecutionId: req.stepExecutionId,
           type: 'github.ci',
           source: 'github',
+          collectorId: 'github.ci',
+          candidateRef: prRef.headSha,
           subjectRef: prRef.headSha,
           status: status.conclusion === 'success' ? 'passed'
             : (status.conclusion === null || status.conclusion === 'pending') ? 'informational'

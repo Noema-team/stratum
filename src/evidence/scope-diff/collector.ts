@@ -44,6 +44,8 @@ export class ScopeDiffCollector implements EvidenceCollector {
         stepExecutionId: req.stepExecutionId,
         type: 'scope_diff',
         source: 'scope_analyzer',
+        collectorId: 'scope_diff',
+        candidateRef: prRef.headSha,
         subjectRef: prRef.headSha,
         status: diff.driftLevel === 'within_scope' || diff.driftLevel === 'minor_expansion'
           ? 'passed'

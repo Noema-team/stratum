@@ -28,6 +28,8 @@ export class GithubReviewCollector implements EvidenceCollector {
         stepExecutionId: req.stepExecutionId,
         type: 'github.review',
         source: 'github',
+        collectorId: 'github.review',
+        candidateRef: prRef.headSha,
         subjectRef: String(prRef.number),
         status: evidenceStatus,
         payload: {
