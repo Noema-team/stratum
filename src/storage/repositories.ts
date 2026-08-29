@@ -567,8 +567,9 @@ export class EvidenceRepository {
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
       INSERT INTO evidence
-        (id, work_item_id, step_execution_id, type, source, subject_ref, status, payload_json, collected_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, work_item_id, step_execution_id, type, source, candidate_ref, collector_id,
+         subject_ref, status, payload_json, collected_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM evidence WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM evidence WHERE work_item_id = ? ORDER BY collected_at');
@@ -578,7 +579,8 @@ export class EvidenceRepository {
   save(e: Evidence): void {
     this.insert.run(
       e.id, e.workItemId, e.stepExecutionId ?? null,
-      e.type, e.source, e.subjectRef ?? null, e.status,
+      e.type, e.source, e.candidateRef ?? null, e.collectorId ?? null,
+      e.subjectRef ?? null, e.status,
       JSON.stringify(e.payload), e.collectedAt,
     );
   }
@@ -604,6 +606,8 @@ function rowToEvidence(r: Record<string, unknown>): Evidence {
     stepExecutionId: r.step_execution_id as string | undefined ?? undefined,
     type: r.type as string,
     source: r.source as string,
+    candidateRef: r.candidate_ref as string | undefined ?? undefined,
+    collectorId: r.collector_id as string | undefined ?? undefined,
     subjectRef: r.subject_ref as string | undefined ?? undefined,
     status: r.status as Evidence['status'],
     payload: JSON.parse(r.payload_json as string),
