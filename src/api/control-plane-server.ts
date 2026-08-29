@@ -10,6 +10,7 @@ import {
   DecisionRepository,
   EvidenceRepository,
   EventRepository,
+  StepExecutionRepository,
 } from '../storage/repositories.js';
 import { makeAttentionHandlers } from './handlers/attention.js';
 import { makeProjectHandlers } from './handlers/projects.js';
@@ -59,6 +60,7 @@ export class ControlPlaneServer {
     const decisions = new DecisionRepository(opts.db);
     const evidence = new EvidenceRepository(opts.db);
     const events = new EventRepository(opts.db);
+    const stepExecutions = new StepExecutionRepository(opts.db);
 
     if (opts.requireAuth) {
       router.setAuth(raw => tokens.validate(raw));
@@ -129,6 +131,80 @@ export class ControlPlaneServer {
       const removed = notifications.removeChannel(req.params.id);
       if (!removed) return err('not_found', `Channel ${req.params.id} not found`);
       return ok({ removed: true });
+    });
+
+    // ── §30 Observability endpoints ──────────────────────────────────────────
+
+    // Workspace-level aggregate summary: active, failed, blocked, decision-pending counts.
+    router.add('GET', '/observability/summary', _req => {
+      const active = workItems.countAllByState('running');
+      const ready = workItems.countAllByState('ready');
+      const failed = workItems.countAllByState('failed');
+      const blocked = workItems.countAllByState('blocked');
+      const needsDecision = workItems.countAllByState('needs_decision');
+      const completed = workItems.countAllByState('completed');
+      const cancelled = workItems.countAllByState('cancelled');
+      const inReview = workItems.countAllByState('in_review');
+      const paused = workItems.countAllByState('paused');
+      const draft = workItems.countAllByState('draft');
+      return ok({
+        workspaceId: opts.workspaceId,
+        counts: {
+          active,
+          ready,
+          inReview,
+          draft,
+          paused,
+          failed,
+          blocked,
+          needsDecision,
+          completed,
+          cancelled,
+        },
+        total: active + ready + inReview + draft + paused + failed + blocked + needsDecision + completed + cancelled,
+      });
+    });
+
+    // Per-work-item observability: step executions, executor, failure categories, durations.
+    router.add('GET', '/observability/work/:id', req => {
+      const item = workItems.findById(req.params.id);
+      if (!item) return err('not_found', `WorkItem ${req.params.id} not found`);
+
+      const steps = stepExecutions.listByWorkItem(req.params.id);
+      const ev = evidence.listByWorkItem(req.params.id);
+
+      const stepSummaries = steps.map(s => ({
+        id: s.id,
+        stepId: s.stepId,
+        executor: s.executor,
+        state: s.state,
+        attempt: s.attempt,
+        durationMs: s.startedAt && s.completedAt
+          ? new Date(s.completedAt).getTime() - new Date(s.startedAt).getTime()
+          : null,
+        failureCode: s.failure?.code ?? null,
+        failureMessage: s.failure?.message ?? null,
+        startedAt: s.startedAt ?? null,
+        completedAt: s.completedAt ?? null,
+      }));
+
+      const failureCategories = stepSummaries
+        .filter(s => s.failureCode)
+        .reduce<Record<string, number>>((acc, s) => {
+          const code = s.failureCode!;
+          acc[code] = (acc[code] ?? 0) + 1;
+          return acc;
+        }, {});
+
+      return ok({
+        workItemId: item.id,
+        state: item.state,
+        stepExecutions: stepSummaries,
+        failureCategories,
+        evidenceCount: ev.length,
+        evidenceTypes: [...new Set(ev.map(e => e.type))],
+        totalDurationMs: stepSummaries.reduce((sum, s) => sum + (s.durationMs ?? 0), 0),
+      });
     });
 
     const html = dashboardHtml();

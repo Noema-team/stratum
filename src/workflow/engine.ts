@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { DAGNodeId } from '../agent-runner.js';
 import type { DAGRunner } from '../dag-runner.js';
-import { updateArtifactEntries } from '../dag-runner.js';
 import type { CycleStateContext } from '../context-manager.js';
 import type { CriticAgent } from '../critic-agent.js';
 import type { ConfirmService } from '../confirm-service.js';
@@ -24,6 +23,29 @@ import { getWorkflow } from './registry.js';
 import yaml from 'js-yaml';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+
+// Inlined from dag-runner.ts to remove the cross-module dependency.
+async function updateArtifactEntries(
+  mapManager: RuntimeMapManager,
+  paths: string[],
+  role: string,
+): Promise<void> {
+  if (paths.length === 0) return;
+  const now = new Date().toISOString();
+  await mapManager.update(m => ({
+    ...m,
+    artifacts: (() => {
+      const updated = [...(m.artifacts ?? [])];
+      for (const artifactPath of paths) {
+        const idx = updated.findIndex(a => a.path === artifactPath);
+        const entry = { path: artifactPath, generator: role, required: true, last_updated: now, dirty: false };
+        if (idx >= 0) updated[idx] = { ...updated[idx], ...entry };
+        else updated.push(entry as typeof updated[number]);
+      }
+      return updated;
+    })(),
+  }));
+}
 
 // ============================================================================
 // WorkflowEngine dependencies — matches CycleRunnerDeps structurally
