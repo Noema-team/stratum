@@ -46,5 +46,8 @@ export type Criterion = z.infer<typeof CriterionSchema>;
 export const EvidenceRequirementSchema = z.object({
   type: z.string().min(1),
   conditions: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  // When set, evidence must have a matching candidateRef — SHA A cannot
+  // satisfy a requirement pinned to SHA B.
+  candidateRef: z.string().optional(),
 });
 export type EvidenceRequirement = z.infer<typeof EvidenceRequirementSchema>;

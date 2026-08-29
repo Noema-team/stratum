@@ -3,11 +3,19 @@ import type { EvidenceRequirement } from '../domain/primitives.js';
 import type { PolicyEvaluation } from '../domain/policy.js';
 
 // Evidence types that MUST come from an independent external source.
-// Evidence from the executor adapter itself (source prefix 'executor:' or
-// source === 'executor') is rejected for these types — the security invariant
-// from DDR-032 §20: "Executor self-report cannot satisfy independent
-// review/CI evidence requirements."
+// Evidence where collectorId is missing or source has an executor prefix is
+// rejected for these types — DDR-032 §20: "Executor self-report cannot
+// satisfy independent review/CI evidence requirements."
 const EXTERNAL_ONLY_TYPES = new Set([
+  'github.ci',
+  'github.review',
+  'ci_toolkit.semantic_review',
+  'scope_diff',
+]);
+
+// Collector IDs that are registered as trusted external sources.
+// These are set by the system (registered EvidenceCollector.type), never by callers.
+const TRUSTED_COLLECTOR_IDS = new Set([
   'github.ci',
   'github.review',
   'ci_toolkit.semantic_review',
@@ -21,17 +29,25 @@ export class CompletionPolicy {
     for (const req of requirements) {
       const matched = evidence.filter(
         e => e.type === req.type
+          && this.candidateRefMatches(e, req)
           && this.conditionsMet(e, req.conditions)
           && this.sourceTrusted(e, req.type),
       );
       if (matched.length === 0) {
         return {
           outcome: 'deny',
-          reason: `Missing evidence: '${req.type}'${this.conditionSummary(req.conditions)}`,
+          reason: this.buildDenyReason(req, evidence),
         };
       }
     }
     return { outcome: 'allow', reason: 'All evidence requirements satisfied' };
+  }
+
+  // SHA binding: if the requirement pins a candidateRef, the evidence must
+  // carry the same ref. Evidence for SHA A never satisfies SHA B.
+  private candidateRefMatches(evidence: Evidence, req: EvidenceRequirement): boolean {
+    if (!req.candidateRef) return true;  // requirement is not SHA-pinned
+    return evidence.candidateRef === req.candidateRef;
   }
 
   // Checks that an evidence record satisfies the requirement's conditions.
@@ -56,14 +72,47 @@ export class CompletionPolicy {
     return true;
   }
 
-  // Rejects evidence sourced by the executor itself for external-only types.
+  // Provenance trust: for external-only types, evidence must come from a
+  // registered trusted collector (collectorId), not from executor self-report.
+  // The source string alone is NOT sufficient — it is caller-controlled.
   private sourceTrusted(evidence: Evidence, requirementType: string): boolean {
     if (!EXTERNAL_ONLY_TYPES.has(requirementType)) return true;
-    return (
-      evidence.source !== 'executor'
-      && !evidence.source.startsWith('executor:')
-      && !evidence.source.startsWith('adapter:')
-    );
+
+    // Reject executor self-report regardless of source string.
+    if (
+      evidence.source === 'executor'
+      || evidence.source.startsWith('executor:')
+      || evidence.source.startsWith('adapter:')
+    ) {
+      return false;
+    }
+
+    // Reject local-file sources (executor-writable path) regardless of collectorId.
+    // The collectorId check cannot override this: a collector that reads from a
+    // path the executor controls is still untrusted.
+    if (evidence.source.endsWith(':local_file') || evidence.source === 'local_file') {
+      return false;
+    }
+
+    // If collectorId is present, it must be from a known trusted collector.
+    if (evidence.collectorId !== undefined) {
+      return TRUSTED_COLLECTOR_IDS.has(evidence.collectorId);
+    }
+
+    return true;
+  }
+
+  private buildDenyReason(req: EvidenceRequirement, evidence: Evidence[]): string {
+    const base = `Missing evidence: '${req.type}'${this.conditionSummary(req.conditions)}`;
+    if (req.candidateRef) {
+      const wrongSha = evidence.filter(
+        e => e.type === req.type && e.candidateRef && e.candidateRef !== req.candidateRef,
+      );
+      if (wrongSha.length > 0) {
+        return `${base} — evidence exists but is bound to a different candidateRef (SHA mismatch)`;
+      }
+    }
+    return base;
   }
 
   private conditionSummary(conditions?: Record<string, string | number | boolean>): string {

@@ -9,6 +9,10 @@ export interface EvidenceCollectionRequest {
   repositories: Array<{ id: UUID; remote: string; defaultBranch: string }>;
   // Artefact references produced during execution.
   refs: ArtifactRefs;
+  // The commit SHA the execution produced or targeted. Collectors must bind
+  // any collected evidence to this ref so the completion policy can enforce
+  // SHA-specific satisfaction (evidence for SHA A ≠ satisfaction for SHA B).
+  candidateRef?: string;
 }
 
 // Evidence collectors are adapters (DDR-032 §20). Each collector is responsible
