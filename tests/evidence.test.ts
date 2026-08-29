@@ -45,6 +45,7 @@ function makeEvidence(workItemId: string, overrides: Partial<Evidence> = {}): Ev
     workItemId,
     type: 'github.ci',
     source: 'github',
+    collectorId: 'github.ci',
     status: 'passed',
     payload: {},
     collectedAt: new Date().toISOString(),
@@ -91,7 +92,7 @@ test('testPolicyAllowsWhenEvidencePassed', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
-    type: 'github.ci', source: 'github', status: 'passed',
+    type: 'github.ci', source: 'github', collectorId: 'github.ci', status: 'passed',
     payload: {}, collectedAt: new Date().toISOString(),
   }];
   const result = policy.evaluate([{ type: 'github.ci' }], evidence);
@@ -113,7 +114,8 @@ test('testPolicyChecksConditions', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
-    type: 'ci_toolkit.semantic_review', source: 'ci_toolkit', status: 'passed',
+    type: 'ci_toolkit.semantic_review', source: 'ci_toolkit',
+    collectorId: 'ci_toolkit.semantic_review', status: 'passed',
     payload: { blockingFindings: 0, warningFindings: 2 },
     collectedAt: new Date().toISOString(),
   }];
@@ -171,7 +173,7 @@ test('testPolicyAllowsInternalEvidenceForNonExternalTypes', () => {
 test('testPolicyMultipleRequirementsAllMustPass', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [
-    { id: randomUUID(), workItemId: 'wi1', type: 'github.ci', source: 'github', status: 'passed', payload: {}, collectedAt: new Date().toISOString() },
+    { id: randomUUID(), workItemId: 'wi1', type: 'github.ci', source: 'github', collectorId: 'github.ci', status: 'passed', payload: {}, collectedAt: new Date().toISOString() },
     // Missing ci_toolkit.semantic_review
   ];
   const result = policy.evaluate(
@@ -339,6 +341,8 @@ test('testGithubCiCollectorPassed', async () => {
   assert.equal(results[0].type, 'github.ci');
   assert.equal(results[0].status, 'passed');
   assert.equal(results[0].source, 'github');
+  assert.equal(results[0].collectorId, 'github.ci');
+  assert.equal(results[0].candidateRef, 'abc123');
   assert.equal(results[0].subjectRef, 'abc123');
 });
 
@@ -515,4 +519,157 @@ test('testEvidenceServiceCollectAll', async () => {
   // After collection, completion policy should pass
   const eval_ = svc.evaluateCompletion(wi);
   assert.equal(eval_.outcome, 'allow');
+});
+
+// ============================================================================
+// Collector stamps collectorId + candidateRef
+// ============================================================================
+
+test('testGithubCiCollectorStampsCollectorIdAndCandidateRef', async () => {
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: 'sha-abc', conclusion: 'success', workflowRuns: [] },
+    { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
+  );
+  const collector = new GithubCiCollector(stub);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { commits: [{ repo: { provider: 'github', remote: 'r' }, sha: 'sha-abc' }] },
+  });
+  assert.equal(results[0].collectorId, 'github.ci');
+  assert.equal(results[0].candidateRef, 'sha-abc');
+});
+
+test('testGithubReviewCollectorStampsCollectorIdAndCandidateRef', async () => {
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: '', conclusion: 'success', workflowRuns: [] },
+    { prNumber: 7, approved: true, changesRequested: false, reviews: [] },
+  );
+  const collector = new GithubReviewCollector(stub);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 7, headSha: 'pr-head-sha' }] },
+  });
+  assert.equal(results[0].collectorId, 'github.review');
+  assert.equal(results[0].candidateRef, 'pr-head-sha');
+});
+
+test('testScopeDiffCollectorStampsCollectorIdAndCandidateRef', async () => {
+  const collector = new ScopeDiffCollector(async () => ['src/a.ts'], ['src/'], []);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 1, headSha: 'diff-head-sha' }] },
+  });
+  assert.equal(results[0].collectorId, 'scope_diff');
+  assert.equal(results[0].candidateRef, 'diff-head-sha');
+});
+
+// ============================================================================
+// Legacy permissive behavior is now explicitly DENIED (deliberate regression)
+// ============================================================================
+
+test('testPolicyDeniesExternalTypeWithNoCollectorId', () => {
+  // Previously: source=github with no collectorId was accepted (permissive).
+  // Now: collectorId is required for all external-only types — deny when absent.
+  const policy = new CompletionPolicy();
+  const evidence: Evidence[] = [{
+    id: randomUUID(), workItemId: 'wi1',
+    type: 'github.ci', source: 'github', status: 'passed',
+    payload: {}, collectedAt: new Date().toISOString(),
+    // collectorId intentionally absent
+  }];
+  const result = policy.evaluate([{ type: 'github.ci' }], evidence);
+  assert.equal(result.outcome, 'deny', 'github.ci evidence with no collectorId must be denied');
+});
+
+// ============================================================================
+// Persistence-level security: collector → EvidenceService → SQLite → reload → CompletionPolicy
+// ============================================================================
+
+test('testTrustFieldsSurviveDbRoundTrip', async () => {
+  const db = openTestDb();
+  const ws = new WorkspaceRepository(db);
+  const workspace = makeWorkspace(); ws.save(workspace);
+  const proj = new ProjectRepository(db); const project = makeProject(workspace.id); proj.save(project);
+  const items = new WorkItemRepository(db);
+  const wi = makeWorkItem(project.id, [{ type: 'github.ci', candidateRef: 'sha-round-trip' }]);
+  items.save(wi);
+
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: 'sha-round-trip', conclusion: 'success', workflowRuns: [] },
+    { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
+  );
+  const svc = new EvidenceService(db, [new GithubCiCollector(stub)]);
+
+  // Collect via collector (stamps collectorId + candidateRef)
+  await svc.collectAll({
+    workItemId: wi.id, repositories: [],
+    refs: { commits: [{ repo: { provider: 'github', remote: 'r' }, sha: 'sha-round-trip' }] },
+  });
+
+  // Reload from DB and evaluate — collectorId and candidateRef must survive
+  const eval_ = svc.evaluateCompletion(wi);
+  assert.equal(eval_.outcome, 'allow', 'trusted evidence must satisfy requirement after DB round-trip');
+});
+
+test('testPersistedEvidenceWithNoCollectorIdDenied', () => {
+  // Simulate legacy evidence in the DB that has no collectorId (pre-migration rows).
+  const db = openTestDb();
+  const ws = new WorkspaceRepository(db);
+  const workspace = makeWorkspace(); ws.save(workspace);
+  const proj = new ProjectRepository(db); const project = makeProject(workspace.id); proj.save(project);
+  const items = new WorkItemRepository(db);
+  const wi = makeWorkItem(project.id, [{ type: 'github.ci' }]);
+  items.save(wi);
+
+  const svc = new EvidenceService(db);
+  // Record with no collectorId — simulates old unattributed evidence
+  svc.record({ workItemId: wi.id, type: 'github.ci', source: 'github', status: 'passed', payload: {} });
+
+  const eval_ = svc.evaluateCompletion(wi);
+  assert.equal(eval_.outcome, 'deny', 'evidence with no collectorId must not satisfy external-only requirement');
+});
+
+test('testShaACannotSatisfyShaBAfterPersistence', async () => {
+  const db = openTestDb();
+  const ws = new WorkspaceRepository(db);
+  const workspace = makeWorkspace(); ws.save(workspace);
+  const proj = new ProjectRepository(db); const project = makeProject(workspace.id); proj.save(project);
+  const items = new WorkItemRepository(db);
+  const wi = makeWorkItem(project.id, [{ type: 'github.ci', candidateRef: 'sha-B' }]);
+  items.save(wi);
+
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: 'sha-A', conclusion: 'success', workflowRuns: [] },
+    { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
+  );
+  const svc = new EvidenceService(db, [new GithubCiCollector(stub)]);
+
+  // Collect evidence for sha-A
+  await svc.collectAll({
+    workItemId: wi.id, repositories: [],
+    refs: { commits: [{ repo: { provider: 'github', remote: 'r' }, sha: 'sha-A' }] },
+  });
+
+  // Requirement is pinned to sha-B — sha-A evidence must not satisfy it
+  const eval_ = svc.evaluateCompletion(wi);
+  assert.equal(eval_.outcome, 'deny', 'sha-A evidence must not satisfy a sha-B requirement after persistence');
+});
+
+test('testManuallyPostedEvidenceCannotSatisfyGithubCiRequirement', () => {
+  // Manually posted evidence gets source=api:manual, no collectorId.
+  // It must never satisfy an external-only requirement.
+  const db = openTestDb();
+  const ws = new WorkspaceRepository(db);
+  const workspace = makeWorkspace(); ws.save(workspace);
+  const proj = new ProjectRepository(db); const project = makeProject(workspace.id); proj.save(project);
+  const items = new WorkItemRepository(db);
+  const wi = makeWorkItem(project.id, [{ type: 'github.ci' }]);
+  items.save(wi);
+
+  const svc = new EvidenceService(db);
+  // This is what the POST /work/:id/evidence handler does after our fix:
+  svc.record({ workItemId: wi.id, type: 'github.ci', source: 'api:manual', status: 'passed', payload: {} });
+
+  const eval_ = svc.evaluateCompletion(wi);
+  assert.equal(eval_.outcome, 'deny', 'manually submitted evidence must not satisfy github.ci requirement');
 });
