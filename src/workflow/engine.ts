@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import type { AgentRunner } from '../agent-runner.js';
 import type { CycleStateContext } from '../context-manager.js';
 import type { CriticAgent } from '../critic-agent.js';
 import type { ConfirmService } from '../confirm-service.js';
@@ -17,6 +16,8 @@ import type {
   WorkflowStep,
   WorkflowStepContext,
   StepResult,
+  StepRunner,
+  StepRunContext,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import yaml from 'js-yaml';
@@ -47,11 +48,11 @@ async function updateArtifactEntries(
 }
 
 // ============================================================================
-// WorkflowEngine dependencies — matches CycleRunnerDeps structurally
+// WorkflowEngine dependencies
 // ============================================================================
 
 export interface WorkflowEngineDeps {
-  agentRunner: AgentRunner;
+  stepRunner: StepRunner;
   confirmService: ConfirmService;
   execService: ExecService;
   validationGateService: ValidationGateService;
@@ -289,12 +290,13 @@ export class WorkflowEngine {
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
     const start = Date.now();
-    const nodeId = this.stepToNodeId(step.id);
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    const result = await this.deps.agentRunner.run(nodeId, cycleState);
+
+    const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+    const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
-      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, cycleState.iteration, nodeId, {
+      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, cycleState.iteration, step.id, {
         status: 'failed',
         completed_at: new Date().toISOString(),
         duration_ms: result.duration_ms,
@@ -339,9 +341,9 @@ export class WorkflowEngine {
       return this.executeValidationGateReview(step, def, cycleNumber, cycleId, cycleState, start);
     }
 
-    // Generic review — delegates to agentRunner directly
-    const nodeId = this.stepToNodeId(step.id);
-    const result = await this.deps.agentRunner.run(nodeId, cycleState);
+    // Generic review — delegates to stepRunner directly
+    const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+    const result = await this.deps.stepRunner.run(step, ctx);
     if (!result.success) {
       return { outcome: 'failed', next_step_id: null, error: result.error };
     }
@@ -555,7 +557,7 @@ export class WorkflowEngine {
 
     if (action === 'revise') {
       const reviseResult = await this.deps.confirmService.revise(cycleNumber, cycleState.iteration);
-      return { outcome: 'completed', next_step_id: this.nodeIdToStepId(reviseResult.next_node) };
+      return { outcome: 'completed', next_step_id: this.confirmNodeToStepId(reviseResult.next_node) };
     }
 
     await this.deps.confirmService.approve(cycleNumber, cycleState.iteration);
@@ -605,7 +607,7 @@ export class WorkflowEngine {
     iteration: number,
     reason?: string,
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, this.stepToNodeId(step.id), {
+    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, step.id, {
       status: 'skipped',
       completed_at: new Date().toISOString(),
       skip_reason: reason ?? 'condition_not_met',
@@ -613,7 +615,7 @@ export class WorkflowEngine {
   }
 
   private async markRunning(stepId: string, cycleNumber: number, iteration: number): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, this.stepToNodeId(stepId), {
+    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
       status: 'running',
       started_at: new Date().toISOString(),
     });
@@ -625,11 +627,23 @@ export class WorkflowEngine {
     iteration: number,
     artifactsWritten: string[],
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, this.stepToNodeId(stepId), {
+    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
       status: 'complete',
       completed_at: new Date().toISOString(),
       artifacts_written: artifactsWritten,
     });
+  }
+
+  private makeStepRunContext(cycleNumber: number, cycleState: CycleStateContext): StepRunContext {
+    return {
+      workflowRunId: String((cycleState as any).cycle_id ?? randomUUID()),
+      cycleNumber,
+      iteration: cycleState.iteration,
+      planningDepth: cycleState.planning_depth,
+      goal: String(cycleState.intent ?? ''),
+      projectRoot: this.deps.projectRoot ?? process.cwd(),
+      _legacyCycleState: cycleState as unknown as Record<string, unknown>,
+    };
   }
 
   private async checkIterationCap(
@@ -650,35 +664,9 @@ export class WorkflowEngine {
     };
   }
 
-  // Map step id to the legacy DAGNodeId the AgentRunner/RunArtifacts expects
-  private stepToNodeId(stepId: string): string {
-    const MAP: Record<string, string> = {
-      'scoping.gather': 'SCOPING',
-      'scoping.produce': 'SCOPING',
-      'scoping.checkpoint': 'SCOPING',
-      'design': 'DESIGN',
-      'critique': 'CRITIQUE',
-      'plan': 'PLAN',
-      'test': 'TEST',
-      'sharding_approval': 'SHARDING_APPROVAL',
-      'confirm': 'CONFIRM',
-      'build': 'BUILD',
-      'exec': 'EXEC',
-      'validation_gate': 'VALIDATION_GATE',
-      'debug': 'DEBUG',
-      'evaluate': 'EVALUATE',
-      'summarise': 'SUMMARISE',
-      'snapshot': 'SNAPSHOT',
-      // draft-artifact steps
-      'gather': 'SCOPING',
-      'produce': 'DESIGN',
-      'commit': 'SNAPSHOT',
-    };
-    return MAP[stepId] ?? stepId.toUpperCase();
-  }
-
-  // Map legacy DAGNodeId back to step id
-  private nodeIdToStepId(nodeId: string | null): string | null {
+  // Translate a legacy DAGNodeId returned by ConfirmService.revise() into a step id.
+  // Only used in executeConfirmCheckpoint; new code should not call this.
+  private confirmNodeToStepId(nodeId: string | null): string | null {
     if (!nodeId) return null;
     const MAP: Record<string, string> = {
       'TEST': 'test',

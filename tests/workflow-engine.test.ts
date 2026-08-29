@@ -157,13 +157,12 @@ export function testStepCount() {
 
 function makeStubDeps(overrides: Partial<WorkflowEngineDeps> = {}): WorkflowEngineDeps {
   return {
-    agentRunner: {
-      run: async (_nodeId: unknown, _ctx: unknown) => ({
+    stepRunner: {
+      run: async (_step: unknown, _ctx: unknown) => ({
         success: true,
         artifacts_written: [],
         tokens_used: 0,
         duration_ms: 1,
-        raw_output_path: '',
       }),
     } as any,
     confirmService: {
@@ -238,14 +237,14 @@ export async function testEngineRunsProduceStep() {
 
   let called = false;
   const deps = makeStubDeps({
-    agentRunner: {
-      run: async () => { called = true; return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
+    stepRunner: {
+      run: async () => { called = true; return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
     } as any,
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
-  assert.ok(called, 'agentRunner.run should have been called for produce step');
+  assert.ok(called, 'stepRunner.run should have been called for produce step');
 }
 
 export async function testEngineHaltsOnProduceFailure() {
@@ -254,8 +253,8 @@ export async function testEngineHaltsOnProduceFailure() {
   ]));
 
   const deps = makeStubDeps({
-    agentRunner: {
-      run: async () => ({ success: false, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '', error: 'agent timeout' }),
+    stepRunner: {
+      run: async () => ({ success: false, artifacts_written: [], tokens_used: 0, duration_ms: 1, error: 'agent timeout' }),
     } as any,
   });
 
@@ -274,16 +273,16 @@ export async function testEngineSkipsConditionalStep() {
 
   const visited: string[] = [];
   const deps = makeStubDeps({
-    agentRunner: {
-      run: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
+    stepRunner: {
+      run: async (step: any) => { visited.push(String(step.id)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
     } as any,
     snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
-  // 'r' is skipped — should not appear in agentRunner calls
-  assert.ok(!visited.includes('R'), 'review step should have been skipped');
+  // 'r' is skipped — should not appear in stepRunner calls
+  assert.ok(!visited.includes('r'), 'review step should have been skipped');
 }
 
 export async function testEngineHaltsForUnknownWorkflow() {
@@ -315,8 +314,8 @@ export async function testConfirmCheckpointApproveAdvances() {
 
   const visited: string[] = [];
   const deps = makeStubDeps({
-    agentRunner: {
-      run: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
+    stepRunner: {
+      run: async (step: any) => { visited.push(String(step.id)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
     } as any,
     snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
@@ -324,6 +323,6 @@ export async function testConfirmCheckpointApproveAdvances() {
   const engine = new WorkflowEngine(deps, makeStubOpts({ onConfirmGate: async () => 'approve' }));
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'complete');
-  // Build step should have been called (nodeId for 'build' step → 'BUILD')
-  assert.ok(visited.some(v => v === 'BUILD'), 'BUILD step should have run after CONFIRM approval');
+  // Build step should have been called with its step id 'build'
+  assert.ok(visited.some(v => v === 'build'), 'build step should have run after CONFIRM approval');
 }

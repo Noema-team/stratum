@@ -107,3 +107,39 @@ export interface WorkflowRunResult {
   iterations_used: number;
   error?: string;
 }
+
+// ============================================================================
+// StepRunner — the narrow seam between WorkflowEngine and the execution layer.
+//
+// WorkflowEngine calls StepRunner.run(step, ctx) for 'produce' and generic
+// 'review' steps. The implementation (e.g. AgentStepRunner) maps step.agentRole
+// onto whatever underlying mechanism it wraps (AgentRunner, ExecutionAdapter,
+// direct LLM call, …) without leaking legacy DAGNodeId semantics into the engine.
+// ============================================================================
+
+export interface StepRunOutcome {
+  success: boolean;
+  artifacts_written: string[];
+  tokens_used: number;
+  duration_ms: number;
+  error?: string;
+}
+
+export interface StepRunner {
+  run(step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome>;
+}
+
+// Execution context passed to StepRunner — a forward-compatible replacement for
+// the legacy CycleStateContext. Fields grow as the new path matures; legacy
+// callers may populate only the fields they know.
+export interface StepRunContext {
+  workflowRunId: string;
+  cycleNumber: number;
+  iteration: number;
+  planningDepth: 'minimal' | 'standard' | 'deep' | 'research';
+  goal: string;
+  projectRoot: string;
+  // Optional legacy fields kept for backward-compat adapters that still need
+  // them; new adapters should ignore these.
+  _legacyCycleState?: Record<string, unknown>;
+}

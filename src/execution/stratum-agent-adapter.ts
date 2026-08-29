@@ -1,4 +1,5 @@
 import { WorkflowEngine } from '../workflow/engine.js';
+import { getWorkflow } from '../workflow/registry.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../workflow/engine.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet, ExecutorCapability } from './types.js';
 
@@ -28,7 +29,14 @@ export class StratumAgentAdapter implements ExecutionAdapter {
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
     const start = Date.now();
 
+    // Derive the entry step from the workflow definition instead of hard-coding.
+    const def = getWorkflow(request.workflowId);
+    const entryStepId = request.stepId !== '__start__'
+      ? request.stepId
+      : (def?.steps[0]?.id ?? 'scoping.gather');
+
     // Build the cycle context the engine expects from what the scheduler provides.
+    // _legacyCycleState is passed through for adapters that still need it.
     const cycleCtx: Record<string, unknown> = {
       cycle_number: 1,
       cycle_id: request.workflowRunId,
@@ -36,8 +44,9 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       revision: 0,
       planning_depth: 'minimal',
       intent: request.goal,
+      current_node: null,
       target: null,
-      project_root: this.engineDeps.projectRoot ?? '/tmp',
+      project_root: this.engineDeps.projectRoot ?? process.cwd(),
     };
 
     const engine = new WorkflowEngine(this.engineDeps, this.engineOpts);
@@ -46,16 +55,25 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       1,
       request.workflowRunId,
       cycleCtx as any,
-      request.stepId,
+      entryStepId,
     );
+
+    // 'halted' without an error means the workflow is waiting at a checkpoint —
+    // that is a structured 'blocked' outcome, not a failure.
+    const outcome: ExecutionResult['outcome'] =
+      result.status === 'complete' ? 'succeeded'
+      : result.error ? 'failed'
+      : 'blocked';
 
     return {
       schemaVersion: 1,
       stepExecutionId: request.stepExecutionId,
-      outcome: result.status === 'complete' ? 'succeeded' : 'failed',
+      outcome,
       artifacts: [],
       evidenceClaims: [],
-      decisionRequests: [],
+      decisionRequests: result.status === 'halted' && !result.error
+        ? [{ type: 'checkpoint', title: 'Workflow paused', summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}` }]
+        : [],
       usage: { durationMs: Date.now() - start },
       failure: result.error
         ? { code: 'workflow_error', message: result.error }

@@ -5,6 +5,7 @@ import type { ExecutionAdapter } from '../execution/types.js';
 import type { WorkItem } from '../domain/index.js';
 import { WorkService } from '../services/work-service.js';
 import { WorkItemRepository, StepExecutionRepository } from '../storage/repositories.js';
+import { getWorkflow } from '../workflow/registry.js';
 import { LeaseManager } from './lease-manager.js';
 import type { SchedulerConfig, DispatchResult } from './types.js';
 import { DEFAULT_SCHEDULER_CONFIG } from './types.js';
@@ -123,13 +124,25 @@ export class Scheduler {
 
     // 8. Execute via adapter (synchronous in Phase 5 — async dispatch in a later phase).
     try {
+      // Derive the workflow's first step from the registered definition.
+      const wfDef = getWorkflow(workflowId);
+      const entryStepId = wfDef?.steps[0]?.id ?? '__start__';
+
+      // Resolve repository remotes from WorkItem data; default to empty for
+      // repositories without a stored remote (caller fills in later phases).
+      const repositories = repositoryIds.map(id => ({
+        id,
+        remote: (item as any).repositories?.find((r: any) => r.id === id)?.remote ?? '',
+        branch: (item as any).repositories?.find((r: any) => r.id === id)?.defaultBranch ?? 'main',
+      }));
+
       const execResult = await adapter.execute({
         stepExecutionId,
         workItemId,
         workflowRunId,
-        stepId: 'scoping.gather',
+        stepId: entryStepId,
         workflowId,
-        repositories: repositoryIds.map(id => ({ id, remote: '', branch: 'main' })),
+        repositories,
         goal: item.goal,
         acceptanceCriteria: item.acceptanceCriteria,
         constraints: item.constraints,
@@ -144,6 +157,12 @@ export class Scheduler {
       if (execResult.outcome === 'succeeded') {
         this.stepExecRepo.updateState(stepExecutionId, 'succeeded', { completedAt });
         this.workService.markInReview({ workItemId });
+      } else if (execResult.outcome === 'blocked') {
+        // Workflow paused at a human-in-the-loop checkpoint. Mark the step
+        // execution cancelled (it was a probe run), and pause the work item so
+        // the control-plane API can resume it when the operator approves.
+        this.stepExecRepo.updateState(stepExecutionId, 'cancelled', { completedAt });
+        this.workService.pause({ workItemId });
       } else {
         this.stepExecRepo.updateState(stepExecutionId, 'failed', {
           completedAt,
