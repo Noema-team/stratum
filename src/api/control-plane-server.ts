@@ -1,4 +1,6 @@
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer as createHttpServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer as createHttpsServer } from 'https';
+import { readFileSync } from 'fs';
 import type Database from 'better-sqlite3';
 import { Router } from './router.js';
 import { AttentionService } from './attention-service.js';
@@ -31,14 +33,21 @@ export interface ControlPlaneServerOptions {
   evidenceService: EvidenceService;
   port?: number;
   requireAuth?: boolean;
+  // TLS: provide both certPath and keyPath to serve HTTPS instead of HTTP.
+  // Use a reverse proxy (nginx/caddy) when you need SNI or certificate management.
+  tls?: { certPath: string; keyPath: string };
 }
+
+export type ControlPlaneProtocol = 'http' | 'https';
 
 export class ControlPlaneServer {
   private readonly server: Server;
   readonly port: number;
+  readonly protocol: ControlPlaneProtocol;
 
   constructor(opts: ControlPlaneServerOptions) {
     this.port = opts.port ?? 7373;
+    this.protocol = opts.tls ? 'https' : 'http';
 
     const router = new Router();
     const tokens = new TokenStore(opts.db);
@@ -124,7 +133,7 @@ export class ControlPlaneServer {
 
     const html = dashboardHtml();
 
-    this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
       const pathname = (req.url ?? '/').split('?')[0];
       if ((pathname === '/' || pathname === '/dashboard') && req.method === 'GET') {
         const buf = Buffer.from(html, 'utf8');
@@ -137,7 +146,15 @@ export class ControlPlaneServer {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: { code: 'internal_error', message: msg } }));
       });
-    });
+    };
+
+    if (opts.tls) {
+      const cert = readFileSync(opts.tls.certPath);
+      const key = readFileSync(opts.tls.keyPath);
+      this.server = createHttpsServer({ cert, key }, handler);
+    } else {
+      this.server = createHttpServer(handler);
+    }
   }
 
   listen(): Promise<void> {

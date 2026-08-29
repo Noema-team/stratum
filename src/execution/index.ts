@@ -15,3 +15,5 @@ export type {
 
 export { ExecutorRegistry } from './registry.js';
 export { StratumAgentAdapter } from './stratum-agent-adapter.js';
+export { ClaudeCodeAdapter } from './claude-code-adapter.js';
+export type { ClaudeCodeAdapterOptions } from './claude-code-adapter.js';
