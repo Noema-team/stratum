@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
 import { openDatabase } from '../src/storage/database.js';
@@ -87,47 +88,47 @@ async function post(url: string, body?: unknown) {
 // Router
 // ============================================================================
 
-export async function testRouterReturns404ForUnknown() {
+test('testRouterReturns404ForUnknown', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/unknown/path`);
     assert.equal(r.status, 404);
     assert.equal((r.body as { ok: boolean }).ok, false);
   });
-}
+});
 
 // ============================================================================
 // Projects
 // ============================================================================
 
-export async function testProjectsList() {
+test('testProjectsList', async () => {
   await withServer(async (base, { project }) => {
     const r = await get(`${base}/projects`);
     assert.equal(r.status, 200);
     const data = (r.body as { data: { id: string }[] }).data;
     assert.ok(data.some(p => p.id === project.id));
   });
-}
+});
 
-export async function testProjectsGetById() {
+test('testProjectsGetById', async () => {
   await withServer(async (base, { project }) => {
     const r = await get(`${base}/projects/${project.id}`);
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { id: string } }).data.id, project.id);
   });
-}
+});
 
-export async function testProjectsGetByIdNotFound() {
+test('testProjectsGetByIdNotFound', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/projects/${randomUUID()}`);
     assert.equal(r.status, 404);
   });
-}
+});
 
 // ============================================================================
 // Work items
 // ============================================================================
 
-export async function testWorkGetById() {
+test('testWorkGetById', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await get(`${base}/work/${workItem.id}`);
     assert.equal(r.status, 200);
@@ -135,42 +136,42 @@ export async function testWorkGetById() {
     assert.equal(data.id, workItem.id);
     assert.equal(data.state, 'draft');
   });
-}
+});
 
-export async function testWorkGetByIdNotFound() {
+test('testWorkGetByIdNotFound', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/work/${randomUUID()}`);
     assert.equal(r.status, 404);
   });
-}
+});
 
-export async function testProjectWorkList() {
+test('testProjectWorkList', async () => {
   await withServer(async (base, { workItem, project }) => {
     const r = await get(`${base}/projects/${project.id}/work`);
     assert.equal(r.status, 200);
     const data = (r.body as { data: { id: string }[] }).data;
     assert.ok(data.some(w => w.id === workItem.id));
   });
-}
+});
 
-export async function testProjectWorkListFilterByState() {
+test('testProjectWorkListFilterByState', async () => {
   await withServer(async (base, { project }) => {
     const r = await get(`${base}/projects/${project.id}/work?state=ready`);
     assert.equal(r.status, 200);
     const data = (r.body as { data: unknown[] }).data;
     assert.equal(data.length, 0);
   });
-}
+});
 
-export async function testWorkReady() {
+test('testWorkReady', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/ready`);
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { state: string } }).data.state, 'ready');
   });
-}
+});
 
-export async function testWorkPause() {
+test('testWorkPause', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/ready`);
     await post(`${base}/work/${workItem.id}/run`);
@@ -178,53 +179,53 @@ export async function testWorkPause() {
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { state: string } }).data.state, 'paused');
   });
-}
+});
 
-export async function testWorkCancel() {
+test('testWorkCancel', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/ready`);
     const r = await post(`${base}/work/${workItem.id}/cancel`, { reason: 'no longer needed' });
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { state: string } }).data.state, 'cancelled');
   });
-}
+});
 
-export async function testWorkFailRequiresReason() {
+test('testWorkFailRequiresReason', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/fail`, {});
     assert.equal(r.status, 400);
   });
-}
+});
 
-export async function testWorkFailWithReason() {
+test('testWorkFailWithReason', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/fail`, { reason: 'something broke' });
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { state: string } }).data.state, 'failed');
   });
-}
+});
 
-export async function testWorkInvalidTransitionReturnsError() {
+test('testWorkInvalidTransitionReturnsError', async () => {
   await withServer(async (base, { workItem }) => {
     // draft → complete is not a valid transition
     const r = await post(`${base}/work/${workItem.id}/complete`);
     assert.equal((r.body as { ok: boolean }).ok, false);
   });
-}
+});
 
 // ============================================================================
 // Evidence
 // ============================================================================
 
-export async function testEvidenceEmptyInitially() {
+test('testEvidenceEmptyInitially', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await get(`${base}/work/${workItem.id}/evidence`);
     assert.equal(r.status, 200);
     assert.deepEqual((r.body as { data: unknown[] }).data, []);
   });
-}
+});
 
-export async function testEvidenceRecord() {
+test('testEvidenceRecord', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/evidence`, {
       type: 'github.ci',
@@ -237,77 +238,77 @@ export async function testEvidenceRecord() {
     assert.equal(data.type, 'github.ci');
     assert.equal(data.status, 'passed');
   });
-}
+});
 
-export async function testEvidenceRequiresFields() {
+test('testEvidenceRequiresFields', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/evidence`, { type: 'github.ci' });
     assert.equal(r.status, 400);
   });
-}
+});
 
 // ============================================================================
 // Events
 // ============================================================================
 
-export async function testEventsReturnsWorkspaceEvents() {
+test('testEventsReturnsWorkspaceEvents', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/ready`);
     const r = await get(`${base}/events`);
     assert.equal(r.status, 200);
     assert.ok((r.body as { data: unknown[] }).data.length >= 1);
   });
-}
+});
 
-export async function testWorkItemEvents() {
+test('testWorkItemEvents', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/ready`);
     const r = await get(`${base}/work/${workItem.id}/events`);
     assert.equal(r.status, 200);
     assert.ok((r.body as { data: unknown[] }).data.length >= 1);
   });
-}
+});
 
 // ============================================================================
 // Workflows
 // ============================================================================
 
-export async function testWorkflowsList() {
+test('testWorkflowsList', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/workflows`);
     assert.equal(r.status, 200);
     assert.ok((r.body as { data: unknown[] }).data.length >= 2);
   });
-}
+});
 
-export async function testWorkflowsGetById() {
+test('testWorkflowsGetById', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/workflows/draft-artifact`);
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { id: string } }).data.id, 'draft-artifact');
   });
-}
+});
 
-export async function testWorkflowsNotFound() {
+test('testWorkflowsNotFound', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/workflows/no-such`);
     assert.equal(r.status, 404);
   });
-}
+});
 
 // ============================================================================
 // Attention
 // ============================================================================
 
-export async function testAttentionEmptyWhenNoIssues() {
+test('testAttentionEmptyWhenNoIssues', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/attention`);
     assert.equal(r.status, 200);
     assert.deepEqual((r.body as { data: unknown[] }).data, []);
   });
-}
+});
 
-export async function testAttentionSurfacesFailedWorkItems() {
+test('testAttentionSurfacesFailedWorkItems', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/fail`, { reason: 'broke' });
     const r = await get(`${base}/attention`);
@@ -315,4 +316,4 @@ export async function testAttentionSurfacesFailedWorkItems() {
     const data = (r.body as { data: { category: string; workItemId: string }[] }).data;
     assert.ok(data.some(i => i.category === 'work_failed' && i.workItemId === workItem.id));
   });
-}
+});

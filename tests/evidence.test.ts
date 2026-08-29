@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
 import { openDatabase } from '../src/storage/database.js';
@@ -70,13 +71,13 @@ class StubGitHubAdapter implements GitHubAdapter {
 // CompletionPolicy — unit tests
 // ============================================================================
 
-export function testPolicyAllowsWhenNoRequirements() {
+test('testPolicyAllowsWhenNoRequirements', () => {
   const policy = new CompletionPolicy();
   const result = policy.evaluate([], []);
   assert.equal(result.outcome, 'allow');
-}
+});
 
-export function testPolicyDeniesWhenEvidenceMissing() {
+test('testPolicyDeniesWhenEvidenceMissing', () => {
   const policy = new CompletionPolicy();
   const result = policy.evaluate(
     [{ type: 'github.ci' }],
@@ -84,9 +85,9 @@ export function testPolicyDeniesWhenEvidenceMissing() {
   );
   assert.equal(result.outcome, 'deny');
   assert.ok(result.reason.includes('github.ci'));
-}
+});
 
-export function testPolicyAllowsWhenEvidencePassed() {
+test('testPolicyAllowsWhenEvidencePassed', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
@@ -95,9 +96,9 @@ export function testPolicyAllowsWhenEvidencePassed() {
   }];
   const result = policy.evaluate([{ type: 'github.ci' }], evidence);
   assert.equal(result.outcome, 'allow');
-}
+});
 
-export function testPolicyDeniesWhenEvidenceFailed() {
+test('testPolicyDeniesWhenEvidenceFailed', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
@@ -106,9 +107,9 @@ export function testPolicyDeniesWhenEvidenceFailed() {
   }];
   const result = policy.evaluate([{ type: 'github.ci' }], evidence);
   assert.equal(result.outcome, 'deny', 'failed evidence should not satisfy requirement');
-}
+});
 
-export function testPolicyChecksConditions() {
+test('testPolicyChecksConditions', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
@@ -130,9 +131,9 @@ export function testPolicyChecksConditions() {
     evidence,
   );
   assert.equal(fail.outcome, 'deny');
-}
+});
 
-export function testPolicyRejectsExecutorSelfReport() {
+test('testPolicyRejectsExecutorSelfReport', () => {
   const policy = new CompletionPolicy();
   // Evidence sourced by the executor adapter must not satisfy github.ci requirement.
   const selfReported: Evidence[] = [{
@@ -142,9 +143,9 @@ export function testPolicyRejectsExecutorSelfReport() {
   }];
   const result = policy.evaluate([{ type: 'github.ci' }], selfReported);
   assert.equal(result.outcome, 'deny', 'executor self-report must not satisfy github.ci');
-}
+});
 
-export function testPolicyRejectsAdapterPrefixedSource() {
+test('testPolicyRejectsAdapterPrefixedSource', () => {
   const policy = new CompletionPolicy();
   const selfReported: Evidence[] = [{
     id: randomUUID(), workItemId: 'wi1',
@@ -153,9 +154,9 @@ export function testPolicyRejectsAdapterPrefixedSource() {
   }];
   const result = policy.evaluate([{ type: 'github.review' }], selfReported);
   assert.equal(result.outcome, 'deny', 'adapter-prefixed source must not satisfy github.review');
-}
+});
 
-export function testPolicyAllowsInternalEvidenceForNonExternalTypes() {
+test('testPolicyAllowsInternalEvidenceForNonExternalTypes', () => {
   const policy = new CompletionPolicy();
   // 'acceptance_criteria' is not in EXTERNAL_ONLY_TYPES — can be self-reported
   const internal: Evidence[] = [{
@@ -165,9 +166,9 @@ export function testPolicyAllowsInternalEvidenceForNonExternalTypes() {
   }];
   const result = policy.evaluate([{ type: 'acceptance_criteria' }], internal);
   assert.equal(result.outcome, 'allow');
-}
+});
 
-export function testPolicyMultipleRequirementsAllMustPass() {
+test('testPolicyMultipleRequirementsAllMustPass', () => {
   const policy = new CompletionPolicy();
   const evidence: Evidence[] = [
     { id: randomUUID(), workItemId: 'wi1', type: 'github.ci', source: 'github', status: 'passed', payload: {}, collectedAt: new Date().toISOString() },
@@ -179,13 +180,13 @@ export function testPolicyMultipleRequirementsAllMustPass() {
   );
   assert.equal(result.outcome, 'deny');
   assert.ok(result.reason.includes('ci_toolkit.semantic_review'));
-}
+});
 
 // ============================================================================
 // EvidenceService
 // ============================================================================
 
-export function testEvidenceServiceRecord() {
+test('testEvidenceServiceRecord', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -204,9 +205,9 @@ export function testEvidenceServiceRecord() {
   const listed = svc.listByWorkItem(wi.id);
   assert.equal(listed.length, 1);
   assert.equal(listed[0].type, 'github.ci');
-}
+});
 
-export function testEvidenceServiceEvaluateCompletion() {
+test('testEvidenceServiceEvaluateCompletion', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -228,9 +229,9 @@ export function testEvidenceServiceEvaluateCompletion() {
   svc.record(makeEvidence(wi.id, { type: 'github.ci', source: 'github', status: 'passed' }));
   const after = svc.evaluateCompletion(wi);
   assert.equal(after.outcome, 'allow');
-}
+});
 
-export function testEvidenceServiceNoRequirementsAlwaysAllows() {
+test('testEvidenceServiceNoRequirementsAlwaysAllows', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -245,13 +246,13 @@ export function testEvidenceServiceNoRequirementsAlwaysAllows() {
   const svc = new EvidenceService(db);
   const result = svc.evaluateCompletion(wi);
   assert.equal(result.outcome, 'allow');
-}
+});
 
 // ============================================================================
 // WorkService.complete() — evidence guard integration
 // ============================================================================
 
-export function testCompleteBlockedByEvidencePolicy() {
+test('testCompleteBlockedByEvidencePolicy', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -274,9 +275,9 @@ export function testCompleteBlockedByEvidencePolicy() {
     },
     'complete() should throw when evidence not satisfied',
   );
-}
+});
 
-export function testCompleteAllowedAfterEvidenceSatisfied() {
+test('testCompleteAllowedAfterEvidenceSatisfied', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -294,9 +295,9 @@ export function testCompleteAllowedAfterEvidenceSatisfied() {
   const svc = new WorkService(db, workspace.id, { evidenceGuard: evidenceSvc.asGuard() });
   const result = svc.complete({ workItemId: wi.id });
   assert.equal(result.state, 'completed');
-}
+});
 
-export function testCompleteWithNoRequirementsNeedsNoEvidence() {
+test('testCompleteWithNoRequirementsNeedsNoEvidence', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -314,13 +315,13 @@ export function testCompleteWithNoRequirementsNeedsNoEvidence() {
   // Should complete without any evidence records
   const result = svc.complete({ workItemId: wi.id });
   assert.equal(result.state, 'completed');
-}
+});
 
 // ============================================================================
 // GithubCiCollector
 // ============================================================================
 
-export async function testGithubCiCollectorPassed() {
+test('testGithubCiCollectorPassed', async () => {
   const stub: GitHubAdapter = new StubGitHubAdapter(
     { sha: 'abc123', conclusion: 'success', workflowRuns: [] },
     { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
@@ -339,9 +340,9 @@ export async function testGithubCiCollectorPassed() {
   assert.equal(results[0].status, 'passed');
   assert.equal(results[0].source, 'github');
   assert.equal(results[0].subjectRef, 'abc123');
-}
+});
 
-export async function testGithubCiCollectorFailed() {
+test('testGithubCiCollectorFailed', async () => {
   const stub = new StubGitHubAdapter(
     { sha: '', conclusion: 'failure', workflowRuns: [] },
     { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
@@ -356,9 +357,9 @@ export async function testGithubCiCollectorFailed() {
   });
 
   assert.equal(results[0].status, 'failed');
-}
+});
 
-export async function testGithubCiCollectorPending() {
+test('testGithubCiCollectorPending', async () => {
   const stub = new StubGitHubAdapter(
     { sha: '', conclusion: null, workflowRuns: [] },
     { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
@@ -372,13 +373,13 @@ export async function testGithubCiCollectorPending() {
     },
   });
   assert.equal(results[0].status, 'informational');
-}
+});
 
 // ============================================================================
 // GithubReviewCollector
 // ============================================================================
 
-export async function testGithubReviewCollectorApproved() {
+test('testGithubReviewCollectorApproved', async () => {
   const stub = new StubGitHubAdapter(
     { sha: '', conclusion: 'success', workflowRuns: [] },
     {
@@ -401,9 +402,9 @@ export async function testGithubReviewCollectorApproved() {
   assert.equal(results[0].type, 'github.review');
   assert.equal(results[0].status, 'passed');
   assert.equal((results[0].payload as Record<string, unknown>)['approved'], true);
-}
+});
 
-export async function testGithubReviewCollectorChangesRequested() {
+test('testGithubReviewCollectorChangesRequested', async () => {
   const stub = new StubGitHubAdapter(
     { sha: '', conclusion: null, workflowRuns: [] },
     { prNumber: 7, approved: false, changesRequested: true, reviews: [] },
@@ -415,13 +416,13 @@ export async function testGithubReviewCollectorChangesRequested() {
     refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 7, headSha: 's' }] },
   });
   assert.equal(results[0].status, 'failed');
-}
+});
 
 // ============================================================================
 // ScopeDiffCollector
 // ============================================================================
 
-export async function testScopeDiffWithinScope() {
+test('testScopeDiffWithinScope', async () => {
   const collector = new ScopeDiffCollector(
     async () => ['src/foo.ts', 'src/bar.ts'],
     ['src/'],
@@ -436,9 +437,9 @@ export async function testScopeDiffWithinScope() {
   });
   assert.equal(results[0].status, 'passed');
   assert.equal((results[0].payload as Record<string, unknown>)['driftLevel'], 'within_scope');
-}
+});
 
-export async function testScopeDiffForbiddenChange() {
+test('testScopeDiffForbiddenChange', async () => {
   const collector = new ScopeDiffCollector(
     async () => ['src/foo.ts', 'infra/prod.tf'],
     ['src/'],
@@ -453,9 +454,9 @@ export async function testScopeDiffForbiddenChange() {
   });
   assert.equal(results[0].status, 'failed');
   assert.equal((results[0].payload as Record<string, unknown>)['driftLevel'], 'forbidden_change');
-}
+});
 
-export async function testScopeDiffMaterialExpansion() {
+test('testScopeDiffMaterialExpansion', async () => {
   const collector = new ScopeDiffCollector(
     async () => ['src/a.ts', 'docs/x.md', 'docs/y.md', 'docs/z.md'],
     ['src/'],
@@ -470,13 +471,13 @@ export async function testScopeDiffMaterialExpansion() {
   });
   assert.equal((results[0].payload as Record<string, unknown>)['driftLevel'], 'material_expansion');
   assert.equal(results[0].status, 'informational');
-}
+});
 
 // ============================================================================
 // EvidenceService.collectAll with registered collectors
 // ============================================================================
 
-export async function testEvidenceServiceCollectAll() {
+test('testEvidenceServiceCollectAll', async () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -514,4 +515,4 @@ export async function testEvidenceServiceCollectAll() {
   // After collection, completion policy should pass
   const eval_ = svc.evaluateCompletion(wi);
   assert.equal(eval_.outcome, 'allow');
-}
+});

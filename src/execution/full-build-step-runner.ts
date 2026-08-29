@@ -95,9 +95,9 @@ export class FullBuildStepRunner implements StepRunner {
 
   // -- review helpers -------------------------------------------------------
 
-  private async executeCritique(step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome> {
+  private async executeCritique(_step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome> {
     const { projectRoot } = this.deps;
-    const { cycleNumber, iteration, planningDepth } = ctx;
+    const { planningDepth } = ctx;
     const start = Date.now();
 
     if (!this.deps.criticAgent) {
@@ -152,7 +152,7 @@ export class FullBuildStepRunner implements StepRunner {
       artifacts_written: [],
       tokens_used: 0,
       duration_ms: Date.now() - start,
-      error: result.passed ? undefined : (result.failure_report?.message ?? 'Validation failed'),
+      error: result.passed ? undefined : (result.failure_report?.quick_summary ?? 'Validation failed'),
     };
   }
 

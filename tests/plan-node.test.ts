@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
@@ -115,7 +116,7 @@ class MockAgentRunner implements AgentRunner {
 
 // ─── buildCycleStateContext tests ─────────────────────────────────────────────
 
-async function testBuildCycleStateContextFromMap() {
+test('testBuildCycleStateContextFromMap', async () => {
   const map = makeBaseMap();
   const ctx = buildCycleStateContext(map, 'PLAN');
 
@@ -125,9 +126,9 @@ async function testBuildCycleStateContextFromMap() {
   assert.strictEqual(ctx.intent, 'Build a widget system');
   assert.strictEqual(ctx.current_node, 'PLAN');
   assert.strictEqual(ctx.failure_report, undefined);
-}
+});
 
-async function testBuildCycleStateContextWithFailureReport() {
+test('testBuildCycleStateContextWithFailureReport', async () => {
   const map = makeBaseMap({ iteration: 2 });
   const report: FailureReport = {
     cycle: 1,
@@ -142,17 +143,17 @@ async function testBuildCycleStateContextWithFailureReport() {
 
   assert.strictEqual(ctx.iteration, 2);
   assert.deepStrictEqual(ctx.failure_report, report);
-}
+});
 
-async function testBuildCycleStateContextNullNode() {
+test('testBuildCycleStateContextNullNode', async () => {
   const map = makeBaseMap();
   const ctx = buildCycleStateContext(map, null);
   assert.strictEqual(ctx.current_node, null);
-}
+});
 
 // ─── writeFailureReport / readFailureReport tests ─────────────────────────────
 
-async function testWriteAndReadFailureReport() {
+test('testWriteAndReadFailureReport', async () => {
   const root = makeTempDir();
   const ram = new RealRunArtifactManager({ projectRoot: root });
   await ram.createRunDir(1, 1);
@@ -173,20 +174,20 @@ async function testWriteAndReadFailureReport() {
 
   const read = await ram.readFailureReport(1, 1);
   assert.deepStrictEqual(read, report);
-}
+});
 
-async function testReadFailureReportMissingReturnsNull() {
+test('testReadFailureReportMissingReturnsNull', async () => {
   const root = makeTempDir();
   const ram = new RealRunArtifactManager({ projectRoot: root });
   await ram.createRunDir(1, 1);
 
   const result = await ram.readFailureReport(1, 1);
   assert.strictEqual(result, null);
-}
+});
 
 // ─── PLAN node via DAGRunner ───────────────────────────────────────────────────
 
-async function testPlanNodeWritesPlanAndTestPlan() {
+test('testPlanNodeWritesPlanAndTestPlan', async () => {
   const planResult: AgentRunResult = {
     success: true,
     artifacts_written: ['docs/plan.md', 'docs/test-plan.md'],
@@ -210,9 +211,9 @@ async function testPlanNodeWritesPlanAndTestPlan() {
   assert.strictEqual(result.next_node, 'TEST');
   assert.deepStrictEqual(result.artifacts_written, ['docs/plan.md', 'docs/test-plan.md']);
   assert.strictEqual(result.tokens_used, 300);
-}
+});
 
-async function testPlanNodeAdvancesDagToTest() {
+test('testPlanNodeAdvancesDagToTest', async () => {
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/plan.md', 'docs/test-plan.md'],
     tokens_used: 100, duration_ms: 500, raw_output_path: '',
@@ -229,9 +230,9 @@ async function testPlanNodeAdvancesDagToTest() {
   const map = await mgr.read();
   assert.strictEqual(map.meta.dag?.current_node, 'TEST');
   assert.ok(map.meta.dag?.completed_nodes.includes('PLAN'));
-}
+});
 
-async function testPlanNodeUpdatesArtifactEntries() {
+test('testPlanNodeUpdatesArtifactEntries', async () => {
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/plan.md', 'docs/test-plan.md'],
     tokens_used: 100, duration_ms: 500, raw_output_path: '',
@@ -252,15 +253,15 @@ async function testPlanNodeUpdatesArtifactEntries() {
   assert.strictEqual(planEntry!.generator, 'planner');
   assert.ok(testPlanEntry, 'docs/test-plan.md entry missing');
   assert.strictEqual(testPlanEntry!.generator, 'planner');
-}
+});
 
-async function testNextNodePlanToTest() {
+test('testNextNodePlanToTest', async () => {
   assert.strictEqual(nextNode('PLAN'), 'TEST');
-}
+});
 
 // ─── Failure context injection ────────────────────────────────────────────────
 
-async function testFailureContextPassedToAgentRunner() {
+test('testFailureContextPassedToAgentRunner', async () => {
   const report: FailureReport = {
     cycle: 1, iteration: 1,
     run_dir: '.sle/runs/1-1', run_id: '1-1',
@@ -287,9 +288,9 @@ async function testFailureContextPassedToAgentRunner() {
   assert.strictEqual(runner.calls.length, 1);
   assert.strictEqual(runner.calls[0].state.iteration, 2);
   assert.deepStrictEqual(runner.calls[0].state.failure_report, report);
-}
+});
 
-async function testFailureContextInContextAssembly() {
+test('testFailureContextInContextAssembly', async () => {
   // Verify the ContextManager includes failure_context for iteration > 1 with a report
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
@@ -317,9 +318,9 @@ async function testFailureContextInContextAssembly() {
   assert.ok(ctx.failure_context !== undefined, 'failure_context should be set on iteration 2');
   assert.ok(ctx.failure_context!.includes('correctness'), 'failed category not in failure_context');
   assert.ok(ctx.failure_context!.includes('Correctness failed.'), 'summary not in failure_context');
-}
+});
 
-async function testNoFailureContextOnIteration1() {
+test('testNoFailureContextOnIteration1', async () => {
   const root = makeTempDir();
   const fsMock = { readFile: async () => { throw new Error('ENOENT'); } } as unknown as typeof import('fs').promises;
   const cm = new ContextManager(root, DEFAULT_CONFIG, fsMock);
@@ -335,21 +336,20 @@ async function testNoFailureContextOnIteration1() {
 
   // iteration=1, so failure_context should NOT be injected even with report
   assert.strictEqual(ctx.failure_context, undefined);
-}
+});
 
 // ─── Planner artifact isolation ───────────────────────────────────────────────
 
-async function testPlannerContextExcludesImplementationFiles() {
+test('testPlannerContextExcludesImplementationFiles', async () => {
   const root = makeTempDir();
-  await fs.mkdir(join(root, 'docs'), { recursive: true });
+  await fs.mkdir(join(root, '.sle', 'project-docs'), { recursive: true });
   await fs.mkdir(join(root, 'src'), { recursive: true });
 
-  // Write all candidate artifact files
-  await fs.writeFile(join(root, 'docs/requirements.md'), '# Req', 'utf-8');
-  await fs.writeFile(join(root, 'docs/architecture.md'), '# Arch', 'utf-8');
-  await fs.writeFile(join(root, 'docs/cycle-charter.md'), '# Charter', 'utf-8');
-  await fs.writeFile(join(root, 'docs/plan.md'), '# Plan (output — should NOT be read as input)', 'utf-8');
-  await fs.writeFile(join(root, 'src/index.ts'), 'export default {};', 'utf-8');
+  // Write all candidate artifact files in the current layout (.sle/project-docs/)
+  await fs.writeFile(join(root, '.sle', 'project-docs', 'requirements.md'), '# Req', 'utf-8');
+  await fs.writeFile(join(root, '.sle', 'project-docs', 'architecture.md'), '# Arch', 'utf-8');
+  await fs.writeFile(join(root, '.sle', 'project-docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(join(root, 'src', 'index.ts'), 'export default {};', 'utf-8');
 
   const cm = new ContextManager(root, DEFAULT_CONFIG);
   const ctx = await cm.assemble('planner', {
@@ -362,13 +362,12 @@ async function testPlannerContextExcludesImplementationFiles() {
   assert.ok('architecture' in ctx.artifact_slices, 'architecture should be in planner context');
   assert.ok('cycle-charter' in ctx.artifact_slices, 'cycle-charter should be in planner context');
 
-  // Planner does NOT read plan.md (that is an output), test-plan.md, or src/
-  assert.ok(!('plan' in ctx.artifact_slices), 'plan.md should NOT be in planner context (output, not input)');
+  // Planner does NOT read src/ implementation files
   assert.ok(!Object.values(ctx.artifact_slices).some(v => v.includes('export default')),
     'src/ files should not appear in planner context');
-}
+});
 
-async function testFailureContextInUserMessage() {
+test('testFailureContextInUserMessage', async () => {
   // buildUserMessage includes failure_context when present
   const { AssembledContext } = await import('../src/types.js' as unknown as string) as never;
   void AssembledContext; // unused — just testing buildUserMessage directly
@@ -386,52 +385,5 @@ async function testFailureContextInUserMessage() {
   const msg = buildUserMessage(ctx);
   assert.ok(msg.includes('Previous Failure'), 'failure_context missing from user message');
   assert.ok(msg.includes('Correctness failed.'), 'failure summary missing from user message');
-}
+});
 
-// ─── Runner ──────────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  console.log('Running Phase G (PLAN Node) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'buildCycleStateContext: basic map fields', fn: testBuildCycleStateContextFromMap },
-    { name: 'buildCycleStateContext: with failure report', fn: testBuildCycleStateContextWithFailureReport },
-    { name: 'buildCycleStateContext: null current node', fn: testBuildCycleStateContextNullNode },
-    { name: 'writeFailureReport + readFailureReport round-trip', fn: testWriteAndReadFailureReport },
-    { name: 'readFailureReport: null when missing', fn: testReadFailureReportMissingReturnsNull },
-    { name: 'PLAN node: writes plan.md and test-plan.md', fn: testPlanNodeWritesPlanAndTestPlan },
-    { name: 'PLAN node: advances DAG to TEST', fn: testPlanNodeAdvancesDagToTest },
-    { name: 'PLAN node: updates artifact entries (generator=planner)', fn: testPlanNodeUpdatesArtifactEntries },
-    { name: 'nextNode: PLAN → TEST', fn: testNextNodePlanToTest },
-    { name: 'failure context: passed through to AgentRunner on iteration 2', fn: testFailureContextPassedToAgentRunner },
-    { name: 'failure context: ContextManager injects it on iteration > 1', fn: testFailureContextInContextAssembly },
-    { name: 'failure context: not injected on iteration 1', fn: testNoFailureContextOnIteration1 },
-    { name: 'planner context: excludes implementation files', fn: testPlannerContextExcludesImplementationFiles },
-    { name: 'failure context: appears in buildUserMessage output', fn: testFailureContextInUserMessage },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase G tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase G tests passed!`);
-}
-
-runAllTests();

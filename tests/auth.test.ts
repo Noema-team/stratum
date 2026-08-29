@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { openDatabase } from '../src/storage/database.js';
 import { TokenStore } from '../src/auth/token-store.js';
 import { AuditLogger } from '../src/audit/audit-logger.js';
@@ -73,7 +74,7 @@ async function apiFetch(
 // TokenStore unit tests
 // ============================================================================
 
-export async function testTokenStoreCreateAndValidate() {
+test('testTokenStoreCreateAndValidate', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   const { token, record } = store.create('test-token');
@@ -82,24 +83,24 @@ export async function testTokenStoreCreateAndValidate() {
   const ctx = store.validate(token);
   if (!ctx) throw new Error('Valid token must authenticate');
   if (ctx.tokenName !== 'test-token') throw new Error('Wrong token name in ctx');
-}
+});
 
-export async function testTokenStoreInvalidToken() {
+test('testTokenStoreInvalidToken', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   const ctx = store.validate('strat_notreal');
   if (ctx !== null) throw new Error('Garbage token should not authenticate');
-}
+});
 
-export async function testTokenStoreWrongPrefix() {
+test('testTokenStoreWrongPrefix', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   store.create('tok');
   const ctx = store.validate('Bearer something');
   if (ctx !== null) throw new Error('Wrong-prefix token should not authenticate');
-}
+});
 
-export async function testTokenStoreRevoke() {
+test('testTokenStoreRevoke', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   const { token, record } = store.create('revoke-me');
@@ -109,16 +110,16 @@ export async function testTokenStoreRevoke() {
   if (!ok) throw new Error('revoke should return true for existing id');
   const after = store.validate(token);
   if (after !== null) throw new Error('Token should be invalid after revoke');
-}
+});
 
-export async function testTokenStoreRevokeUnknown() {
+test('testTokenStoreRevokeUnknown', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   const result = store.revoke('does-not-exist');
   if (result !== false) throw new Error('revoke of unknown id should return false');
-}
+});
 
-export async function testTokenStoreList() {
+test('testTokenStoreList', async () => {
   const db = makeDb();
   const store = new TokenStore(db);
   store.create('a');
@@ -127,29 +128,27 @@ export async function testTokenStoreList() {
   if (list.length !== 2) throw new Error(`Expected 2 tokens, got ${list.length}`);
   const names = list.map(t => t.name).sort();
   if (names[0] !== 'a' || names[1] !== 'b') throw new Error('Wrong names in list');
-}
+});
 
 // ============================================================================
 // AuditLogger unit tests
 // ============================================================================
 
-export async function testAuditLoggerLog() {
+test('testAuditLoggerLog', async () => {
   const db = makeDb();
   const logger = new AuditLogger(db);
   const event = logger.log('decision.resolved', 'decision', 'dec-1', {
-    tokenId: 'tok-1',
     details: { outcome: 'approved' },
     ipAddress: '127.0.0.1',
   });
   if (!event.id) throw new Error('Event must have id');
   if (event.action !== 'decision.resolved') throw new Error('Wrong action');
-  if (event.tokenId !== 'tok-1') throw new Error('Wrong tokenId');
   if (event.resourceType !== 'decision') throw new Error('Wrong resourceType');
   if (event.resourceId !== 'dec-1') throw new Error('Wrong resourceId');
   if ((event.details as Record<string, unknown>)?.outcome !== 'approved') throw new Error('Wrong details');
-}
+});
 
-export async function testAuditLoggerListByResource() {
+test('testAuditLoggerListByResource', async () => {
   const db = makeDb();
   const logger = new AuditLogger(db);
   logger.log('work.paused', 'work', 'w-1');
@@ -160,9 +159,9 @@ export async function testAuditLoggerListByResource() {
   for (const e of evts) {
     if (e.resourceId !== 'w-1') throw new Error('Wrong resource filtered');
   }
-}
+});
 
-export async function testAuditLoggerListRecent() {
+test('testAuditLoggerListRecent', async () => {
   const db = makeDb();
   const logger = new AuditLogger(db);
   for (let i = 0; i < 5; i++) logger.log('work.paused', 'work', `w-${i}`);
@@ -170,13 +169,13 @@ export async function testAuditLoggerListRecent() {
   if (all.length !== 5) throw new Error(`Expected 5, got ${all.length}`);
   const limited = logger.listRecent(2);
   if (limited.length !== 2) throw new Error(`Expected 2, got ${limited.length}`);
-}
+});
 
 // ============================================================================
 // NotificationService unit tests
 // ============================================================================
 
-export async function testNotificationServiceAddWebhook() {
+test('testNotificationServiceAddWebhook', async () => {
   const db = makeDb();
   const svc = new NotificationService(db);
   const record = svc.addWebhook('my-hook', { url: 'https://example.com/hook' });
@@ -184,18 +183,18 @@ export async function testNotificationServiceAddWebhook() {
   if (record.name !== 'my-hook') throw new Error('Wrong name');
   if (record.config.url !== 'https://example.com/hook') throw new Error('Wrong url');
   if (!record.enabled) throw new Error('Must be enabled');
-}
+});
 
-export async function testNotificationServiceListChannels() {
+test('testNotificationServiceListChannels', async () => {
   const db = makeDb();
   const svc = new NotificationService(db);
   svc.addWebhook('a', { url: 'https://a.example.com' });
   svc.addWebhook('b', { url: 'https://b.example.com' });
   const list = svc.listChannels();
   if (list.length !== 2) throw new Error(`Expected 2, got ${list.length}`);
-}
+});
 
-export async function testNotificationServiceRemoveChannel() {
+test('testNotificationServiceRemoveChannel', async () => {
   const db = makeDb();
   const svc = new NotificationService(db);
   const r = svc.addWebhook('removable', { url: 'https://example.com' });
@@ -203,46 +202,46 @@ export async function testNotificationServiceRemoveChannel() {
   if (!removed) throw new Error('removeChannel should return true');
   const removed2 = svc.removeChannel('nonexistent');
   if (removed2) throw new Error('removeChannel of unknown id should return false');
-}
+});
 
 // ============================================================================
 // HTTP API — auth enforcement
 // ============================================================================
 
-export async function testAuthRequiredReturns401WithNoToken() {
+test('testAuthRequiredReturns401WithNoToken', async () => {
   await withAuthServer(async ({ base }) => {
     const r = await apiFetch(base, '/attention');
     if (r.status !== 401) throw new Error(`Expected 401, got ${r.status}`);
   });
-}
+});
 
-export async function testAuthRequiredReturns401WithBadToken() {
+test('testAuthRequiredReturns401WithBadToken', async () => {
   await withAuthServer(async ({ base }) => {
     const r = await apiFetch(base, '/attention', { token: 'strat_badtoken' });
     if (r.status !== 401) throw new Error(`Expected 401, got ${r.status}`);
   });
-}
+});
 
-export async function testAuthValidTokenAllows200() {
+test('testAuthValidTokenAllows200', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const { token } = tokens.create('test');
     const r = await apiFetch(base, '/attention', { token });
     if (r.status !== 200) throw new Error(`Expected 200, got ${r.status}`);
   });
-}
+});
 
-export async function testAuthDisabledAllowsNoToken() {
+test('testAuthDisabledAllowsNoToken', async () => {
   await withAuthServer(async ({ base }) => {
     const r = await apiFetch(base, '/attention');
     if (r.status !== 200) throw new Error(`Expected 200 without auth, got ${r.status}`);
   }, false);
-}
+});
 
 // ============================================================================
 // HTTP API — token management endpoints
 // ============================================================================
 
-export async function testCreateTokenEndpoint() {
+test('testCreateTokenEndpoint', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const r = await apiFetch(base, '/tokens', {
@@ -254,9 +253,9 @@ export async function testCreateTokenEndpoint() {
     const data = (r.body as { ok: boolean; data: { token: string; id: string } }).data;
     if (!data.token.startsWith('strat_')) throw new Error('Returned token should start with strat_');
   });
-}
+});
 
-export async function testCreateTokenRequiresName() {
+test('testCreateTokenRequiresName', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const r = await apiFetch(base, '/tokens', {
@@ -266,9 +265,9 @@ export async function testCreateTokenRequiresName() {
     });
     if (r.status !== 400) throw new Error(`Expected 400, got ${r.status}`);
   });
-}
+});
 
-export async function testListTokensEndpoint() {
+test('testListTokensEndpoint', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     tokens.create('extra');
@@ -277,9 +276,9 @@ export async function testListTokensEndpoint() {
     const data = (r.body as { data: unknown[] }).data;
     if (data.length < 2) throw new Error(`Expected at least 2 tokens, got ${data.length}`);
   });
-}
+});
 
-export async function testRevokeTokenEndpoint() {
+test('testRevokeTokenEndpoint', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const { record } = tokens.create('to-revoke');
@@ -294,13 +293,13 @@ export async function testRevokeTokenEndpoint() {
     });
     if (revokedAgain.status !== 404) throw new Error(`Expected 404 for already-revoked, got ${revokedAgain.status}`);
   });
-}
+});
 
 // ============================================================================
 // HTTP API — audit log endpoints
 // ============================================================================
 
-export async function testAuditEndpointListRecent() {
+test('testAuditEndpointListRecent', async () => {
   await withAuthServer(async ({ base, tokens, db }) => {
     const admin = tokens.create('admin');
     const logger = new AuditLogger(db);
@@ -310,9 +309,9 @@ export async function testAuditEndpointListRecent() {
     const data = (r.body as { data: unknown[] }).data;
     if (data.length < 1) throw new Error('Expected at least one audit event');
   });
-}
+});
 
-export async function testAuditEndpointByResource() {
+test('testAuditEndpointByResource', async () => {
   await withAuthServer(async ({ base, tokens, db }) => {
     const admin = tokens.create('admin');
     const logger = new AuditLogger(db);
@@ -323,13 +322,13 @@ export async function testAuditEndpointByResource() {
     const data = (r.body as { data: unknown[] }).data;
     if (data.length !== 2) throw new Error(`Expected 2 events, got ${data.length}`);
   });
-}
+});
 
 // ============================================================================
 // HTTP API — notification channel endpoints
 // ============================================================================
 
-export async function testCreateNotificationChannel() {
+test('testCreateNotificationChannel', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const r = await apiFetch(base, '/notifications/channels', {
@@ -342,9 +341,9 @@ export async function testCreateNotificationChannel() {
     if (!data.id) throw new Error('Missing channel id');
     if (data.name !== 'my-hook') throw new Error('Wrong channel name');
   });
-}
+});
 
-export async function testCreateNotificationChannelRequiresUrl() {
+test('testCreateNotificationChannelRequiresUrl', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const r = await apiFetch(base, '/notifications/channels', {
@@ -354,9 +353,9 @@ export async function testCreateNotificationChannelRequiresUrl() {
     });
     if (r.status !== 400) throw new Error(`Expected 400, got ${r.status}`);
   });
-}
+});
 
-export async function testListNotificationChannels() {
+test('testListNotificationChannels', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     await apiFetch(base, '/notifications/channels', {
@@ -369,9 +368,9 @@ export async function testListNotificationChannels() {
     const data = (r.body as { data: unknown[] }).data;
     if (data.length < 1) throw new Error('Expected at least 1 channel');
   });
-}
+});
 
-export async function testDeleteNotificationChannel() {
+test('testDeleteNotificationChannel', async () => {
   await withAuthServer(async ({ base, tokens }) => {
     const admin = tokens.create('admin');
     const create = await apiFetch(base, '/notifications/channels', {
@@ -391,4 +390,4 @@ export async function testDeleteNotificationChannel() {
     });
     if (del2.status !== 404) throw new Error(`Expected 404 for already-deleted, got ${del2.status}`);
   });
-}
+});

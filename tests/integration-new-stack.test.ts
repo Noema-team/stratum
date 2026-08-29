@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 // §29.4 End-to-end integration test — new control-plane stack (DDR-032)
 //
 // Exercises the full flow without a real claude binary:
@@ -33,7 +34,8 @@ function makeDb(): Database.Database {
 
 function seed(db: Database.Database): void {
   db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES (?,?,?)").run(WS, 'E2E Workspace', new Date().toISOString());
-  db.prepare("INSERT INTO projects (id, workspace_id, name, created_at) VALUES (?,?,?,?)").run(PROJ, WS, 'E2E Project', new Date().toISOString());
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects (id, workspace_id, name, status, priority, created_at, updated_at) VALUES (?,?,?,?,?,?,?)").run(PROJ, WS, 'E2E Project', 'active', 0, now, now);
 }
 
 function makeItem(db: Database.Database, partial: Partial<WorkItem> = {}): WorkItem {
@@ -65,7 +67,7 @@ function makeItem(db: Database.Database, partial: Partial<WorkItem> = {}): WorkI
 // ============================================================================
 
 // Full happy path: draft → ready → running (via Scheduler+echo) → in_review → completed.
-export async function testFullNewStackHappyPath() {
+test('testFullNewStackHappyPath', async () => {
   const db = makeDb();
   seed(db);
 
@@ -121,10 +123,10 @@ export async function testFullNewStackHappyPath() {
   // Final event count must be even larger.
   const finalEvents = events.listByWorkspace(WS).length;
   if (finalEvents <= afterEvents) throw new Error('Events must grow on complete()');
-}
+});
 
 // Evidence recorded after execution is queryable and linked to the work item.
-export async function testEvidenceRecordedDuringRun() {
+test('testEvidenceRecordedDuringRun', async () => {
   const db = makeDb();
   seed(db);
 
@@ -151,10 +153,10 @@ export async function testEvidenceRecordedDuringRun() {
   if (listed.length === 0) throw new Error('Evidence must be retrievable by work item');
   if (listed[0].type !== 'test_pass') throw new Error(`Evidence type must be preserved, got ${listed[0].type}`);
   if (listed[0].workItemId !== item.id) throw new Error('Evidence must be linked to work item');
-}
+});
 
 // Scheduler skips items whose dependencies are unmet.
-export async function testSchedulerSkipsDependencyBlocked() {
+test('testSchedulerSkipsDependencyBlocked', async () => {
   const db = makeDb();
   seed(db);
 
@@ -187,10 +189,10 @@ export async function testSchedulerSkipsDependencyBlocked() {
   const after = items.findById(item.id);
   if (!after) throw new Error('WorkItem disappeared');
   if (after.state !== 'ready') throw new Error(`Expected ready state preserved, got ${after.state}`);
-}
+});
 
 // Scheduler dispatch failure → work item transitions to failed, not stuck.
-export async function testSchedulerFailureTransitionsToFailed() {
+test('testSchedulerFailureTransitionsToFailed', async () => {
   const db = makeDb();
   seed(db);
 
@@ -213,10 +215,10 @@ export async function testSchedulerFailureTransitionsToFailed() {
   if (after.state !== 'failed') {
     throw new Error(`Expected failed state after adapter exit 1, got ${after.state}`);
   }
-}
+});
 
 // State integrity: no WorkItem ends in an undefined or unknown state after any flow.
-export async function testStateIntegrityAfterDispatch() {
+test('testStateIntegrityAfterDispatch', async () => {
   const db = makeDb();
   seed(db);
 
@@ -248,4 +250,4 @@ export async function testStateIntegrityAfterDispatch() {
       throw new Error(`WorkItem ${wi.id} ended in illegal state '${wi.state}'`);
     }
   }
-}
+});

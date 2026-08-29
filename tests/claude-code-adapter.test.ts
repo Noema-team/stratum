@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 // §29.3 Adapter contract tests — ClaudeCodeAdapter (DDR-032)
 //
 // Verifies the adapter conforms to the ExecutionAdapter contract without
@@ -35,22 +36,22 @@ function makeRequest(partial: Partial<ExecutionRequest> = {}): ExecutionRequest 
 // ============================================================================
 
 // Contract: adapter has an immutable id
-export async function testClaudeCodeAdapterHasId() {
+test('testClaudeCodeAdapterHasId', async () => {
   const adapter = new ClaudeCodeAdapter();
   if (adapter.id !== 'claude-code') throw new Error(`Expected id 'claude-code', got '${adapter.id}'`);
-}
+});
 
 // Contract: getCapabilities returns a non-empty ReadonlySet
-export async function testClaudeCodeAdapterHasCapabilities() {
+test('testClaudeCodeAdapterHasCapabilities', async () => {
   const adapter = new ClaudeCodeAdapter();
   const caps = adapter.getCapabilities();
   if (caps.size === 0) throw new Error('Capabilities must not be empty');
   if (!caps.has('repo.read')) throw new Error('Must claim repo.read capability');
   if (!caps.has('repo.write')) throw new Error('Must claim repo.write capability');
-}
+});
 
 // Contract: execute() returns a schema-valid ExecutionResult with schemaVersion:1
-export async function testClaudeCodeAdapterReturnsSchemaValidResult() {
+test('testClaudeCodeAdapterReturnsSchemaValidResult', async () => {
   // Use 'echo' as a stand-in binary — it exits 0 and prints the first arg
   const adapter = new ClaudeCodeAdapter({ binaryPath: 'echo' });
   const req = makeRequest();
@@ -63,27 +64,27 @@ export async function testClaudeCodeAdapterReturnsSchemaValidResult() {
   if (!Array.isArray(result.evidenceClaims)) throw new Error('evidenceClaims must be an array');
   if (!Array.isArray(result.decisionRequests)) throw new Error('decisionRequests must be an array');
   if (typeof result.usage?.durationMs !== 'number') throw new Error('usage.durationMs must be a number');
-}
+});
 
 // Contract: successful exit (echo exits 0) → outcome 'succeeded'
-export async function testClaudeCodeAdapterSuccessOnZeroExit() {
+test('testClaudeCodeAdapterSuccessOnZeroExit', async () => {
   const adapter = new ClaudeCodeAdapter({ binaryPath: 'echo' });
   const result = await adapter.execute(makeRequest());
   if (result.outcome !== 'succeeded') throw new Error(`Expected succeeded, got ${result.outcome}`);
   if (result.failure !== undefined) throw new Error('failure must be undefined on success');
-}
+});
 
 // Contract: nonexistent binary → outcome 'failed' with spawn_error, no unhandled throw
-export async function testClaudeCodeAdapterFailsOnMissingBinary() {
+test('testClaudeCodeAdapterFailsOnMissingBinary', async () => {
   const adapter = new ClaudeCodeAdapter({ binaryPath: '/nonexistent/bin/claude-code-fake' });
   const result = await adapter.execute(makeRequest());
   if (result.outcome !== 'failed') throw new Error(`Expected failed, got ${result.outcome}`);
   if (!result.failure) throw new Error('failure must be set when binary is missing');
   if (result.failure.code !== 'spawn_error') throw new Error(`Expected spawn_error, got ${result.failure.code}`);
-}
+});
 
 // Contract: timeout respected — use a binary that sleeps longer than the budget
-export async function testClaudeCodeAdapterTimesOut() {
+test('testClaudeCodeAdapterTimesOut', async () => {
   const adapter = new ClaudeCodeAdapter({ binaryPath: 'sleep', defaultTimeoutMs: 100 });
   const req = makeRequest({ budget: { maxRuntimeMs: 100 } });
 
@@ -95,22 +96,22 @@ export async function testClaudeCodeAdapterTimesOut() {
   const adapter2 = new ClaudeCodeAdapter({ binaryPath: 'sh', extraFlags: ['-c', 'sleep 5'], defaultTimeoutMs: 200 });
   const result = await adapter2.execute(overrideReq);
   if (result.outcome !== 'failed') throw new Error(`Expected failed on timeout, got ${result.outcome}`);
-}
+});
 
 // ============================================================================
 // StratumAgentAdapter contract compliance (parallel verification)
 // ============================================================================
 
 // Contract: StratumAgentAdapter has a distinct id from ClaudeCodeAdapter
-export async function testAdaptersHaveDistinctIds() {
+test('testAdaptersHaveDistinctIds', async () => {
   const a1: ExecutionAdapter = new ClaudeCodeAdapter();
   // StratumAgentAdapter requires deps — we check id via the class directly
   if (a1.id === 'stratum-agent') throw new Error('claude-code and stratum-agent must have distinct ids');
   if (a1.id !== 'claude-code') throw new Error(`Expected 'claude-code', got '${a1.id}'`);
-}
+});
 
 // Contract: capabilities are stable (same set on every call)
-export async function testCapabilitiesAreStable() {
+test('testCapabilitiesAreStable', async () => {
   const adapter = new ClaudeCodeAdapter();
   const caps1 = adapter.getCapabilities();
   const caps2 = adapter.getCapabilities();
@@ -118,7 +119,7 @@ export async function testCapabilitiesAreStable() {
   for (const c of caps1) {
     if (!caps2.has(c)) throw new Error(`Capability ${c} disappeared between calls`);
   }
-}
+});
 
 // ============================================================================
 // ExecutorRegistry — two-adapter registration
@@ -126,7 +127,7 @@ export async function testCapabilitiesAreStable() {
 
 // The registry accepts both adapters and can look them up by capability.
 // This satisfies DDR-032 §37 criterion 13: at least two adapter implementations.
-export async function testRegistryHoldsTwoAdapters() {
+test('testRegistryHoldsTwoAdapters', async () => {
   const registry = new ExecutorRegistry();
   const cc = new ClaudeCodeAdapter();
 
@@ -134,18 +135,18 @@ export async function testRegistryHoldsTwoAdapters() {
 
   const all = registry.list();
   if (!all.some(a => a.id === 'claude-code')) throw new Error('Registry must contain claude-code');
-}
+});
 
-export async function testRegistryFindsAdapterByCapability() {
+test('testRegistryFindsAdapterByCapability', async () => {
   const registry = new ExecutorRegistry();
   registry.register(new ClaudeCodeAdapter());
 
   const found = registry.findByCapabilities(new Set(['repo.read', 'repo.write']));
   if (!found) throw new Error('Should find an adapter with repo.read + repo.write');
   if (found.id !== 'claude-code') throw new Error(`Expected claude-code, got ${found.id}`);
-}
+});
 
-export async function testRegistryReturnsNullForUnsatisfiableCapabilities() {
+test('testRegistryReturnsNullForUnsatisfiableCapabilities', async () => {
   const registry = new ExecutorRegistry();
   registry.register(new ClaudeCodeAdapter());
 
@@ -154,4 +155,4 @@ export async function testRegistryReturnsNullForUnsatisfiableCapabilities() {
   const found = registry.findByCapabilities(new Set(['browser' as 'browser']));
   // May be null or an adapter — just verify it doesn't throw
   void found;
-}
+});

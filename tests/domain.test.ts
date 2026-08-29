@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   WorkspaceSchema,
@@ -30,90 +31,90 @@ const NOW = new Date().toISOString();
 // Workspace
 // ============================================================================
 
-export function testWorkspaceValid() {
+test('testWorkspaceValid', () => {
   const result = WorkspaceSchema.safeParse({ id: WS_ID, name: 'Magnor', createdAt: NOW });
   assert(result.success, 'valid workspace should parse');
-}
+});
 
-export function testWorkspaceRejectsInvalidUUID() {
+test('testWorkspaceRejectsInvalidUUID', () => {
   const result = WorkspaceSchema.safeParse({ id: 'not-a-uuid', name: 'X', createdAt: NOW });
   assert(!result.success, 'bad UUID should fail');
-}
+});
 
-export function testWorkspaceRejectsEmptyName() {
+test('testWorkspaceRejectsEmptyName', () => {
   const result = WorkspaceSchema.safeParse({ id: WS_ID, name: '', createdAt: NOW });
   assert(!result.success, 'empty name should fail');
-}
+});
 
-export function testWorkspaceRoundTrip() {
+test('testWorkspaceRoundTrip', () => {
   const ws = { id: WS_ID, name: 'Magnor', createdAt: NOW };
   const parsed = WorkspaceSchema.parse(ws);
   assert.deepEqual(parsed, ws);
-}
+});
 
 // ============================================================================
 // Project
 // ============================================================================
 
-export function testProjectValid() {
+test('testProjectValid', () => {
   const result = ProjectSchema.safeParse({
     id: PROJ_ID, workspaceId: WS_ID, name: 'Stratum',
     status: 'active', priority: 1, createdAt: NOW, updatedAt: NOW,
   });
   assert(result.success, 'valid project should parse');
-}
+});
 
-export function testProjectRejectsInvalidStatus() {
+test('testProjectRejectsInvalidStatus', () => {
   const result = ProjectSchema.safeParse({
     id: PROJ_ID, workspaceId: WS_ID, name: 'Stratum',
     status: 'running', priority: 1, createdAt: NOW, updatedAt: NOW,
   });
   assert(!result.success, 'invalid status should fail');
-}
+});
 
-export function testProjectRejectsNegativePriority() {
+test('testProjectRejectsNegativePriority', () => {
   const result = ProjectSchema.safeParse({
     id: PROJ_ID, workspaceId: WS_ID, name: 'Stratum',
     status: 'active', priority: -1, createdAt: NOW, updatedAt: NOW,
   });
   assert(!result.success, 'negative priority should fail');
-}
+});
 
-export function testProjectOptionalDescription() {
+test('testProjectOptionalDescription', () => {
   const result = ProjectSchema.safeParse({
     id: PROJ_ID, workspaceId: WS_ID, name: 'Stratum',
     status: 'active', priority: 0, createdAt: NOW, updatedAt: NOW,
     description: 'Control plane',
   });
   assert(result.success && result.data.description === 'Control plane');
-}
+});
 
 // ============================================================================
 // Repository
 // ============================================================================
 
-export function testRepositoryValid() {
+test('testRepositoryValid', () => {
   const result = RepositorySchema.safeParse({
     id: REPO_ID, projectId: PROJ_ID, provider: 'github',
     remote: 'git@github.com:noema-team/stratum.git',
     defaultBranch: 'main', status: 'active',
   });
   assert(result.success, 'valid repository should parse');
-}
+});
 
-export function testRepositoryRejectsUnknownProvider() {
+test('testRepositoryRejectsUnknownProvider', () => {
   const result = RepositorySchema.safeParse({
     id: REPO_ID, projectId: PROJ_ID, provider: 'gitlab',
     remote: 'git@gitlab.com:x/y.git', defaultBranch: 'main', status: 'active',
   });
   assert(!result.success, 'unknown provider should fail');
-}
+});
 
 // ============================================================================
 // Objective
 // ============================================================================
 
-export function testObjectiveValid() {
+test('testObjectiveValid', () => {
   const result = ObjectiveSchema.safeParse({
     id: OBJ_ID, projectId: PROJ_ID,
     title: 'Fix scheduling race', description: 'Eliminate the race condition in task dispatch',
@@ -122,9 +123,9 @@ export function testObjectiveValid() {
     successCriteria: [{ description: 'All race tests pass' }],
   });
   assert(result.success, 'valid objective should parse');
-}
+});
 
-export function testObjectiveRejectsEmptyTitle() {
+test('testObjectiveRejectsEmptyTitle', () => {
   const result = ObjectiveSchema.safeParse({
     id: OBJ_ID, projectId: PROJ_ID,
     title: '', description: 'desc',
@@ -132,7 +133,7 @@ export function testObjectiveRejectsEmptyTitle() {
     constraints: [], successCriteria: [],
   });
   assert(!result.success, 'empty title should fail');
-}
+});
 
 // ============================================================================
 // WorkItem
@@ -147,34 +148,34 @@ const BASE_WORK_ITEM = {
   dependencies: [], createdAt: NOW, updatedAt: NOW,
 };
 
-export function testWorkItemValid() {
+test('testWorkItemValid', () => {
   const result = WorkItemSchema.safeParse(BASE_WORK_ITEM);
   assert(result.success, 'valid work item should parse');
-}
+});
 
-export function testWorkItemAllStates() {
+test('testWorkItemAllStates', () => {
   const states = ['draft', 'ready', 'running', 'in_review', 'completed',
                    'needs_decision', 'blocked', 'failed', 'paused', 'cancelled'];
   for (const state of states) {
     const result = WorkItemSchema.safeParse({ ...BASE_WORK_ITEM, state });
     assert(result.success, `state "${state}" should be valid`);
   }
-}
+});
 
-export function testWorkItemRejectsUnknownState() {
+test('testWorkItemRejectsUnknownState', () => {
   const result = WorkItemSchema.safeParse({ ...BASE_WORK_ITEM, state: 'queued' });
   assert(!result.success, 'unknown state should fail');
-}
+});
 
-export function testWorkItemTerminalStates() {
+test('testWorkItemTerminalStates', () => {
   assert(isWorkItemTerminal('completed'));
   assert(isWorkItemTerminal('failed'));
   assert(isWorkItemTerminal('cancelled'));
   assert(!isWorkItemTerminal('running'));
   assert(!isWorkItemTerminal('paused'));
-}
+});
 
-export function testWorkItemWithEvidenceRequirement() {
+test('testWorkItemWithEvidenceRequirement', () => {
   const result = WorkItemSchema.safeParse({
     ...BASE_WORK_ITEM,
     requiredEvidence: [
@@ -183,7 +184,7 @@ export function testWorkItemWithEvidenceRequirement() {
     ],
   });
   assert(result.success, 'evidence requirements should parse');
-}
+});
 
 // ============================================================================
 // StepExecution
@@ -196,31 +197,31 @@ const BASE_STEP = {
   executor: 'stratum-agent', state: 'dispatched' as const, attempt: 1,
 };
 
-export function testStepExecutionValid() {
+test('testStepExecutionValid', () => {
   const result = StepExecutionSchema.safeParse(BASE_STEP);
   assert(result.success, 'valid step execution should parse');
-}
+});
 
-export function testStepExecutionRejectsZeroAttempt() {
+test('testStepExecutionRejectsZeroAttempt', () => {
   const result = StepExecutionSchema.safeParse({ ...BASE_STEP, attempt: 0 });
   assert(!result.success, 'attempt 0 should fail');
-}
+});
 
-export function testStepExecutionWithFailure() {
+test('testStepExecutionWithFailure', () => {
   const result = StepExecutionSchema.safeParse({
     ...BASE_STEP, state: 'failed',
     failure: { code: 'TIMEOUT', message: 'Agent timed out after 60s' },
   });
   assert(result.success, 'step with failure info should parse');
-}
+});
 
-export function testStepExecutionTerminalStates() {
+test('testStepExecutionTerminalStates', () => {
   assert(isStepExecutionTerminal('succeeded'));
   assert(isStepExecutionTerminal('failed'));
   assert(isStepExecutionTerminal('cancelled'));
   assert(!isStepExecutionTerminal('running'));
   assert(!isStepExecutionTerminal('dispatched'));
-}
+});
 
 // ============================================================================
 // Decision
@@ -240,40 +241,40 @@ const BASE_DECISION = {
   status: 'pending' as const,
 };
 
-export function testDecisionValid() {
+test('testDecisionValid', () => {
   const result = DecisionSchema.safeParse(BASE_DECISION);
   assert(result.success, 'valid decision should parse');
-}
+});
 
-export function testDecisionCustomType() {
+test('testDecisionCustomType', () => {
   const result = DecisionSchema.safeParse({ ...BASE_DECISION, type: 'custom.approval.deploy' });
   assert(result.success, 'custom string type should be allowed');
-}
+});
 
-export function testDecisionRejectsEmptyOptions() {
+test('testDecisionRejectsEmptyOptions', () => {
   const result = DecisionSchema.safeParse({ ...BASE_DECISION, options: [] });
   assert(!result.success, 'empty options should fail');
-}
+});
 
-export function testDecisionWithResolution() {
+test('testDecisionWithResolution', () => {
   const result = DecisionSchema.safeParse({
     ...BASE_DECISION,
     status: 'resolved',
     resolution: { selectedOptionId: 'confirm', resolvedAt: NOW },
   });
   assert(result.success, 'resolved decision should parse');
-}
+});
 
-export function testDecisionSubjectRefRequiresAtLeastOne() {
+test('testDecisionSubjectRefRequiresAtLeastOne', () => {
   const result = DecisionSchema.safeParse({ ...BASE_DECISION, subjectRef: {} });
   assert(!result.success, 'empty subjectRef should fail');
-}
+});
 
 // ============================================================================
 // Evidence
 // ============================================================================
 
-export function testEvidenceValid() {
+test('testEvidenceValid', () => {
   const result = EvidenceSchema.safeParse({
     id: EV_ID, workItemId: WI_ID,
     type: 'github.ci', source: 'github-actions',
@@ -283,18 +284,18 @@ export function testEvidenceValid() {
     collectedAt: NOW,
   });
   assert(result.success, 'valid evidence should parse');
-}
+});
 
-export function testEvidenceRejectsInvalidStatus() {
+test('testEvidenceRejectsInvalidStatus', () => {
   const result = EvidenceSchema.safeParse({
     id: EV_ID, workItemId: WI_ID,
     type: 'github.ci', source: 'github-actions',
     status: 'unknown', payload: {}, collectedAt: NOW,
   });
   assert(!result.success, 'invalid status should fail');
-}
+});
 
-export function testEvidencePayloadCanBeComplex() {
+test('testEvidencePayloadCanBeComplex', () => {
   const result = EvidenceSchema.safeParse({
     id: EV_ID, workItemId: WI_ID,
     type: 'ci_toolkit.semantic_review', source: 'ci-toolkit',
@@ -303,13 +304,13 @@ export function testEvidencePayloadCanBeComplex() {
     collectedAt: NOW,
   });
   assert(result.success, 'complex payload should parse');
-}
+});
 
 // ============================================================================
 // DomainEvent
 // ============================================================================
 
-export function testDomainEventValid() {
+test('testDomainEventValid', () => {
   const result = DomainEventSchema.safeParse({
     id: '00000000-0000-0000-0000-000000000009',
     schemaVersion: 1,
@@ -319,9 +320,9 @@ export function testDomainEventValid() {
     payload: { from: 'ready', to: 'running' },
   });
   assert(result.success, 'valid domain event should parse');
-}
+});
 
-export function testDomainEventRejectsWrongSchemaVersion() {
+test('testDomainEventRejectsWrongSchemaVersion', () => {
   const result = DomainEventSchema.safeParse({
     id: '00000000-0000-0000-0000-000000000009',
     schemaVersion: 2,
@@ -331,9 +332,9 @@ export function testDomainEventRejectsWrongSchemaVersion() {
     payload: {},
   });
   assert(!result.success, 'schema version other than 1 should fail');
-}
+});
 
-export function testDomainEventOptionalProjectAndWorkItem() {
+test('testDomainEventOptionalProjectAndWorkItem', () => {
   const result = DomainEventSchema.safeParse({
     id: '00000000-0000-0000-0000-000000000009',
     schemaVersion: 1,
@@ -343,13 +344,13 @@ export function testDomainEventOptionalProjectAndWorkItem() {
     payload: { name: 'Stratum' },
   });
   assert(result.success, 'event without projectId/workItemId should parse');
-}
+});
 
 // ============================================================================
 // PolicyConfig + PolicyEvaluation
 // ============================================================================
 
-export function testPolicyConfigValid() {
+test('testPolicyConfigValid', () => {
   const result = PolicyConfigSchema.safeParse({
     projectId: PROJ_ID,
     merge: { humanApproval: true },
@@ -357,21 +358,21 @@ export function testPolicyConfigValid() {
     defaultBudget: { maxAttempts: 3, maxCostUsd: 5 },
   });
   assert(result.success, 'valid policy config should parse');
-}
+});
 
-export function testPolicyEvaluationAllow() {
+test('testPolicyEvaluationAllow', () => {
   const result = PolicyEvaluationSchema.safeParse({ outcome: 'allow', reason: 'Within budget' });
   assert(result.success, 'allow outcome should parse');
-}
+});
 
-export function testPolicyEvaluationRequireDecision() {
+test('testPolicyEvaluationRequireDecision', () => {
   const result = PolicyEvaluationSchema.safeParse({
     outcome: 'require_decision', reason: 'Major dependency upgrade', decisionType: 'policy.escalation',
   });
   assert(result.success, 'require_decision outcome should parse');
-}
+});
 
-export function testPolicyEvaluationRejectsInvalidOutcome() {
+test('testPolicyEvaluationRejectsInvalidOutcome', () => {
   const result = PolicyEvaluationSchema.safeParse({ outcome: 'maybe', reason: 'unsure' });
   assert(!result.success, 'invalid outcome should fail');
-}
+});

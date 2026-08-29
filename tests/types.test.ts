@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   ProjectTypeEnum,
@@ -31,7 +32,7 @@ import {
 // Enum Tests
 // ============================================================================
 
-export function testProjectTypeEnum() {
+test('testProjectTypeEnum', () => {
   const valid = ['api', 'ui', 'library', 'research', 'custom'];
   for (const type of valid) {
     const result = ProjectTypeEnum.safeParse(type);
@@ -43,9 +44,9 @@ export function testProjectTypeEnum() {
     const result = ProjectTypeEnum.safeParse(type);
     assert(!result.success, `ProjectType "${type}" should be invalid`);
   }
-}
+});
 
-export function testPlanningDepthEnum() {
+test('testPlanningDepthEnum', () => {
   const valid = ['minimal', 'standard', 'deep', 'research'];
   for (const depth of valid) {
     const result = PlanningDepthEnum.safeParse(depth);
@@ -57,9 +58,9 @@ export function testPlanningDepthEnum() {
     const result = PlanningDepthEnum.safeParse(depth);
     assert(!result.success, `PlanningDepth "${depth}" should be invalid`);
   }
-}
+});
 
-export function testSystemStatusEnum() {
+test('testSystemStatusEnum', () => {
   const valid = ['idle', 'discovering', 'cycling', 'halted', 'complete'];
   for (const status of valid) {
     const result = SystemStatusEnum.safeParse(status);
@@ -71,9 +72,9 @@ export function testSystemStatusEnum() {
     const result = SystemStatusEnum.safeParse(status);
     assert(!result.success, `SystemStatus "${status}" should be invalid`);
   }
-}
+});
 
-export function testAgentRoleEnum() {
+test('testAgentRoleEnum', () => {
   const validRoles = [
     'designer',
     'explorer',
@@ -96,13 +97,13 @@ export function testAgentRoleEnum() {
     const result = AgentRoleEnum.safeParse(role);
     assert(!result.success, `AgentRole "${role}" should be invalid`);
   }
-}
+});
 
 // ============================================================================
 // Agent Config Tests
 // ============================================================================
 
-export function testAgentLLMConfig() {
+test('testAgentLLMConfig', () => {
   const valid = {
     provider: 'openai_compatible' as const,
     api_key_env: 'OPENAI_API_KEY',
@@ -126,9 +127,9 @@ export function testAgentLLMConfig() {
   };
   const result3 = AgentLLMConfigSchema.safeParse(wrongProvider);
   assert(!result3.success, 'Invalid provider should fail');
-}
+});
 
-export function testAgentRoleConfig() {
+test('testAgentRoleConfig', () => {
   const validConfig = {
     active: true,
     node: 'design',
@@ -155,9 +156,9 @@ export function testAgentRoleConfig() {
   const negativeTokens = { ...validConfig, max_tokens: -100 };
   const result3 = AgentRoleConfigSchema.safeParse(negativeTokens);
   assert(!result3.success, 'Negative max_tokens should fail');
-}
+});
 
-export function testAgentsConfig() {
+test('testAgentsConfig', () => {
   const validConfig = {
     defaults: {
       llm: {
@@ -211,13 +212,13 @@ export function testAgentsConfig() {
   };
   const result = AgentsSchema.safeParse(validConfig);
   assert(result.success, 'Valid AgentsConfig with planner should pass');
-}
+});
 
 // ============================================================================
 // Validation Config Tests
 // ============================================================================
 
-export function testValidationRuleCategory() {
+test('testValidationRuleCategory', () => {
   const validCategory = {
     name: 'correctness',
     method: 'executable' as const,
@@ -243,9 +244,9 @@ export function testValidationRuleCategory() {
   };
   const result2 = ValidationRuleCategorySchema.safeParse(incomplete);
   assert(!result2.success, 'Missing required fields should fail');
-}
+});
 
-export function testValidationRuleCategoryRefine() {
+test('testValidationRuleCategoryRefine', () => {
   const noExecutable = {
     name: 'correctness',
     method: 'executable' as const,
@@ -310,9 +311,9 @@ export function testValidationRuleCategoryRefine() {
   };
   const result5 = ValidationRuleCategorySchema.safeParse(bothComplete);
   assert(result5.success, 'both method with all configs should pass');
-}
+});
 
-export function testAgentsSchemaRefine() {
+test('testAgentsSchemaRefine', () => {
   const noPlanner = {
     defaults: {
       llm: {
@@ -345,9 +346,9 @@ export function testAgentsSchemaRefine() {
   };
   const result = AgentsSchema.safeParse(noPlanner);
   assert(!result.success, 'AgentsConfig without planner should fail');
-}
+});
 
-export function testValidationConfig() {
+test('testValidationConfig', () => {
   const validConfig = {
     static_analysis: {
       lint: {
@@ -392,13 +393,13 @@ export function testValidationConfig() {
   };
   const result = ValidationSchema.safeParse(validConfig);
   assert(result.success, 'Valid ValidationConfig should pass');
-}
+});
 
 // ============================================================================
 // Chat and Cycle Flags Tests
 // ============================================================================
 
-export function testChatState() {
+test('testChatState', () => {
   const validOpen = {
     session_open: true,
     session_id: 'session-123',
@@ -424,9 +425,9 @@ export function testChatState() {
   assert(result3.success, 'ChatState with defaults should pass');
   assert.strictEqual(result3.data.total_exchanges, 0);
   assert.strictEqual(result3.data.pending_decisions, 0);
-}
+});
 
-export function testCycleFlags() {
+test('testCycleFlags', () => {
   const allFalse = {
     awaiting_scoping: false,
     awaiting_confirmation: false,
@@ -443,13 +444,13 @@ export function testCycleFlags() {
   assert(result2.success, 'Partial CycleFlags should pass (defaults applied)');
   assert(result2.data?.awaiting_scoping === false);
   assert(result2.data?.awaiting_confirmation === true);
-}
+});
 
 // ============================================================================
 // Artifact Tests
 // ============================================================================
 
-export function testArtifactRule() {
+test('testArtifactRule', () => {
   const validRule = {
     id: 'requirements',
     path: 'docs/requirements.md',
@@ -464,9 +465,9 @@ export function testArtifactRule() {
   const invalidBool = { ...validRule, append_only: 'true' };
   const result2 = ArtifactRuleSchema.safeParse(invalidBool);
   assert(!result2.success, 'Non-boolean append_only should fail');
-}
+});
 
-export function testArtifactsConfig() {
+test('testArtifactsConfig', () => {
   const validConfig = {
     artifacts: [
       {
@@ -489,13 +490,13 @@ export function testArtifactsConfig() {
   };
   const result = ArtifactsSchema.safeParse(validConfig);
   assert(result.success, 'Valid ArtifactsConfig should pass');
-}
+});
 
 // ============================================================================
 // Init State Tests
 // ============================================================================
 
-export function testInitState() {
+test('testInitState', () => {
   const validInitState = {
     last_completed_step: 0,
     project: {
@@ -532,13 +533,13 @@ export function testInitState() {
   delete missing.project.name;
   const result2 = InitStateSchema.safeParse(missing);
   assert(!result2.success, 'Missing required field should fail');
-}
+});
 
 // ============================================================================
 // Discovery State Tests
 // ============================================================================
 
-export function testDiscoveryState() {
+test('testDiscoveryState', () => {
   const validState = {
     status: 'not_started' as const,
     mode: 'full' as const,
@@ -557,13 +558,13 @@ export function testDiscoveryState() {
   const invalidStatus = { ...validState, status: 'started' };
   const result2 = DiscoveryStateSchema.safeParse(invalidStatus);
   assert(!result2.success, 'Invalid status should fail');
-}
+});
 
 // ============================================================================
 // Node Tag Tests
 // ============================================================================
 
-export function testNodeTag() {
+test('testNodeTag', () => {
   const validTag = {
     prefix: 'next-cycle' as const,
     target_ref: 'node:rate-limiting',
@@ -594,13 +595,13 @@ export function testNodeTag() {
   };
   const result4 = NodeTagSchema.safeParse(missingTargetRef);
   assert(!result4.success, 'NodeTag without target_ref should fail');
-}
+});
 
 // ============================================================================
 // Open Question Tests
 // ============================================================================
 
-export function testOpenQuestion() {
+test('testOpenQuestion', () => {
   const validQuestion = {
     title: 'What is the target audience?',
     status: 'open' as const,
@@ -627,13 +628,13 @@ export function testOpenQuestion() {
   const deferredStatus = { ...validQuestion, status: 'deferred' as const };
   const result4 = OpenQuestionSchema.safeParse(deferredStatus);
   assert(!result4.success, 'Deferred status should be invalid');
-}
+});
 
 // ============================================================================
 // ExitConfig Tests (C4, C5)
 // ============================================================================
 
-export function testExitConfig() {
+test('testExitConfig', () => {
   const valid = {
     conditions: {
       all_categories_pass: true,
@@ -692,13 +693,13 @@ export function testExitConfig() {
   };
   const result3 = ExitSchema.safeParse(missingErrorField);
   assert(!result3.success, 'Missing on_error fields should fail');
-}
+});
 
 // ============================================================================
 // SLETask Tests (C6, C7, C8)
 // ============================================================================
 
-export function testSLETask() {
+test('testSLETask', () => {
   const validTask = {
     id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
     title: 'Implement feature',
@@ -747,13 +748,13 @@ export function testSLETask() {
   };
   const result5 = SLETaskSchema.safeParse(closedStatus);
   assert(result5.success, '"closed" status and numeric priority should pass');
-}
+});
 
 // ============================================================================
 // PlanningConfig Tests (C1, C2, C3)
 // ============================================================================
 
-export function testPlanningConfig() {
+test('testPlanningConfig', () => {
   const valid = {
     depth: 'standard' as const,
     max_iterations: 5,
@@ -788,13 +789,13 @@ export function testPlanningConfig() {
   const invalidOnDepthChange = { ...valid, on_depth_change: 'invalid' };
   const result5 = PlanningSchema.safeParse(invalidOnDepthChange);
   assert(!result5.success, 'Invalid on_depth_change value should fail');
-}
+});
 
 // ============================================================================
 // Full RuntimeConfig Test
 // ============================================================================
 
-export function testRuntimeConfigFull() {
+test('testRuntimeConfigFull', () => {
   const config = {
     planning: {
       depth: 'standard' as const,
@@ -933,85 +934,5 @@ export function testRuntimeConfigFull() {
   if (!result.success) {
     console.error('Validation errors:', result.error.issues);
   }
-}
+});
 
-// ============================================================================
-// Run All Tests
-// ============================================================================
-
-export function runAllTests() {
-  console.log('Running Phase A (Foundation Types) tests...\n');
-
-  console.log('✓ Testing ProjectTypeEnum');
-  testProjectTypeEnum();
-
-  console.log('✓ Testing PlanningDepthEnum');
-  testPlanningDepthEnum();
-
-  console.log('✓ Testing SystemStatusEnum');
-  testSystemStatusEnum();
-
-  console.log('✓ Testing AgentRoleEnum');
-  testAgentRoleEnum();
-
-  console.log('✓ Testing AgentLLMConfig');
-  testAgentLLMConfig();
-
-  console.log('✓ Testing AgentRoleConfig');
-  testAgentRoleConfig();
-
-  console.log('✓ Testing AgentsConfig');
-  testAgentsConfig();
-
-  console.log('✓ Testing ValidationRuleCategory');
-  testValidationRuleCategory();
-
-  console.log('✓ Testing ValidationRuleCategory refine');
-  testValidationRuleCategoryRefine();
-
-  console.log('✓ Testing AgentsSchema refine');
-  testAgentsSchemaRefine();
-
-  console.log('✓ Testing ValidationConfig');
-  testValidationConfig();
-
-  console.log('✓ Testing ChatState');
-  testChatState();
-
-  console.log('✓ Testing CycleFlags');
-  testCycleFlags();
-
-  console.log('✓ Testing ArtifactRule');
-  testArtifactRule();
-
-  console.log('✓ Testing ArtifactsConfig');
-  testArtifactsConfig();
-
-  console.log('✓ Testing InitState');
-  testInitState();
-
-  console.log('✓ Testing DiscoveryState');
-  testDiscoveryState();
-
-  console.log('✓ Testing NodeTag');
-  testNodeTag();
-
-  console.log('✓ Testing OpenQuestion');
-  testOpenQuestion();
-
-  console.log('✓ Testing ExitConfig');
-  testExitConfig();
-
-  console.log('✓ Testing SLETask');
-  testSLETask();
-
-  console.log('✓ Testing PlanningConfig');
-  testPlanningConfig();
-
-  console.log('✓ Testing Full RuntimeConfig');
-  testRuntimeConfigFull();
-
-  console.log('\n✅ All Phase A tests passed!');
-}
-
-runAllTests();

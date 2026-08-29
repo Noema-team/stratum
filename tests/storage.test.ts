@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { openDatabase } from '../src/storage/database.js';
 import {
@@ -43,6 +44,7 @@ const WS: Workspace = { id: WS_ID, name: 'Magnor', createdAt: NOW };
 
 const PROJ: Project = {
   id: P_ID, workspaceId: WS_ID, name: 'Stratum',
+  description: undefined,
   status: 'active', priority: 1, createdAt: NOW, updatedAt: NOW,
 };
 
@@ -50,6 +52,7 @@ const REPO: Repository = {
   id: R_ID, projectId: P_ID, provider: 'github',
   remote: 'git@github.com:noema-team/stratum.git',
   defaultBranch: 'main', status: 'active',
+  localWorkspace: undefined,
 };
 
 const OBJ: Objective = {
@@ -65,6 +68,8 @@ const WI: WorkItem = {
   title: 'Fix race condition', goal: 'Remove race in scheduler',
   workflowId: 'draft-artifact', state: 'ready',
   priority: 1,
+  objectiveId: undefined,
+  parentId: undefined,
   acceptanceCriteria: [], constraints: [], requiredEvidence: [],
   dependencies: [], createdAt: NOW, updatedAt: NOW,
 };
@@ -74,6 +79,11 @@ const SE: StepExecution = {
   workflowRunId: 'draft-artifact-1-i1-20260829T100000Z',
   stepId: 'produce', executor: 'stratum-agent',
   state: 'dispatched', attempt: 1,
+  startedAt: undefined,
+  completedAt: undefined,
+  tokens: undefined,
+  cost: undefined,
+  failure: undefined,
 };
 
 const DEC: Decision = {
@@ -84,6 +94,9 @@ const DEC: Decision = {
   options: [{ id: 'confirm', label: 'Confirm' }, { id: 'cancel', label: 'Cancel' }],
   impact: 'low', reversibility: 'easy', urgency: 'blocking',
   status: 'pending',
+  recommendedOptionId: undefined,
+  recommendationReason: undefined,
+  resolution: undefined,
 };
 
 const EV: Evidence = {
@@ -92,6 +105,8 @@ const EV: Evidence = {
   status: 'passed',
   payload: { conclusion: 'success' },
   collectedAt: NOW,
+  stepExecutionId: undefined,
+  subjectRef: undefined,
 };
 
 const ART: ArtifactRecord = {
@@ -102,6 +117,7 @@ const ART: ArtifactRecord = {
   path: '.sle/artifacts/architecture.md',
   hash: 'abc123',
   createdAt: NOW,
+  stepExecutionId: undefined,
 };
 
 const EVT: DomainEvent = {
@@ -110,6 +126,7 @@ const EVT: DomainEvent = {
   workspaceId: WS_ID, projectId: P_ID, workItemId: WI_ID,
   occurredAt: NOW,
   payload: { from: 'draft', to: 'ready' },
+  workflowRunId: undefined,
 };
 
 function seedAll(db: ReturnType<typeof freshDb>) {
@@ -124,54 +141,54 @@ function seedAll(db: ReturnType<typeof freshDb>) {
 // Workspace
 // ============================================================================
 
-export function testWorkspaceSaveAndFind() {
+test('testWorkspaceSaveAndFind', () => {
   const db = freshDb();
   const repo = new WorkspaceRepository(db);
   repo.save(WS);
   const found = repo.findById(WS_ID);
   assert.deepEqual(found, WS);
-}
+});
 
-export function testWorkspaceList() {
+test('testWorkspaceList', () => {
   const db = freshDb();
   const repo = new WorkspaceRepository(db);
   repo.save(WS);
   assert.equal(repo.list().length, 1);
-}
+});
 
-export function testWorkspaceIdempotencyConstraint() {
+test('testWorkspaceIdempotencyConstraint', () => {
   const db = freshDb();
   const repo = new WorkspaceRepository(db);
   repo.save(WS);
   assert.throws(() => repo.save(WS), /UNIQUE constraint/);
-}
+});
 
-export function testWorkspaceFindMissing() {
+test('testWorkspaceFindMissing', () => {
   const db = freshDb();
   assert.equal(new WorkspaceRepository(db).findById('missing'), undefined);
-}
+});
 
 // ============================================================================
 // Project
 // ============================================================================
 
-export function testProjectSaveAndFind() {
+test('testProjectSaveAndFind', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   const repo = new ProjectRepository(db);
   repo.save(PROJ);
   const found = repo.findById(P_ID);
   assert.deepEqual(found, PROJ);
-}
+});
 
-export function testProjectForeignKeyEnforced() {
+test('testProjectForeignKeyEnforced', () => {
   const db = freshDb();
   const repo = new ProjectRepository(db);
   // workspace doesn't exist — should throw
   assert.throws(() => repo.save(PROJ), /FOREIGN KEY constraint/);
-}
+});
 
-export function testProjectListByWorkspace() {
+test('testProjectListByWorkspace', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   const repo = new ProjectRepository(db);
@@ -179,22 +196,22 @@ export function testProjectListByWorkspace() {
   const list = repo.listByWorkspace(WS_ID);
   assert.equal(list.length, 1);
   assert.equal(list[0].id, P_ID);
-}
+});
 
-export function testProjectUpdateStatus() {
+test('testProjectUpdateStatus', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   const repo = new ProjectRepository(db);
   repo.save(PROJ);
   repo.updateStatus(P_ID, 'paused', NOW);
   assert.equal(repo.findById(P_ID)!.status, 'paused');
-}
+});
 
 // ============================================================================
 // Repository (SCM)
 // ============================================================================
 
-export function testRepositorySaveAndFind() {
+test('testRepositorySaveAndFind', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   new ProjectRepository(db).save(PROJ);
@@ -202,22 +219,22 @@ export function testRepositorySaveAndFind() {
   repo.save(REPO);
   const found = repo.findById(R_ID);
   assert.deepEqual(found, REPO);
-}
+});
 
-export function testRepositoryListByProject() {
+test('testRepositoryListByProject', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   new ProjectRepository(db).save(PROJ);
   const repo = new RepositoryRepository(db);
   repo.save(REPO);
   assert.equal(repo.listByProject(P_ID).length, 1);
-}
+});
 
 // ============================================================================
 // Objective
 // ============================================================================
 
-export function testObjectiveSaveAndFind() {
+test('testObjectiveSaveAndFind', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   new ProjectRepository(db).save(PROJ);
@@ -225,9 +242,9 @@ export function testObjectiveSaveAndFind() {
   repo.save(OBJ);
   const found = repo.findById(OBJ_ID);
   assert.deepEqual(found, OBJ);
-}
+});
 
-export function testObjectiveConstraintsRoundTrip() {
+test('testObjectiveConstraintsRoundTrip', () => {
   const db = freshDb();
   new WorkspaceRepository(db).save(WS);
   new ProjectRepository(db).save(PROJ);
@@ -236,37 +253,37 @@ export function testObjectiveConstraintsRoundTrip() {
   const found = repo.findById(OBJ_ID)!;
   assert.equal(found.constraints[0].description, 'No API change');
   assert.equal(found.successCriteria[0].description, 'All race tests pass');
-}
+});
 
 // ============================================================================
 // WorkItem
 // ============================================================================
 
-export function testWorkItemSaveAndFind() {
+test('testWorkItemSaveAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new WorkItemRepository(db);
   const found = repo.findById(WI_ID);
   assert.deepEqual(found, WI);
-}
+});
 
-export function testWorkItemListByState() {
+test('testWorkItemListByState', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new WorkItemRepository(db);
   assert.equal(repo.listByState(P_ID, 'ready').length, 1);
   assert.equal(repo.listByState(P_ID, 'running').length, 0);
-}
+});
 
-export function testWorkItemUpdateState() {
+test('testWorkItemUpdateState', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new WorkItemRepository(db);
   repo.updateState(WI_ID, 'running', NOW);
   assert.equal(repo.findById(WI_ID)!.state, 'running');
-}
+});
 
-export function testWorkItemDependenciesRoundTrip() {
+test('testWorkItemDependenciesRoundTrip', () => {
   const db = freshDb();
   seedAll(db);
   // create a second work item that depends on the first
@@ -275,29 +292,29 @@ export function testWorkItemDependenciesRoundTrip() {
   repo.save(dep);
   const found = repo.findById(dep.id)!;
   assert.deepEqual(found.dependencies, [WI_ID]);
-}
+});
 
-export function testWorkItemSelfDependencyRejected() {
+test('testWorkItemSelfDependencyRejected', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new WorkItemRepository(db);
   assert.throws(() => repo.addDependency(WI_ID, WI_ID), /CHECK constraint/);
-}
+});
 
 // ============================================================================
 // StepExecution
 // ============================================================================
 
-export function testStepExecutionSaveAndFind() {
+test('testStepExecutionSaveAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new StepExecutionRepository(db);
   repo.save(SE);
   const found = repo.findById(SE_ID);
   assert.deepEqual(found, SE);
-}
+});
 
-export function testStepExecutionUpdateState() {
+test('testStepExecutionUpdateState', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new StepExecutionRepository(db);
@@ -306,9 +323,9 @@ export function testStepExecutionUpdateState() {
   const found = repo.findById(SE_ID)!;
   assert.equal(found.state, 'succeeded');
   assert.equal(found.completedAt, NOW);
-}
+});
 
-export function testStepExecutionWithFailure() {
+test('testStepExecutionWithFailure', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new StepExecutionRepository(db);
@@ -320,39 +337,39 @@ export function testStepExecutionWithFailure() {
   const found = repo.findById(SE_ID)!;
   assert.equal(found.state, 'failed');
   assert.equal(found.failure?.code, 'TIMEOUT');
-}
+});
 
-export function testStepExecutionListByWorkflowRun() {
+test('testStepExecutionListByWorkflowRun', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new StepExecutionRepository(db);
   repo.save(SE);
   const list = repo.listByWorkflowRun(SE.workflowRunId);
   assert.equal(list.length, 1);
-}
+});
 
 // ============================================================================
 // Decision
 // ============================================================================
 
-export function testDecisionSaveAndFind() {
+test('testDecisionSaveAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new DecisionRepository(db);
   repo.save(DEC);
   const found = repo.findById(DEC_ID);
   assert.deepEqual(found, DEC);
-}
+});
 
-export function testDecisionListPending() {
+test('testDecisionListPending', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new DecisionRepository(db);
   repo.save(DEC);
   assert.equal(repo.listPending(P_ID).length, 1);
-}
+});
 
-export function testDecisionResolve() {
+test('testDecisionResolve', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new DecisionRepository(db);
@@ -363,13 +380,13 @@ export function testDecisionResolve() {
   assert.equal(found.status, 'resolved');
   assert.equal(found.resolution?.selectedOptionId, 'confirm');
   assert.equal(repo.listPending(P_ID).length, 0);
-}
+});
 
 // ============================================================================
 // Policy
 // ============================================================================
 
-export function testPolicyUpsertAndFind() {
+test('testPolicyUpsertAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new PolicyRepository(db);
@@ -381,9 +398,9 @@ export function testPolicyUpsertAndFind() {
   repo.upsertPolicy(config);
   const found = repo.findByProject(P_ID);
   assert.deepEqual(found, config);
-}
+});
 
-export function testPolicyUpsertUpdates() {
+test('testPolicyUpsertUpdates', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new PolicyRepository(db);
@@ -392,73 +409,73 @@ export function testPolicyUpsertUpdates() {
   repo.upsertPolicy(v1);
   repo.upsertPolicy(v2);
   assert.equal(repo.findByProject(P_ID)!.merge?.humanApproval, false);
-}
+});
 
 // ============================================================================
 // Evidence
 // ============================================================================
 
-export function testEvidenceSaveAndFind() {
+test('testEvidenceSaveAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new EvidenceRepository(db);
   repo.save(EV);
   const found = repo.findById(EV_ID);
   assert.deepEqual(found, EV);
-}
+});
 
-export function testEvidencePayloadRoundTrip() {
+test('testEvidencePayloadRoundTrip', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new EvidenceRepository(db);
   const ev: Evidence = { ...EV, payload: { nested: { score: 9.5, tags: ['ok'] } } };
   repo.save(ev);
   assert.deepEqual(repo.findById(EV_ID)!.payload, ev.payload);
-}
+});
 
-export function testEvidenceListByType() {
+test('testEvidenceListByType', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new EvidenceRepository(db);
   repo.save(EV);
   assert.equal(repo.listByType(WI_ID, 'github.ci').length, 1);
   assert.equal(repo.listByType(WI_ID, 'ci_toolkit.semantic_review').length, 0);
-}
+});
 
 // ============================================================================
 // Artifact
 // ============================================================================
 
-export function testArtifactSaveAndFind() {
+test('testArtifactSaveAndFind', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new ArtifactRepository(db);
   repo.save(ART);
   const found = repo.findById(ART_ID);
   assert.deepEqual(found, ART);
-}
+});
 
-export function testArtifactListByWorkflowRun() {
+test('testArtifactListByWorkflowRun', () => {
   const db = freshDb();
   seedAll(db);
   const repo = new ArtifactRepository(db);
   repo.save(ART);
   assert.equal(repo.listByWorkflowRun(ART.workflowRunId!).length, 1);
-}
+});
 
 // ============================================================================
 // EventRepository — ordering and append-only semantics
 // ============================================================================
 
-export function testEventAppendAndFind() {
+test('testEventAppendAndFind', () => {
   const db = freshDb();
   const repo = new EventRepository(db);
   repo.append(EVT);
   const found = repo.findById(EVT_ID);
   assert.deepEqual(found, EVT);
-}
+});
 
-export function testEventOrdering() {
+test('testEventOrdering', () => {
   const db = freshDb();
   const repo = new EventRepository(db);
   const t1 = '2026-08-29T10:00:00.000Z';
@@ -475,16 +492,16 @@ export function testEventOrdering() {
   assert.equal(list[0].occurredAt, t1);
   assert.equal(list[1].occurredAt, t2);
   assert.equal(list[2].occurredAt, t3);
-}
+});
 
-export function testEventIdempotencyConstraint() {
+test('testEventIdempotencyConstraint', () => {
   const db = freshDb();
   const repo = new EventRepository(db);
   repo.append(EVT);
   assert.throws(() => repo.append(EVT), /UNIQUE constraint/);
-}
+});
 
-export function testEventListAfterCursor() {
+test('testEventListAfterCursor', () => {
   const db = freshDb();
   const repo = new EventRepository(db);
   const t1 = '2026-08-29T10:00:00.000Z';
@@ -496,9 +513,9 @@ export function testEventListAfterCursor() {
   const page = repo.listAfter(WS_ID, t1, 10);
   assert.equal(page.length, 2);
   assert.equal(page[0].occurredAt, t2);
-}
+});
 
-export function testEventListByType() {
+test('testEventListByType', () => {
   const db = freshDb();
   const repo = new EventRepository(db);
   repo.append(EVT);
@@ -506,13 +523,13 @@ export function testEventListByType() {
   assert.equal(repo.listByType(WS_ID, 'work.state_changed').length, 1);
   assert.equal(repo.listByType(WS_ID, 'work.completed').length, 1);
   assert.equal(repo.listByType(WS_ID, 'project.created').length, 0);
-}
+});
 
 // ============================================================================
 // Transaction rollback
 // ============================================================================
 
-export function testTransactionRollback() {
+test('testTransactionRollback', () => {
   const db = freshDb();
   const wsRepo = new WorkspaceRepository(db);
   const projRepo = new ProjectRepository(db);
@@ -530,13 +547,13 @@ export function testTransactionRollback() {
 
   // Project must not have been committed
   assert.equal(projRepo.findById(P_ID), undefined);
-}
+});
 
 // ============================================================================
 // Restart persistence
 // ============================================================================
 
-export function testRestartPersistence() {
+test('testRestartPersistence', () => {
   const path = `/tmp/stratum-test-${Date.now()}.db`;
   try {
     // Session 1 — write
@@ -556,4 +573,4 @@ export function testRestartPersistence() {
   } finally {
     try { require('fs').unlinkSync(path); } catch { /* ignore */ }
   }
-}
+});

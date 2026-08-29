@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
 import { openDatabase } from '../src/storage/database.js';
@@ -5,6 +6,7 @@ import {
   WorkspaceRepository,
   ProjectRepository,
   WorkItemRepository,
+  DecisionRepository,
   EventRepository,
 } from '../src/storage/repositories.js';
 import { WorkService, WorkServiceError } from '../src/services/work-service.js';
@@ -59,19 +61,20 @@ function setup() {
   const projects = new ProjectRepository(db);
   const items = new WorkItemRepository(db);
   const events = new EventRepository(db);
+  const decisions = new DecisionRepository(db);
   const svc = new WorkService(db, WS_ID);
 
   workspaces.save(WORKSPACE);
   projects.save(PROJECT);
 
-  return { db, items, events, svc };
+  return { db, items, events, decisions, svc };
 }
 
 // ============================================================================
 // Forward path: draft → ready → running → in_review → completed
 // ============================================================================
 
-export function testForwardLifecycle() {
+test('testForwardLifecycle', () => {
   const { items, svc } = setup();
   const item = makeItem();
   items.save(item);
@@ -87,9 +90,9 @@ export function testForwardLifecycle() {
 
   const completed = svc.complete({ workItemId: item.id });
   assert.equal(completed.state, 'completed');
-}
+});
 
-export function testStatePersistedAfterTransition() {
+test('testStatePersistedAfterTransition', () => {
   const { items, svc } = setup();
   const item = makeItem();
   items.save(item);
@@ -97,13 +100,13 @@ export function testStatePersistedAfterTransition() {
   svc.markReady({ workItemId: item.id });
   const loaded = items.findById(item.id);
   assert.equal(loaded?.state, 'ready');
-}
+});
 
 // ============================================================================
 // Terminal state guard
 // ============================================================================
 
-export function testNoTransitionFromCompleted() {
+test('testNoTransitionFromCompleted', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'completed' });
   items.save(item);
@@ -112,9 +115,9 @@ export function testNoTransitionFromCompleted() {
     () => svc.cancel({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'TERMINAL_STATE',
   );
-}
+});
 
-export function testNoTransitionFromCancelled() {
+test('testNoTransitionFromCancelled', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'cancelled' });
   items.save(item);
@@ -123,9 +126,9 @@ export function testNoTransitionFromCancelled() {
     () => svc.fail({ workItemId: item.id, reason: 'late' }),
     (e: WorkServiceError) => e.code === 'TERMINAL_STATE',
   );
-}
+});
 
-export function testNoTransitionFromFailed() {
+test('testNoTransitionFromFailed', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'failed' });
   items.save(item);
@@ -134,13 +137,13 @@ export function testNoTransitionFromFailed() {
     () => svc.markReady({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'TERMINAL_STATE',
   );
-}
+});
 
 // ============================================================================
 // Invalid transitions
 // ============================================================================
 
-export function testCannotSkipReadyToRunning() {
+test('testCannotSkipReadyToRunning', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'draft' });
   items.save(item);
@@ -149,9 +152,9 @@ export function testCannotSkipReadyToRunning() {
     () => svc.startRunning({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'INVALID_TRANSITION',
   );
-}
+});
 
-export function testCannotCompleteFromRunning() {
+test('testCannotCompleteFromRunning', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -160,13 +163,13 @@ export function testCannotCompleteFromRunning() {
     () => svc.complete({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'INVALID_TRANSITION',
   );
-}
+});
 
 // ============================================================================
 // Dependency guard
 // ============================================================================
 
-export function testDependencyMustBeCompletedBeforeDispatch() {
+test('testDependencyMustBeCompletedBeforeDispatch', () => {
   const { items, svc } = setup();
 
   const dep = makeItem({ state: 'running' });
@@ -174,15 +177,14 @@ export function testDependencyMustBeCompletedBeforeDispatch() {
 
   const item = makeItem({ state: 'ready', dependencies: [dep.id] });
   items.save(item);
-  items.addDependency(item.id, dep.id);
 
   assert.throws(
     () => svc.startRunning({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'DEPENDENCY_NOT_COMPLETED',
   );
-}
+});
 
-export function testDependencyOverrideBypassesCheck() {
+test('testDependencyOverrideBypassesCheck', () => {
   const { items, svc } = setup();
 
   const dep = makeItem({ state: 'running' });
@@ -190,13 +192,12 @@ export function testDependencyOverrideBypassesCheck() {
 
   const item = makeItem({ state: 'ready', dependencies: [dep.id] });
   items.save(item);
-  items.addDependency(item.id, dep.id);
 
   const running = svc.startRunning({ workItemId: item.id, dependencyOverride: true });
   assert.equal(running.state, 'running');
-}
+});
 
-export function testDispatchAllowedWhenDependencyCompleted() {
+test('testDispatchAllowedWhenDependencyCompleted', () => {
   const { items, svc } = setup();
 
   const dep = makeItem({ state: 'completed' });
@@ -204,17 +205,16 @@ export function testDispatchAllowedWhenDependencyCompleted() {
 
   const item = makeItem({ state: 'ready', dependencies: [dep.id] });
   items.save(item);
-  items.addDependency(item.id, dep.id);
 
   const running = svc.startRunning({ workItemId: item.id });
   assert.equal(running.state, 'running');
-}
+});
 
 // ============================================================================
 // Side states
 // ============================================================================
 
-export function testPauseAndResume() {
+test('testPauseAndResume', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -224,9 +224,9 @@ export function testPauseAndResume() {
 
   const resumed = svc.resume({ workItemId: item.id });
   assert.equal(resumed.state, 'ready');
-}
+});
 
-export function testPauseAndResumeRunning() {
+test('testPauseAndResumeRunning', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -234,9 +234,9 @@ export function testPauseAndResumeRunning() {
   svc.pause({ workItemId: item.id });
   const running = svc.resume({ workItemId: item.id, resumeRunning: true });
   assert.equal(running.state, 'running');
-}
+});
 
-export function testResumeOnlyAllowedFromPaused() {
+test('testResumeOnlyAllowedFromPaused', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -245,9 +245,9 @@ export function testResumeOnlyAllowedFromPaused() {
     () => svc.resume({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'INVALID_STATE',
   );
-}
+});
 
-export function testBlockAndUnblock() {
+test('testBlockAndUnblock', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -257,9 +257,9 @@ export function testBlockAndUnblock() {
 
   const ready = svc.markReady({ workItemId: item.id });
   assert.equal(ready.state, 'ready');
-}
+});
 
-export function testCancelFromAnyNonTerminal() {
+test('testCancelFromAnyNonTerminal', () => {
   const { items, svc } = setup();
 
   for (const state of ['draft', 'ready', 'running', 'in_review', 'paused', 'blocked', 'needs_decision'] as const) {
@@ -268,9 +268,9 @@ export function testCancelFromAnyNonTerminal() {
     const cancelled = svc.cancel({ workItemId: item.id });
     assert.equal(cancelled.state, 'cancelled', `cancel from '${state}' should work`);
   }
-}
+});
 
-export function testFailFromAnyNonTerminal() {
+test('testFailFromAnyNonTerminal', () => {
   const { items, svc } = setup();
 
   for (const state of ['draft', 'ready', 'running', 'in_review', 'paused', 'blocked', 'needs_decision'] as const) {
@@ -279,13 +279,13 @@ export function testFailFromAnyNonTerminal() {
     const failed = svc.fail({ workItemId: item.id, reason: 'error' });
     assert.equal(failed.state, 'failed', `fail from '${state}' should work`);
   }
-}
+});
 
 // ============================================================================
 // needs_decision + decision resolution
 // ============================================================================
 
-export function testNeedsDecisionMintsDecision() {
+test('testNeedsDecisionMintsDecision', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -298,9 +298,9 @@ export function testNeedsDecisionMintsDecision() {
   assert.equal(workItem.state, 'needs_decision');
   assert.equal(decision.status, 'pending');
   assert.equal(decision.workItemId, item.id);
-}
+});
 
-export function testResolveDecisionResumesItem() {
+test('testResolveDecisionResumesItem', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -318,9 +318,9 @@ export function testResolveDecisionResumesItem() {
 
   assert.equal(resumed.state, 'running');
   assert.equal(resolved.status, 'resolved');
-}
+});
 
-export function testCannotResolveAlreadyResolvedDecision() {
+test('testCannotResolveAlreadyResolvedDecision', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -336,9 +336,9 @@ export function testCannotResolveAlreadyResolvedDecision() {
     () => svc.resolveDecision(decision.id, { selectedOptionId: 'yes', resolvedAt: new Date().toISOString() }),
     (e: WorkServiceError) => e.code === 'INVALID_STATUS',
   );
-}
+});
 
-export function testCompletionBlockedByPendingDecision() {
+test('testCompletionBlockedByPendingDecision', () => {
   const { items, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
@@ -350,33 +350,43 @@ export function testCompletionBlockedByPendingDecision() {
     () => svc.complete({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'INVALID_TRANSITION',
   );
-}
+});
 
-export function testCompletionBlockedByPendingDecisionFromInReview() {
-  const { items, svc } = setup();
+test('testCompletionBlockedByPendingDecisionFromInReview', () => {
+  const { items, decisions, svc } = setup();
   const item = makeItem({ state: 'running' });
   items.save(item);
 
-  // Put into in_review with a pending decision
   svc.markInReview({ workItemId: item.id });
-  svc.needsDecision({ workItemId: item.id, decision: makeDecisionPayload() });
-  // Resolve to in_review
-  const { decision } = svc.needsDecision({ workItemId: item.id, decision: makeDecisionPayload() });
-  // Can't complete while pending decision exists
-  // (resolve first one but leave second pending)
-  svc.resolveDecision(decision.id, { selectedOptionId: 'yes', resolvedAt: new Date().toISOString() }, 'in_review');
-  // Now in in_review again with one pending decision remaining — complete should throw
+
+  // Inject a pending decision directly without changing work item state
+  decisions.save({
+    id: randomUUID(),
+    projectId: PROJ_ID,
+    workItemId: item.id,
+    type: 'checkpoint',
+    subjectRef: { workflowRunId: 'run-1', stepId: 'confirm' },
+    title: 'Pending gate',
+    summary: 'Needs resolution',
+    options: [{ id: 'yes', label: 'Yes' }],
+    impact: 'medium',
+    reversibility: 'easy',
+    urgency: 'blocking',
+    status: 'pending',
+  });
+
+  // complete() should throw because there's a pending decision
   assert.throws(
     () => svc.complete({ workItemId: item.id }),
     (e: WorkServiceError) => e.code === 'PENDING_DECISIONS',
   );
-}
+});
 
 // ============================================================================
 // Event emission
 // ============================================================================
 
-export function testEventsEmittedOnTransition() {
+test('testEventsEmittedOnTransition', () => {
   const { items, events, svc } = setup();
   const item = makeItem();
   items.save(item);
@@ -394,9 +404,9 @@ export function testEventsEmittedOnTransition() {
   assert.ok(types.includes('work.started'));
   assert.ok(types.includes('work.state_changed'));
   assert.ok(types.includes('work.completed'));
-}
+});
 
-export function testEventWorkspaceAndProjectLinked() {
+test('testEventWorkspaceAndProjectLinked', () => {
   const { items, events, svc } = setup();
   const item = makeItem();
   items.save(item);
@@ -409,17 +419,17 @@ export function testEventWorkspaceAndProjectLinked() {
   assert.equal(ev.workspaceId, WS_ID);
   assert.equal(ev.projectId, PROJ_ID);
   assert.equal(ev.workItemId, item.id);
-}
+});
 
 // ============================================================================
 // Not-found guard
 // ============================================================================
 
-export function testNotFoundThrows() {
+test('testNotFoundThrows', () => {
   const { svc } = setup();
 
   assert.throws(
     () => svc.markReady({ workItemId: '00000000-0000-0000-0000-000000000099' }),
     (e: WorkServiceError) => e.code === 'NOT_FOUND',
   );
-}
+});

@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   getWorkflow,
@@ -15,16 +16,16 @@ import type { WorkflowDefinition, WorkflowEngineDeps, WorkflowEngineOptions } fr
 // Registry
 // ============================================================================
 
-export function testBuiltinsRegistered() {
+test('testBuiltinsRegistered', () => {
   assert(getWorkflow('full-build') !== undefined, 'full-build must be registered');
   assert(getWorkflow('draft-artifact') !== undefined, 'draft-artifact must be registered');
-}
+});
 
-export function testUnknownWorkflowReturnsUndefined() {
+test('testUnknownWorkflowReturnsUndefined', () => {
   assert.equal(getWorkflow('non-existent-workflow'), undefined);
-}
+});
 
-export function testRegisterUserWorkflow() {
+test('testRegisterUserWorkflow', () => {
   const custom: WorkflowDefinition = {
     id: 'my-custom-workflow',
     label: 'Custom',
@@ -32,9 +33,9 @@ export function testRegisterUserWorkflow() {
   };
   registerWorkflow(custom);
   assert.deepEqual(getWorkflow('my-custom-workflow'), custom);
-}
+});
 
-export function testRegisterRejectsBuiltinId() {
+test('testRegisterRejectsBuiltinId', () => {
   assert.throws(
     () => registerWorkflow({ id: 'full-build', label: 'X', steps: [] }),
     /reserved/,
@@ -43,31 +44,31 @@ export function testRegisterRejectsBuiltinId() {
     () => registerWorkflow({ id: 'draft-artifact', label: 'X', steps: [] }),
     /reserved/,
   );
-}
+});
 
-export function testListWorkflowIds() {
+test('testListWorkflowIds', () => {
   const ids = listWorkflowIds();
   assert.ok(ids.includes('full-build'));
   assert.ok(ids.includes('draft-artifact'));
-}
+});
 
-export function testBuiltinIdSet() {
+test('testBuiltinIdSet', () => {
   assert.ok(BUILTIN_IDS.has('full-build'));
   assert.ok(BUILTIN_IDS.has('draft-artifact'));
   assert.ok(!BUILTIN_IDS.has('something-else'));
-}
+});
 
 // ============================================================================
 // full-build definition integrity
 // ============================================================================
 
-export function testFullBuildStepCount() {
+test('testFullBuildStepCount', () => {
   // SCOPING decomposes to 3, plus DESIGN, CRITIQUE, PLAN, TEST, SHARDING_APPROVAL,
   // CONFIRM, BUILD, EXEC, VALIDATION_GATE, DEBUG, EVALUATE, SUMMARISE, SNAPSHOT = 16
   assert.equal(FULL_BUILD.steps.length, 16, `expected 16 steps, got ${FULL_BUILD.steps.length}`);
-}
+});
 
-export function testFullBuildStepIds() {
+test('testFullBuildStepIds', () => {
   const ids = FULL_BUILD.steps.map(s => s.id);
   const required = [
     'scoping.gather', 'scoping.produce', 'scoping.checkpoint',
@@ -79,9 +80,9 @@ export function testFullBuildStepIds() {
   for (const id of required) {
     assert.ok(ids.includes(id), `full-build should have step '${id}'`);
   }
-}
+});
 
-export function testFullBuildKinds() {
+test('testFullBuildKinds', () => {
   const kindOf = (id: string) => FULL_BUILD.steps.find(s => s.id === id)?.kind;
   assert.equal(kindOf('scoping.gather'), 'gather');
   assert.equal(kindOf('scoping.produce'), 'produce');
@@ -99,9 +100,9 @@ export function testFullBuildKinds() {
   assert.equal(kindOf('evaluate'), 'produce');
   assert.equal(kindOf('summarise'), 'produce');
   assert.equal(kindOf('snapshot'), 'commit');
-}
+});
 
-export function testCritiqueHasSkipCondition() {
+test('testCritiqueHasSkipCondition', () => {
   const critique = FULL_BUILD.steps.find(s => s.id === 'critique');
   assert.ok(critique?.skip_if, 'critique must have a skip_if predicate');
   const ctx = { runId: 'r', workflowId: 'full-build', iteration: 1, revision: 0, planningDepth: 'minimal' as const };
@@ -109,47 +110,47 @@ export function testCritiqueHasSkipCondition() {
   assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'standard' }), true, 'should skip at standard depth');
   assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'deep' }), false, 'should NOT skip at deep');
   assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'research' }), false, 'should NOT skip at research');
-}
+});
 
-export function testValidationGateHasOnFail() {
+test('testValidationGateHasOnFail', () => {
   const vg = FULL_BUILD.steps.find(s => s.id === 'validation_gate');
   assert.ok(vg?.on_fail, 'validation_gate must have on_fail');
   assert.equal(vg!.on_fail!.target_step_id, 'debug');
   assert.equal(vg!.on_fail!.iteration_loop, true, 'validation_gate on_fail should set iteration_loop');
-}
+});
 
-export function testSnapshotLogsDecision() {
+test('testSnapshotLogsDecision', () => {
   const snapshot = FULL_BUILD.steps.find(s => s.id === 'snapshot');
   assert.equal(snapshot?.logs_decision, true, 'snapshot step should have logs_decision: true (HISTORY folded in)');
-}
+});
 
-export function testFullBuildMaxIterations() {
+test('testFullBuildMaxIterations', () => {
   assert.ok(typeof FULL_BUILD.max_iterations === 'number' && FULL_BUILD.max_iterations > 0);
-}
+});
 
 // ============================================================================
 // draft-artifact definition integrity
 // ============================================================================
 
-export function testDraftArtifactSteps() {
+test('testDraftArtifactSteps', () => {
   const ids = DRAFT_ARTIFACT.steps.map(s => s.id);
   assert.ok(ids.includes('gather'), 'draft-artifact needs gather');
   assert.ok(ids.includes('produce'), 'draft-artifact needs produce');
   assert.ok(ids.includes('commit'), 'draft-artifact needs commit');
-}
+});
 
-export function testDraftArtifactKinds() {
+test('testDraftArtifactKinds', () => {
   const kindOf = (id: string) => DRAFT_ARTIFACT.steps.find(s => s.id === id)?.kind;
   assert.equal(kindOf('gather'), 'gather');
   assert.equal(kindOf('produce'), 'produce');
   assert.equal(kindOf('commit'), 'commit');
-}
+});
 
-export function testStepCount() {
+test('testStepCount', () => {
   assert.equal(stepCount('full-build'), FULL_BUILD.steps.length);
   assert.equal(stepCount('draft-artifact'), DRAFT_ARTIFACT.steps.length);
   assert.equal(stepCount('no-such-workflow'), 0);
-}
+});
 
 // ============================================================================
 // WorkflowEngine — runs via stub dependencies
@@ -201,7 +202,7 @@ const DUMMY_CYCLE_CTX: any = {
   project_root: '/tmp',
 };
 
-export async function testEngineRunsGatherStep() {
+test('testEngineRunsGatherStep', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'g', kind: 'gather', label: 'Gather' },
   ]));
@@ -209,9 +210,9 @@ export async function testEngineRunsGatherStep() {
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'complete');
-}
+});
 
-export async function testEngineRunsProduceStep() {
+test('testEngineRunsProduceStep', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'p', kind: 'produce', agentRole: 'designer' },
   ]));
@@ -226,9 +227,9 @@ export async function testEngineRunsProduceStep() {
   const engine = new WorkflowEngine(deps, makeStubOpts());
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.ok(called, 'stepRunner.run should have been called for produce step');
-}
+});
 
-export async function testEngineHaltsOnProduceFailure() {
+test('testEngineHaltsOnProduceFailure', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'p', kind: 'produce', agentRole: 'designer' },
   ]));
@@ -243,9 +244,9 @@ export async function testEngineHaltsOnProduceFailure() {
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'halted');
   assert.ok(result.error?.includes('agent timeout'));
-}
+});
 
-export async function testEngineSkipsConditionalStep() {
+test('testEngineSkipsConditionalStep', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'p', kind: 'produce', agentRole: 'designer' },
     { id: 'r', kind: 'review', skip_if: () => true, on_fail: { target_step_id: 'p' } },
@@ -263,16 +264,16 @@ export async function testEngineSkipsConditionalStep() {
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   // 'r' is skipped — should not appear in stepRunner calls
   assert.ok(!visited.includes('r'), 'review step should have been skipped');
-}
+});
 
-export async function testEngineHaltsForUnknownWorkflow() {
+test('testEngineHaltsForUnknownWorkflow', async () => {
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
   const result = await engine.run('definitely-not-registered', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'halted');
   assert.ok(result.error?.includes('Unknown workflow'));
-}
+});
 
-export async function testCheckpointHaltsPropagates() {
+test('testCheckpointHaltsPropagates', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'cp', kind: 'checkpoint', label: 'Gate' },
     { id: 'p', kind: 'produce', agentRole: 'designer' },
@@ -283,9 +284,9 @@ export async function testCheckpointHaltsPropagates() {
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'halted');
   assert.equal(result.final_step_id, 'cp');
-}
+});
 
-export async function testConfirmCheckpointApproveAdvances() {
+test('testConfirmCheckpointApproveAdvances', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'confirm', kind: 'checkpoint', label: 'CONFIRM' },
     { id: 'build', kind: 'produce', agentRole: 'builder' },
@@ -304,4 +305,4 @@ export async function testConfirmCheckpointApproveAdvances() {
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'complete');
   assert.ok(visited.some(v => v === 'build'), 'build step should have run after CONFIRM approval');
-}
+});

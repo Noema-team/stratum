@@ -79,7 +79,7 @@ export class NotificationService {
 
   removeChannel(id: string): boolean {
     const r = this.repo.findById(id);
-    if (!r) return false;
+    if (!r || !r.enabled) return false;
     this.repo.setEnabled(id, false);
     this.channels.delete(id);
     return true;

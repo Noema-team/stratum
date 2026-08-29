@@ -147,6 +147,9 @@ function runProcess(
     child.on('error', e => { clearTimeout(timer); reject(e); });
     child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? 1, out, err }); });
 
-    child.stdin?.end(stdin, 'utf8');
+    if (child.stdin) {
+      child.stdin.on('error', (e: NodeJS.ErrnoException) => { if (e.code !== 'EPIPE') reject(e); });
+      child.stdin.end(stdin, 'utf8');
+    }
   });
 }

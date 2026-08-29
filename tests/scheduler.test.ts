@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
 import { openDatabase } from '../src/storage/database.js';
@@ -86,7 +87,7 @@ function makeRegistry(adapter?: ExecutionAdapter): ExecutorRegistry {
 // ExecutorRegistry
 // ============================================================================
 
-export function testRegistryFindById() {
+test('testRegistryFindById', () => {
   const reg = new ExecutorRegistry();
   const a = new StubAdapter('a');
   const b = new StubAdapter('b');
@@ -95,9 +96,9 @@ export function testRegistryFindById() {
   assert.equal(reg.findById('a'), a);
   assert.equal(reg.findById('b'), b);
   assert.equal(reg.findById('c'), undefined);
-}
+});
 
-export function testRegistryFindByCapabilities() {
+test('testRegistryFindByCapabilities', () => {
   const reg = new ExecutorRegistry();
   const a = new StubAdapter('a');
   reg.register(a);
@@ -105,20 +106,20 @@ export function testRegistryFindByCapabilities() {
   assert.equal(found, a);
   const notFound = reg.findByCapabilities(new Set(['browser']));
   assert.equal(notFound, undefined);
-}
+});
 
-export function testRegistryList() {
+test('testRegistryList', () => {
   const reg = new ExecutorRegistry();
   reg.register(new StubAdapter('x'));
   reg.register(new StubAdapter('y'));
   assert.equal(reg.list().length, 2);
-}
+});
 
 // ============================================================================
 // LeaseManager
 // ============================================================================
 
-export function testLeaseAcquireAndRelease() {
+test('testLeaseAcquireAndRelease', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -139,9 +140,9 @@ export function testLeaseAcquireAndRelease() {
 
   mgr.releaseAll(wi.id);
   assert.equal(mgr.hasActiveLease(wi.id), false);
-}
+});
 
-export function testLeaseBlocksConflictingWorkItem() {
+test('testLeaseBlocksConflictingWorkItem', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -161,9 +162,9 @@ export function testLeaseBlocksConflictingWorkItem() {
 
   const second = mgr.tryAcquireWrite(wi2.id, 'shared-repo', 60_000);
   assert.equal(second, null, 'wi2 should be blocked by wi1 lease');
-}
+});
 
-export function testLeaseSameWorkItemSameRepo() {
+test('testLeaseSameWorkItemSameRepo', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -181,9 +182,9 @@ export function testLeaseSameWorkItemSameRepo() {
   const l2 = mgr.tryAcquireWrite(wi.id, 'repo-x', 60_000);
   assert.ok(l1);
   assert.ok(l2);
-}
+});
 
-export function testLeaseExpiry() {
+test('testLeaseExpiry', () => {
   const db = openTestDb();
   const ws = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -206,13 +207,13 @@ export function testLeaseExpiry() {
   // Now wi2 should be able to acquire.
   const lease = mgr.tryAcquireWrite(wi2.id, 'repo-z', 60_000);
   assert.ok(lease, 'wi2 should get lease after wi1 lease expired');
-}
+});
 
 // ============================================================================
 // Scheduler — happy path
 // ============================================================================
 
-export async function testSchedulerDispatchesReadyItem() {
+test('testSchedulerDispatchesReadyItem', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -236,9 +237,9 @@ export async function testSchedulerDispatchesReadyItem() {
   // Work item should now be in in_review (adapter returned 'succeeded').
   const updated = items.findById(wi.id)!;
   assert.equal(updated.state, 'in_review');
-}
+});
 
-export async function testSchedulerSkipsDraftItem() {
+test('testSchedulerSkipsDraftItem', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -255,9 +256,9 @@ export async function testSchedulerSkipsDraftItem() {
 
   assert.equal(results.length, 0, 'draft items should not appear in tick results');
   assert.equal(adapter.callCount, 0);
-}
+});
 
-export async function testSchedulerSkipsItemWithUnmetDeps() {
+test('testSchedulerSkipsItemWithUnmetDeps', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -279,9 +280,9 @@ export async function testSchedulerSkipsItemWithUnmetDeps() {
   const wiResult = results.find(r => r.workItemId === wi.id);
   assert.equal(wiResult?.outcome, 'skipped_deps');
   assert.equal(adapter.callCount, 0);
-}
+});
 
-export async function testSchedulerDispatchesWhenDepsComplete() {
+test('testSchedulerDispatchesWhenDepsComplete', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -302,9 +303,9 @@ export async function testSchedulerDispatchesWhenDepsComplete() {
 
   const wiResult = results.find(r => r.workItemId === wi.id);
   assert.equal(wiResult?.outcome, 'dispatched');
-}
+});
 
-export async function testSchedulerRespectsConcurrencyLimit() {
+test('testSchedulerRespectsConcurrencyLimit', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -335,9 +336,9 @@ export async function testSchedulerRespectsConcurrencyLimit() {
   const res = results.find(r => r.workItemId === candidate.id);
   assert.equal(res?.outcome, 'skipped_concurrency');
   assert.equal(adapter.callCount, 0);
-}
+});
 
-export async function testSchedulerSkipsAlreadyActiveItem() {
+test('testSchedulerSkipsAlreadyActiveItem', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -367,9 +368,9 @@ export async function testSchedulerSkipsAlreadyActiveItem() {
   // Item is now in_review, so it won't be found by listAllByState('ready').
   assert.equal(results2.length, 0);
   assert.equal(adapter2.callCount, 0, 'should not dispatch item that is no longer ready');
-}
+});
 
-export async function testSchedulerSkipsWhenNoAdapter() {
+test('testSchedulerSkipsWhenNoAdapter', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -384,9 +385,9 @@ export async function testSchedulerSkipsWhenNoAdapter() {
   const results = await scheduler.tick();
 
   assert.equal(results[0].outcome, 'skipped_no_adapter');
-}
+});
 
-export async function testSchedulerHandlesAdapterFailure() {
+test('testSchedulerHandlesAdapterFailure', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -405,9 +406,9 @@ export async function testSchedulerHandlesAdapterFailure() {
   assert.equal(results[0].outcome, 'dispatched', 'dispatch itself succeeds even if adapter reports failure');
   const updated = items.findById(wi.id)!;
   assert.equal(updated.state, 'failed', 'work item should be failed after adapter failure');
-}
+});
 
-export async function testSchedulerRespectsRepoWriteLease() {
+test('testSchedulerRespectsRepoWriteLease', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -437,9 +438,9 @@ export async function testSchedulerRespectsRepoWriteLease() {
   // Manually test that wi2 cannot acquire the lease.
   const conflictLease = leaseMgr.tryAcquireWrite(wi2.id, repoId, 60_000);
   assert.equal(conflictLease, null, 'wi2 should not acquire repo lease while wi1 holds it');
-}
+});
 
-export async function testSchedulerGlobalLimit() {
+test('testSchedulerGlobalLimit', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -467,9 +468,9 @@ export async function testSchedulerGlobalLimit() {
 
   const res = results.find(r => r.workItemId === candidate.id);
   assert.equal(res?.outcome, 'skipped_concurrency');
-}
+});
 
-export async function testSchedulerMultipleItems() {
+test('testSchedulerMultipleItems', async () => {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
   const workspace = makeWorkspace();
@@ -490,4 +491,4 @@ export async function testSchedulerMultipleItems() {
 
   assert.equal(results.filter(r => r.outcome === 'dispatched').length, 2);
   assert.equal(adapter.callCount, 2);
-}
+});

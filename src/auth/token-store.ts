@@ -106,7 +106,7 @@ export class TokenStore {
 
   revoke(id: string): boolean {
     const record = this.repo.findById(id);
-    if (!record) return false;
+    if (!record || record.revokedAt) return false;
     this.repo.revoke(id, new Date().toISOString());
     return true;
   }

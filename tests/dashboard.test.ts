@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { openDatabase } from '../src/storage/database.js';
 import { ControlPlaneServer } from '../src/api/control-plane-server.js';
 import { WorkService } from '../src/services/work-service.js';
@@ -50,7 +51,7 @@ async function withServer(fn: (ctx: Ctx) => Promise<void>, requireAuth = false):
 // Dashboard route tests
 // ============================================================================
 
-export async function testDashboardRootReturnsHtml() {
+test('testDashboardRootReturnsHtml', async () => {
   await withServer(async ({ base }) => {
     const res = await fetch(`${base}/`);
     if (res.status !== 200) throw new Error(`Expected 200, got ${res.status}`);
@@ -59,9 +60,9 @@ export async function testDashboardRootReturnsHtml() {
     const body = await res.text();
     if (!body.includes('<title>Stratum</title>')) throw new Error('Missing <title>Stratum</title> in dashboard');
   });
-}
+});
 
-export async function testDashboardPathReturnsHtml() {
+test('testDashboardPathReturnsHtml', async () => {
   await withServer(async ({ base }) => {
     const res = await fetch(`${base}/dashboard`);
     if (res.status !== 200) throw new Error(`Expected 200, got ${res.status}`);
@@ -70,17 +71,17 @@ export async function testDashboardPathReturnsHtml() {
     const body = await res.text();
     if (!body.includes('STRATUM')) throw new Error('Missing STRATUM header in dashboard');
   });
-}
+});
 
-export async function testDashboardDoesNotRequireAuth() {
+test('testDashboardDoesNotRequireAuth', async () => {
   await withServer(async ({ base }) => {
     // Dashboard is always accessible without auth (it handles its own token prompt)
     const res = await fetch(`${base}/`);
     if (res.status !== 200) throw new Error(`Dashboard should be reachable without token, got ${res.status}`);
   }, true);
-}
+});
 
-export async function testDashboardContainsExpectedTabs() {
+test('testDashboardContainsExpectedTabs', async () => {
   await withServer(async ({ base }) => {
     const body = await (await fetch(`${base}/`)).text();
     const tabs = ['Needs You', 'Work', 'Projects', 'Activity'];
@@ -88,9 +89,9 @@ export async function testDashboardContainsExpectedTabs() {
       if (!body.includes(tab)) throw new Error(`Missing tab: ${tab}`);
     }
   });
-}
+});
 
-export async function testDashboardContainsApiCalls() {
+test('testDashboardContainsApiCalls', async () => {
   await withServer(async ({ base }) => {
     const body = await (await fetch(`${base}/`)).text();
     // The JS should reference the control-plane API paths
@@ -98,9 +99,9 @@ export async function testDashboardContainsApiCalls() {
     if (!body.includes('/projects')) throw new Error('Dashboard JS should reference /projects');
     if (!body.includes('/events')) throw new Error('Dashboard JS should reference /events');
   });
-}
+});
 
-export async function testDashboardDoesNotInterceptApiRoutes() {
+test('testDashboardDoesNotInterceptApiRoutes', async () => {
   await withServer(async ({ base }) => {
     // API routes must still work
     const res = await fetch(`${base}/attention`);
@@ -108,9 +109,9 @@ export async function testDashboardDoesNotInterceptApiRoutes() {
     const data = await res.json() as { ok: boolean };
     if (!data.ok) throw new Error('/attention response should have ok:true');
   });
-}
+});
 
-export async function testDashboardDoesNotInterceptApiRoutesWithAuth() {
+test('testDashboardDoesNotInterceptApiRoutesWithAuth', async () => {
   await withServer(async ({ base, tokens }) => {
     const { token } = tokens.create('test');
     const res = await fetch(`${base}/attention`, {
@@ -118,21 +119,21 @@ export async function testDashboardDoesNotInterceptApiRoutesWithAuth() {
     });
     if (res.status !== 200) throw new Error(`Expected 200 from /attention with token, got ${res.status}`);
   }, true);
-}
+});
 
-export async function testDashboardHtmlContainsTokenInput() {
+test('testDashboardHtmlContainsTokenInput', async () => {
   await withServer(async ({ base }) => {
     const body = await (await fetch(`${base}/`)).text();
     if (!body.includes('strat_')) throw new Error('Auth prompt should mention token prefix');
     if (!body.includes('token-input')) throw new Error('Auth form should have token-input element');
   });
-}
+});
 
-export async function testDashboardMethodNotAllowed() {
+test('testDashboardMethodNotAllowed', async () => {
   await withServer(async ({ base }) => {
     // POST to / should go through the JSON router and return 404 (no route), not the HTML dashboard
     const res = await fetch(`${base}/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     // POST / has no route — router returns 404
     if (res.status !== 404) throw new Error(`POST / should return 404, got ${res.status}`);
   });
-}
+});

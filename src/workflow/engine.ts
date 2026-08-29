@@ -104,7 +104,7 @@ export class WorkflowEngine {
         continue;
       }
 
-      const result = await this.executeStep(step, def, cycleNumber, cycleState);
+      const result = await this.executeStep(step, cycleNumber, cycleState);
 
       if (result.outcome === 'failed') {
         return {
@@ -188,7 +188,6 @@ export class WorkflowEngine {
 
   private async executeStep(
     step: WorkflowStep,
-    def: WorkflowDefinition,
     cycleNumber: number,
     cycleState: CycleStateContext,
   ): Promise<StepResult & { _iterate?: true }> {

@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 // §29.1 Invariant tests + §29.2 State-machine property tests (DDR-032)
 //
 // Each exported testXxx function exercises a named invariant from the spec.
@@ -23,7 +24,8 @@ const PROJ = 'proj-invariant';
 
 function seed(db: Database.Database): void {
   db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES (?,?,?)").run(WS, 'Test', new Date().toISOString());
-  db.prepare("INSERT INTO projects (id, workspace_id, name, created_at) VALUES (?,?,?,?)").run(PROJ, WS, 'Proj', new Date().toISOString());
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO projects (id, workspace_id, name, status, priority, created_at, updated_at) VALUES (?,?,?,?,?,?,?)").run(PROJ, WS, 'Proj', 'active', 0, now, now);
 }
 
 function svc(db: Database.Database, opts: Parameters<typeof WorkService>[2] = {}): WorkService {
@@ -35,11 +37,16 @@ function makeItem(db: Database.Database, partial: Partial<WorkItem> = {}): WorkI
   const item: WorkItem = {
     id: crypto.randomUUID(),
     projectId: PROJ,
-    workspaceId: WS,
+    repositoryIds: [],
     title: 'Test work item',
+    goal: 'Test goal',
     state: 'draft',
-    priority: 'normal',
+    priority: 0,
     workflowId: 'full-build',
+    acceptanceCriteria: [],
+    constraints: [],
+    requiredEvidence: [],
+    dependencies: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...partial,
@@ -75,7 +82,7 @@ const NON_TERMINAL_STATES = ALL_STATES.filter(s => !TERMINAL_STATES.includes(s))
 
 // Invariant: "cancelled work never dispatches" — a cancelled item cannot be
 // transitioned to running through any path.
-export async function testCancelledWorkNeverDispatches() {
+test('testCancelledWorkNeverDispatches', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -85,13 +92,13 @@ export async function testCancelledWorkNeverDispatches() {
   s.cancel({ workItemId: item.id, reason: 'test' });
 
   // Cannot go to ready
-  assertThrows(() => s.markReady({ workItemId: item.id }), 'INVALID_STATE');
+  assertThrows(() => s.markReady({ workItemId: item.id }), 'TERMINAL_STATE');
   // Cannot go to running
-  assertThrows(() => s.startRunning({ workItemId: item.id }), 'INVALID_STATE');
-}
+  assertThrows(() => s.startRunning({ workItemId: item.id }), 'TERMINAL_STATE');
+});
 
 // Invariant: "completed work cannot be executed again"
-export async function testCompletedWorkCannotBeReExecuted() {
+test('testCompletedWorkCannotBeReExecuted', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -99,14 +106,14 @@ export async function testCompletedWorkCannotBeReExecuted() {
 
   s.complete({ workItemId: item.id });
 
-  assertThrows(() => s.markReady({ workItemId: item.id }), 'INVALID_STATE');
-  assertThrows(() => s.startRunning({ workItemId: item.id }), 'INVALID_STATE');
-  assertThrows(() => s.pause({ workItemId: item.id }), 'INVALID_STATE');
-}
+  assertThrows(() => s.markReady({ workItemId: item.id }), 'TERMINAL_STATE');
+  assertThrows(() => s.startRunning({ workItemId: item.id }), 'TERMINAL_STATE');
+  assertThrows(() => s.pause({ workItemId: item.id }), 'TERMINAL_STATE');
+});
 
 // Invariant: "state changes emit durable events" — every transition must
 // produce at least one event record in the DB.
-export async function testEveryTransitionEmitsDurableEvent() {
+test('testEveryTransitionEmitsDurableEvent', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -119,12 +126,12 @@ export async function testEveryTransitionEmitsDurableEvent() {
   const after = events.listByWorkspace(WS).length;
 
   if (after <= before) throw new Error('markReady must emit at least one durable event');
-}
+});
 
 // Invariant: "duplicate events do not duplicate side effects" — calling the
 // same transition twice on a terminal item must error, not silently create
 // a second event.
-export async function testDuplicateTransitionOnTerminalErrors() {
+test('testDuplicateTransitionOnTerminalErrors', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -134,17 +141,17 @@ export async function testDuplicateTransitionOnTerminalErrors() {
   const events = new EventRepository(db);
   const countAfterFirst = events.listByWorkspace(WS).length;
 
-  assertThrows(() => s.complete({ workItemId: item.id }), 'INVALID_STATE');
+  assertThrows(() => s.complete({ workItemId: item.id }), 'TERMINAL_STATE');
   const countAfterSecond = events.listByWorkspace(WS).length;
 
   if (countAfterSecond !== countAfterFirst) {
     throw new Error('Failed transition must not emit additional events');
   }
-}
+});
 
 // Invariant: "blocked dependencies prevent dispatch" — a work item with an
 // incomplete dependency cannot transition to running.
-export async function testBlockedDependencyPreventsDispatch() {
+test('testBlockedDependencyPreventsDispatch', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -157,10 +164,10 @@ export async function testBlockedDependencyPreventsDispatch() {
 
   s.markReady({ workItemId: item.id });
   assertThrows(() => s.startRunning({ workItemId: item.id }), 'DEPENDENCY');
-}
+});
 
 // Invariant: dependency check is lifted when the dependency completes.
-export async function testDependencyClearedAllowsDispatch() {
+test('testDependencyClearedAllowsDispatch', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -174,11 +181,11 @@ export async function testDependencyClearedAllowsDispatch() {
   s.markReady({ workItemId: item.id });
   // Should NOT throw — dependency is now complete
   s.startRunning({ workItemId: item.id });
-}
+});
 
 // Invariant: "completion cannot occur without required evidence" — when an
 // evidence guard is installed, complete() must reject if it returns 'deny'.
-export async function testCompletionRequiresEvidence() {
+test('testCompletionRequiresEvidence', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db, {
@@ -187,10 +194,10 @@ export async function testCompletionRequiresEvidence() {
 
   const item = makeItem(db, { state: 'in_review' });
   assertThrows(() => s.complete({ workItemId: item.id }), 'EVIDENCE_POLICY_DENIED');
-}
+});
 
 // Invariant: when evidence guard allows, completion proceeds.
-export async function testCompletionAllowedWhenEvidencePresent() {
+test('testCompletionAllowedWhenEvidencePresent', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db, {
@@ -200,11 +207,11 @@ export async function testCompletionAllowedWhenEvidencePresent() {
   const item = makeItem(db, { state: 'in_review' });
   const result = s.complete({ workItemId: item.id });
   if (result.state !== 'completed') throw new Error(`Expected completed, got ${result.state}`);
-}
+});
 
 // Invariant: "executor failure cannot corrupt work state" — fail() on a
 // running item moves it to failed, not into an undefined state.
-export async function testExecutorFailureProducesFailedState() {
+test('testExecutorFailureProducesFailedState', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -214,20 +221,20 @@ export async function testExecutorFailureProducesFailedState() {
 
   if (result.state !== 'failed') throw new Error(`Expected failed, got ${result.state}`);
   if (!isWorkItemTerminal(result.state)) throw new Error('failed must be a terminal state');
-}
+});
 
 // Invariant: fail() requires a reason.
-export async function testFailRequiresReason() {
+test('testFailRequiresReason', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
   const item = makeItem(db, { state: 'running' });
 
   assertThrows(() => s.fail({ workItemId: item.id, reason: '' }));
-}
+});
 
 // Invariant: needsDecision mints exactly one Decision record.
-export async function testNeedsDecisionMintsExactlyOneDecision() {
+test('testNeedsDecisionMintsExactlyOneDecision', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -237,15 +244,24 @@ export async function testNeedsDecisionMintsExactlyOneDecision() {
   const before = decisions.listByWorkItem(item.id).length;
   s.needsDecision({
     workItemId: item.id,
-    decision: { type: 'checkpoint', title: 'Review required', description: 'Please review' },
+    decision: {
+      type: 'checkpoint',
+      title: 'Review required',
+      summary: 'Please review',
+      subjectRef: { workItemId: item.id },
+      options: [{ id: 'approve', label: 'Approve' }, { id: 'reject', label: 'Reject' }],
+      impact: 'low',
+      reversibility: 'easy',
+      urgency: 'blocking',
+    },
   });
   const after = decisions.listByWorkItem(item.id).length;
 
   if (after !== before + 1) throw new Error(`Expected exactly 1 new decision, got ${after - before}`);
-}
+});
 
 // Invariant: resolving a decision on a pending item transitions it back to running.
-export async function testResolveDecisionRestoresRunning() {
+test('testResolveDecisionRestoresRunning', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -253,19 +269,32 @@ export async function testResolveDecisionRestoresRunning() {
 
   const { decision } = s.needsDecision({
     workItemId: item.id,
-    decision: { type: 'checkpoint', title: 'Approve', description: 'Go ahead?' },
+    decision: {
+      type: 'checkpoint',
+      title: 'Approve',
+      summary: 'Go ahead?',
+      subjectRef: { workItemId: item.id },
+      options: [{ id: 'approve', label: 'Approve' }],
+      impact: 'low',
+      reversibility: 'easy',
+      urgency: 'blocking',
+    },
   });
 
-  const { workItem } = s.resolveDecision(decision.id, { choice: 'approved' }, 'running');
+  const { workItem } = s.resolveDecision(
+    decision.id,
+    { selectedOptionId: 'approve', resolvedAt: new Date().toISOString() },
+    'running',
+  );
   if (workItem.state !== 'running') throw new Error(`Expected running after resolve, got ${workItem.state}`);
-}
+});
 
 // ============================================================================
 // §29.2 State-machine property tests
 // ============================================================================
 
 // Property: isWorkItemTerminal is consistent with what the transition table allows.
-export async function testTerminalStatesAreImmovable() {
+test('testTerminalStatesAreImmovable', async () => {
   const db = makeDb();
   seed(db);
 
@@ -280,10 +309,10 @@ export async function testTerminalStatesAreImmovable() {
       throw new Error(`isWorkItemTerminal(${state}) should be false`);
     }
   }
-}
+});
 
 // Property: any non-terminal state can reach 'cancelled'.
-export async function testAnyCancellableStateCanBeCancelled() {
+test('testAnyCancellableStateCanBeCancelled', async () => {
   const cancellable: WorkItemState[] = [
     'draft', 'ready', 'running', 'in_review', 'needs_decision', 'blocked', 'paused',
   ];
@@ -298,10 +327,10 @@ export async function testAnyCancellableStateCanBeCancelled() {
       throw new Error(`cancel() from '${state}' produced '${result.state}' instead of 'cancelled'`);
     }
   }
-}
+});
 
 // Property: any non-terminal state can reach 'failed'.
-export async function testAnyNonTerminalStateCanFail() {
+test('testAnyNonTerminalStateCanFail', async () => {
   const failable: WorkItemState[] = [
     'draft', 'ready', 'running', 'in_review', 'needs_decision', 'blocked', 'paused',
   ];
@@ -316,10 +345,10 @@ export async function testAnyNonTerminalStateCanFail() {
       throw new Error(`fail() from '${state}' produced '${result.state}' instead of 'failed'`);
     }
   }
-}
+});
 
 // Property: terminal states reject every transition (fail, cancel, pause, etc.).
-export async function testTerminalStatesRejectAllTransitions() {
+test('testTerminalStatesRejectAllTransitions', async () => {
   const terminals: WorkItemState[] = ['completed', 'failed', 'cancelled'];
 
   for (const state of terminals) {
@@ -328,15 +357,15 @@ export async function testTerminalStatesRejectAllTransitions() {
     const s = svc(db);
     const item = makeItem(db, { state });
 
-    assertThrows(() => s.markReady({ workItemId: item.id }), 'INVALID_STATE');
-    assertThrows(() => s.cancel({ workItemId: item.id }), 'INVALID_STATE');
-    assertThrows(() => s.pause({ workItemId: item.id }), 'INVALID_STATE');
-    assertThrows(() => s.fail({ workItemId: item.id, reason: 'x' }), 'INVALID_STATE');
+    assertThrows(() => s.markReady({ workItemId: item.id }), 'TERMINAL_STATE');
+    assertThrows(() => s.cancel({ workItemId: item.id }), 'TERMINAL_STATE');
+    assertThrows(() => s.pause({ workItemId: item.id }), 'TERMINAL_STATE');
+    assertThrows(() => s.fail({ workItemId: item.id, reason: 'x' }), 'TERMINAL_STATE');
   }
-}
+});
 
 // Property: paused → resume → ready OR running; never skips states.
-export async function testResumeFromPausedProducesLegalTargetState() {
+test('testResumeFromPausedProducesLegalTargetState', async () => {
   const db1 = makeDb();
   seed(db1);
   const s1 = svc(db1);
@@ -350,10 +379,10 @@ export async function testResumeFromPausedProducesLegalTargetState() {
   const item2 = makeItem(db2, { state: 'paused' });
   const r2 = s2.resume({ workItemId: item2.id, resumeRunning: true });
   if (r2.state !== 'running') throw new Error(`resume(resumeRunning=true) → expected running, got ${r2.state}`);
-}
+});
 
 // Property: every state transition is recorded — the event log is monotonically growing.
-export async function testEventLogGrowsMonotonically() {
+test('testEventLogGrowsMonotonically', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -380,10 +409,10 @@ export async function testEventLogGrowsMonotonically() {
       throw new Error(`Event count did not grow: ${counts[i - 1]} → ${counts[i]}`);
     }
   }
-}
+});
 
 // Property: schema validity — WorkItem fields are never null/undefined after a transition.
-export async function testTransitionPreservesSchemaValidity() {
+test('testTransitionPreservesSchemaValidity', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
@@ -396,13 +425,13 @@ export async function testTransitionPreservesSchemaValidity() {
   if (!result.state) throw new Error('state missing after transition');
   if (!result.updatedAt) throw new Error('updatedAt missing after transition');
   if (!result.createdAt) throw new Error('createdAt missing after transition');
-}
+});
 
 // Property: unknown work item raises a not-found error, not an unhandled crash.
-export async function testUnknownWorkItemRaisesNotFound() {
+test('testUnknownWorkItemRaisesNotFound', async () => {
   const db = makeDb();
   seed(db);
   const s = svc(db);
 
   assertThrows(() => s.markReady({ workItemId: 'does-not-exist' }));
-}
+});

@@ -260,6 +260,9 @@ export class WorkService {
   }
 
   fail(req: FailRequest): WorkItem {
+    if (!req.reason || !req.reason.trim()) {
+      throw new WorkServiceError('A non-empty reason is required to fail a work item', 'MISSING_REASON');
+    }
     return this.transition(req.workItemId, 'failed', {
       guardFn: () => {},
       eventType: 'work.state_changed',
