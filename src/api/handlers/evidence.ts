@@ -14,13 +14,16 @@ export function makeEvidenceHandlers(
   router.add('POST', '/work/:id/evidence', (req) => {
     try {
       const b = (req.body ?? {}) as Record<string, unknown>;
-      if (!b.type || !b.source || !b.status) {
-        return err('bad_request', 'type, source, and status are required');
+      if (!b.type || !b.status) {
+        return err('bad_request', 'type and status are required');
       }
+      // Force a system-assigned source; never accept caller-supplied collectorId
+      // or caller-supplied source as authoritative provenance. Manually submitted
+      // evidence will not satisfy external-only requirements (no collectorId).
       const e = evidenceService.record({
         workItemId: req.params.id,
         type: b.type as string,
-        source: b.source as string,
+        source: 'api:manual',
         status: b.status as EvidenceStatus,
         payload: b.payload ?? {},
         subjectRef: b.subjectRef as string | undefined,
