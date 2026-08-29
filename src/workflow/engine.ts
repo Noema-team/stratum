@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
-import type { DAGNodeId } from '../agent-runner.js';
-import type { DAGRunner } from '../dag-runner.js';
+import type { AgentRunner } from '../agent-runner.js';
 import type { CycleStateContext } from '../context-manager.js';
 import type { CriticAgent } from '../critic-agent.js';
 import type { ConfirmService } from '../confirm-service.js';
@@ -52,7 +51,7 @@ async function updateArtifactEntries(
 // ============================================================================
 
 export interface WorkflowEngineDeps {
-  dagRunner: DAGRunner;
+  agentRunner: AgentRunner;
   confirmService: ConfirmService;
   execService: ExecService;
   validationGateService: ValidationGateService;
@@ -286,18 +285,27 @@ export class WorkflowEngine {
 
   private async executeProduce(
     step: WorkflowStep,
-    _cycleNumber: number,
+    cycleNumber: number,
     cycleState: CycleStateContext,
   ): Promise<StepResult> {
     const start = Date.now();
     const nodeId = this.stepToNodeId(step.id);
-    // DAGRunner handles: markRunning, agentRunner.run, markComplete, artifact entries
-    const result = await this.deps.dagRunner.runNode(nodeId as DAGNodeId, cycleState);
+    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
+    const result = await this.deps.agentRunner.run(nodeId, cycleState);
 
     if (!result.success) {
+      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, cycleState.iteration, nodeId, {
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        duration_ms: result.duration_ms,
+      });
       return { outcome: 'failed', next_step_id: null, error: result.error };
     }
 
+    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
+    if (result.artifacts_written.length > 0) {
+      await updateArtifactEntries(this.deps.mapManager, result.artifacts_written, step.agentRole ?? 'builder');
+    }
     return {
       outcome: 'completed',
       next_step_id: '__next__',
@@ -331,12 +339,13 @@ export class WorkflowEngine {
       return this.executeValidationGateReview(step, def, cycleNumber, cycleId, cycleState, start);
     }
 
-    // Generic review — delegates to DAGRunner
+    // Generic review — delegates to agentRunner directly
     const nodeId = this.stepToNodeId(step.id);
-    const result = await this.deps.dagRunner.runNode(nodeId as DAGNodeId, cycleState);
+    const result = await this.deps.agentRunner.run(nodeId, cycleState);
     if (!result.success) {
       return { outcome: 'failed', next_step_id: null, error: result.error };
     }
+    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
     return { outcome: 'completed', next_step_id: '__next__', duration_ms: Date.now() - start };
   }
 

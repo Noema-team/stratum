@@ -157,16 +157,14 @@ export function testStepCount() {
 
 function makeStubDeps(overrides: Partial<WorkflowEngineDeps> = {}): WorkflowEngineDeps {
   return {
-    dagRunner: {
-      runNode: async (_nodeId: unknown, _ctx: unknown) => ({
+    agentRunner: {
+      run: async (_nodeId: unknown, _ctx: unknown) => ({
         success: true,
-        node: _nodeId,
-        next_node: null,
         artifacts_written: [],
         tokens_used: 0,
         duration_ms: 1,
+        raw_output_path: '',
       }),
-      skipNode: async () => {},
     } as any,
     confirmService: {
       gate: async () => {},
@@ -240,15 +238,14 @@ export async function testEngineRunsProduceStep() {
 
   let called = false;
   const deps = makeStubDeps({
-    dagRunner: {
-      runNode: async () => { called = true; return { success: true, node: 'p', next_node: null, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
-      skipNode: async () => {},
+    agentRunner: {
+      run: async () => { called = true; return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
     } as any,
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
-  assert.ok(called, 'dagRunner.runNode should have been called for produce step');
+  assert.ok(called, 'agentRunner.run should have been called for produce step');
 }
 
 export async function testEngineHaltsOnProduceFailure() {
@@ -257,9 +254,8 @@ export async function testEngineHaltsOnProduceFailure() {
   ]));
 
   const deps = makeStubDeps({
-    dagRunner: {
-      runNode: async () => ({ success: false, node: 'p', next_node: null, artifacts_written: [], tokens_used: 0, duration_ms: 1, error: 'agent timeout' }),
-      skipNode: async () => {},
+    agentRunner: {
+      run: async () => ({ success: false, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '', error: 'agent timeout' }),
     } as any,
   });
 
@@ -278,16 +274,15 @@ export async function testEngineSkipsConditionalStep() {
 
   const visited: string[] = [];
   const deps = makeStubDeps({
-    dagRunner: {
-      runNode: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, node: nodeId, next_node: null, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
-      skipNode: async () => {},
+    agentRunner: {
+      run: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
     } as any,
     snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
   await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
-  // 'r' is skipped — should not appear in dagRunner calls
+  // 'r' is skipped — should not appear in agentRunner calls
   assert.ok(!visited.includes('R'), 'review step should have been skipped');
 }
 
@@ -320,9 +315,8 @@ export async function testConfirmCheckpointApproveAdvances() {
 
   const visited: string[] = [];
   const deps = makeStubDeps({
-    dagRunner: {
-      runNode: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, node: nodeId, next_node: null, artifacts_written: [], tokens_used: 0, duration_ms: 1 }; },
-      skipNode: async () => {},
+    agentRunner: {
+      run: async (nodeId: any) => { visited.push(String(nodeId)); return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' }; },
     } as any,
     snapshotService: { run: async () => ({ snapshot_dir: '/tmp' }) } as any,
   });
@@ -330,6 +324,6 @@ export async function testConfirmCheckpointApproveAdvances() {
   const engine = new WorkflowEngine(deps, makeStubOpts({ onConfirmGate: async () => 'approve' }));
   const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
   assert.equal(result.status, 'complete');
-  // Build step should have been called
+  // Build step should have been called (nodeId for 'build' step → 'BUILD')
   assert.ok(visited.some(v => v === 'BUILD'), 'BUILD step should have run after CONFIRM approval');
 }
