@@ -179,6 +179,43 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_scheduler_leases_work_item ON scheduler_leases(work_item_id);
   CREATE INDEX idx_scheduler_leases_expires   ON scheduler_leases(expires_at);
   `,
+
+  // Migration 3: auth tokens, audit log, notification channels (DDR-032 §22, §28 Phase 8)
+  `
+  CREATE TABLE api_tokens (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    last_used_at TEXT,
+    revoked_at   TEXT
+  );
+
+  CREATE TABLE audit_events (
+    id            TEXT PRIMARY KEY,
+    token_id      TEXT REFERENCES api_tokens(id),
+    action        TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    details_json  TEXT,
+    ip_address    TEXT,
+    occurred_at   TEXT NOT NULL
+  );
+
+  CREATE INDEX idx_audit_events_occurred_at ON audit_events(occurred_at);
+  CREATE INDEX idx_audit_events_resource    ON audit_events(resource_type, resource_id);
+  CREATE INDEX idx_audit_events_token       ON audit_events(token_id);
+
+  CREATE TABLE notification_channels (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    type        TEXT NOT NULL CHECK(type IN ('webhook')),
+    config_json TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL
+  );
+  `,
 ];
 
 // ============================================================================

@@ -2,12 +2,17 @@
 // Shared API types — request parsing and response envelopes
 // ============================================================================
 
+import type { AuthContext } from '../auth/types.js';
+export type { AuthContext };
+
 export interface ParsedRequest {
   method: string;
   path: string;
   params: Record<string, string>;   // matched from URL pattern (:param)
   query: Record<string, string>;    // from ?key=value
   body: unknown;                    // parsed JSON body, or null
+  auth?: AuthContext;               // set when token is valid
+  rawIp?: string;                   // remote address, best-effort
 }
 
 export interface ApiSuccess<T> {

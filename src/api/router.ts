@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
-import type { ParsedRequest, ApiResponse } from './types.js';
+import type { ParsedRequest, ApiResponse, AuthContext } from './types.js';
 import { err, statusForError } from './types.js';
 
 export type RouteHandler = (req: ParsedRequest) => ApiResponse | Promise<ApiResponse>;
+export type AuthMiddleware = (raw: string) => AuthContext | null;
 
 interface Route {
   method: string;
@@ -13,10 +14,15 @@ interface Route {
 
 export class Router {
   private readonly routes: Route[] = [];
+  private authMiddleware: AuthMiddleware | null = null;
 
   add(method: string, path: string, handler: RouteHandler): this {
     this.routes.push({ method: method.toUpperCase(), segments: path.split('/').filter(Boolean), handler });
     return this;
+  }
+
+  setAuth(middleware: AuthMiddleware): void {
+    this.authMiddleware = middleware;
   }
 
   private match(method: string, pathname: string): { handler: RouteHandler; params: Record<string, string> } | null {
@@ -58,12 +64,31 @@ export class Router {
       return;
     }
 
+    let auth: AuthContext | undefined;
+    if (this.authMiddleware) {
+      const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
+      if (!authHeader.startsWith('Bearer ')) {
+        sendJson(res, 401, err('unauthorized', 'Authorization: Bearer <token> required'));
+        return;
+      }
+      const ctx = this.authMiddleware(authHeader.slice(7).trim());
+      if (!ctx) {
+        sendJson(res, 401, err('unauthorized', 'Invalid or revoked token'));
+        return;
+      }
+      auth = ctx;
+    }
+
+    const rawIp = (req.socket as { remoteAddress?: string }).remoteAddress;
+
     const parsed: ParsedRequest = {
       method: req.method ?? 'GET',
       path: url.pathname,
       params: found.params,
       query,
       body,
+      auth,
+      rawIp,
     };
 
     try {
