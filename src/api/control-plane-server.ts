@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'http';
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import type Database from 'better-sqlite3';
 import { Router } from './router.js';
 import { AttentionService } from './attention-service.js';
@@ -22,6 +22,7 @@ import { TokenStore } from '../auth/token-store.js';
 import { AuditLogger } from '../audit/audit-logger.js';
 import { NotificationService } from '../notifications/notification-service.js';
 import { ok, err } from './types.js';
+import { dashboardHtml } from './dashboard.js';
 
 export interface ControlPlaneServerOptions {
   db: Database.Database;
@@ -121,7 +122,16 @@ export class ControlPlaneServer {
       return ok({ removed: true });
     });
 
-    this.server = createServer((req, res) => {
+    const html = dashboardHtml();
+
+    this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const pathname = (req.url ?? '/').split('?')[0];
+      if ((pathname === '/' || pathname === '/dashboard') && req.method === 'GET') {
+        const buf = Buffer.from(html, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': buf.byteLength });
+        res.end(buf);
+        return;
+      }
       router.handle(req, res).catch(e => {
         const msg = e instanceof Error ? e.message : String(e);
         res.writeHead(500, { 'Content-Type': 'application/json' });

@@ -6,3 +6,4 @@ export { AttentionService } from './attention-service.js';
 export type { AttentionItem, AttentionCategory, AttentionUrgency } from './attention-service.js';
 export { ControlPlaneServer } from './control-plane-server.js';
 export type { ControlPlaneServerOptions } from './control-plane-server.js';
+export { dashboardHtml } from './dashboard.js';
