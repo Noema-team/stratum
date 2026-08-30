@@ -286,6 +286,79 @@ test('testCheckpointHaltsPropagates', async () => {
   assert.equal(result.final_step_id, 'cp');
 });
 
+// ============================================================================
+// WorkflowRun identity invariants
+// ============================================================================
+
+test('testEngineResultRunIdMatchesSuppliedId', async () => {
+  registerWorkflow(makeSimpleWorkflow([
+    { id: 'p', kind: 'produce', agentRole: 'designer' },
+  ]));
+  const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
+  const result = await engine.run('test-wf', 1, 'supplied-run-id-abc', DUMMY_CYCLE_CTX);
+  assert.equal(result.run_id, 'supplied-run-id-abc', 'result.run_id must echo caller-supplied ID');
+});
+
+test('testEngineErrorResultRunIdMatchesSuppliedId', async () => {
+  const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
+  const result = await engine.run('no-such-workflow', 1, 'canonical-xyz', DUMMY_CYCLE_CTX);
+  assert.equal(result.run_id, 'canonical-xyz', 'error result must return caller-supplied ID, not a fresh UUID');
+});
+
+test('testEngineBadStartStepRunIdMatchesSuppliedId', async () => {
+  registerWorkflow(makeSimpleWorkflow([
+    { id: 'only-step', kind: 'produce', agentRole: 'designer' },
+  ]));
+  const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
+  const result = await engine.run('test-wf', 1, 'run-bad-step', DUMMY_CYCLE_CTX, 'nonexistent-step');
+  assert.equal(result.run_id, 'run-bad-step', 'bad startStepId error must return caller-supplied ID');
+});
+
+test('testStepRunContextReceivesCanonicalWorkflowRunId', async () => {
+  registerWorkflow(makeSimpleWorkflow([
+    { id: 'p', kind: 'produce', agentRole: 'designer' },
+  ]));
+  const capturedIds: string[] = [];
+  const deps = makeStubDeps({
+    stepRunner: {
+      run: async (_step: unknown, ctx: any) => {
+        capturedIds.push(ctx.workflowRunId);
+        return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 };
+      },
+    } as any,
+  });
+  const engine = new WorkflowEngine(deps, makeStubOpts());
+  await engine.run('test-wf', 1, 'ctx-test-run-id', DUMMY_CYCLE_CTX);
+  assert.equal(capturedIds.length, 1);
+  assert.equal(capturedIds[0], 'ctx-test-run-id', 'StepRunContext.workflowRunId must equal caller-supplied ID');
+});
+
+test('testCheckpointCallbackReceivesCanonicalWorkflowRunId', async () => {
+  registerWorkflow(makeSimpleWorkflow([
+    { id: 'cp', kind: 'checkpoint', label: 'Gate' },
+  ]));
+  const capturedRunIds: string[] = [];
+  const opts = makeStubOpts({
+    onCheckpoint: async (runId) => { capturedRunIds.push(runId); return 'approve'; },
+  });
+  const engine = new WorkflowEngine(makeStubDeps(), opts);
+  await engine.run('test-wf', 1, 'checkpoint-run-id', DUMMY_CYCLE_CTX);
+  assert.equal(capturedRunIds.length, 1);
+  assert.equal(capturedRunIds[0], 'checkpoint-run-id', 'onCheckpoint must receive canonical workflowRunId');
+});
+
+test('testTwoRunsProduceDifferentRunIds', async () => {
+  registerWorkflow(makeSimpleWorkflow([
+    { id: 'p', kind: 'produce', agentRole: 'designer' },
+  ]));
+  const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
+  const r1 = await engine.run('test-wf', 1, 'run-id-first', DUMMY_CYCLE_CTX);
+  const r2 = await engine.run('test-wf', 1, 'run-id-second', DUMMY_CYCLE_CTX);
+  assert.equal(r1.run_id, 'run-id-first');
+  assert.equal(r2.run_id, 'run-id-second');
+  assert.notEqual(r1.run_id, r2.run_id, 'two separate runs with distinct supplied IDs must not share a run_id');
+});
+
 test('testConfirmCheckpointApproveAdvances', async () => {
   registerWorkflow(makeSimpleWorkflow([
     { id: 'confirm', kind: 'checkpoint', label: 'CONFIRM' },

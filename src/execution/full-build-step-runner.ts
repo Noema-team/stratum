@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
@@ -62,10 +61,10 @@ export class FullBuildStepRunner implements StepRunner {
     const { cycleNumber, iteration } = ctx;
     if (step.id === 'confirm') return this.executeConfirm(cycleNumber, iteration);
     if (step.id === 'sharding_approval') return this.executeShardingApproval(step, cycleNumber, iteration);
-    if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, cycleNumber, iteration);
+    if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, cycleNumber, iteration, ctx.workflowRunId);
     // Generic checkpoint fallback.
     await this.markRunning(step.id, cycleNumber, iteration);
-    const action = await this.callbacks.onCheckpoint(randomUUID(), step.id, cycleNumber, iteration);
+    const action = await this.callbacks.onCheckpoint(ctx.workflowRunId, step.id, cycleNumber, iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
     await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
@@ -177,6 +176,7 @@ export class FullBuildStepRunner implements StepRunner {
     step: WorkflowStep,
     cycleNumber: number,
     iteration: number,
+    workflowRunId: string,
   ): Promise<StepResult> {
     if (!this.deps.scopingService) {
       throw new Error('ScopingService is required for the scoping.checkpoint step');
@@ -184,7 +184,7 @@ export class FullBuildStepRunner implements StepRunner {
     await this.markRunning(step.id, cycleNumber, iteration);
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: true } }));
 
-    const action = await this.callbacks.onCheckpoint(randomUUID(), step.id, cycleNumber, iteration);
+    const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, cycleNumber, iteration);
 
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: false } }));
 

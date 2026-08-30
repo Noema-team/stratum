@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import type { CycleStateContext } from '../context-manager.js';
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
@@ -30,7 +29,7 @@ export interface WorkflowEngineOptions {
   // does not provide handleCheckpoint. Resolves to 'approve' (continue) or
   // 'halt' (pause the run).
   onCheckpoint: (
-    runId: string,
+    workflowRunId: string,
     stepId: string,
     cycleNumber: number,
     iteration: number,
@@ -48,20 +47,24 @@ export class WorkflowEngine {
   ) {}
 
   // --------------------------------------------------------------------------
-  // run — execute a workflow definition from the given start step
+  // run — execute a workflow definition from the given start step.
+  //
+  // workflowRunId is the canonical identity for this run, supplied by the
+  // caller (Scheduler or adapter). The engine never mints its own run ID —
+  // every WorkflowRunResult.run_id echoes the supplied value.
   // --------------------------------------------------------------------------
 
   async run(
     workflowId: string,
     cycleNumber: number,
-    cycleId: string,
+    workflowRunId: string,
     cycleStateCtx: CycleStateContext,
     startStepId?: string,
   ): Promise<WorkflowRunResult> {
     const def = getWorkflow(workflowId);
     if (!def) {
       return {
-        run_id: randomUUID(),
+        run_id: workflowRunId,
         status: 'halted',
         final_step_id: null,
         iterations_used: cycleStateCtx.iteration,
@@ -69,14 +72,13 @@ export class WorkflowEngine {
       };
     }
 
-    const runId = randomUUID();
     const startIndex = startStepId
       ? def.steps.findIndex(s => s.id === startStepId)
       : 0;
 
     if (startIndex === -1) {
       return {
-        run_id: runId,
+        run_id: workflowRunId,
         status: 'halted',
         final_step_id: startStepId ?? null,
         iterations_used: cycleStateCtx.iteration,
@@ -91,7 +93,7 @@ export class WorkflowEngine {
       const step = def.steps[stepIndex];
 
       const stepCtx: WorkflowStepContext = {
-        runId,
+        runId: workflowRunId,
         workflowId,
         iteration: cycleState.iteration,
         revision: 0,
@@ -104,11 +106,11 @@ export class WorkflowEngine {
         continue;
       }
 
-      const result = await this.executeStep(step, cycleNumber, cycleState);
+      const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId);
 
       if (result.outcome === 'failed') {
         return {
-          run_id: runId,
+          run_id: workflowRunId,
           status: 'halted',
           final_step_id: step.id,
           iterations_used: cycleState.iteration,
@@ -118,7 +120,7 @@ export class WorkflowEngine {
 
       if (result.outcome === 'checkpoint_set') {
         return {
-          run_id: runId,
+          run_id: workflowRunId,
           status: 'halted',
           final_step_id: step.id,
           iterations_used: cycleState.iteration,
@@ -130,7 +132,7 @@ export class WorkflowEngine {
         const targetIndex = def.steps.findIndex(s => s.id === result.next_step_id);
         if (targetIndex === -1) {
           return {
-            run_id: runId,
+            run_id: workflowRunId,
             status: 'halted',
             final_step_id: step.id,
             iterations_used: cycleState.iteration,
@@ -142,13 +144,13 @@ export class WorkflowEngine {
           const updatedMap = await this.deps.mapManager.read();
           cycleState = { ...cycleState, iteration: updatedMap.cycle.iteration };
 
-          const capResult = await this.checkIterationCap(def, updatedMap.cycle.iteration, runId, step.id);
+          const capResult = await this.checkIterationCap(def, updatedMap.cycle.iteration, workflowRunId, step.id);
           if (capResult) return capResult;
 
           try {
             await this.deps.runArtifacts.createRunDir(cycleNumber, cycleState.iteration);
             await this.deps.runArtifacts.createManifest({
-              cycleId,
+              cycleId: workflowRunId,
               cycleNumber,
               iteration: cycleState.iteration,
               planningDepth: cycleState.planning_depth,
@@ -164,7 +166,7 @@ export class WorkflowEngine {
 
       if (result.next_step_id === null) {
         return {
-          run_id: runId,
+          run_id: workflowRunId,
           status: 'complete',
           final_step_id: step.id,
           iterations_used: cycleState.iteration,
@@ -175,7 +177,7 @@ export class WorkflowEngine {
     }
 
     return {
-      run_id: runId,
+      run_id: workflowRunId,
       status: 'complete',
       final_step_id: def.steps[def.steps.length - 1]?.id ?? null,
       iterations_used: cycleState.iteration,
@@ -190,14 +192,15 @@ export class WorkflowEngine {
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     switch (step.kind) {
       case 'gather':     return this.executeGather(step, cycleNumber, cycleState);
-      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState);
-      case 'review':     return this.executeReview(step, cycleNumber, cycleState);
-      case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, cycleState);
-      case 'execute':    return this.executeExec(step, cycleNumber, cycleState);
-      case 'commit':     return this.executeCommit(step, cycleNumber, cycleState);
+      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState, workflowRunId);
+      case 'review':     return this.executeReview(step, cycleNumber, cycleState, workflowRunId);
+      case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, cycleState, workflowRunId);
+      case 'execute':    return this.executeExec(step, cycleNumber, cycleState, workflowRunId);
+      case 'commit':     return this.executeCommit(step, cycleNumber, cycleState, workflowRunId);
     }
   }
 
@@ -219,11 +222,12 @@ export class WorkflowEngine {
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult> {
     const start = Date.now();
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
 
-    const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
@@ -250,18 +254,17 @@ export class WorkflowEngine {
 
   // -- review ----------------------------------------------------------------
   // Generic: delegates to stepRunner.run() and routes on failure via on_fail.
-  // Full-build-specific review logic (critique, validation_gate) lives in
-  // FullBuildStepRunner.run(), not here.
 
   private async executeReview(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
 
-    const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
@@ -286,36 +289,35 @@ export class WorkflowEngine {
 
   // -- checkpoint ------------------------------------------------------------
   // Delegates to stepRunner.handleCheckpoint if defined; otherwise calls the
-  // generic onCheckpoint callback. Full-build checkpoint logic lives in
-  // FullBuildStepRunner.handleCheckpoint().
+  // generic onCheckpoint callback with the canonical workflowRunId.
 
   private async executeCheckpoint(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCheckpoint) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleCheckpoint(step, ctx);
     }
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    const action = await this.opts.onCheckpoint(randomUUID(), step.id, cycleNumber, cycleState.iteration);
+    const action = await this.opts.onCheckpoint(workflowRunId, step.id, cycleNumber, cycleState.iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
     await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   // -- execute ---------------------------------------------------------------
-  // Delegates to stepRunner.handleExecute if defined; otherwise no-ops and
-  // advances. Full-build execute logic (sandbox) lives in FullBuildStepRunner.
 
   private async executeExec(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleExecute) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleExecute(step, ctx);
     }
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
@@ -324,17 +326,15 @@ export class WorkflowEngine {
   }
 
   // -- commit ----------------------------------------------------------------
-  // Delegates to stepRunner.handleCommit if defined; otherwise marks complete
-  // and ends the workflow. Full-build commit logic (snapshot) lives in
-  // FullBuildStepRunner.handleCommit().
 
   private async executeCommit(
     step: WorkflowStep,
     cycleNumber: number,
     cycleState: CycleStateContext,
+    workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCommit) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState);
+      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleCommit(step, ctx);
     }
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
@@ -379,9 +379,15 @@ export class WorkflowEngine {
     });
   }
 
-  private makeStepRunContext(cycleNumber: number, cycleState: CycleStateContext): StepRunContext {
+  // makeStepRunContext receives workflowRunId explicitly — the engine never
+  // derives run identity from cycleState (which is legacy full-build state).
+  private makeStepRunContext(
+    cycleNumber: number,
+    cycleState: CycleStateContext,
+    workflowRunId: string,
+  ): StepRunContext {
     return {
-      workflowRunId: String((cycleState as any).cycle_id ?? randomUUID()),
+      workflowRunId,
       cycleNumber,
       iteration: cycleState.iteration,
       planningDepth: cycleState.planning_depth,
@@ -394,13 +400,13 @@ export class WorkflowEngine {
   private async checkIterationCap(
     def: WorkflowDefinition,
     iteration: number,
-    runId: string,
+    workflowRunId: string,
     stepId: string,
   ): Promise<WorkflowRunResult | null> {
     const maxIterations = def.max_iterations ?? Infinity;
     if (iteration < maxIterations) return null;
     return {
-      run_id: runId,
+      run_id: workflowRunId,
       status: 'halted',
       final_step_id: stepId,
       iterations_used: iteration,
