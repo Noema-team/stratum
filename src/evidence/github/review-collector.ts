@@ -16,7 +16,18 @@ export class GithubReviewCollector implements EvidenceCollector {
     for (const prRef of req.refs.prs ?? []) {
       const reviewStatus = await this.github.getReviewStatus(prRef.repo.remote, prRef.number);
 
-      const evidenceStatus: Evidence['status'] = reviewStatus.approved
+      // candidateRef comes from the adapter's response — the actual GitHub head SHA,
+      // not from caller-supplied EvidenceCollectionRequest metadata.
+      const actualHeadSha = reviewStatus.headSha;
+
+      // If the requested head SHA diverges from GitHub's current PR head, the review
+      // does not cover the candidate in question; emit failed evidence so the policy
+      // sees the mismatch rather than silently binding approval to the wrong commit.
+      const shaMismatch = prRef.headSha !== actualHeadSha;
+
+      const evidenceStatus: Evidence['status'] = shaMismatch
+        ? 'failed'
+        : reviewStatus.approved
         ? 'passed'
         : reviewStatus.changesRequested
         ? 'failed'
@@ -29,7 +40,7 @@ export class GithubReviewCollector implements EvidenceCollector {
         type: 'github.review',
         source: 'github',
         collectorId: 'github.review',
-        candidateRef: prRef.headSha,
+        candidateRef: actualHeadSha,
         subjectRef: String(prRef.number),
         status: evidenceStatus,
         payload: {
@@ -37,6 +48,9 @@ export class GithubReviewCollector implements EvidenceCollector {
           approved: reviewStatus.approved,
           changesRequested: reviewStatus.changesRequested,
           reviewCount: reviewStatus.reviews.length,
+          requestedHeadSha: prRef.headSha,
+          actualHeadSha,
+          shaMismatch,
         } as unknown as Record<string, unknown>,
         collectedAt: new Date().toISOString(),
       });

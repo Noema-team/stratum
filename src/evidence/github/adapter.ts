@@ -24,6 +24,9 @@ export interface ReviewSummary {
 
 export interface GithubReviewStatus {
   prNumber: number;
+  // Current PR head SHA as reported by GitHub — authoritative, not caller-supplied.
+  // Collectors use this to bind candidateRef independently of EvidenceCollectionRequest.
+  headSha: string;
   approved: boolean;
   changesRequested: boolean;
   reviews: ReviewSummary[];

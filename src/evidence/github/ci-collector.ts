@@ -17,6 +17,12 @@ export class GithubCiCollector implements EvidenceCollector {
     for (const commitRef of req.refs.commits ?? []) {
       const status = await this.github.getCiStatus(commitRef.repo.remote, commitRef.sha);
 
+      // Use the SHA confirmed by the adapter as the authoritative candidateRef.
+      // If the adapter returns a different SHA than requested (adapter bug or race),
+      // the mismatch is preserved in the evidence so policy cannot bind CI approval
+      // to a SHA that was not actually checked.
+      const confirmedSha = status.sha;
+
       let evidenceStatus: Evidence['status'];
       if (status.conclusion === 'success') {
         evidenceStatus = 'passed';
@@ -33,8 +39,8 @@ export class GithubCiCollector implements EvidenceCollector {
         type: 'github.ci',
         source: 'github',
         collectorId: 'github.ci',
-        candidateRef: commitRef.sha,
-        subjectRef: commitRef.sha,
+        candidateRef: confirmedSha,
+        subjectRef: confirmedSha,
         status: evidenceStatus,
         payload: status as unknown as Record<string, unknown>,
         collectedAt: new Date().toISOString(),
