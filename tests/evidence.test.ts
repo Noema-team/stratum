@@ -388,6 +388,7 @@ test('testGithubReviewCollectorApproved', async () => {
     { sha: '', conclusion: 'success', workflowRuns: [] },
     {
       prNumber: 42,
+      headSha: 'sha1',
       approved: true,
       changesRequested: false,
       reviews: [{ author: 'alice', state: 'approved', submittedAt: new Date().toISOString() }],
@@ -411,7 +412,7 @@ test('testGithubReviewCollectorApproved', async () => {
 test('testGithubReviewCollectorChangesRequested', async () => {
   const stub = new StubGitHubAdapter(
     { sha: '', conclusion: null, workflowRuns: [] },
-    { prNumber: 7, approved: false, changesRequested: true, reviews: [] },
+    { prNumber: 7, headSha: 's', approved: false, changesRequested: true, reviews: [] },
   );
   const collector = new GithubReviewCollector(stub);
   const results = await collector.collect({
@@ -495,7 +496,7 @@ test('testEvidenceServiceCollectAll', async () => {
 
   const stub = new StubGitHubAdapter(
     { sha: 'sha1', conclusion: 'success', workflowRuns: [] },
-    { prNumber: 1, approved: true, changesRequested: false, reviews: [] },
+    { prNumber: 1, headSha: 'sha1', approved: true, changesRequested: false, reviews: [] },
   );
 
   const svc = new EvidenceService(db, [
@@ -542,7 +543,8 @@ test('testGithubCiCollectorStampsCollectorIdAndCandidateRef', async () => {
 test('testGithubReviewCollectorStampsCollectorIdAndCandidateRef', async () => {
   const stub: GitHubAdapter = new StubGitHubAdapter(
     { sha: '', conclusion: 'success', workflowRuns: [] },
-    { prNumber: 7, approved: true, changesRequested: false, reviews: [] },
+    // headSha on the adapter result is the authoritative SHA from GitHub.
+    { prNumber: 7, headSha: 'pr-head-sha', approved: true, changesRequested: false, reviews: [] },
   );
   const collector = new GithubReviewCollector(stub);
   const results = await collector.collect({
@@ -550,6 +552,7 @@ test('testGithubReviewCollectorStampsCollectorIdAndCandidateRef', async () => {
     refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 7, headSha: 'pr-head-sha' }] },
   });
   assert.equal(results[0].collectorId, 'github.review');
+  // candidateRef must be the SHA returned by GitHub, not the caller-provided headSha
   assert.equal(results[0].candidateRef, 'pr-head-sha');
 });
 
@@ -626,7 +629,7 @@ test('testTrustFieldsSurviveDbRoundTrip', async () => {
 
   const stub: GitHubAdapter = new StubGitHubAdapter(
     { sha: 'sha-round-trip', conclusion: 'success', workflowRuns: [] },
-    { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
+    { prNumber: 1, headSha: 'sha-round-trip', approved: false, changesRequested: false, reviews: [] },
   );
   const svc = new EvidenceService(db, [new GithubCiCollector(stub)]);
 
@@ -670,7 +673,7 @@ test('testShaACannotSatisfyShaBAfterPersistence', async () => {
 
   const stub: GitHubAdapter = new StubGitHubAdapter(
     { sha: 'sha-A', conclusion: 'success', workflowRuns: [] },
-    { prNumber: 1, approved: false, changesRequested: false, reviews: [] },
+    { prNumber: 1, headSha: 'sha-A', approved: false, changesRequested: false, reviews: [] },
   );
   const svc = new EvidenceService(db, [new GithubCiCollector(stub)]);
 
@@ -702,4 +705,60 @@ test('testManuallyPostedEvidenceCannotSatisfyGithubCiRequirement', () => {
 
   const eval_ = svc.evaluateCompletion(wi);
   assert.equal(eval_.outcome, 'deny', 'manually submitted evidence must not satisfy github.ci requirement');
+});
+
+// ============================================================================
+// GitHub review and CI candidate SHA binding (independently verified)
+// ============================================================================
+
+test('testReviewCollectorDeniesWhenGithubHeadDiffersFromRequested', async () => {
+  // PR was approved when head was sha-A. Somebody pushed sha-B since then.
+  // GitHub adapter returns headSha='sha-B' (current), but we requested approval
+  // for sha-A. The collector must emit failed evidence, not pass.
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: '', conclusion: null, workflowRuns: [] },
+    { prNumber: 1, headSha: 'sha-B', approved: true, changesRequested: false, reviews: [] },
+  );
+  const collector = new GithubReviewCollector(stub);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 1, headSha: 'sha-A' }] },
+  });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].status, 'failed', 'SHA mismatch must produce failed evidence');
+  assert.equal(results[0].candidateRef, 'sha-B', 'candidateRef is the actual GitHub head, not the requested SHA');
+  assert.equal((results[0].payload as Record<string, unknown>)['shaMismatch'], true);
+});
+
+test('testReviewCollectorCandidateRefFromGithubNotCaller', async () => {
+  // Even when SHAs match, candidateRef must come from the adapter response, not
+  // from the caller-supplied prRef.headSha.
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: '', conclusion: null, workflowRuns: [] },
+    { prNumber: 5, headSha: 'adapter-sha', approved: true, changesRequested: false, reviews: [] },
+  );
+  const collector = new GithubReviewCollector(stub);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { prs: [{ repo: { provider: 'github', remote: 'r' }, number: 5, headSha: 'adapter-sha' }] },
+  });
+  assert.equal(results[0].candidateRef, 'adapter-sha');
+  assert.equal(results[0].status, 'passed');
+});
+
+test('testCiCollectorCandidateRefFromAdapterConfirmedSha', async () => {
+  // candidateRef must be the SHA the adapter confirms, not the requested one.
+  // The StubGitHubAdapter echoes back the requested sha, so they match here.
+  // This test documents the contract: adapter sha is authoritative.
+  const stub: GitHubAdapter = new StubGitHubAdapter(
+    { sha: 'confirmed-sha', conclusion: 'success', workflowRuns: [] },
+    { prNumber: 1, headSha: '', approved: false, changesRequested: false, reviews: [] },
+  );
+  const collector = new GithubCiCollector(stub);
+  const results = await collector.collect({
+    workItemId: randomUUID(), repositories: [],
+    refs: { commits: [{ repo: { provider: 'github', remote: 'r' }, sha: 'confirmed-sha' }] },
+  });
+  assert.equal(results[0].candidateRef, 'confirmed-sha');
+  assert.equal(results[0].status, 'passed');
 });
