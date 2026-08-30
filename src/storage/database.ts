@@ -226,6 +226,7 @@ const MIGRATIONS: string[] = [
 
   // Migration 5: durable WorkflowRun cursor (DDR-031 Stage 2 — checkpoint/resume).
   // One row per logical run; updated in place as the engine advances through steps.
+  // work_item_id has no FK here — corrected in Migration 6.
   `
   CREATE TABLE workflow_runs (
     run_id              TEXT PRIMARY KEY,
@@ -240,6 +241,55 @@ const MIGRATIONS: string[] = [
     updated_at          TEXT NOT NULL
   );
 
+  CREATE INDEX idx_workflow_runs_work_item ON workflow_runs(work_item_id);
+  CREATE INDEX idx_workflow_runs_status    ON workflow_runs(status);
+  `,
+
+  // Migration 6: correct schema invariants introduced in Stages 1–2.
+  //
+  // (a) step_executions: add 'waiting' state for checkpoint-paused executions;
+  //     abusing 'cancelled' for a successfully reached checkpoint is semantically wrong.
+  // (b) workflow_runs: restore nullable FK to work_items(id) so any supplied
+  //     work_item_id has referential integrity; NULL remains valid for standalone runs.
+  //
+  // SQLite does not support ALTER COLUMN, so both tables are recreated in place.
+  `
+  CREATE TABLE step_executions_v6 (
+    id              TEXT PRIMARY KEY,
+    work_item_id    TEXT NOT NULL REFERENCES work_items(id),
+    workflow_run_id TEXT NOT NULL,
+    step_id         TEXT NOT NULL,
+    executor        TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN
+                      ('dispatched','running','succeeded','failed','cancelled','waiting')),
+    attempt         INTEGER NOT NULL DEFAULT 1 CHECK(attempt >= 1),
+    started_at      TEXT,
+    completed_at    TEXT,
+    cost_json       TEXT,
+    tokens          INTEGER,
+    failure_json    TEXT
+  );
+  INSERT INTO step_executions_v6 SELECT * FROM step_executions;
+  DROP TABLE step_executions;
+  ALTER TABLE step_executions_v6 RENAME TO step_executions;
+  CREATE INDEX idx_step_executions_wi  ON step_executions(work_item_id);
+  CREATE INDEX idx_step_executions_run ON step_executions(workflow_run_id);
+
+  CREATE TABLE workflow_runs_v6 (
+    run_id              TEXT PRIMARY KEY,
+    workflow_id         TEXT NOT NULL,
+    work_item_id        TEXT REFERENCES work_items(id),
+    status              TEXT NOT NULL CHECK(status IN ('active','halted','complete')),
+    current_step_id     TEXT NOT NULL,
+    iteration           INTEGER NOT NULL DEFAULT 1,
+    revision            INTEGER NOT NULL DEFAULT 0,
+    awaiting_checkpoint TEXT,
+    started_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+  );
+  INSERT INTO workflow_runs_v6 SELECT * FROM workflow_runs;
+  DROP TABLE workflow_runs;
+  ALTER TABLE workflow_runs_v6 RENAME TO workflow_runs;
   CREATE INDEX idx_workflow_runs_work_item ON workflow_runs(work_item_id);
   CREATE INDEX idx_workflow_runs_status    ON workflow_runs(status);
   `,

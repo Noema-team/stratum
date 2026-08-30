@@ -87,6 +87,9 @@ export interface ExecutionResult {
   artifacts: ArtifactReference[];
   evidenceClaims: EvidenceClaim[];
   decisionRequests: DecisionRequest[];
+  // Set when outcome === 'blocked': the stepId that triggered the checkpoint pause.
+  // Used by the Scheduler to populate Decision.subjectRef.stepId.
+  checkpointStepId?: string;
   usage?: {
     durationMs: number;
     tokens?: number;

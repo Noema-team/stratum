@@ -158,11 +158,32 @@ export class Scheduler {
         this.stepExecRepo.updateState(stepExecutionId, 'succeeded', { completedAt });
         this.workService.markInReview({ workItemId });
       } else if (execResult.outcome === 'blocked') {
-        // Workflow paused at a human-in-the-loop checkpoint. Mark the step
-        // execution cancelled (it was a probe run), and pause the work item so
-        // the control-plane API can resume it when the operator approves.
-        this.stepExecRepo.updateState(stepExecutionId, 'cancelled', { completedAt });
-        this.workService.pause({ workItemId });
+        // Workflow paused at a human-in-the-loop checkpoint.
+        // Mark the step execution 'waiting' (not cancelled — it successfully reached
+        // the checkpoint) and create a first-class Decision so operators can track
+        // and resolve the pause. WorkItem transitions to 'needs_decision'.
+        this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt });
+        this.workService.needsDecision({
+          workItemId,
+          decision: {
+            type: 'checkpoint',
+            subjectRef: {
+              workflowRunId,
+              workItemId,
+              stepId: execResult.checkpointStepId,
+            },
+            title: 'Workflow reached a checkpoint',
+            summary: `Workflow '${workflowId}' paused at step '${execResult.checkpointStepId ?? 'unknown'}' and requires operator approval to continue.`,
+            options: [
+              { id: 'approve', label: 'Approve', description: 'Continue the workflow past this checkpoint' },
+              { id: 'reject', label: 'Reject', description: 'Cancel the workflow run' },
+            ],
+            recommendedOptionId: 'approve',
+            impact: 'medium',
+            reversibility: 'easy',
+            urgency: 'normal',
+          },
+        });
       } else {
         this.stepExecRepo.updateState(stepExecutionId, 'failed', {
           completedAt,

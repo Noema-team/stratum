@@ -56,10 +56,12 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       request.workflowRunId,
       cycleCtx as any,
       entryStepId,
+      request.workItemId,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —
     // that is a structured 'blocked' outcome, not a failure.
+    const isCheckpoint = result.status === 'halted' && !result.error;
     const outcome: ExecutionResult['outcome'] =
       result.status === 'complete' ? 'succeeded'
       : result.error ? 'failed'
@@ -71,7 +73,8 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       outcome,
       artifacts: [],
       evidenceClaims: [],
-      decisionRequests: result.status === 'halted' && !result.error
+      checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
+      decisionRequests: isCheckpoint
         ? [{ type: 'checkpoint', title: 'Workflow paused', summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}` }]
         : [],
       usage: { durationMs: Date.now() - start },

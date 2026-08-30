@@ -381,7 +381,7 @@ export class StepExecutionRepository {
     this.byWorkItem = db.prepare('SELECT * FROM step_executions WHERE work_item_id = ? ORDER BY started_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM step_executions WHERE workflow_run_id = ? ORDER BY started_at');
     this.activeByWorkItem = db.prepare(
-      "SELECT * FROM step_executions WHERE work_item_id = ? AND state IN ('dispatched', 'running') LIMIT 1"
+      "SELECT * FROM step_executions WHERE work_item_id = ? AND state IN ('dispatched', 'running', 'waiting') LIMIT 1"
     );
     this.stateStmt = db.prepare(`
       UPDATE step_executions
@@ -756,6 +756,7 @@ export class WorkflowRunRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly active: Database.Statement;
+  private readonly haltedByWorkItem: Database.Statement;
 
   constructor(db: Database.Database) {
     this.upsert = db.prepare(`
@@ -777,6 +778,9 @@ export class WorkflowRunRepository {
     );
     this.active = db.prepare(
       "SELECT * FROM workflow_runs WHERE status = 'active' ORDER BY started_at"
+    );
+    this.haltedByWorkItem = db.prepare(
+      "SELECT * FROM workflow_runs WHERE work_item_id = ? AND status = 'halted' ORDER BY updated_at DESC LIMIT 1"
     );
   }
 
@@ -807,6 +811,14 @@ export class WorkflowRunRepository {
 
   listActive(): WorkflowRun[] {
     return (this.active.all() as Record<string, unknown>[]).map(rowToWorkflowRun);
+  }
+
+  // Returns the most recent halted run for a WorkItem, if any.
+  // Used by the resume path to locate the paused run without requiring the caller
+  // to know the run_id ahead of time.
+  findHaltedByWorkItem(workItemId: string): WorkflowRun | undefined {
+    const r = this.haltedByWorkItem.get(workItemId) as Record<string, unknown> | undefined;
+    return r ? rowToWorkflowRun(r) : undefined;
   }
 }
 

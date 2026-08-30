@@ -14,3 +14,5 @@ export type {
 } from './work-service.js';
 
 export { EvidenceService } from './evidence-service.js';
+
+export { ResumeService, ResumeServiceError } from './resume-service.js';

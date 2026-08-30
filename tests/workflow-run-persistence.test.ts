@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { openDatabase } from '../src/storage/database.js';
-import { WorkflowRunRepository } from '../src/storage/repositories.js';
+import { WorkflowRunRepository, WorkspaceRepository, ProjectRepository, WorkItemRepository } from '../src/storage/repositories.js';
 import {
   WorkflowEngine,
   registerWorkflow,
@@ -317,13 +317,31 @@ test('testRunIdIsPreservedThroughoutLifecycle', async () => {
 test('testWorkItemIdPersistedInRow', async () => {
   const db = openMemoryDb();
   const repo = new WorkflowRunRepository(db);
+
+  // Seed parent rows so the FK work_item_id → work_items(id) is satisfied.
+  const now = new Date().toISOString();
+  const wsRepo = new WorkspaceRepository(db);
+  const projRepo = new ProjectRepository(db);
+  const wiRepo = new WorkItemRepository(db);
+  const wsId = 'ws-wi-link';
+  const projId = 'proj-wi-link';
+  const workItemId = 'work-item-uuid-001';
+  wsRepo.save({ id: wsId, name: 'ws', createdAt: now });
+  projRepo.save({ id: projId, workspaceId: wsId, name: 'p', status: 'active', priority: 0, createdAt: now, updatedAt: now });
+  wiRepo.save({
+    id: workItemId, projectId: projId, repositoryIds: [],
+    title: 'wi', goal: 'g', workflowId: 'wf-wi-link', state: 'ready',
+    priority: 0, acceptanceCriteria: [], constraints: [], requiredEvidence: [],
+    dependencies: [], createdAt: now, updatedAt: now,
+  });
+
   registerWorkflow(makeWorkflow('wf-wi-link', [
     { id: 'g', kind: 'gather' },
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
   // NOTE: workItemId is the 6th arg; pass undefined for startStepId
-  await engine.run('wf-wi-link', 1, 'run-wi', DUMMY_CYCLE_CTX, undefined, 'work-item-uuid');
+  await engine.run('wf-wi-link', 1, 'run-wi', DUMMY_CYCLE_CTX, undefined, workItemId);
   const found = repo.findById('run-wi')!;
-  assert.equal(found.work_item_id, 'work-item-uuid');
+  assert.equal(found.work_item_id, workItemId);
 });

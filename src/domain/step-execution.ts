@@ -7,6 +7,7 @@ export const StepExecutionStateEnum = z.enum([
   'succeeded',
   'failed',
   'cancelled',
+  'waiting',   // reached a human-in-the-loop checkpoint; execution is paused
 ]);
 export type StepExecutionState = z.infer<typeof StepExecutionStateEnum>;
 
@@ -36,6 +37,11 @@ export const STEP_EXECUTION_TERMINAL_STATES: StepExecutionState[] = [
   'failed',
   'cancelled',
 ];
+
+// 'waiting' is non-terminal: the execution is paused at a checkpoint.
+export function isStepExecutionWaiting(state: StepExecutionState): boolean {
+  return state === 'waiting';
+}
 
 export function isStepExecutionTerminal(state: StepExecutionState): boolean {
   return STEP_EXECUTION_TERMINAL_STATES.includes(state);

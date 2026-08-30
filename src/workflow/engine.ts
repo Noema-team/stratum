@@ -4,6 +4,7 @@ import type { RunArtifactManager } from '../run-artifacts.js';
 import type { WorkflowRunRepository } from '../storage/repositories.js';
 import type {
   WorkflowDefinition,
+  WorkflowRun,
   WorkflowRunResult,
   WorkflowStep,
   WorkflowStepContext,
@@ -23,13 +24,15 @@ export interface WorkflowEngineDeps {
   mapManager: RuntimeMapManager;
   runArtifacts: RunArtifactManager;
   projectRoot?: string;
+  // When present, the engine durably persists WorkflowRun cursor state and
+  // operates in fail-closed mode: persistence failures abort lifecycle transitions.
   workflowRunRepository?: WorkflowRunRepository;
 }
 
 export interface WorkflowEngineOptions {
   // Generic checkpoint callback — invoked for checkpoint steps when the runner
   // does not provide handleCheckpoint. Resolves to 'approve' (continue) or
-  // 'halt' (pause the run).
+  // 'halt' (pause the run). Receives the canonical workflowRunId.
   onCheckpoint: (
     workflowRunId: string,
     stepId: string,
@@ -54,6 +57,22 @@ export class WorkflowEngine {
   // workflowRunId is the canonical identity for this run, supplied by the
   // caller (Scheduler or adapter). The engine never mints its own run ID —
   // every WorkflowRunResult.run_id echoes the supplied value.
+  //
+  // Cursor invariant: WorkflowRun.current_step_id = the next step eligible
+  // to execute. The cursor is advanced to the next step only after the
+  // current step completes successfully — it is never left pointing at a
+  // step that has already been completed.
+  //
+  // Iteration tracking: the engine maintains a local iteration counter that
+  // starts from cycleStateCtx.iteration. The engine does not read back from
+  // mapManager to determine the current iteration — that would couple run
+  // state to project-global cycle state and break concurrent WorkflowRuns.
+  // The mapManager write in executeReview (legacy FullBuild compatibility)
+  // remains a one-way advisory sync only.
+  //
+  // Fail-closed: when workflowRunRepository is injected, any failure to persist
+  // a lifecycle transition propagates as an error, preventing the engine from
+  // falsely claiming a transition succeeded.
   // --------------------------------------------------------------------------
 
   async run(
@@ -89,81 +108,92 @@ export class WorkflowEngine {
       };
     }
 
-    const now = new Date().toISOString();
-    await this.persistRunCursor({
-      run_id: workflowRunId,
-      workflow_id: workflowId,
-      work_item_id: workItemId,
+    // Local authoritative iteration counter. Never read back from mapManager.
+    let iteration = cycleStateCtx.iteration;
+    let cycleState = { ...cycleStateCtx, iteration };
+
+    const startedAt = new Date().toISOString();
+
+    // Save initial cursor: current_step_id = startStep = "next step eligible to execute".
+    // ON CONFLICT DO NOTHING — safe to call on resume (row already exists).
+    await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
       status: 'active',
       current_step_id: def.steps[startIndex].id,
-      iteration: cycleStateCtx.iteration,
+      iteration,
       revision: 0,
       awaiting_checkpoint: null,
-      started_at: now,
-      updated_at: now,
-    }, 'save');
+      started_at: startedAt,
+      updated_at: startedAt,
+    });
 
     let stepIndex = startIndex;
-    let cycleState = cycleStateCtx;
 
     while (stepIndex < def.steps.length) {
       const step = def.steps[stepIndex];
+      cycleState = { ...cycleState, iteration };
 
       const stepCtx: WorkflowStepContext = {
         runId: workflowRunId,
         workflowId,
-        iteration: cycleState.iteration,
+        iteration,
         revision: 0,
         planningDepth: cycleState.planning_depth,
       };
 
       if (step.skip_if?.(stepCtx)) {
-        await this.skipStep(step, cycleNumber, cycleState.iteration);
-        stepIndex++;
+        await this.skipStep(step, cycleNumber, iteration);
+        // Cursor was already pointing to this step; advance to next.
+        const nextIndex = stepIndex + 1;
+        if (nextIndex < def.steps.length) {
+          await this.updateRunCursor(workflowRunId, {
+            status: 'active',
+            current_step_id: def.steps[nextIndex].id,
+            iteration, revision: 0, awaiting_checkpoint: null,
+          });
+        }
+        stepIndex = nextIndex;
         continue;
       }
 
-      await this.persistRunCursor({
-        run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
-        status: 'active', current_step_id: step.id,
-        iteration: cycleState.iteration, revision: 0,
-        awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
-      }, 'update');
-
+      // Cursor is already pointing at step.id (set by previous advance or init save).
+      // Execute the step.
       const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId);
 
+      // ---- failure -----------------------------------------------------------
       if (result.outcome === 'failed') {
-        await this.persistRunCursor({
-          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
-          status: 'halted', current_step_id: step.id,
-          iteration: cycleState.iteration, revision: 0,
-          awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
-        }, 'update');
+        // Cursor stays at step.id (already set) — a retry/restart re-executes from here.
+        await this.updateRunCursor(workflowRunId, {
+          status: 'halted',
+          current_step_id: step.id,
+          iteration, revision: 0, awaiting_checkpoint: null,
+        });
         return {
           run_id: workflowRunId,
           status: 'halted',
           final_step_id: step.id,
-          iterations_used: cycleState.iteration,
+          iterations_used: iteration,
           error: result.error,
         };
       }
 
+      // ---- checkpoint halt ---------------------------------------------------
       if (result.outcome === 'checkpoint_set') {
-        await this.persistRunCursor({
-          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
-          status: 'halted', current_step_id: step.id,
-          iteration: cycleState.iteration, revision: 0,
-          awaiting_checkpoint: step.id, started_at: now, updated_at: new Date().toISOString(),
-        }, 'update');
+        // Cursor stays at step.id — resuming re-executes the checkpoint (now approved).
+        await this.updateRunCursor(workflowRunId, {
+          status: 'halted',
+          current_step_id: step.id,
+          iteration, revision: 0, awaiting_checkpoint: step.id,
+        });
         return {
           run_id: workflowRunId,
           status: 'halted',
           final_step_id: step.id,
-          iterations_used: cycleState.iteration,
+          iterations_used: iteration,
           error: undefined,
         };
       }
 
+      // ---- explicit routing (on_fail, loop back) -----------------------------
       if (result.outcome === 'completed' && result.next_step_id && result.next_step_id !== '__next__') {
         const targetIndex = def.steps.findIndex(s => s.id === result.next_step_id);
         if (targetIndex === -1) {
@@ -171,65 +201,92 @@ export class WorkflowEngine {
             run_id: workflowRunId,
             status: 'halted',
             final_step_id: step.id,
-            iterations_used: cycleState.iteration,
+            iterations_used: iteration,
             error: `on_fail target '${result.next_step_id}' not found`,
           };
         }
 
         if ('_iterate' in (result as any)) {
-          const updatedMap = await this.deps.mapManager.read();
-          cycleState = { ...cycleState, iteration: updatedMap.cycle.iteration };
+          // Increment iteration locally — authoritative. The FullBuildStepRunner's
+          // mapManager.update() is an advisory legacy sync, not the source of truth.
+          iteration += 1;
+          cycleState = { ...cycleState, iteration };
 
-          const capResult = await this.checkIterationCap(def, updatedMap.cycle.iteration, workflowRunId, step.id);
+          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id);
           if (capResult) return capResult;
 
+          // Advance cursor to loop target with updated iteration.
+          await this.updateRunCursor(workflowRunId, {
+            status: 'active',
+            current_step_id: def.steps[targetIndex].id,
+            iteration, revision: 0, awaiting_checkpoint: null,
+          });
+
           try {
-            await this.deps.runArtifacts.createRunDir(cycleNumber, cycleState.iteration);
+            await this.deps.runArtifacts.createRunDir(cycleNumber, iteration);
             await this.deps.runArtifacts.createManifest({
               cycleId: workflowRunId,
               cycleNumber,
-              iteration: cycleState.iteration,
+              iteration,
               planningDepth: cycleState.planning_depth,
             });
           } catch {
-            // non-fatal
+            // non-fatal: runArtifacts are legacy observability, not control-plane state
           }
+        } else {
+          await this.updateRunCursor(workflowRunId, {
+            status: 'active',
+            current_step_id: def.steps[targetIndex].id,
+            iteration, revision: 0, awaiting_checkpoint: null,
+          });
         }
 
         stepIndex = targetIndex;
         continue;
       }
 
+      // ---- terminal commit step (next_step_id === null) ----------------------
       if (result.next_step_id === null) {
-        await this.persistRunCursor({
-          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
-          status: 'complete', current_step_id: step.id,
-          iteration: cycleState.iteration, revision: 0,
-          awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
-        }, 'update');
+        await this.updateRunCursor(workflowRunId, {
+          status: 'complete',
+          current_step_id: step.id,
+          iteration, revision: 0, awaiting_checkpoint: null,
+        });
         return {
           run_id: workflowRunId,
           status: 'complete',
           final_step_id: step.id,
-          iterations_used: cycleState.iteration,
+          iterations_used: iteration,
         };
       }
 
-      stepIndex++;
+      // ---- __next__: advance cursor to next sequential step ------------------
+      const nextIndex = stepIndex + 1;
+      if (nextIndex < def.steps.length) {
+        // Crash-boundary: step[I] succeeded; cursor now advances to step[I+1].
+        // A crash between this persist and the next step's execution causes step[I+1]
+        // to be re-executed on restart (at-least-once for non-idempotent steps).
+        await this.updateRunCursor(workflowRunId, {
+          status: 'active',
+          current_step_id: def.steps[nextIndex].id,
+          iteration, revision: 0, awaiting_checkpoint: null,
+        });
+      }
+      stepIndex = nextIndex;
     }
 
+    // Loop ended: all steps executed sequentially to completion.
     const lastStepId = def.steps[def.steps.length - 1]?.id ?? null;
-    await this.persistRunCursor({
-      run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
-      status: 'complete', current_step_id: lastStepId ?? '',
-      iteration: cycleState.iteration, revision: 0,
-      awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
-    }, 'update');
+    await this.updateRunCursor(workflowRunId, {
+      status: 'complete',
+      current_step_id: lastStepId ?? '',
+      iteration, revision: 0, awaiting_checkpoint: null,
+    });
     return {
       run_id: workflowRunId,
       status: 'complete',
       final_step_id: lastStepId,
-      iterations_used: cycleState.iteration,
+      iterations_used: iteration,
     };
   }
 
@@ -303,6 +360,10 @@ export class WorkflowEngine {
 
   // -- review ----------------------------------------------------------------
   // Generic: delegates to stepRunner.run() and routes on failure via on_fail.
+  // When on_fail.iteration_loop is set, signals the run loop to increment
+  // its local iteration counter (the _iterate flag). The FullBuildStepRunner
+  // may also write to mapManager as a legacy advisory sync — this is not read
+  // back by the engine.
 
   private async executeReview(
     step: WorkflowStep,
@@ -318,12 +379,6 @@ export class WorkflowEngine {
 
     if (!result.success) {
       await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
-      if (step.on_fail?.iteration_loop) {
-        await this.deps.mapManager.update(m => ({
-          ...m,
-          cycle: { ...m.cycle, iteration: m.cycle.iteration + 1 },
-        }));
-      }
       return {
         outcome: 'completed',
         next_step_id: step.on_fail?.target_step_id ?? null,
@@ -392,7 +447,7 @@ export class WorkflowEngine {
   }
 
   // --------------------------------------------------------------------------
-  // Helpers
+  // RunArtifact helpers (legacy observability — not control-plane state)
   // --------------------------------------------------------------------------
 
   private async skipStep(
@@ -446,20 +501,41 @@ export class WorkflowEngine {
     };
   }
 
-  private async persistRunCursor(
-    run: import('./types.js').WorkflowRun,
-    op: 'save' | 'update',
+  // --------------------------------------------------------------------------
+  // WorkflowRun persistence — fail-closed when repo is injected.
+  //
+  // saveRunCursor: INSERT OR IGNORE — idempotent; safe to call on resume.
+  // updateRunCursor: UPDATE — always applied; throws on error if repo is set.
+  // --------------------------------------------------------------------------
+
+  private async saveRunCursor(
+    runId: string,
+    workflowId: string,
+    workItemId: string | undefined,
+    fields: Omit<WorkflowRun, 'run_id' | 'workflow_id' | 'work_item_id'>,
   ): Promise<void> {
     if (!this.deps.workflowRunRepository) return;
-    try {
-      if (op === 'save') {
-        this.deps.workflowRunRepository.save(run);
-      } else {
-        this.deps.workflowRunRepository.update(run);
-      }
-    } catch {
-      // non-fatal: cursor persistence failure must not abort the run
-    }
+    this.deps.workflowRunRepository.save({
+      run_id: runId,
+      workflow_id: workflowId,
+      work_item_id: workItemId,
+      ...fields,
+    });
+  }
+
+  private async updateRunCursor(
+    runId: string,
+    fields: Pick<WorkflowRun, 'status' | 'current_step_id' | 'iteration' | 'revision' | 'awaiting_checkpoint'>,
+  ): Promise<void> {
+    if (!this.deps.workflowRunRepository) return;
+    this.deps.workflowRunRepository.update({
+      run_id: runId,
+      workflow_id: '',  // not needed for UPDATE (keyed on run_id)
+      work_item_id: undefined,
+      started_at: '',   // not needed for UPDATE
+      ...fields,
+      updated_at: new Date().toISOString(),
+    });
   }
 
   private async checkIterationCap(
