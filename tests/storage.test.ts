@@ -107,6 +107,8 @@ const EV: Evidence = {
   collectedAt: NOW,
   stepExecutionId: undefined,
   subjectRef: undefined,
+  candidateRef: undefined,
+  collectorId: undefined,
 };
 
 const ART: ArtifactRecord = {

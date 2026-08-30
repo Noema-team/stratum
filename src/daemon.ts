@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { load as parseYAML } from 'js-yaml';
 import { z } from 'zod';
@@ -1440,8 +1440,12 @@ export class DaemonServer {
 
     // ─── Static Asset Serving Fallback ───
     if (method === 'GET' && !pathName.startsWith('/api/')) {
-      const packageRoot = path.dirname(new URL(import.meta.url).pathname);
-      const publicRoot = path.join(packageRoot, 'public');
+      // Compiled: daemon.js lives in dist/, public/ is at dist/public/.
+      // TSX dev context: daemon.ts lives in src/, no src/public/ exists;
+      // fall back to cwd-relative public/ so tests can serve the source assets.
+      const moduleDir = path.dirname(new URL(import.meta.url).pathname);
+      const adjacent = path.join(moduleDir, 'public');
+      const publicRoot = existsSync(adjacent) ? adjacent : path.join(process.cwd(), 'public');
       
       let relativePath = pathName === '/' ? 'index.html' : pathName.slice(1);
       relativePath = path.normalize(relativePath).replace(/^(\.\.(\/|\\))+/, '');
