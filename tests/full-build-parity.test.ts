@@ -319,6 +319,7 @@ function makeCRHarness(opts: CRHarnessOpts = {}): CRHarness {
     runArtifacts: noopRunArtifacts,
     criticAgent: criticAgent as any,
     scopingService: noopScopingService,
+    projectRoot: '/tmp/parity-test-no-such-dir',
   });
 
   return { runner, agentSpy, dagSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, stateMachine, mapManager };
