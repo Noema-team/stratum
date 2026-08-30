@@ -223,6 +223,26 @@ const MIGRATIONS: string[] = [
   ALTER TABLE evidence ADD COLUMN candidate_ref TEXT;
   ALTER TABLE evidence ADD COLUMN collector_id  TEXT;
   `,
+
+  // Migration 5: durable WorkflowRun cursor (DDR-031 Stage 2 — checkpoint/resume).
+  // One row per logical run; updated in place as the engine advances through steps.
+  `
+  CREATE TABLE workflow_runs (
+    run_id              TEXT PRIMARY KEY,
+    workflow_id         TEXT NOT NULL,
+    work_item_id        TEXT,
+    status              TEXT NOT NULL CHECK(status IN ('active','halted','complete')),
+    current_step_id     TEXT NOT NULL,
+    iteration           INTEGER NOT NULL DEFAULT 1,
+    revision            INTEGER NOT NULL DEFAULT 0,
+    awaiting_checkpoint TEXT,
+    started_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+  );
+
+  CREATE INDEX idx_workflow_runs_work_item ON workflow_runs(work_item_id);
+  CREATE INDEX idx_workflow_runs_status    ON workflow_runs(status);
+  `,
 ];
 
 // ============================================================================

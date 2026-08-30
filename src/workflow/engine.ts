@@ -1,6 +1,7 @@
 import type { CycleStateContext } from '../context-manager.js';
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
+import type { WorkflowRunRepository } from '../storage/repositories.js';
 import type {
   WorkflowDefinition,
   WorkflowRunResult,
@@ -22,6 +23,7 @@ export interface WorkflowEngineDeps {
   mapManager: RuntimeMapManager;
   runArtifacts: RunArtifactManager;
   projectRoot?: string;
+  workflowRunRepository?: WorkflowRunRepository;
 }
 
 export interface WorkflowEngineOptions {
@@ -60,6 +62,7 @@ export class WorkflowEngine {
     workflowRunId: string,
     cycleStateCtx: CycleStateContext,
     startStepId?: string,
+    workItemId?: string,
   ): Promise<WorkflowRunResult> {
     const def = getWorkflow(workflowId);
     if (!def) {
@@ -86,6 +89,20 @@ export class WorkflowEngine {
       };
     }
 
+    const now = new Date().toISOString();
+    await this.persistRunCursor({
+      run_id: workflowRunId,
+      workflow_id: workflowId,
+      work_item_id: workItemId,
+      status: 'active',
+      current_step_id: def.steps[startIndex].id,
+      iteration: cycleStateCtx.iteration,
+      revision: 0,
+      awaiting_checkpoint: null,
+      started_at: now,
+      updated_at: now,
+    }, 'save');
+
     let stepIndex = startIndex;
     let cycleState = cycleStateCtx;
 
@@ -106,9 +123,22 @@ export class WorkflowEngine {
         continue;
       }
 
+      await this.persistRunCursor({
+        run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
+        status: 'active', current_step_id: step.id,
+        iteration: cycleState.iteration, revision: 0,
+        awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
+      }, 'update');
+
       const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId);
 
       if (result.outcome === 'failed') {
+        await this.persistRunCursor({
+          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
+          status: 'halted', current_step_id: step.id,
+          iteration: cycleState.iteration, revision: 0,
+          awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
+        }, 'update');
         return {
           run_id: workflowRunId,
           status: 'halted',
@@ -119,6 +149,12 @@ export class WorkflowEngine {
       }
 
       if (result.outcome === 'checkpoint_set') {
+        await this.persistRunCursor({
+          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
+          status: 'halted', current_step_id: step.id,
+          iteration: cycleState.iteration, revision: 0,
+          awaiting_checkpoint: step.id, started_at: now, updated_at: new Date().toISOString(),
+        }, 'update');
         return {
           run_id: workflowRunId,
           status: 'halted',
@@ -165,6 +201,12 @@ export class WorkflowEngine {
       }
 
       if (result.next_step_id === null) {
+        await this.persistRunCursor({
+          run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
+          status: 'complete', current_step_id: step.id,
+          iteration: cycleState.iteration, revision: 0,
+          awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
+        }, 'update');
         return {
           run_id: workflowRunId,
           status: 'complete',
@@ -176,10 +218,17 @@ export class WorkflowEngine {
       stepIndex++;
     }
 
+    const lastStepId = def.steps[def.steps.length - 1]?.id ?? null;
+    await this.persistRunCursor({
+      run_id: workflowRunId, workflow_id: workflowId, work_item_id: workItemId,
+      status: 'complete', current_step_id: lastStepId ?? '',
+      iteration: cycleState.iteration, revision: 0,
+      awaiting_checkpoint: null, started_at: now, updated_at: new Date().toISOString(),
+    }, 'update');
     return {
       run_id: workflowRunId,
       status: 'complete',
-      final_step_id: def.steps[def.steps.length - 1]?.id ?? null,
+      final_step_id: lastStepId,
       iterations_used: cycleState.iteration,
     };
   }
@@ -395,6 +444,22 @@ export class WorkflowEngine {
       projectRoot: this.deps.projectRoot ?? process.cwd(),
       _legacyCycleState: cycleState as unknown as Record<string, unknown>,
     };
+  }
+
+  private async persistRunCursor(
+    run: import('./types.js').WorkflowRun,
+    op: 'save' | 'update',
+  ): Promise<void> {
+    if (!this.deps.workflowRunRepository) return;
+    try {
+      if (op === 'save') {
+        this.deps.workflowRunRepository.save(run);
+      } else {
+        this.deps.workflowRunRepository.update(run);
+      }
+    } catch {
+      // non-fatal: cursor persistence failure must not abort the run
+    }
   }
 
   private async checkIterationCap(

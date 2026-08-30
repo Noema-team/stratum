@@ -14,6 +14,7 @@ import type {
   DomainEvent,
   PolicyConfig,
 } from '../domain/index.js';
+import type { WorkflowRun } from '../workflow/types.js';
 
 // Artifact metadata record (cross-run provenance stored in DB; content stays in .sle/)
 export interface ArtifactRecord {
@@ -742,5 +743,84 @@ function rowToEvent(r: Record<string, unknown>): DomainEvent {
     workflowRunId: r.workflow_run_id as string | undefined ?? undefined,
     occurredAt: r.occurred_at as string,
     payload: JSON.parse(r.payload_json as string),
+  };
+}
+
+// ============================================================================
+// WorkflowRunRepository — durable cursor for checkpoint/resume (DDR-031 Stage 2)
+// ============================================================================
+
+export class WorkflowRunRepository {
+  private readonly upsert: Database.Statement;
+  private readonly updateStmt: Database.Statement;
+  private readonly byId: Database.Statement;
+  private readonly byWorkItem: Database.Statement;
+  private readonly active: Database.Statement;
+
+  constructor(db: Database.Database) {
+    this.upsert = db.prepare(`
+      INSERT INTO workflow_runs
+        (run_id, workflow_id, work_item_id, status, current_step_id,
+         iteration, revision, awaiting_checkpoint, started_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO NOTHING
+    `);
+    this.updateStmt = db.prepare(`
+      UPDATE workflow_runs
+      SET status = ?, current_step_id = ?, iteration = ?, revision = ?,
+          awaiting_checkpoint = ?, updated_at = ?
+      WHERE run_id = ?
+    `);
+    this.byId = db.prepare('SELECT * FROM workflow_runs WHERE run_id = ?');
+    this.byWorkItem = db.prepare(
+      'SELECT * FROM workflow_runs WHERE work_item_id = ? ORDER BY started_at DESC'
+    );
+    this.active = db.prepare(
+      "SELECT * FROM workflow_runs WHERE status = 'active' ORDER BY started_at"
+    );
+  }
+
+  save(run: WorkflowRun): void {
+    this.upsert.run(
+      run.run_id, run.workflow_id, run.work_item_id ?? null, run.status,
+      run.current_step_id, run.iteration, run.revision,
+      run.awaiting_checkpoint ?? null, run.started_at, run.updated_at,
+    );
+  }
+
+  update(run: WorkflowRun): void {
+    this.updateStmt.run(
+      run.status, run.current_step_id, run.iteration, run.revision,
+      run.awaiting_checkpoint ?? null, run.updated_at,
+      run.run_id,
+    );
+  }
+
+  findById(runId: string): WorkflowRun | undefined {
+    const r = this.byId.get(runId) as Record<string, unknown> | undefined;
+    return r ? rowToWorkflowRun(r) : undefined;
+  }
+
+  listByWorkItem(workItemId: string): WorkflowRun[] {
+    return (this.byWorkItem.all(workItemId) as Record<string, unknown>[]).map(rowToWorkflowRun);
+  }
+
+  listActive(): WorkflowRun[] {
+    return (this.active.all() as Record<string, unknown>[]).map(rowToWorkflowRun);
+  }
+}
+
+function rowToWorkflowRun(r: Record<string, unknown>): WorkflowRun {
+  return {
+    run_id: r.run_id as string,
+    workflow_id: r.workflow_id as string,
+    work_item_id: r.work_item_id as string | undefined ?? undefined,
+    status: r.status as WorkflowRun['status'],
+    current_step_id: r.current_step_id as string,
+    iteration: r.iteration as number,
+    revision: r.revision as number,
+    awaiting_checkpoint: r.awaiting_checkpoint as string | null ?? null,
+    started_at: r.started_at as string,
+    updated_at: r.updated_at as string,
   };
 }
