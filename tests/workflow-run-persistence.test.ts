@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { openDatabase } from '../src/storage/database.js';
-import { WorkflowRunRepository, WorkspaceRepository, ProjectRepository, WorkItemRepository } from '../src/storage/repositories.js';
+import { WorkflowRunRepository, WorkflowRunConflictError, WorkspaceRepository, ProjectRepository, WorkItemRepository } from '../src/storage/repositories.js';
 import {
   WorkflowEngine,
   registerWorkflow,
@@ -95,7 +95,7 @@ const DUMMY_CYCLE_CTX: any = {
 test('testWorkflowRunRepoSaveAndFind', () => {
   const repo = makeRepo();
   const run = stubRun();
-  repo.save(run);
+  repo.createOrValidate(run);
   const found = repo.findById('run-1');
   assert.ok(found, 'saved run must be findable by id');
   assert.equal(found.run_id, 'run-1');
@@ -108,7 +108,7 @@ test('testWorkflowRunRepoSaveAndFind', () => {
 test('testWorkflowRunRepoUpdate', () => {
   const repo = makeRepo();
   const run = stubRun();
-  repo.save(run);
+  repo.createOrValidate(run);
 
   repo.update({
     ...run,
@@ -122,14 +122,36 @@ test('testWorkflowRunRepoUpdate', () => {
   assert.equal(found.awaiting_checkpoint, 'step-a');
 });
 
-test('testWorkflowRunRepoSaveIsIdempotent', () => {
+test('testWorkflowRunRepoUpdateThrowsForMissingRun', () => {
   const repo = makeRepo();
   const run = stubRun();
-  repo.save(run);
-  // ON CONFLICT DO NOTHING — second save must not throw or overwrite
-  assert.doesNotThrow(() => repo.save({ ...run, status: 'complete' }));
+  // update on a run_id that was never created must throw
+  assert.throws(
+    () => repo.update({ ...run, status: 'halted', updated_at: new Date().toISOString() }),
+    (e: unknown) => e instanceof Error && e.message.includes('update affected 0 rows'),
+    'update must throw when run_id does not exist',
+  );
+});
+
+test('testWorkflowRunRepoCreateOrValidateIsIdempotentOnIdentityMatch', () => {
+  const repo = makeRepo();
+  const run = stubRun();
+  repo.createOrValidate(run);
+  // Same run_id + same workflow_id + same work_item_id → no-op, no throw
+  assert.doesNotThrow(() => repo.createOrValidate({ ...run, status: 'complete' }));
   const found = repo.findById('run-1')!;
-  assert.equal(found.status, 'active', 'first save wins; duplicate save is ignored');
+  assert.equal(found.status, 'active', 'first save wins; duplicate with same identity is a no-op');
+});
+
+test('testWorkflowRunRepoCreateOrValidateThrowsOnWorkflowIdMismatch', () => {
+  const repo = makeRepo();
+  const run = stubRun();
+  repo.createOrValidate(run);
+  assert.throws(
+    () => repo.createOrValidate({ ...run, workflow_id: 'different-wf' }),
+    (e: unknown) => e instanceof WorkflowRunConflictError,
+    'createOrValidate must throw WorkflowRunConflictError when workflow_id mismatches',
+  );
 });
 
 test('testWorkflowRunRepoListByWorkItem', () => {
@@ -138,8 +160,8 @@ test('testWorkflowRunRepoListByWorkItem', () => {
   // because the DB has foreign_keys = ON). Skip FK to keep the test self-contained.
   const run1 = { ...stubRun(), run_id: 'r1', work_item_id: undefined };
   const run2 = { ...stubRun(), run_id: 'r2', work_item_id: undefined };
-  repo.save(run1);
-  repo.save(run2);
+  repo.createOrValidate(run1);
+  repo.createOrValidate(run2);
   // listByWorkItem with undefined (NULL) won't match — verify listActive instead
   const active = repo.listActive();
   assert.equal(active.length, 2);
@@ -152,9 +174,9 @@ test('testWorkflowRunRepoFindMissingReturnsUndefined', () => {
 
 test('testWorkflowRunRepoListActive', () => {
   const repo = makeRepo();
-  repo.save({ ...stubRun(), run_id: 'active-1', status: 'active' });
-  repo.save({ ...stubRun(), run_id: 'done-1',   status: 'complete' });
-  repo.save({ ...stubRun(), run_id: 'halt-1',   status: 'halted' });
+  repo.createOrValidate({ ...stubRun(), run_id: 'active-1', status: 'active' });
+  repo.createOrValidate({ ...stubRun(), run_id: 'done-1',   status: 'complete' });
+  repo.createOrValidate({ ...stubRun(), run_id: 'halt-1',   status: 'halted' });
   const active = repo.listActive();
   assert.equal(active.length, 1);
   assert.equal(active[0].run_id, 'active-1');

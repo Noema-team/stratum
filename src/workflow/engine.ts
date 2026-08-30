@@ -85,6 +85,23 @@ export class WorkflowEngine {
   ): Promise<WorkflowRunResult> {
     const def = getWorkflow(workflowId);
     if (!def) {
+      const now = new Date().toISOString();
+      await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+        status: 'halted',
+        current_step_id: startStepId ?? '__unknown__',
+        iteration: cycleStateCtx.iteration,
+        revision: 0,
+        awaiting_checkpoint: null,
+        started_at: now,
+        updated_at: now,
+      });
+      await this.updateRunCursor(workflowRunId, {
+        status: 'halted',
+        current_step_id: startStepId ?? '__unknown__',
+        iteration: cycleStateCtx.iteration,
+        revision: 0,
+        awaiting_checkpoint: null,
+      });
       return {
         run_id: workflowRunId,
         status: 'halted',
@@ -99,6 +116,23 @@ export class WorkflowEngine {
       : 0;
 
     if (startIndex === -1) {
+      const now = new Date().toISOString();
+      await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+        status: 'halted',
+        current_step_id: startStepId ?? '__invalid__',
+        iteration: cycleStateCtx.iteration,
+        revision: 0,
+        awaiting_checkpoint: null,
+        started_at: now,
+        updated_at: now,
+      });
+      await this.updateRunCursor(workflowRunId, {
+        status: 'halted',
+        current_step_id: startStepId ?? '__invalid__',
+        iteration: cycleStateCtx.iteration,
+        revision: 0,
+        awaiting_checkpoint: null,
+      });
       return {
         run_id: workflowRunId,
         status: 'halted',
@@ -110,21 +144,33 @@ export class WorkflowEngine {
 
     // Local authoritative iteration counter. Never read back from mapManager.
     let iteration = cycleStateCtx.iteration;
+    let revision = 0;
     let cycleState = { ...cycleStateCtx, iteration };
 
     const startedAt = new Date().toISOString();
 
     // Save initial cursor: current_step_id = startStep = "next step eligible to execute".
-    // ON CONFLICT DO NOTHING — safe to call on resume (row already exists).
+    // createOrValidate — idempotent on resume (row already exists with correct identity).
     await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
       status: 'active',
       current_step_id: def.steps[startIndex].id,
       iteration,
-      revision: 0,
+      revision,
       awaiting_checkpoint: null,
       started_at: startedAt,
       updated_at: startedAt,
     });
+
+    // Load persisted state — handles resume: existing row carries the authoritative
+    // iteration and revision from before the halt (e.g. iteration > 1 for iterative runs).
+    if (this.deps.workflowRunRepository) {
+      const persisted = this.deps.workflowRunRepository.findById(workflowRunId);
+      if (persisted) {
+        iteration = persisted.iteration;
+        revision = persisted.revision;
+        cycleState = { ...cycleStateCtx, iteration };
+      }
+    }
 
     let stepIndex = startIndex;
 
@@ -136,7 +182,7 @@ export class WorkflowEngine {
         runId: workflowRunId,
         workflowId,
         iteration,
-        revision: 0,
+        revision,
         planningDepth: cycleState.planning_depth,
       };
 
@@ -148,7 +194,7 @@ export class WorkflowEngine {
           await this.updateRunCursor(workflowRunId, {
             status: 'active',
             current_step_id: def.steps[nextIndex].id,
-            iteration, revision: 0, awaiting_checkpoint: null,
+            iteration, revision, awaiting_checkpoint: null,
           });
         }
         stepIndex = nextIndex;
@@ -165,7 +211,7 @@ export class WorkflowEngine {
         await this.updateRunCursor(workflowRunId, {
           status: 'halted',
           current_step_id: step.id,
-          iteration, revision: 0, awaiting_checkpoint: null,
+          iteration, revision, awaiting_checkpoint: null,
         });
         return {
           run_id: workflowRunId,
@@ -182,7 +228,7 @@ export class WorkflowEngine {
         await this.updateRunCursor(workflowRunId, {
           status: 'halted',
           current_step_id: step.id,
-          iteration, revision: 0, awaiting_checkpoint: step.id,
+          iteration, revision, awaiting_checkpoint: step.id,
         });
         return {
           run_id: workflowRunId,
@@ -197,6 +243,11 @@ export class WorkflowEngine {
       if (result.outcome === 'completed' && result.next_step_id && result.next_step_id !== '__next__') {
         const targetIndex = def.steps.findIndex(s => s.id === result.next_step_id);
         if (targetIndex === -1) {
+          await this.updateRunCursor(workflowRunId, {
+            status: 'halted',
+            current_step_id: step.id,
+            iteration, revision, awaiting_checkpoint: null,
+          });
           return {
             run_id: workflowRunId,
             status: 'halted',
@@ -212,14 +263,14 @@ export class WorkflowEngine {
           iteration += 1;
           cycleState = { ...cycleState, iteration };
 
-          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id);
+          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id, revision);
           if (capResult) return capResult;
 
           // Advance cursor to loop target with updated iteration.
           await this.updateRunCursor(workflowRunId, {
             status: 'active',
             current_step_id: def.steps[targetIndex].id,
-            iteration, revision: 0, awaiting_checkpoint: null,
+            iteration, revision, awaiting_checkpoint: null,
           });
 
           try {
@@ -237,7 +288,7 @@ export class WorkflowEngine {
           await this.updateRunCursor(workflowRunId, {
             status: 'active',
             current_step_id: def.steps[targetIndex].id,
-            iteration, revision: 0, awaiting_checkpoint: null,
+            iteration, revision, awaiting_checkpoint: null,
           });
         }
 
@@ -250,7 +301,7 @@ export class WorkflowEngine {
         await this.updateRunCursor(workflowRunId, {
           status: 'complete',
           current_step_id: step.id,
-          iteration, revision: 0, awaiting_checkpoint: null,
+          iteration, revision, awaiting_checkpoint: null,
         });
         return {
           run_id: workflowRunId,
@@ -269,7 +320,7 @@ export class WorkflowEngine {
         await this.updateRunCursor(workflowRunId, {
           status: 'active',
           current_step_id: def.steps[nextIndex].id,
-          iteration, revision: 0, awaiting_checkpoint: null,
+          iteration, revision, awaiting_checkpoint: null,
         });
       }
       stepIndex = nextIndex;
@@ -280,7 +331,7 @@ export class WorkflowEngine {
     await this.updateRunCursor(workflowRunId, {
       status: 'complete',
       current_step_id: lastStepId ?? '',
-      iteration, revision: 0, awaiting_checkpoint: null,
+      iteration, revision, awaiting_checkpoint: null,
     });
     return {
       run_id: workflowRunId,
@@ -504,8 +555,8 @@ export class WorkflowEngine {
   // --------------------------------------------------------------------------
   // WorkflowRun persistence — fail-closed when repo is injected.
   //
-  // saveRunCursor: INSERT OR IGNORE — idempotent; safe to call on resume.
-  // updateRunCursor: UPDATE — always applied; throws on error if repo is set.
+  // saveRunCursor: createOrValidate — idempotent on identity match; throws on collision.
+  // updateRunCursor: UPDATE — throws if row not found (fail-closed).
   // --------------------------------------------------------------------------
 
   private async saveRunCursor(
@@ -515,7 +566,7 @@ export class WorkflowEngine {
     fields: Omit<WorkflowRun, 'run_id' | 'workflow_id' | 'work_item_id'>,
   ): Promise<void> {
     if (!this.deps.workflowRunRepository) return;
-    this.deps.workflowRunRepository.save({
+    this.deps.workflowRunRepository.createOrValidate({
       run_id: runId,
       workflow_id: workflowId,
       work_item_id: workItemId,
@@ -543,9 +594,15 @@ export class WorkflowEngine {
     iteration: number,
     workflowRunId: string,
     stepId: string,
+    revision: number,
   ): Promise<WorkflowRunResult | null> {
     const maxIterations = def.max_iterations ?? Infinity;
     if (iteration < maxIterations) return null;
+    await this.updateRunCursor(workflowRunId, {
+      status: 'halted',
+      current_step_id: stepId,
+      iteration, revision, awaiting_checkpoint: null,
+    });
     return {
       run_id: workflowRunId,
       status: 'halted',

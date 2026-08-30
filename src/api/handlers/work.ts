@@ -41,8 +41,7 @@ export function makeWorkHandlers(
 
   router.add('POST', '/work/:id/run', (req) => {
     try {
-      const b = body(req);
-      return ok(workService.startRunning({ workItemId: req.params.id, dependencyOverride: b.dependencyOverride as boolean }));
+      return ok(workService.startRunning({ workItemId: req.params.id }));
     } catch (e) { return svcErr(e); }
   });
 

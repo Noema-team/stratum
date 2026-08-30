@@ -323,10 +323,18 @@ function runMigrations(db: Database.Database): void {
   for (let i = 0; i < MIGRATIONS.length; i++) {
     const migrationId = i + 1;
     if ((check.get(migrationId) as { count: number }).count === 0) {
-      db.transaction(() => {
-        db.exec(MIGRATIONS[i]);
-        record.run(migrationId, new Date().toISOString());
-      })();
+      // PRAGMA foreign_keys cannot be changed inside a transaction, so disable it
+      // around the transaction to allow table-recreation migrations to DROP a parent
+      // table that has child-row FK references. Re-enabled immediately after.
+      db.pragma('foreign_keys = OFF');
+      try {
+        db.transaction(() => {
+          db.exec(MIGRATIONS[i]);
+          record.run(migrationId, new Date().toISOString());
+        })();
+      } finally {
+        db.pragma('foreign_keys = ON');
+      }
     }
   }
 }

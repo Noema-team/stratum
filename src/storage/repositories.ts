@@ -750,8 +750,15 @@ function rowToEvent(r: Record<string, unknown>): DomainEvent {
 // WorkflowRunRepository — durable cursor for checkpoint/resume (DDR-031 Stage 2)
 // ============================================================================
 
+export class WorkflowRunConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowRunConflictError';
+  }
+}
+
 export class WorkflowRunRepository {
-  private readonly upsert: Database.Statement;
+  private readonly insertIgnore: Database.Statement;
   private readonly updateStmt: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
@@ -759,7 +766,7 @@ export class WorkflowRunRepository {
   private readonly haltedByWorkItem: Database.Statement;
 
   constructor(db: Database.Database) {
-    this.upsert = db.prepare(`
+    this.insertIgnore = db.prepare(`
       INSERT INTO workflow_runs
         (run_id, workflow_id, work_item_id, status, current_step_id,
          iteration, revision, awaiting_checkpoint, started_at, updated_at)
@@ -784,20 +791,49 @@ export class WorkflowRunRepository {
     );
   }
 
-  save(run: WorkflowRun): void {
-    this.upsert.run(
+  // createOrValidate: INSERT OR IGNORE — idempotent on exact identity match;
+  // throws WorkflowRunConflictError if run_id exists with different workflow_id
+  // or work_item_id (identity collision = programming error, never silently ignored).
+  createOrValidate(run: WorkflowRun): void {
+    const result = this.insertIgnore.run(
       run.run_id, run.workflow_id, run.work_item_id ?? null, run.status,
       run.current_step_id, run.iteration, run.revision,
       run.awaiting_checkpoint ?? null, run.started_at, run.updated_at,
     );
+    if (result.changes === 0) {
+      // Row already exists — verify identity fields match.
+      const existing = this.byId.get(run.run_id) as Record<string, unknown> | undefined;
+      if (!existing) {
+        throw new WorkflowRunConflictError(
+          `WorkflowRun '${run.run_id}' conflict but row disappeared`,
+        );
+      }
+      if (existing.workflow_id !== run.workflow_id) {
+        throw new WorkflowRunConflictError(
+          `WorkflowRun '${run.run_id}' already exists with workflow_id='${existing.workflow_id}', ` +
+          `got '${run.workflow_id}'`,
+        );
+      }
+      const existingWi = (existing.work_item_id as string | null) ?? null;
+      const incomingWi = run.work_item_id ?? null;
+      if (existingWi !== incomingWi) {
+        throw new WorkflowRunConflictError(
+          `WorkflowRun '${run.run_id}' already exists with work_item_id='${existingWi}', ` +
+          `got '${incomingWi}'`,
+        );
+      }
+    }
   }
 
   update(run: WorkflowRun): void {
-    this.updateStmt.run(
+    const result = this.updateStmt.run(
       run.status, run.current_step_id, run.iteration, run.revision,
       run.awaiting_checkpoint ?? null, run.updated_at,
       run.run_id,
     );
+    if (result.changes === 0) {
+      throw new Error(`WorkflowRun '${run.run_id}' not found — update affected 0 rows`);
+    }
   }
 
   findById(runId: string): WorkflowRun | undefined {

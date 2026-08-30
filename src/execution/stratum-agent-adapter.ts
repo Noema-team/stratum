@@ -35,13 +35,17 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       ? request.stepId
       : (def?.steps[0]?.id ?? 'scoping.gather');
 
+    // Load persisted WorkflowRun to recover iteration/revision on resume.
+    // For fresh runs the row doesn't exist yet, so defaults (1/0) apply.
+    const persistedRun = this.engineDeps.workflowRunRepository?.findById(request.workflowRunId);
+
     // Build the cycle context the engine expects from what the scheduler provides.
     // _legacyCycleState is passed through for adapters that still need it.
     const cycleCtx: Record<string, unknown> = {
       cycle_number: 1,
       cycle_id: request.workflowRunId,
-      iteration: 1,
-      revision: 0,
+      iteration: persistedRun?.iteration ?? 1,
+      revision: persistedRun?.revision ?? 0,
       planning_depth: 'minimal',
       intent: request.goal,
       current_node: null,

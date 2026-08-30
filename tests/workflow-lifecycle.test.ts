@@ -14,6 +14,9 @@
 import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
+import { tmpdir } from 'os';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
 import { openDatabase } from '../src/storage/database.js';
 import {
   WorkspaceRepository,
@@ -372,5 +375,124 @@ test('testResumeServiceGuards', async () => {
     try { await resumeService.resume(d.id, resolution); } catch (e) { err = e; }
     assert.ok(err instanceof ResumeServiceError, 'must throw for missing workflowRunId');
     assert.equal(err.code, 'MISSING_RUN_ID');
+  }
+});
+
+// ============================================================================
+// Test 3: Real file-backed SQLite restart — proves durability across DB close/reopen
+// ============================================================================
+
+test('testFileBackedSQLiteRestart', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'stratum-restart-test-'));
+  const dbPath = join(tmpDir, 'stratum.db');
+
+  try {
+    // ---- Phase 1: Dispatch in first process --------------------------------
+    const stepCallLog1: Array<{ stepId: string }> = [];
+    let canonicalRunId: string;
+    let decisionId: string;
+    let workItemId: string;
+    let workspaceId: string;
+
+    {
+      const db1 = openDatabase(dbPath);
+      const wsRepo = new WorkspaceRepository(db1);
+      const projRepo = new ProjectRepository(db1);
+      const workItemRepo = new WorkItemRepository(db1);
+
+      const ws = makeWorkspace();
+      wsRepo.save(ws);
+      workspaceId = ws.id;
+      const proj = makeProject(ws.id);
+      projRepo.save(proj);
+      const workItem = makeWorkItem(proj.id);
+      workItemRepo.save(workItem);
+      workItemId = workItem.id;
+
+      const adapter1 = makeTestAdapter(db1, stepCallLog1);
+      const registry1 = new ExecutorRegistry();
+      registry1.register(adapter1);
+      const scheduler1 = new Scheduler(db1, ws.id, registry1);
+
+      const results = await scheduler1.tick();
+      assert.equal(results.length, 1, 'one item dispatched');
+      assert.equal(results[0].outcome, 'dispatched');
+      canonicalRunId = results[0].workflowRunId!;
+
+      // Verify halted state in DB before closing.
+      const runRepo1 = new WorkflowRunRepository(db1);
+      const run1 = runRepo1.findById(canonicalRunId)!;
+      assert.equal(run1.status, 'halted', 'run must be halted at checkpoint');
+      assert.equal(run1.awaiting_checkpoint, 'step-ck');
+
+      const decRepo1 = new DecisionRepository(db1);
+      const [dec1] = decRepo1.listByWorkItem(workItemId);
+      assert.ok(dec1, 'Decision must exist before close');
+      decisionId = dec1.id;
+
+      // Simulate process death by closing the DB connection.
+      db1.close();
+    }
+
+    // ---- Phase 2: Fresh process — reopen DB, verify state survived ----------
+    const stepCallLog2: Array<{ stepId: string }> = [];
+    {
+      const db2 = openDatabase(dbPath);
+
+      const runRepo2 = new WorkflowRunRepository(db2);
+      const persistedRun = runRepo2.findById(canonicalRunId);
+      assert.ok(persistedRun, 'WorkflowRun must survive DB close/reopen');
+      assert.equal(persistedRun!.status, 'halted', 'WorkflowRun must still be halted');
+      assert.equal(persistedRun!.awaiting_checkpoint, 'step-ck');
+
+      const decRepo2 = new DecisionRepository(db2);
+      const persistedDec = decRepo2.findById(decisionId);
+      assert.ok(persistedDec, 'Decision must survive DB close/reopen');
+      assert.equal(persistedDec!.status, 'pending');
+
+      const wiRepo2 = new WorkItemRepository(db2);
+      const persistedWi = wiRepo2.findById(workItemId)!;
+      assert.equal(persistedWi.state, 'needs_decision', 'WorkItem must be needs_decision after reopen');
+
+      // Verify step-a ran exactly once (no replay on reopen).
+      assert.equal(stepCallLog1.filter(l => l.stepId === 'step-a').length, 1);
+      assert.equal(stepCallLog2.filter(l => l.stepId === 'step-a').length, 0,
+        'step-a must not replay on DB reopen alone');
+
+      // ---- Phase 3: Resume via ResumeService on the fresh process ------------
+      const adapter2 = makeTestAdapter(db2, stepCallLog2);
+      const resumeService2 = new ResumeService(db2, workspaceId, adapter2);
+
+      await resumeService2.resume(decisionId, {
+        selectedOptionId: 'approve',
+        rationale: 'LGTM',
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: 'test-operator',
+      });
+
+      // step-a must not have replayed; step-b must have run exactly once.
+      assert.equal(
+        stepCallLog2.filter(l => l.stepId === 'step-a').length, 0,
+        'step-a must not replay after file-backed resume',
+      );
+      assert.equal(
+        stepCallLog2.filter(l => l.stepId === 'step-b').length, 1,
+        'step-b must run exactly once during resume',
+      );
+
+      // WorkflowRun complete.
+      const finalRun = runRepo2.findById(canonicalRunId)!;
+      assert.equal(finalRun.run_id, canonicalRunId, 'run_id must be preserved');
+      assert.equal(finalRun.status, 'complete', 'WorkflowRun must be complete');
+      assert.equal(finalRun.awaiting_checkpoint, null);
+
+      // WorkItem in_review.
+      const finalWi = wiRepo2.findById(workItemId)!;
+      assert.equal(finalWi.state, 'in_review', 'WorkItem must be in_review after resume');
+
+      db2.close();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 });

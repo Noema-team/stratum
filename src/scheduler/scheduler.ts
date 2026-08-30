@@ -4,7 +4,7 @@ import type { ExecutorRegistry } from '../execution/registry.js';
 import type { ExecutionAdapter } from '../execution/types.js';
 import type { WorkItem } from '../domain/index.js';
 import { WorkService } from '../services/work-service.js';
-import { WorkItemRepository, StepExecutionRepository } from '../storage/repositories.js';
+import { WorkItemRepository, StepExecutionRepository, RepositoryRepository } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
 import { LeaseManager } from './lease-manager.js';
 import type { SchedulerConfig, DispatchResult } from './types.js';
@@ -25,6 +25,7 @@ import { DEFAULT_SCHEDULER_CONFIG } from './types.js';
 export class Scheduler {
   private readonly workRepo: WorkItemRepository;
   private readonly stepExecRepo: StepExecutionRepository;
+  private readonly repoRepo: RepositoryRepository;
   private readonly workService: WorkService;
   private readonly leaseManager: LeaseManager;
   private readonly config: SchedulerConfig;
@@ -38,6 +39,7 @@ export class Scheduler {
     this.config = { ...DEFAULT_SCHEDULER_CONFIG, ...config };
     this.workRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
+    this.repoRepo = new RepositoryRepository(db);
     this.workService = new WorkService(db, workspaceId);
     this.leaseManager = new LeaseManager(db);
   }
@@ -128,13 +130,12 @@ export class Scheduler {
       const wfDef = getWorkflow(workflowId);
       const entryStepId = wfDef?.steps[0]?.id ?? '__start__';
 
-      // Resolve repository remotes from WorkItem data; default to empty for
-      // repositories without a stored remote (caller fills in later phases).
-      const repositories = repositoryIds.map(id => ({
-        id,
-        remote: (item as any).repositories?.find((r: any) => r.id === id)?.remote ?? '',
-        branch: (item as any).repositories?.find((r: any) => r.id === id)?.defaultBranch ?? 'main',
-      }));
+      // Resolve repository remotes from the RepositoryRepository.
+      // Falls back to empty remote for IDs not found in the DB (defensive).
+      const repositories = repositoryIds.map(id => {
+        const stored = this.repoRepo.findById(id);
+        return { id, remote: stored?.remote ?? '', branch: stored?.defaultBranch ?? 'main' };
+      });
 
       const execResult = await adapter.execute({
         stepExecutionId,

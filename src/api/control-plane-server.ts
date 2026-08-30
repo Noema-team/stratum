@@ -21,6 +21,7 @@ import { makeEventHandlers } from './handlers/events.js';
 import { makeWorkflowHandlers } from './handlers/workflows.js';
 import type { WorkService } from '../services/work-service.js';
 import type { EvidenceService } from '../services/evidence-service.js';
+import type { ResumeService } from '../services/resume-service.js';
 import { TokenStore } from '../auth/token-store.js';
 import { AuditLogger } from '../audit/audit-logger.js';
 import { NotificationService } from '../notifications/notification-service.js';
@@ -32,6 +33,9 @@ export interface ControlPlaneServerOptions {
   workspaceId: string;
   workService: WorkService;
   evidenceService: EvidenceService;
+  // When provided, checkpoint Decisions route through ResumeService for full
+  // durable lifecycle (cursor advance + execution continuation).
+  resumeService?: ResumeService;
   port?: number;
   requireAuth?: boolean;
   // TLS: provide both certPath and keyPath to serve HTTPS instead of HTTP.
@@ -69,7 +73,7 @@ export class ControlPlaneServer {
     makeAttentionHandlers(router, attention, projects, opts.workspaceId);
     makeProjectHandlers(router, projects, opts.workspaceId);
     makeWorkHandlers(router, workItems, opts.workService);
-    makeDecisionHandlers(router, decisions, opts.workService);
+    makeDecisionHandlers(router, decisions, opts.workService, opts.resumeService);
     makeEvidenceHandlers(router, evidence, opts.evidenceService);
     makeEventHandlers(router, events, opts.workspaceId);
     makeWorkflowHandlers(router);

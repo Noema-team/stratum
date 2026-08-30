@@ -7,6 +7,7 @@ import {
   WorkflowRunRepository,
   WorkItemRepository,
   StepExecutionRepository,
+  RepositoryRepository,
 } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
 import type { ExecutionAdapter } from '../execution/types.js';
@@ -41,6 +42,7 @@ export class ResumeService {
   private readonly runRepo: WorkflowRunRepository;
   private readonly workItemRepo: WorkItemRepository;
   private readonly stepExecRepo: StepExecutionRepository;
+  private readonly repoRepo: RepositoryRepository;
 
   constructor(
     private readonly db: Database.Database,
@@ -52,6 +54,7 @@ export class ResumeService {
     this.runRepo = new WorkflowRunRepository(db);
     this.workItemRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
+    this.repoRepo = new RepositoryRepository(db);
   }
 
   async resume(
@@ -74,12 +77,20 @@ export class ResumeService {
       );
     }
 
+    // (1b) Decision must be a checkpoint type.
+    if (decision.type !== 'checkpoint') {
+      throw new ResumeServiceError(
+        `Decision '${decisionId}' has type '${decision.type}', expected 'checkpoint'`,
+        'WRONG_TYPE',
+      );
+    }
+
     const subjectRef = decision.subjectRef as {
       workflowRunId?: string;
       workItemId?: string;
       stepId?: string;
     };
-    const { workflowRunId, workItemId } = subjectRef;
+    const { workflowRunId, workItemId, stepId: checkpointStepIdRef } = subjectRef;
     if (!workflowRunId) {
       throw new ResumeServiceError(
         'Decision.subjectRef.workflowRunId is required for checkpoint resume',
@@ -90,6 +101,15 @@ export class ResumeService {
       throw new ResumeServiceError(
         'Decision.subjectRef.workItemId is required for checkpoint resume',
         'MISSING_WORK_ITEM_ID',
+      );
+    }
+
+    // (1c) Validate selectedOptionId exists in the decision's options.
+    const selectedOption = decision.options?.find(o => o.id === resolution?.selectedOptionId);
+    if (resolution?.selectedOptionId && !selectedOption) {
+      throw new ResumeServiceError(
+        `Option '${resolution.selectedOptionId}' is not valid for Decision '${decisionId}'`,
+        'INVALID_OPTION',
       );
     }
 
@@ -110,10 +130,23 @@ export class ResumeService {
         'NOT_AT_CHECKPOINT',
       );
     }
+    // Verify Decision ↔ WorkflowRun linkage.
+    if (decision.workItemId !== workItemId) {
+      throw new ResumeServiceError(
+        `Decision.workItemId '${decision.workItemId}' does not match subjectRef.workItemId '${workItemId}'`,
+        'WORK_ITEM_MISMATCH',
+      );
+    }
     if (run.work_item_id && run.work_item_id !== workItemId) {
       throw new ResumeServiceError(
         `WorkflowRun '${workflowRunId}' is linked to WorkItem '${run.work_item_id}', not '${workItemId}'`,
         'WORK_ITEM_MISMATCH',
+      );
+    }
+    if (checkpointStepIdRef && checkpointStepIdRef !== run.awaiting_checkpoint) {
+      throw new ResumeServiceError(
+        `Decision.subjectRef.stepId '${checkpointStepIdRef}' does not match run.awaiting_checkpoint '${run.awaiting_checkpoint}'`,
+        'CHECKPOINT_STEP_MISMATCH',
       );
     }
 
@@ -139,17 +172,42 @@ export class ResumeService {
     }
 
     const now = new Date().toISOString();
+    const isReject = resolution?.selectedOptionId === 'reject';
 
     // Find the 'waiting' StepExecution(s) for this run so we can close them.
     const waitingExecs = this.stepExecRepo
       .listByWorkflowRun(workflowRunId)
       .filter(se => se.state === 'waiting');
 
+    if (isReject) {
+      // Reject path: resolve Decision + cancel WorkItem + halt WorkflowRun — no execution.
+      this.db.transaction(() => {
+        for (const se of waitingExecs) {
+          this.stepExecRepo.updateState(se.id, 'cancelled', { completedAt: now });
+        }
+        this.workService.resolveDecision(decisionId, resolution, 'running');
+        this.runRepo.update({
+          ...run,
+          status: 'halted',
+          current_step_id: run.awaiting_checkpoint!,
+          awaiting_checkpoint: null,
+          updated_at: now,
+        });
+      })();
+      this.workService.cancel({ workItemId, reason: 'checkpoint rejected' });
+      return;
+    }
+
+    // Approve path: mint StepExecution inside the same atomic transaction so there
+    // is no crash window between the state transition and the new execution record.
+    const stepExecutionId = randomUUID();
+
     // (4) Atomic transition:
     //   • close waiting StepExecution(s) → 'succeeded'
     //   • resolve Decision (its own SAVEPOINT via db.transaction())
     //   • transition WorkItem → 'running' (done inside resolveDecision)
     //   • advance WorkflowRun cursor past the checkpoint
+    //   • create new StepExecution (dispatched) — inside the transaction to close crash window
     this.db.transaction(() => {
       for (const se of waitingExecs) {
         this.stepExecRepo.updateState(se.id, 'succeeded', { completedAt: now });
@@ -162,6 +220,18 @@ export class ResumeService {
         awaiting_checkpoint: null,
         updated_at: now,
       });
+      if (continuationStepId) {
+        this.stepExecRepo.save({
+          id: stepExecutionId,
+          workItemId,
+          workflowRunId,
+          stepId: continuationStepId,
+          executor: this.adapter.id,
+          state: 'dispatched',
+          attempt: 1,
+          startedAt: now,
+        });
+      }
     })();
 
     if (!continuationStepId) {
@@ -169,19 +239,6 @@ export class ResumeService {
       this.workService.markInReview({ workItemId });
       return;
     }
-
-    // (5) Create a new StepExecution for the resumed segment.
-    const stepExecutionId = randomUUID();
-    this.stepExecRepo.save({
-      id: stepExecutionId,
-      workItemId,
-      workflowRunId,
-      stepId: continuationStepId,
-      executor: this.adapter.id,
-      state: 'dispatched',
-      attempt: 1,
-      startedAt: now,
-    });
 
     // (6) Execute via adapter — same workflowRunId, starting from the continuation step.
     //     The engine's INSERT OR IGNORE is a no-op (WorkflowRun row already exists with
@@ -194,7 +251,10 @@ export class ResumeService {
         workflowRunId,
         stepId: continuationStepId,
         workflowId: run.workflow_id,
-        repositories: workItem.repositoryIds.map(id => ({ id, remote: '', branch: 'main' })),
+        repositories: workItem.repositoryIds.map(id => {
+          const stored = this.repoRepo.findById(id);
+          return { id, remote: stored?.remote ?? '', branch: stored?.defaultBranch ?? 'main' };
+        }),
         goal: workItem.goal,
         acceptanceCriteria: workItem.acceptanceCriteria,
         constraints: workItem.constraints,
