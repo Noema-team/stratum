@@ -13,13 +13,14 @@ const EXTERNAL_ONLY_TYPES = new Set([
   'scope_diff',
 ]);
 
-// Collector IDs that are registered as trusted external sources.
-// These are set by the system (registered EvidenceCollector.type), never by callers.
-const TRUSTED_COLLECTOR_IDS = new Set([
-  'github.ci',
-  'github.review',
-  'ci_toolkit.semantic_review',
-  'scope_diff',
+// Per-type mapping of allowed collector IDs (DDR-032 §20).
+// A trusted collectorId for type X cannot satisfy a requirement of type Y.
+// Designed as a map so each type can allow multiple implementations later.
+const COLLECTOR_TRUST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['github.ci',                 new Set(['github.ci'])],
+  ['github.review',             new Set(['github.review'])],
+  ['ci_toolkit.semantic_review', new Set(['ci_toolkit.semantic_review'])],
+  ['scope_diff',                new Set(['scope_diff'])],
 ]);
 
 export class CompletionPolicy {
@@ -94,11 +95,12 @@ export class CompletionPolicy {
       return false;
     }
 
-    // collectorId must be present and from a known trusted collector.
-    // Absent collectorId → deny; this closes the permissive legacy path
-    // where missing collectorId was silently treated as trusted.
+    // collectorId must be present and must be the registered collector for
+    // this specific evidence type. A trusted collectorId for a different
+    // type does not satisfy this requirement (cross-type mismatch → deny).
     if (evidence.collectorId === undefined) return false;
-    return TRUSTED_COLLECTOR_IDS.has(evidence.collectorId);
+    const allowed = COLLECTOR_TRUST.get(requirementType);
+    return allowed !== undefined && allowed.has(evidence.collectorId);
   }
 
   private buildDenyReason(req: EvidenceRequirement, evidence: Evidence[]): string {

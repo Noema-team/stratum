@@ -581,6 +581,36 @@ test('testPolicyDeniesExternalTypeWithNoCollectorId', () => {
   assert.equal(result.outcome, 'deny', 'github.ci evidence with no collectorId must be denied');
 });
 
+test('testPolicyDeniesWhenCollectorIdDoesNotMatchRequirementType', () => {
+  // github.review is a trusted collectorId, but not for github.ci requirements.
+  // Cross-type mismatch must be denied.
+  const policy = new CompletionPolicy();
+  const evidence: Evidence[] = [{
+    id: randomUUID(), workItemId: 'wi1',
+    type: 'github.ci',
+    source: 'github',
+    collectorId: 'github.review',  // wrong collector for this type
+    status: 'passed',
+    payload: {}, collectedAt: new Date().toISOString(),
+  }];
+  const result = policy.evaluate([{ type: 'github.ci' }], evidence);
+  assert.equal(result.outcome, 'deny', 'github.review collector cannot satisfy github.ci requirement');
+});
+
+test('testPolicyDeniesWhenCollectorIdIsUnknown', () => {
+  const policy = new CompletionPolicy();
+  const evidence: Evidence[] = [{
+    id: randomUUID(), workItemId: 'wi1',
+    type: 'github.ci',
+    source: 'github',
+    collectorId: 'unknown.collector',
+    status: 'passed',
+    payload: {}, collectedAt: new Date().toISOString(),
+  }];
+  const result = policy.evaluate([{ type: 'github.ci' }], evidence);
+  assert.equal(result.outcome, 'deny', 'unknown collectorId must be denied');
+});
+
 // ============================================================================
 // Persistence-level security: collector → EvidenceService → SQLite → reload → CompletionPolicy
 // ============================================================================
