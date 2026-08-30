@@ -1,11 +1,11 @@
 import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 import type { ExecutorRegistry } from '../execution/registry.js';
-import type { ExecutionAdapter } from '../execution/types.js';
 import type { WorkItem } from '../domain/index.js';
 import { WorkService } from '../services/work-service.js';
 import { WorkItemRepository, StepExecutionRepository, RepositoryRepository } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
+import { resolveRepositories, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from './lease-manager.js';
 import type { SchedulerConfig, DispatchResult } from './types.js';
 import { DEFAULT_SCHEDULER_CONFIG } from './types.js';
@@ -83,8 +83,8 @@ export class Scheduler {
       return { workItemId, outcome: 'skipped_concurrency' };
     }
 
-    // 5. Find an adapter for this workflow.
-    const adapter = this.selectAdapter(workflowId);
+    // 5. Find an adapter for this workflow (shared selection logic with ResumeService).
+    const adapter = selectAdapter(this.registry);
     if (!adapter) {
       return { workItemId, outcome: 'skipped_no_adapter' };
     }
@@ -97,6 +97,15 @@ export class Scheduler {
         this.leaseManager.releaseAll(workItemId);
         return { workItemId, outcome: 'skipped_lease' };
       }
+    }
+
+    // 6b. Resolve repository remotes — fail closed before creating any DB state.
+    let repositories;
+    try {
+      repositories = resolveRepositories(repositoryIds, this.repoRepo);
+    } catch (err) {
+      this.leaseManager.releaseAll(workItemId);
+      return { workItemId, outcome: 'failed', error: String(err) };
     }
 
     // 7. Atomically create StepExecution + transition WorkItem to running.
@@ -129,13 +138,6 @@ export class Scheduler {
       // Derive the workflow's first step from the registered definition.
       const wfDef = getWorkflow(workflowId);
       const entryStepId = wfDef?.steps[0]?.id ?? '__start__';
-
-      // Resolve repository remotes from the RepositoryRepository.
-      // Falls back to empty remote for IDs not found in the DB (defensive).
-      const repositories = repositoryIds.map(id => {
-        const stored = this.repoRepo.findById(id);
-        return { id, remote: stored?.remote ?? '', branch: stored?.defaultBranch ?? 'main' };
-      });
 
       const execResult = await adapter.execute({
         stepExecutionId,
@@ -207,11 +209,4 @@ export class Scheduler {
     return { workItemId, outcome: 'dispatched', stepExecutionId, workflowRunId };
   }
 
-  private selectAdapter(_workflowId: string): ExecutionAdapter | undefined {
-    // Phase 5: use stratum-agent for all workflows if registered; otherwise fall
-    // back to any adapter with repo.read capability. Later phases can match on
-    // workflow-specific capability requirements.
-    return this.registry.findById('stratum-agent')
-      ?? this.registry.findByCapabilities(new Set(['repo.read']));
-  }
 }

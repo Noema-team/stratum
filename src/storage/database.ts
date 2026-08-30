@@ -332,6 +332,15 @@ function runMigrations(db: Database.Database): void {
           db.exec(MIGRATIONS[i]);
           record.run(migrationId, new Date().toISOString());
         })();
+        // Verify no FK violations were introduced while enforcement was off.
+        // Migration 5 allowed workflow_runs.work_item_id without a FK; Migration 6
+        // can copy an orphaned ID into the FK-constrained table while OFF.
+        const violations = db.pragma('foreign_key_check') as unknown[];
+        if (violations.length > 0) {
+          throw new Error(
+            `Migration ${migrationId} introduced FK violations: ${JSON.stringify(violations)}`,
+          );
+        }
       } finally {
         db.pragma('foreign_keys = ON');
       }

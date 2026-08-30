@@ -277,7 +277,7 @@ export class WorkService {
   resolveDecision(
     decisionId: string,
     resolution: Decision['resolution'],
-    resumeTo: 'running' | 'in_review' | 'blocked' = 'running',
+    resumeTo: 'running' | 'in_review' | 'blocked' | 'cancelled' = 'running',
   ): { workItem: WorkItem; decision: Decision } {
     if (!resolution) throw new WorkServiceError('Resolution is required', 'MISSING_RESOLUTION');
 

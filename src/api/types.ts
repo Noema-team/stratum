@@ -39,8 +39,10 @@ export const HTTP_STATUS: Record<string, number> = {
   ok: 200,
   created: 201,
   bad_request: 400,
+  unauthorized: 401,
   not_found: 404,
   conflict: 409,
+  service_unavailable: 503,
   internal_error: 500,
 };
 

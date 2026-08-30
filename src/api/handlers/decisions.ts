@@ -42,7 +42,17 @@ export function makeDecisionHandlers(
       const decision = decisions.findById(req.params.id);
       if (!decision) return err('not_found', `Decision '${req.params.id}' not found`);
 
-      if (decision.type === 'checkpoint' && resumeService) {
+      if (decision.type === 'checkpoint') {
+        // Checkpoint Decisions MUST route through ResumeService to enforce the
+        // full durable lifecycle (cursor advance + continuation execution).
+        // Falling back to bare WorkService would resolve the Decision while
+        // leaving the WorkflowRun halted forever — never silently tolerated.
+        if (!resumeService) {
+          return err(
+            'service_unavailable',
+            'ResumeService is required for checkpoint decisions but was not configured',
+          );
+        }
         await resumeService.resume(req.params.id, resolution);
         return ok({ resumed: true });
       }

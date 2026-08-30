@@ -83,30 +83,66 @@ export class WorkflowEngine {
     startStepId?: string,
     workItemId?: string,
   ): Promise<WorkflowRunResult> {
+
+    // ---- SQLite cursor ownership --------------------------------------------
+    // For existing runs, the persisted cursor is authoritative. Callers may not
+    // override it. This prevents replaying completed segments or skipping steps.
+    const existingRun = this.deps.workflowRunRepository?.findById(workflowRunId) ?? null;
+
+    if (existingRun !== null) {
+      // Completed runs cannot be re-executed.
+      if (existingRun.status === 'complete') {
+        return {
+          run_id: workflowRunId,
+          status: 'complete',
+          final_step_id: null,
+          iterations_used: existingRun.iteration,
+          error: `WorkflowRun '${workflowRunId}' is already complete — re-execution denied`,
+        };
+      }
+      // SQLite cursor is authoritative; caller override is denied.
+      if (startStepId && startStepId !== existingRun.current_step_id) {
+        return {
+          run_id: workflowRunId,
+          status: 'halted',
+          final_step_id: existingRun.current_step_id,
+          iterations_used: existingRun.iteration,
+          error: `Cursor override denied: persisted cursor is '${existingRun.current_step_id}', caller requested '${startStepId}'`,
+        };
+      }
+      // Use persisted cursor as the authoritative start step.
+      startStepId = existingRun.current_step_id;
+    }
+
     const def = getWorkflow(workflowId);
     if (!def) {
       const now = new Date().toISOString();
-      await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
-        status: 'halted',
-        current_step_id: startStepId ?? '__unknown__',
-        iteration: cycleStateCtx.iteration,
-        revision: 0,
-        awaiting_checkpoint: null,
-        started_at: now,
-        updated_at: now,
-      });
+      const iter = existingRun?.iteration ?? cycleStateCtx.iteration;
+      const rev = existingRun?.revision ?? 0;
+      const haltStep = existingRun?.current_step_id ?? startStepId ?? '__unknown__';
+      if (!existingRun) {
+        await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+          status: 'halted',
+          current_step_id: haltStep,
+          iteration: iter,
+          revision: rev,
+          awaiting_checkpoint: null,
+          started_at: now,
+          updated_at: now,
+        });
+      }
       await this.updateRunCursor(workflowRunId, {
         status: 'halted',
-        current_step_id: startStepId ?? '__unknown__',
-        iteration: cycleStateCtx.iteration,
-        revision: 0,
+        current_step_id: haltStep,
+        iteration: iter,
+        revision: rev,
         awaiting_checkpoint: null,
       });
       return {
         run_id: workflowRunId,
         status: 'halted',
         final_step_id: null,
-        iterations_used: cycleStateCtx.iteration,
+        iterations_used: iter,
         error: `Unknown workflow '${workflowId}'`,
       };
     }
@@ -117,27 +153,32 @@ export class WorkflowEngine {
 
     if (startIndex === -1) {
       const now = new Date().toISOString();
-      await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
-        status: 'halted',
-        current_step_id: startStepId ?? '__invalid__',
-        iteration: cycleStateCtx.iteration,
-        revision: 0,
-        awaiting_checkpoint: null,
-        started_at: now,
-        updated_at: now,
-      });
+      const iter = existingRun?.iteration ?? cycleStateCtx.iteration;
+      const rev = existingRun?.revision ?? 0;
+      const haltStep = existingRun?.current_step_id ?? startStepId ?? '__invalid__';
+      if (!existingRun) {
+        await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+          status: 'halted',
+          current_step_id: haltStep,
+          iteration: iter,
+          revision: rev,
+          awaiting_checkpoint: null,
+          started_at: now,
+          updated_at: now,
+        });
+      }
       await this.updateRunCursor(workflowRunId, {
         status: 'halted',
-        current_step_id: startStepId ?? '__invalid__',
-        iteration: cycleStateCtx.iteration,
-        revision: 0,
+        current_step_id: haltStep,
+        iteration: iter,
+        revision: rev,
         awaiting_checkpoint: null,
       });
       return {
         run_id: workflowRunId,
         status: 'halted',
         final_step_id: startStepId ?? null,
-        iterations_used: cycleStateCtx.iteration,
+        iterations_used: iter,
         error: `Step '${startStepId}' not found in workflow '${workflowId}'`,
       };
     }
@@ -161,10 +202,11 @@ export class WorkflowEngine {
       updated_at: startedAt,
     });
 
-    // Load persisted state — handles resume: existing row carries the authoritative
-    // iteration and revision from before the halt (e.g. iteration > 1 for iterative runs).
+    // Load persisted iteration/revision — for existing runs, authoritative values
+    // from before the halt (e.g. iteration > 1 for iterative workflows).
+    // For new runs, loads back exactly what was just written.
     if (this.deps.workflowRunRepository) {
-      const persisted = this.deps.workflowRunRepository.findById(workflowRunId);
+      const persisted = existingRun ?? this.deps.workflowRunRepository.findById(workflowRunId);
       if (persisted) {
         iteration = persisted.iteration;
         revision = persisted.revision;

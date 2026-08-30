@@ -263,7 +263,9 @@ test('testWorkflowLifecycleCheckpointResumeEndToEnd', async () => {
   // ---- Phase 3: Resolve Decision via fresh ResumeService --------------------
 
   const freshAdapter = makeTestAdapter(db, stepCallLog);  // new instance, same log
-  const resumeService = new ResumeService(db, ws.id, freshAdapter);
+  const freshRegistry = new ExecutorRegistry();
+  freshRegistry.register(freshAdapter);
+  const resumeService = new ResumeService(db, ws.id, freshRegistry);
 
   const resolution = {
     selectedOptionId: 'approve',
@@ -331,7 +333,9 @@ test('testResumeServiceGuards', async () => {
 
   const stepCallLog: Array<{ stepId: string }> = [];
   const adapter = makeTestAdapter(db, stepCallLog);
-  const resumeService = new ResumeService(db, ws.id, adapter);
+  const guardRegistry = new ExecutorRegistry();
+  guardRegistry.register(adapter);
+  const resumeService = new ResumeService(db, ws.id, guardRegistry);
 
   const resolution = {
     selectedOptionId: 'approve',
@@ -461,7 +465,9 @@ test('testFileBackedSQLiteRestart', async () => {
 
       // ---- Phase 3: Resume via ResumeService on the fresh process ------------
       const adapter2 = makeTestAdapter(db2, stepCallLog2);
-      const resumeService2 = new ResumeService(db2, workspaceId, adapter2);
+      const registry2 = new ExecutorRegistry();
+      registry2.register(adapter2);
+      const resumeService2 = new ResumeService(db2, workspaceId, registry2);
 
       await resumeService2.resume(decisionId, {
         selectedOptionId: 'approve',
