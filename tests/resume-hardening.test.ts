@@ -243,6 +243,56 @@ const REJECT = {
 };
 
 // ============================================================================
+// 0. WorkflowRun identity guard — wrong workflowId or workItemId is rejected
+//    before any DB mutation.
+// ============================================================================
+
+test('testWrongWorkflowIdCannotAlterExistingRun', async () => {
+  const db = openDb();
+  const repo = new WorkflowRunRepository(db);
+  const stepLog: string[] = [];
+
+  const engine = new WorkflowEngine(makeStubDeps(repo, stepLog), makeStubOpts(async () => 'halt'));
+  // Create a run under HARNESS_WF.
+  await engine.run(HARNESS_WF, 1, 'run-id-wf', DUMMY_CTX, undefined, undefined);
+  const original = repo.findById('run-id-wf')!;
+
+  // Present the same run_id but a completely different workflowId.
+  const result = await engine.run('wrong-workflow-id', 1, 'run-id-wf', DUMMY_CTX, undefined, undefined);
+  assert.ok(result.error?.includes('Identity mismatch'), `expected identity-mismatch error, got: ${result.error}`);
+
+  // Run must be completely unmodified.
+  const after = repo.findById('run-id-wf')!;
+  assert.equal(after.workflow_id, original.workflow_id);
+  assert.equal(after.status, original.status);
+  assert.equal(after.current_step_id, original.current_step_id);
+  assert.equal(after.awaiting_checkpoint, original.awaiting_checkpoint);
+});
+
+test('testWrongWorkItemIdCannotAlterExistingRun', async () => {
+  const db = openDb();
+  const { wi } = seedWorld(db);  // real work_item in DB
+  const repo = new WorkflowRunRepository(db);
+  const stepLog: string[] = [];
+
+  const engine = new WorkflowEngine(makeStubDeps(repo, stepLog), makeStubOpts(async () => 'halt'));
+  // Create a run bound to the real workItemId.
+  await engine.run(HARNESS_WF, 1, 'run-id-wi', DUMMY_CTX, undefined, wi.id);
+  const original = repo.findById('run-id-wi')!;
+  assert.equal(original.work_item_id, wi.id);
+
+  // Present a different workItemId for the same run_id — identity check must reject.
+  const result = await engine.run(HARNESS_WF, 1, 'run-id-wi', DUMMY_CTX, undefined, 'wi-different');
+  assert.ok(result.error?.includes('Identity mismatch'), `expected identity-mismatch error, got: ${result.error}`);
+
+  // Run must be completely unmodified.
+  const after = repo.findById('run-id-wi')!;
+  assert.equal(after.work_item_id, original.work_item_id);
+  assert.equal(after.status, original.status);
+  assert.equal(after.current_step_id, original.current_step_id);
+});
+
+// ============================================================================
 // 1. Persisted cursor cannot be overridden
 // ============================================================================
 
@@ -890,6 +940,52 @@ test('testCheckpointHTTPResolveWithoutResumeServiceFailsClosed', async () => {
     // WorkItem must remain needs_decision.
     const wiState = new WorkItemRepository(db).findById(wi.id)!;
     assert.equal(wiState.state, 'needs_decision', 'WorkItem must remain needs_decision on failed resolve');
+  } finally {
+    await srv.close();
+  }
+});
+
+// ============================================================================
+// 14. Malformed resolution at HTTP boundary → bad_request (schema parsed early)
+// ============================================================================
+
+test('testMalformedResolutionReturnsBadRequest', async () => {
+  const db = openDb();
+  const { ws, wi } = seedWorld(db);
+
+  const stepLog: string[] = [];
+  const adapter = makeHaltingAdapter(db, stepLog);
+  const registry = makeRegistry(adapter);
+  const scheduler = new Scheduler(db, ws.id, registry);
+
+  await scheduler.tick();
+
+  const [decision] = new DecisionRepository(db).listByWorkItem(wi.id);
+  assert.ok(decision, 'Decision must exist after halted dispatch');
+
+  const resumeRegistry = makeRegistry(makeHaltingAdapter(db, stepLog));
+  const resumeSvc = new ResumeService(db, ws.id, resumeRegistry);
+  const workSvc = new WorkService(db, ws.id);
+  const evidSvc = new EvidenceService(db);
+  const srv = new ControlPlaneServer({
+    db, workspaceId: ws.id, workService: workSvc, evidenceService: evidSvc,
+    resumeService: resumeSvc, port: nextPort(),
+  });
+  await srv.listen();
+  const base = `http://localhost:${srv.port}`;
+
+  try {
+    // Missing selectedOptionId — schema validation should catch this before service layer.
+    const r = await postJson(`${base}/decisions/${decision.id}/resolve`, {
+      resolution: { rationale: 'no option id provided' },
+    });
+    assert.equal(r.status, 400, `expected 400 bad_request, got ${r.status}`);
+    assert.equal((r.body as any).ok, false);
+    assert.ok((r.body as any).error?.message?.includes('Invalid resolution'));
+
+    // Decision must remain pending — no state was changed.
+    const stillPending = new DecisionRepository(db).findById(decision.id)!;
+    assert.equal(stillPending.status, 'pending', 'Decision must stay pending on bad request');
   } finally {
     await srv.close();
   }

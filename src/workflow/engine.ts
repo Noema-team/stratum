@@ -90,6 +90,28 @@ export class WorkflowEngine {
     const existingRun = this.deps.workflowRunRepository?.findById(workflowRunId) ?? null;
 
     if (existingRun !== null) {
+      // Identity guard: reject before any mutation if the caller presents a
+      // different workflow or workItem binding than what was stored.
+      if (existingRun.workflow_id !== workflowId) {
+        return {
+          run_id: workflowRunId,
+          status: 'halted',
+          final_step_id: existingRun.current_step_id,
+          iterations_used: existingRun.iteration,
+          error: `Identity mismatch: run '${workflowRunId}' is bound to workflow '${existingRun.workflow_id}', caller presented '${workflowId}'`,
+        };
+      }
+      const storedWorkItemId = existingRun.work_item_id ?? undefined;
+      if (storedWorkItemId !== workItemId) {
+        return {
+          run_id: workflowRunId,
+          status: 'halted',
+          final_step_id: existingRun.current_step_id,
+          iterations_used: existingRun.iteration,
+          error: `Identity mismatch: run '${workflowRunId}' is bound to workItem '${existingRun.work_item_id ?? 'none'}', caller presented '${workItemId ?? 'none'}'`,
+        };
+      }
+
       // Completed runs cannot be re-executed.
       if (existingRun.status === 'complete') {
         return {

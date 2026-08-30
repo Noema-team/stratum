@@ -330,17 +330,18 @@ function runMigrations(db: Database.Database): void {
       try {
         db.transaction(() => {
           db.exec(MIGRATIONS[i]);
+          // Check FK integrity inside the transaction — any violation causes the
+          // entire transaction to roll back (migration DDL + _migrations row).
+          // This prevents a partially-valid migration from being committed and
+          // skipped on the next startup.
+          const violations = db.pragma('foreign_key_check') as unknown[];
+          if (violations.length > 0) {
+            throw new Error(
+              `Migration ${migrationId} introduced FK violations: ${JSON.stringify(violations)}`,
+            );
+          }
           record.run(migrationId, new Date().toISOString());
         })();
-        // Verify no FK violations were introduced while enforcement was off.
-        // Migration 5 allowed workflow_runs.work_item_id without a FK; Migration 6
-        // can copy an orphaned ID into the FK-constrained table while OFF.
-        const violations = db.pragma('foreign_key_check') as unknown[];
-        if (violations.length > 0) {
-          throw new Error(
-            `Migration ${migrationId} introduced FK violations: ${JSON.stringify(violations)}`,
-          );
-        }
       } finally {
         db.pragma('foreign_keys = ON');
       }

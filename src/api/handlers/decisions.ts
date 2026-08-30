@@ -4,7 +4,7 @@ import type { WorkService, WorkServiceError } from '../../services/work-service.
 import type { ResumeService } from '../../services/resume-service.js';
 import { ResumeServiceError } from '../../services/resume-service.js';
 import { ok, err } from '../types.js';
-import type { Decision } from '../../domain/index.js';
+import { DecisionResolutionSchema } from '../../domain/decision.js';
 
 function svcErr(e: unknown) {
   if (e instanceof ResumeServiceError) {
@@ -33,8 +33,12 @@ export function makeDecisionHandlers(
   router.add('POST', '/decisions/:id/resolve', async (req) => {
     try {
       const b = (req.body ?? {}) as Record<string, unknown>;
-      const resolution = b.resolution as Decision['resolution'];
-      if (!resolution) return err('bad_request', 'resolution is required');
+      const parsed = DecisionResolutionSchema.safeParse(b.resolution);
+      if (!parsed.success) {
+        const msg = parsed.error.issues.map(i => i.message).join('; ');
+        return err('bad_request', `Invalid resolution: ${msg}`);
+      }
+      const resolution = parsed.data;
 
       // Checkpoint Decisions route through ResumeService when available — this
       // enforces the full durable checkpoint/resume lifecycle (cursor advance,

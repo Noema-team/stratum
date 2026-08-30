@@ -1,11 +1,12 @@
 /**
- * Migration 6 upgrade test.
+ * Migration 6 upgrade tests.
  *
- * Proves that a database populated under migrations 1–5 (before Migration 6)
- * can be upgraded to Migration 6 without FK violations or data loss:
- *   - evidence rows referencing step_executions by id survive the table rename
- *   - artifact rows referencing step_executions by id survive the table rename
- *   - existing workflow_runs rows are preserved with FK to work_items satisfied
+ * 1. Happy path: a pre-M6 database with valid FK references survives Migration 6
+ *    without data loss or FK violations.
+ *
+ * 2. Atomicity regression: a pre-M6 database with an orphaned workflow_run
+ *    (work_item_id referencing a non-existent work_item) must cause Migration 6
+ *    to fail, roll back the schema change, and leave M6 absent from _migrations.
  */
 
 import { test } from 'node:test';
@@ -241,6 +242,68 @@ test('testMigration6PreservesExistingRowsAndFKIntegrity', () => {
     assert.equal(seWaiting.state, 'waiting', 'waiting state must be accepted after migration 6');
 
     dbPost.close();
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// Migration atomicity regression: orphaned workflow_run must cause M6 to fail
+// atomically — schema rollback + absent _migrations row.
+// ============================================================================
+
+test('testMigration6AtomicityWithOrphanedWorkflowRun', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'stratum-migration6-atom-'));
+  const dbPath = join(tmpDir, 'stratum.db');
+
+  try {
+    // Build pre-M6 schema with an ORPHANED workflow_run (work_item_id references
+    // a work_item that does not exist). Migration 6 must detect this violation
+    // via PRAGMA foreign_key_check and roll back entirely.
+    const dbPre = openDatabaseUpToMigration5(dbPath);
+    const now = '2025-06-01T00:00:00.000Z';
+
+    dbPre.exec(`
+      INSERT INTO workspaces VALUES ('ws-atom', 'workspace', '${now}');
+      INSERT INTO projects VALUES ('proj-atom', 'ws-atom', 'project', NULL, 'active', 0, '${now}', '${now}');
+      -- Intentionally orphaned: 'wi-MISSING' does not exist in work_items.
+      INSERT INTO workflow_runs
+        (run_id, workflow_id, work_item_id, status, current_step_id, iteration, revision,
+         awaiting_checkpoint, started_at, updated_at)
+      VALUES ('run-orphan', 'wf-1', 'wi-MISSING', 'active', 'step-1', 1, 0, NULL, '${now}', '${now}');
+    `);
+    dbPre.close();
+
+    // Attempting to apply migration 6 must throw (FK violation detected inside
+    // the transaction, causing the whole migration to roll back).
+    assert.throws(
+      () => openDatabase(dbPath),
+      /FK violations/,
+      'openDatabase must throw when migration 6 would introduce FK violations',
+    );
+
+    // Verify M6 is absent from _migrations — the migration runner must not have
+    // committed the tracking row.
+    const dbCheck = new Database(dbPath);
+    try {
+      const row = dbCheck
+        .prepare('SELECT COUNT(*) as cnt FROM _migrations WHERE id = 6')
+        .get() as { cnt: number };
+      assert.equal(row.cnt, 0, 'Migration 6 must NOT be recorded in _migrations after rollback');
+
+      // The workflow_runs table must still have no FK constraint (pre-M6 schema):
+      // the CREATE TABLE workflow_runs_v6 DDL was rolled back.
+      const tableInfo = dbCheck
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_runs'")
+        .get() as { sql: string } | undefined;
+      assert.ok(tableInfo, 'workflow_runs table must still exist after failed migration');
+      assert.ok(
+        !tableInfo.sql.includes('REFERENCES work_items'),
+        'workflow_runs must NOT have FK on work_item_id after rolled-back migration',
+      );
+    } finally {
+      dbCheck.close();
+    }
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
