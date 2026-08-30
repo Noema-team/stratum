@@ -321,7 +321,7 @@ export class WorkflowEngine {
           };
         }
 
-        if ('_iterate' in (result as any)) {
+        if ((result as any)._iterate === true) {
           // Increment iteration locally — authoritative. The FullBuildStepRunner's
           // mapManager.update() is an advisory legacy sync, not the source of truth.
           iteration += 1;
