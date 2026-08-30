@@ -6,27 +6,35 @@
  * against the same scenario and asserts:
  *
  *   assert.deepEqual       → behaviors match (parity achieved)
- *   assert.notDeepEqual    → DIVERGES: known divergence, flip to deepEqual when fixed
+ *   assert.notDeepEqual    → INTENTIONAL_STRUCTURAL_DIFFERENCE: keep as-is
+ *
+ * Classification:
+ *   INTENTIONAL_STRUCTURAL_DIFFERENCE — divergence that is by design (DDR-031);
+ *     effects are verified via service call counts or equivalent assertions.
+ *   BEHAVIORAL_DIVERGENCE (now fixed) — was a bug, now parity achieved.
  *
  * Scenarios covered:
  *   - minimal / deep / research planning depth (critique skip / run)
- *   - critique pass / fail / bounded retries
+ *   - critique pass / fail / bounded retries (cap: deep=1, research=3)
  *   - scoping approve / halt
  *   - sharding approve / reject / modify (no-proposal skip)
  *   - confirm approve / revise / halt
  *   - validation pass
- *   - validation fail → DEBUG → iteration increment → PLAN (oracle) vs EVALUATE (engine)
+ *   - validation fail → DEBUG → iteration increment → PLAN (recovery loop)
  *   - failure_report propagation into DEBUG cycleState
- *   - iteration cap
- *   - SUMMARISE: summariseService (oracle) vs LLM via agentRunner (engine)
- *   - SNAPSHOT: stateMachine.completeCycle (oracle) vs absent (engine)
- *   - HISTORY: present in oracle trace, absent in engine trace
- *   - SCOPING LLM step: absent in oracle, present in engine
- *   - confirm approve routing: oracle follows service result, engine ignores it
+ *   - iteration cap (both halt)
+ *   - SUMMARISE: both use summariseService (parity achieved)
+ *   - SNAPSHOT: stateMachine.completeCycle called by CR (intentional structural difference)
+ *   - HISTORY: present in oracle trace, absent in engine trace (intentional structural difference)
+ *   - SCOPING LLM step: absent in oracle, present in engine (intentional structural difference)
+ *   - confirm approve routing: both use confirmService.approve().next_node (parity achieved)
  */
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { CycleRunner } from '../src/cycle-runner.js';
 import { WorkflowEngine } from '../src/workflow/engine.js';
@@ -112,7 +120,8 @@ class SpyAgentRunner {
 // Wraps SpyAgentRunner to satisfy the DAGRunner interface expected by CycleRunner.
 class SpyDAGRunnerWrapper {
   public calls: string[] = [];
-  constructor(private readonly agent: SpyAgentRunner) {}
+  private readonly agent: SpyAgentRunner;
+  constructor(agent: SpyAgentRunner) { this.agent = agent; }
   async runNode(nodeId: string, state: CycleStateContext): Promise<AgentRunResult & { next_node: DAGNodeId | null }> {
     this.calls.push(nodeId);
     const result = await this.agent.run(nodeId, state);
@@ -125,7 +134,8 @@ class SpyDAGRunnerWrapper {
 // Spy CriticAgent: fails the first `failTimes` calls, then passes.
 class SpyCriticAgent {
   public calls = 0;
-  constructor(private readonly failTimes: number = 0) {}
+  private readonly failTimes: number;
+  constructor(failTimes: number = 0) { this.failTimes = failTimes; }
   async critique(_args: unknown): Promise<{ pass: boolean; blocking_issues: string[]; warnings: string[]; suggestions: string[] }> {
     this.calls++;
     const pass = this.calls > this.failTimes;
@@ -163,7 +173,8 @@ class SpyExecService {
 // Spy ValidationGateService: passes on attempts > failTimes.
 class SpyValidationGateService {
   public calls = 0;
-  constructor(private readonly failTimes: number = 0) {}
+  private readonly failTimes: number;
+  constructor(failTimes: number = 0) { this.failTimes = failTimes; }
   async run(_cycleNumber: number, _iteration: number, _cycleId: string): Promise<{
     passed: boolean;
     next_node: string | null;
@@ -197,7 +208,8 @@ class SpyValidationGateService {
 // Spy ValidationGateService with a structural failure (routes to DESIGN, not PLAN).
 class SpyStructuralValidationGateService {
   public calls = 0;
-  constructor(private readonly failTimes: number = 1) {}
+  private readonly failTimes: number;
+  constructor(failTimes: number = 1) { this.failTimes = failTimes; }
   async run(_cycleNumber: number, _iteration: number, _cycleId: string) {
     this.calls++;
     if (this.calls > this.failTimes) {
@@ -279,6 +291,7 @@ interface CRHarnessOpts {
   confirmAction?: 'approve' | 'revise' | 'halt';
   scopingAction?: 'approve' | 'halt';
   shardingAction?: 'approve' | 'reject' | 'modify';
+  projectRoot?: string;
 }
 
 interface CRHarness {
@@ -293,9 +306,14 @@ interface CRHarness {
   summariseService: SpySummariseService;
   stateMachine: SpyStateMachine;
   mapManager: InMemoryMapManager;
+  projectRoot: string;
+  cleanup: () => void;
 }
 
 function makeCRHarness(opts: CRHarnessOpts = {}): CRHarness {
+  const projectRoot = opts.projectRoot ?? mkdtempSync(path.join(tmpdir(), 'parity-cr-'));
+  const cleanup = opts.projectRoot ? () => {} : () => { try { rmSync(projectRoot, { recursive: true, force: true }); } catch {} };
+
   const agentSpy = opts.agentRunner ?? new SpyAgentRunner();
   const dagSpy = new SpyDAGRunnerWrapper(agentSpy);
   const criticAgent = opts.criticAgent ?? new SpyCriticAgent();
@@ -319,10 +337,10 @@ function makeCRHarness(opts: CRHarnessOpts = {}): CRHarness {
     runArtifacts: noopRunArtifacts,
     criticAgent: criticAgent as any,
     scopingService: noopScopingService,
-    projectRoot: '/tmp/parity-test-no-such-dir',
+    projectRoot,
   });
 
-  return { runner, agentSpy, dagSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, stateMachine, mapManager };
+  return { runner, agentSpy, dagSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, stateMachine, mapManager, projectRoot, cleanup };
 }
 
 async function runCR(
@@ -351,9 +369,11 @@ interface WEHarnessOpts {
   execService?: SpyExecService;
   validationGateService?: SpyValidationGateService | SpyStructuralValidationGateService;
   snapshotService?: SpySnapshotService;
+  summariseService?: SpySummariseService;
   confirmAction?: 'approve' | 'revise' | 'halt';
   scopingAction?: 'approve' | 'halt';
   shardingAction?: 'approve' | 'reject' | 'modify';
+  projectRoot?: string;
 }
 
 interface WEHarness {
@@ -365,10 +385,16 @@ interface WEHarness {
   execService: SpyExecService;
   validationGateService: SpyValidationGateService | SpyStructuralValidationGateService;
   snapshotService: SpySnapshotService;
+  summariseService: SpySummariseService;
   mapManager: InMemoryMapManager;
+  projectRoot: string;
+  cleanup: () => void;
 }
 
 function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
+  const projectRoot = opts.projectRoot ?? mkdtempSync(path.join(tmpdir(), 'parity-we-'));
+  const cleanup = opts.projectRoot ? () => {} : () => { try { rmSync(projectRoot, { recursive: true, force: true }); } catch {} };
+
   const agentSpy = opts.agentRunner ?? new SpyAgentRunner();
   const agentStepRunner = new AgentStepRunner(agentSpy as any);
   const criticAgent = opts.criticAgent ?? new SpyCriticAgent();
@@ -376,24 +402,35 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
   const execService = opts.execService ?? new SpyExecService();
   const validationGateService = opts.validationGateService ?? new SpyValidationGateService();
   const snapshotService = opts.snapshotService ?? new SpySnapshotService();
+  const summariseService = opts.summariseService ?? new SpySummariseService();
   const mapManager = new InMemoryMapManager(baseMap(opts.depth ?? 'minimal'));
 
   const confirmAction = opts.confirmAction ?? 'approve';
   const scopingAction = opts.scopingAction ?? 'approve';
   const shardingAction = opts.shardingAction ?? 'approve';
 
+  // SpyScopingService: delegates SCOPING LLM call to agentSpy so SCOPING
+  // still appears in agentSpy.calls (INTENTIONAL_STRUCTURAL_DIFFERENCE vs CR).
+  const scopingService = {
+    begin: async (_cycle: number, _iter: number, state: CycleStateContext) => {
+      await agentSpy.run('SCOPING', state);
+      return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
+    },
+  } as any;
+
   const stepRunner = new FullBuildStepRunner(
     {
       agentStepRunner,
       mapManager,
       runArtifacts: noopRunArtifacts,
-      projectRoot: '/tmp/parity-test-no-such-dir',
+      projectRoot,
       criticAgent: criticAgent as any,
       confirmService: confirmService as any,
       execService: execService as any,
       validationGateService: validationGateService as any,
       snapshotService: snapshotService as any,
-      scopingService: noopScopingService,
+      summariseService: summariseService as any,
+      scopingService,
     },
     {
       onCheckpoint: async (_runId, stepId, _cycle, _iter) => {
@@ -409,7 +446,7 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
     stepRunner,
     mapManager,
     runArtifacts: noopRunArtifacts,
-    projectRoot: '/tmp/parity-test-no-such-dir',
+    projectRoot,
   };
 
   const engineOpts: WorkflowEngineOptions = {
@@ -421,7 +458,7 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
 
   const engine = new WorkflowEngine(deps, engineOpts);
 
-  return { engine, stepRunner, agentSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, mapManager };
+  return { engine, stepRunner, agentSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, mapManager, projectRoot, cleanup };
 }
 
 function makeCycleCtx(depth: PlanningDepth = 'minimal'): CycleStateContext {
@@ -459,11 +496,15 @@ test('parityMinimalDepthBothComplete', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'minimal');
 
-  assert.equal(crResult.completed, true, `CR must complete: ${crResult.error}`);
-  assert.equal(weResult.status, 'complete', `WE must complete: ${weResult.error}`);
+    assert.equal(crResult.completed, true, `CR must complete: ${crResult.error}`);
+    assert.equal(weResult.status, 'complete', `WE must complete: ${weResult.error}`);
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -474,170 +515,193 @@ test('parityCritiqueSkippedAtMinimalDepth', async () => {
   const crH = makeCRHarness({ depth: 'minimal', criticAgent: new SpyCriticAgent() });
   const weH = makeWEHarness({ depth: 'minimal', criticAgent: new SpyCriticAgent() });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  // Neither implementation should call criticAgent at minimal depth.
-  assert.equal(crH.criticAgent.calls, 0, 'CR: no critique at minimal depth');
-  assert.equal(weH.criticAgent.calls, 0, 'WE: no critique at minimal depth');
+    // Neither implementation should call criticAgent at minimal depth.
+    assert.equal(crH.criticAgent.calls, 0, 'CR: no critique at minimal depth');
+    assert.equal(weH.criticAgent.calls, 0, 'WE: no critique at minimal depth');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 test('parityCritiqueRunsAtDeepDepth', async () => {
   const crH = makeCRHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
   const weH = makeWEHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
 
-  await runCR(crH);
-  await runWE(weH, 'deep');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'deep');
 
-  // Both implementations must call criticAgent at deep depth (critique passes on first call).
-  assert.ok(crH.criticAgent.calls > 0, 'CR: critique must run at deep depth');
-  assert.ok(weH.criticAgent.calls > 0, 'WE: critique must run at deep depth');
+    // Both implementations must call criticAgent at deep depth (critique passes on first call).
+    assert.ok(crH.criticAgent.calls > 0, 'CR: critique must run at deep depth');
+    assert.ok(weH.criticAgent.calls > 0, 'WE: critique must run at deep depth');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
-// Scenario 3: Critique retry cap divergence
+// Scenario 3: Critique retry cap — both cap at deep=1 retry (BEHAVIORAL_DIVERGENCE fixed)
 //
 // CycleRunner at deep depth: limit = 1 retry. After 1 failed retry, falls
 // through to PLAN without waiting for a passing critique.
 //
-// WorkflowEngine: no retry cap. on_fail routes back to design until critique
-// passes (potentially infinite).
+// WorkflowEngine (fixed): same cap. executeCritique tracks retries per run,
+// falls through after hitting the limit.
 // ============================================================================
 
 test('parityCritiqueRetryCapDiverges', async () => {
-  // Critic fails twice then passes.
+  // Critic fails twice then passes. With deep cap=1 retry, both should call critique
+  // exactly 2 times (initial call + 1 retry cap), then fall through to PLAN.
   const crCritic = new SpyCriticAgent(2);
   const weCritic = new SpyCriticAgent(2);
 
   const crH = makeCRHarness({ depth: 'deep', criticAgent: crCritic });
   const weH = makeWEHarness({ depth: 'deep', criticAgent: weCritic });
 
-  await runCR(crH);
-  await runWE(weH, 'deep');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'deep');
 
-  // CycleRunner at deep: cap = 1 retry, so critique runs at most 2 times total
-  // (initial run + 1 retry), then falls through to PLAN regardless of pass/fail.
-  const crCritiqueCalls = crH.criticAgent.calls;
+    const crCritiqueCalls = crH.criticAgent.calls;
+    const weCritiqueCalls = weH.criticAgent.calls;
 
-  // WorkflowEngine: no cap, retries until critic passes (3rd call).
-  const weCritiqueCalls = weH.criticAgent.calls;
-
-  // DIVERGES: WE retries until pass (3 calls), CR caps at 2 calls at deep depth.
-  assert.notDeepEqual(
-    crCritiqueCalls,
-    weCritiqueCalls,
-    `DIVERGES: CR critique calls (${crCritiqueCalls}) must differ from WE (${weCritiqueCalls}): ` +
-    `CR has a finite cap, WE loops until pass`,
-  );
-
-  // Specifically: CR should stop after 2 critique calls (1 retry cap at deep),
-  // WE should call critique 3 times (until it passes).
-  assert.equal(crCritiqueCalls, 2, 'CR: exactly 2 critique calls at deep depth with 1-retry cap');
-  assert.equal(weCritiqueCalls, 3, 'WE: exactly 3 critique calls (retries until pass, no cap)');
+    // BEHAVIORAL_DIVERGENCE (fixed): both cap at 2 calls for deep depth.
+    // CR: initial run + 1 retry = 2 total; then falls through to PLAN.
+    // WE: same cap via executeCritique._critiqueRetries logic.
+    assert.equal(crCritiqueCalls, 2, 'CR: exactly 2 critique calls at deep depth with 1-retry cap');
+    assert.equal(weCritiqueCalls, 2, 'WE: exactly 2 critique calls at deep depth with 1-retry cap (parity achieved)');
+    assert.deepEqual(crCritiqueCalls, weCritiqueCalls, 'CR and WE must agree on critique call count');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
 // Scenario 4: HISTORY node — present in CycleRunner trace, absent in engine
+// INTENTIONAL_STRUCTURAL_DIFFERENCE: HISTORY folded into SNAPSHOT via logs_decision:true
 // ============================================================================
 
 test('parityHistoryNodeDiverges', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  const crLlm = crLlmCalls(crH.dagSpy.calls);
-  const weLlm = weH.agentSpy.calls;
+    const crLlm = crLlmCalls(crH.dagSpy.calls);
+    const weLlm = weH.agentSpy.calls;
 
-  // DIVERGES: CycleRunner visits HISTORY (LLM call); WorkflowEngine does not
-  // (HISTORY is folded into SNAPSHOT via logs_decision:true in full-build.ts).
-  assert.ok(
-    crLlm.includes('HISTORY'),
-    `CR must include HISTORY in LLM calls: ${crLlm.join(', ')}`,
-  );
-  assert.ok(
-    !weLlm.includes('HISTORY'),
-    `WE must NOT include HISTORY (folded into SNAPSHOT): ${weLlm.join(', ')}`,
-  );
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: CycleRunner visits HISTORY (LLM call);
+    // WorkflowEngine does not (HISTORY is folded into SNAPSHOT via logs_decision:true).
+    // The folded behavior (writing to docs/decisions.md) is implemented in handleCommit.
+    assert.ok(
+      crLlm.includes('HISTORY'),
+      `CR must include HISTORY in LLM calls: ${crLlm.join(', ')}`,
+    );
+    assert.ok(
+      !weLlm.includes('HISTORY'),
+      `WE must NOT include HISTORY (folded into SNAPSHOT): ${weLlm.join(', ')}`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
 // Scenario 5: SCOPING LLM step — absent in CycleRunner, present in engine
+// INTENTIONAL_STRUCTURAL_DIFFERENCE: DDR-031 decomposes SCOPING into gather→produce→checkpoint
 // ============================================================================
 
 test('parityScopingLlmDiverges', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  const crLlm = crLlmCalls(crH.dagSpy.calls);
-  const weLlm = weH.agentSpy.calls;
+    const crLlm = crLlmCalls(crH.dagSpy.calls);
+    const weLlm = weH.agentSpy.calls;
 
-  // DIVERGES: WorkflowEngine has scoping.produce (agentRole=facilitator → SCOPING LLM call).
-  // CycleRunner handles SCOPING as a pure system node (no LLM invocation).
-  assert.ok(
-    !crLlm.includes('SCOPING'),
-    `CR must NOT have SCOPING as an LLM call: ${crLlm.join(', ')}`,
-  );
-  assert.ok(
-    weLlm.includes('SCOPING'),
-    `WE must include SCOPING as an LLM call (scoping.produce): ${weLlm.join(', ')}`,
-  );
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: WorkflowEngine has scoping.produce which
+    // calls ScopingService.begin() → agentRunner('SCOPING').
+    // CycleRunner handles SCOPING as a pure system node (no LLM invocation via dagSpy).
+    assert.ok(
+      !crLlm.includes('SCOPING'),
+      `CR must NOT have SCOPING as an LLM call: ${crLlm.join(', ')}`,
+    );
+    assert.ok(
+      weLlm.includes('SCOPING'),
+      `WE must include SCOPING as an LLM call (via ScopingService.begin): ${weLlm.join(', ')}`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
-// Scenario 6: SUMMARISE — summariseService (CycleRunner) vs LLM (WorkflowEngine)
+// Scenario 6: SUMMARISE — both use summariseService (BEHAVIORAL_DIVERGENCE fixed)
 // ============================================================================
 
 test('paritySummariseImplementationDiverges', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  const weLlm = weH.agentSpy.calls;
+    const weLlm = weH.agentSpy.calls;
 
-  // DIVERGES: CycleRunner calls summariseService.run() (a service call, not LLM).
-  // WorkflowEngine runs the 'summarise' step as a produce step (historian role →
-  // agentRunner SUMMARISE), i.e. an LLM call.
-  assert.equal(crH.summariseService.calls, 1, 'CR: summariseService.run() must be called once');
-  assert.ok(
-    weLlm.includes('SUMMARISE'),
-    `WE: SUMMARISE must appear as an LLM call: ${weLlm.join(', ')}`,
-  );
-  // Not a symmetric divergence to fix — one or the other approach needs to win.
+    // BEHAVIORAL_DIVERGENCE (fixed): both now call summariseService.run() (deterministic,
+    // no LLM). WorkflowEngine intercepts the 'summarise' produce step to call
+    // this.deps.summariseService.run() instead of agentStepRunner.
+    assert.equal(crH.summariseService.calls, 1, 'CR: summariseService.run() must be called once');
+    assert.equal(weH.summariseService.calls, 1, 'WE: summariseService.run() must be called once (parity achieved)');
+    assert.ok(
+      !weLlm.includes('SUMMARISE'),
+      `WE: SUMMARISE must NOT appear as LLM call (uses summariseService instead): ${weLlm.join(', ')}`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
 // Scenario 7: SNAPSHOT — stateMachine.completeCycle called (CR), absent (WE)
+// INTENTIONAL_STRUCTURAL_DIFFERENCE: DDR-031 removes project-global cycling state
 // ============================================================================
 
 test('paritySnapshotCompleteCycleDiverges', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  // Both must call snapshotService.
-  assert.equal(crH.snapshotService.calls, 1, 'CR: snapshotService must run');
-  assert.equal(weH.snapshotService.calls, 1, 'WE: snapshotService must run');
+    // Both must call snapshotService.
+    assert.equal(crH.snapshotService.calls, 1, 'CR: snapshotService must run');
+    assert.equal(weH.snapshotService.calls, 1, 'WE: snapshotService must run');
 
-  // DIVERGES: CycleRunner calls stateMachine.completeCycle() after SNAPSHOT;
-  // WorkflowEngine (FullBuildStepRunner.handleCommit) does not.
-  assert.equal(crH.stateMachine.completeCycleCalls, 1, 'CR: stateMachine.completeCycle must be called');
-  // WorkflowEngine has no stateMachine injection — completeCycle is never called.
-  // (Verified by absence of call in FullBuildStepRunner.handleCommit.)
-  // This is the DIVERGES assertion: CR=1, WE=0.
-  assert.notDeepEqual(
-    crH.stateMachine.completeCycleCalls,
-    0,
-    'DIVERGES reference: CR calls completeCycle(1) while WE calls it 0 times',
-  );
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: CycleRunner calls stateMachine.completeCycle()
+    // after SNAPSHOT; WorkflowEngine does not (DDR-031 removes project-global cycling state).
+    // Modern equivalent: WorkflowRun.status reaches 'complete'.
+    assert.equal(crH.stateMachine.completeCycleCalls, 1, 'CR: stateMachine.completeCycle must be called');
+    // WE has no stateMachine injection — the modern equivalent is WorkflowRun reaching 'complete'.
+    assert.notDeepEqual(
+      crH.stateMachine.completeCycleCalls,
+      0,
+      'INTENTIONAL_STRUCTURAL_DIFFERENCE: CR calls completeCycle, WE uses WorkflowRun status',
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -648,24 +712,32 @@ test('parityConfirmApproveCompletes', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  const crResult = await runCR(crH, { confirmAction: 'approve' });
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH, { confirmAction: 'approve' });
+    const weResult = await runWE(weH, 'minimal');
 
-  assert.equal(crResult.completed, true, `CR must complete on approve: ${crResult.error}`);
-  assert.equal(weResult.status, 'complete', `WE must complete on approve: ${weResult.error}`);
-  assert.equal(crH.confirmService.gateCalls, 1, 'CR: confirmService.gate must be called');
-  assert.equal(weH.confirmService.gateCalls, 1, 'WE: confirmService.gate must be called');
+    assert.equal(crResult.completed, true, `CR must complete on approve: ${crResult.error}`);
+    assert.equal(weResult.status, 'complete', `WE must complete on approve: ${weResult.error}`);
+    assert.equal(crH.confirmService.gateCalls, 1, 'CR: confirmService.gate must be called');
+    assert.equal(weH.confirmService.gateCalls, 1, 'WE: confirmService.gate must be called');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 test('parityConfirmHaltStops', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal', confirmAction: 'halt' });
 
-  const crResult = await runCR(crH, { confirmAction: 'halt' });
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH, { confirmAction: 'halt' });
+    const weResult = await runWE(weH, 'minimal');
 
-  assert.equal(crResult.completed, false, 'CR: halt must stop the cycle');
-  assert.equal(weResult.status, 'halted', 'WE: halt must halt the engine');
+    assert.equal(crResult.completed, false, 'CR: halt must stop the cycle');
+    assert.equal(weResult.status, 'halted', 'WE: halt must halt the engine');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 test('parityConfirmReviseLoopsToExpectedStep', async () => {
@@ -673,52 +745,50 @@ test('parityConfirmReviseLoopsToExpectedStep', async () => {
   // CycleRunner: confirmService.revise().next_node = 'PLAN' → goes to PLAN DAG node.
   // WorkflowEngine: confirmNodeToStepId('PLAN') = 'plan' → jumps to 'plan' step.
   // After revise, we make the confirm approve so the run completes.
-  let crConfirmCalls = 0;
   const crH = makeCRHarness({ depth: 'minimal' });
-  let weConfirmCalls = 0;
   const weH = makeWEHarness({
     depth: 'minimal',
     confirmAction: 'approve', // after the first revise, approve
   });
 
-  const crResult = await runCR(crH, {
-    confirmAction: 'approve', // confirm approves directly
-  });
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH, {
+      confirmAction: 'approve', // confirm approves directly
+    });
+    const weResult = await runWE(weH, 'minimal');
 
-  // Both complete — this test just verifies they complete after confirm.
-  assert.equal(crResult.completed, true);
-  assert.equal(weResult.status, 'complete');
-  void crConfirmCalls; void weConfirmCalls; // suppress unused warning
+    // Both complete — this test just verifies they complete after confirm.
+    assert.equal(crResult.completed, true);
+    assert.equal(weResult.status, 'complete');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
-// Scenario 9: Confirm approve routing — CycleRunner follows service result,
-// WorkflowEngine ignores it
+// Scenario 9: Confirm approve routing — both use confirmService.approve().next_node
+// BEHAVIORAL_DIVERGENCE (now fixed): WE now uses approve return value
 // ============================================================================
 
-test('parityConfirmApproveRoutingDiverges', () => {
-  // DIVERGES (code-level, not execution): CycleRunner.CONFIRM calls
-  // confirmService.approve() and uses the returned next_node to determine routing:
-  //   const r = await this.deps.confirmService.approve(cycleNumber, iteration);
-  //   currentNode = r.next_node;
-  //
-  // WorkflowEngine.FullBuildStepRunner.executeConfirm ignores the return value of
-  // confirmService.approve() and always advances __next__ (to the build step):
-  //   await this.deps.confirmService.approve(cycleNumber, iteration);
-  //   return { outcome: 'completed', next_step_id: '__next__' };
-  //
-  // Consequence: if confirmService.approve() returns a node other than BUILD
-  // (e.g., 'PLAN' for a re-plan gate), CycleRunner follows it while WorkflowEngine
-  // always proceeds to BUILD. We do NOT run CycleRunner with an unusual approveNext
-  // here because routing to PLAN from CONFIRM creates an infinite loop in CycleRunner.
-  //
-  // Fix: WorkflowEngine.executeConfirm should use confirmService.approve() return value.
-  assert.ok(
-    true,
-    'DIVERGES (code-level): CycleRunner uses confirmService.approve() result for routing; ' +
-    'WorkflowEngine ignores it and always advances __next__',
-  );
+test('parityConfirmApproveRoutingDiverges', async () => {
+  // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now uses confirmService.approve().next_node
+  // via confirmNodeToStepId() for routing (same as CycleRunner).
+  // Verify with approveNext='BUILD' (normal path: both complete).
+  const crH = makeCRHarness({ depth: 'minimal' });
+  const weH = makeWEHarness({ depth: 'minimal' });
+
+  try {
+    const crResult = await runCR(crH, { confirmAction: 'approve' });
+    const weResult = await runWE(weH, 'minimal');
+
+    assert.equal(crResult.completed, true, 'CR: must complete with approveNext=BUILD');
+    assert.equal(weResult.status, 'complete', 'WE: must complete with approveNext=BUILD');
+    // Both call confirmService.approve() exactly once.
+    assert.equal(crH.confirmService.approveCalls, 1, 'CR: approve called once');
+    assert.equal(weH.confirmService.approveCalls, 1, 'WE: approve called once');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -729,11 +799,15 @@ test('parityScopingHaltStops', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal', scopingAction: 'halt' });
 
-  const crResult = await runCR(crH, { scopingAction: 'halt' });
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH, { scopingAction: 'halt' });
+    const weResult = await runWE(weH, 'minimal');
 
-  assert.equal(crResult.completed, false, 'CR: scoping halt must stop run');
-  assert.equal(weResult.status, 'halted', 'WE: scoping halt must halt engine');
+    assert.equal(crResult.completed, false, 'CR: scoping halt must stop run');
+    assert.equal(weResult.status, 'halted', 'WE: scoping halt must halt engine');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -744,21 +818,23 @@ test('parityValidationPassContinues', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'minimal');
 
-  // Both complete and snapshotService was called (meaning pipeline ran to end).
-  assert.equal(crResult.completed, true);
-  assert.equal(weResult.status, 'complete');
-  assert.equal(crH.snapshotService.calls, 1, 'CR: snapshot must run');
-  assert.equal(weH.snapshotService.calls, 1, 'WE: snapshot must run');
+    // Both complete and snapshotService was called (meaning pipeline ran to end).
+    assert.equal(crResult.completed, true);
+    assert.equal(weResult.status, 'complete');
+    assert.equal(crH.snapshotService.calls, 1, 'CR: snapshot must run');
+    assert.equal(weH.snapshotService.calls, 1, 'WE: snapshot must run');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
-// Scenario 12: Validation fail → iteration increment → routing divergence
-//
-// CycleRunner routes DEBUG → PLAN (re-runs the plan+build cycle).
-// WorkflowEngine routes debug → evaluate (skips PLAN and BUILD).
+// Scenario 12: Validation fail → debug → iteration increment → PLAN
+// BEHAVIORAL_DIVERGENCE (now fixed): WE now routes debug → PLAN (same as CR)
 // ============================================================================
 
 test('parityValidationFailRoutingDiverges', async () => {
@@ -769,45 +845,43 @@ test('parityValidationFailRoutingDiverges', async () => {
   const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG });
   const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'minimal');
 
-  assert.equal(crResult.completed, true, `CR must complete after 1 validation failure: ${crResult.error}`);
-  assert.equal(weResult.status, 'complete', `WE must complete after 1 validation failure: ${weResult.error}`);
+    assert.equal(crResult.completed, true, `CR must complete after 1 validation failure: ${crResult.error}`);
+    assert.equal(weResult.status, 'complete', `WE must complete after 1 validation failure: ${weResult.error}`);
 
-  const crLlm = crLlmCalls(crH.dagSpy.calls);
-  const weLlm = weH.agentSpy.calls;
+    const crLlm = crLlmCalls(crH.dagSpy.calls);
+    const weLlm = weH.agentSpy.calls;
 
-  // DIVERGES: CycleRunner routes DEBUG → PLAN, causing PLAN+TEST+BUILD+HISTORY to run again.
-  // WorkflowEngine routes debug → evaluate (next step sequentially), skipping PLAN entirely.
+    // BEHAVIORAL_DIVERGENCE (fixed): WE now routes debug → PLAN (with iteration increment),
+    // matching CycleRunner's behavior. Both run PLAN at least twice.
+    const crPlanCount = crLlm.filter(n => n === 'PLAN').length;
+    const wePlanCount = weLlm.filter(n => n === 'PLAN').length;
 
-  // CycleRunner runs PLAN at least twice (once before and once after DEBUG).
-  const crPlanCount = crLlm.filter(n => n === 'PLAN').length;
-  const wePlanCount = weLlm.filter(n => n === 'PLAN').length;
+    assert.ok(crPlanCount >= 2, `CR: PLAN must run ≥2 times after validation failure+retry, got ${crPlanCount} (calls: ${crLlm})`);
+    assert.ok(wePlanCount >= 2, `WE: PLAN must run ≥2 times after debug→PLAN routing, got ${wePlanCount} (calls: ${weLlm})`);
 
-  assert.ok(crPlanCount >= 2, `CR: PLAN must run ≥2 times after validation failure+retry, got ${crPlanCount} (calls: ${crLlm})`);
-
-  // WorkflowEngine runs PLAN exactly once (before validation; doesn't loop back after debug).
-  assert.equal(wePlanCount, 1, `WE: PLAN must run exactly once (no loop-back), got ${wePlanCount} (calls: ${weLlm})`);
-
-  // Assert divergence explicitly.
-  assert.notDeepEqual(
-    crPlanCount,
-    wePlanCount,
-    `DIVERGES: CR re-runs PLAN after DEBUG (count=${crPlanCount}), WE routes to EVALUATE instead (count=${wePlanCount})`,
-  );
+    // Parity: both run PLAN the same number of times after the validation recovery loop.
+    assert.deepEqual(
+      crPlanCount,
+      wePlanCount,
+      `parity: CR and WE run PLAN the same number of times (CR=${crPlanCount}, WE=${wePlanCount})`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
 // Scenario 13: failure_report propagation — set in CycleRunner cycleState
-// before DEBUG, not in WorkflowEngine
+// before DEBUG; now also set in WorkflowEngine (BEHAVIORAL_DIVERGENCE fixed)
 // ============================================================================
 
 test('parityFailureReportPropagatedInCycleRunner', async () => {
   // We verify that when CycleRunner runs DEBUG, the cycleState.failure_report
   // is populated from the validation gate result.
-  // We intercept this by replacing the dagRunner to capture the state passed to DEBUG.
-
   const capturedDebugStates: CycleStateContext[] = [];
 
   const crH = makeCRHarness({ depth: 'minimal', validationGateService: new SpyValidationGateService(1) });
@@ -819,23 +893,27 @@ test('parityFailureReportPropagatedInCycleRunner', async () => {
     return originalRunNode(nodeId, state);
   };
 
-  await runCR(crH);
+  try {
+    await runCR(crH);
 
-  // MATCHES: CycleRunner sets failure_report in cycleState before calling DEBUG.
-  assert.ok(capturedDebugStates.length >= 1, 'DEBUG must be called at least once');
-  assert.ok(
-    capturedDebugStates[0].failure_report != null,
-    'CR: failure_report must be in cycleState when DEBUG is called',
-  );
-  assert.ok(
-    capturedDebugStates[0].failure_report?.quick_summary === 'BUILD failed',
-    `CR: failure_report.quick_summary must be set, got: ${capturedDebugStates[0].failure_report?.quick_summary}`,
-  );
+    // MATCHES: CycleRunner sets failure_report in cycleState before calling DEBUG.
+    assert.ok(capturedDebugStates.length >= 1, 'DEBUG must be called at least once');
+    assert.ok(
+      capturedDebugStates[0].failure_report != null,
+      'CR: failure_report must be in cycleState when DEBUG is called',
+    );
+    assert.ok(
+      capturedDebugStates[0].failure_report?.quick_summary === 'BUILD failed',
+      `CR: failure_report.quick_summary must be set, got: ${capturedDebugStates[0].failure_report?.quick_summary}`,
+    );
+  } finally {
+    crH.cleanup();
+  }
 });
 
 test('parityFailureReportNotInWorkflowEngineContext', async () => {
-  // WorkflowEngine does NOT propagate failure_report into the StepRunContext
-  // before running the debug step.
+  // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now propagates failure_report
+  // into the StepRunContext before running the debug step.
   const capturedDebugContexts: unknown[] = [];
 
   const weH = makeWEHarness({ depth: 'minimal', validationGateService: new SpyValidationGateService(1) });
@@ -847,70 +925,81 @@ test('parityFailureReportNotInWorkflowEngineContext', async () => {
     return originalAgentRun(nodeId, state);
   };
 
-  await runWE(weH, 'minimal');
+  try {
+    await runWE(weH, 'minimal');
 
-  // DIVERGES: WorkflowEngine does not set failure_report in cycleState for DEBUG.
-  assert.ok(capturedDebugContexts.length >= 1, 'DEBUG must be called at least once in WE');
-  const debugCtx = capturedDebugContexts[0] as CycleStateContext;
-  assert.equal(
-    debugCtx.failure_report,
-    undefined,
-    `DIVERGES: WE does NOT populate failure_report in context before DEBUG (got: ${JSON.stringify(debugCtx.failure_report)})`,
-  );
+    // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now sets _failureReport in
+    // StepRunContext before running debug.
+    assert.ok(capturedDebugContexts.length >= 1, 'DEBUG must be called at least once in WE');
+    const debugCtx = capturedDebugContexts[0] as any;
+    assert.ok(
+      debugCtx._failureReport != null,
+      `WE: _failureReport must be populated in StepRunContext before DEBUG (got: ${JSON.stringify(debugCtx._failureReport)})`,
+    );
+    assert.equal(
+      debugCtx._failureReport?.quick_summary,
+      'BUILD failed',
+      'WE: failure_report.quick_summary must match validation gate failure',
+    );
+  } finally {
+    weH.cleanup();
+  }
 });
 
 // ============================================================================
-// Scenario 14: Structural failure routing — DESIGN (CycleRunner) vs EVALUATE (WorkflowEngine)
+// Scenario 14: Structural failure routing — both route to DESIGN
+// BEHAVIORAL_DIVERGENCE (now fixed): WE now routes debug → DESIGN on structural failure
 // ============================================================================
 
 test('parityStructuralFailureRoutingDiverges', async () => {
-  // Structural failure: CycleRunner routes DEBUG → DESIGN.
-  // WorkflowEngine routes debug → evaluate (__next__).
+  // Structural failure: both CR and WE route DEBUG → DESIGN.
   const crVG = new SpyStructuralValidationGateService(1);
   const weVG = new SpyStructuralValidationGateService(1);
 
   const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG });
   const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  const crLlm = crLlmCalls(crH.dagSpy.calls);
-  const weLlm = weH.agentSpy.calls;
+    const crLlm = crLlmCalls(crH.dagSpy.calls);
+    const weLlm = weH.agentSpy.calls;
 
-  // DIVERGES: CycleRunner routes DEBUG → DESIGN on structural failure.
-  // WorkflowEngine routes debug → evaluate (no structural routing knowledge).
-  const crDesignCount = crLlm.filter(n => n === 'DESIGN').length;
-  const weDesignCount = weLlm.filter(n => n === 'DESIGN').length;
+    // BEHAVIORAL_DIVERGENCE (fixed): WE now routes debug → DESIGN on structural failure.
+    const crDesignCount = crLlm.filter(n => n === 'DESIGN').length;
+    const weDesignCount = weLlm.filter(n => n === 'DESIGN').length;
 
-  // CycleRunner re-runs DESIGN after structural DEBUG (at least 2 times total).
-  assert.ok(
-    crDesignCount >= 2,
-    `CR: DESIGN must run ≥2 times after structural failure (routes DEBUG→DESIGN), got ${crDesignCount}; calls: ${crLlm}`,
-  );
+    // Both re-run DESIGN after structural DEBUG (at least 2 times total).
+    assert.ok(
+      crDesignCount >= 2,
+      `CR: DESIGN must run ≥2 times after structural failure (routes DEBUG→DESIGN), got ${crDesignCount}; calls: ${crLlm}`,
+    );
+    assert.ok(
+      weDesignCount >= 2,
+      `WE: DESIGN must run ≥2 times after structural failure (routes debug→design), got ${weDesignCount}; calls: ${weLlm}`,
+    );
 
-  // WorkflowEngine runs DESIGN exactly once (no loop-back to DESIGN after debug).
-  assert.equal(
-    weDesignCount,
-    1,
-    `WE: DESIGN runs exactly once (no structural routing), got ${weDesignCount}; calls: ${weLlm}`,
-  );
-
-  assert.notDeepEqual(
-    crDesignCount,
-    weDesignCount,
-    `DIVERGES: CR re-runs DESIGN on structural failure (count=${crDesignCount}), WE routes to EVALUATE (count=${weDesignCount})`,
-  );
+    // Parity: both run DESIGN the same number of times.
+    assert.deepEqual(
+      crDesignCount,
+      weDesignCount,
+      `parity: CR and WE run DESIGN the same number of times (CR=${crDesignCount}, WE=${weDesignCount})`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
 // Scenario 15: Iteration cap — both halt when cap exceeded
+// BEHAVIORAL_DIVERGENCE (now fixed): WE now halts when iteration cap exceeded
 // ============================================================================
 
 test('parityIterationCapHalts', async () => {
-  // CycleRunner loops back to PLAN after every DEBUG, eventually hitting the cap.
-  // WorkflowEngine routes debug → evaluate → snapshot without re-running validation,
-  // so it COMPLETES after the first debug cycle rather than looping until the cap.
+  // CycleRunner cap: map.cycle.max_iterations=2.
+  // WE cap: FULL_BUILD.max_iterations=3 (from workflow definition).
+  // Both always-fail validation gates → both will hit their respective caps.
   const crH = makeCRHarness({
     depth: 'minimal',
     maxIterations: 2,
@@ -921,31 +1010,25 @@ test('parityIterationCapHalts', async () => {
     validationGateService: new SpyValidationGateService(Infinity), // always fails
   });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'minimal');
 
-  // CycleRunner loops: PLAN→BUILD→EXEC→VALIDATION_GATE(fail)→DEBUG→PLAN→...
-  // With maxIterations=2, iteration reaches 2 after one DEBUG pass → halt.
-  assert.equal(crResult.completed, false, 'CR: must halt when iteration cap exceeded');
-  assert.ok(
-    crResult.error?.includes('cap') || crResult.final_node === 'DEBUG',
-    `CR: result must reflect cap: error=${crResult.error}, final_node=${crResult.final_node}`,
-  );
+    // Both halt when iteration cap is exceeded.
+    assert.equal(crResult.completed, false, 'CR: must halt when iteration cap exceeded');
+    assert.equal(weResult.status, 'halted', 'WE: must halt when iteration cap exceeded (parity achieved)');
 
-  // DIVERGES: WorkflowEngine routes debug → evaluate → snapshot (no loop back to
-  // validation), so it COMPLETES even though validation always failed. The iteration
-  // cap can never be triggered via normal validation failure in the current engine.
-  assert.equal(
-    weResult.status,
-    'complete',
-    `DIVERGES: WE completes after first debug→evaluate→snapshot cycle (no re-validation loop)`,
-  );
-
-  assert.notDeepEqual(
-    crResult.completed,
-    true,
-    `DIVERGES: CR halts at iteration cap (completed=false), WE completes (status='complete')`,
-  );
+    assert.ok(
+      crResult.error?.includes('cap') || crResult.final_node === 'DEBUG',
+      `CR: result must reflect cap halt: error=${crResult.error}, final_node=${crResult.final_node}`,
+    );
+    assert.ok(
+      weResult.error?.includes('cap'),
+      `WE: result must say cap reached: ${weResult.error}`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -953,22 +1036,26 @@ test('parityIterationCapHalts', async () => {
 // ============================================================================
 
 test('parityNoShardingProposalSkipsBoth', async () => {
-  // No sharding-proposal.yaml exists in projectRoot (/tmp/parity-test-no-such-dir).
+  // No sharding-proposal.yaml exists in projectRoot.
   // FullBuildStepRunner.executeShardingApproval: safeReadFile returns '' → skip.
   // CycleRunner.SHARDING_APPROVAL: safeReadFile returns '' → dagRunner.skipNode.
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'minimal');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'minimal');
 
-  // Both complete (sharding is skipped, not blocking).
-  assert.equal(crResult.completed, true, `CR: must complete when no sharding proposal: ${crResult.error}`);
-  assert.equal(weResult.status, 'complete', `WE: must complete when no sharding proposal: ${weResult.error}`);
+    // Both complete (sharding is skipped, not blocking).
+    assert.equal(crResult.completed, true, `CR: must complete when no sharding proposal: ${crResult.error}`);
+    assert.equal(weResult.status, 'complete', `WE: must complete when no sharding proposal: ${weResult.error}`);
 
-  // CycleRunner: SHARDING_APPROVAL appears as skip:SHARDING_APPROVAL in dagSpy.
-  const crSkipped = crH.dagSpy.calls.includes('skip:SHARDING_APPROVAL');
-  assert.ok(crSkipped, `CR: SHARDING_APPROVAL must be skipped (no proposal): dagCalls=${crH.dagSpy.calls}`);
+    // CycleRunner: SHARDING_APPROVAL appears as skip:SHARDING_APPROVAL in dagSpy.
+    const crSkipped = crH.dagSpy.calls.includes('skip:SHARDING_APPROVAL');
+    assert.ok(crSkipped, `CR: SHARDING_APPROVAL must be skipped (no proposal): dagCalls=${crH.dagSpy.calls}`);
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -980,13 +1067,17 @@ test('parityDeepDepthCritiquePassCompletes', async () => {
   const crH = makeCRHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
   const weH = makeWEHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
 
-  const crResult = await runCR(crH);
-  const weResult = await runWE(weH, 'deep');
+  try {
+    const crResult = await runCR(crH);
+    const weResult = await runWE(weH, 'deep');
 
-  assert.equal(crResult.completed, true, `CR: must complete at deep depth: ${crResult.error}`);
-  assert.equal(weResult.status, 'complete', `WE: must complete at deep depth: ${weResult.error}`);
-  assert.equal(crH.criticAgent.calls, 1, 'CR: critique called once (passes immediately)');
-  assert.equal(weH.criticAgent.calls, 1, 'WE: critique called once (passes immediately)');
+    assert.equal(crResult.completed, true, `CR: must complete at deep depth: ${crResult.error}`);
+    assert.equal(weResult.status, 'complete', `WE: must complete at deep depth: ${weResult.error}`);
+    assert.equal(crH.criticAgent.calls, 1, 'CR: critique called once (passes immediately)');
+    assert.equal(weH.criticAgent.calls, 1, 'WE: critique called once (passes immediately)');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -997,11 +1088,15 @@ test('parityResearchDepthCritiqueRuns', async () => {
   const crH = makeCRHarness({ depth: 'research', criticAgent: new SpyCriticAgent(0) });
   const weH = makeWEHarness({ depth: 'research', criticAgent: new SpyCriticAgent(0) });
 
-  await runCR(crH);
-  await runWE(weH, 'research');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'research');
 
-  assert.ok(crH.criticAgent.calls > 0, 'CR: critique must run at research depth');
-  assert.ok(weH.criticAgent.calls > 0, 'WE: critique must run at research depth');
+    assert.ok(crH.criticAgent.calls > 0, 'CR: critique must run at research depth');
+    assert.ok(weH.criticAgent.calls > 0, 'WE: critique must run at research depth');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });
 
 // ============================================================================
@@ -1012,25 +1107,31 @@ test('parityLlmNodeOrderAtMinimalDepth', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  const crLlm = crLlmCalls(crH.dagSpy.calls);
-  const weLlm = weH.agentSpy.calls;
+    const crLlm = crLlmCalls(crH.dagSpy.calls);
+    const weLlm = weH.agentSpy.calls;
 
-  // Nodes both share (in order): DESIGN, PLAN, TEST, BUILD, EVALUATE.
-  const sharedOrdered = ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'EVALUATE'];
-  for (const node of sharedOrdered) {
-    assert.ok(crLlm.includes(node), `CR must include ${node}: ${crLlm}`);
-    assert.ok(weLlm.includes(node), `WE must include ${node}: ${weLlm}`);
+    // Nodes both share (in order): DESIGN, PLAN, TEST, BUILD, EVALUATE.
+    const sharedOrdered = ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'EVALUATE'];
+    for (const node of sharedOrdered) {
+      assert.ok(crLlm.includes(node), `CR must include ${node}: ${crLlm}`);
+      assert.ok(weLlm.includes(node), `WE must include ${node}: ${weLlm}`);
+    }
+
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: sequences differ — CycleRunner has HISTORY,
+    // WorkflowEngine has SCOPING (LLM call via scoping.produce → ScopingService.begin).
+    // WE does not have SUMMARISE in agentSpy (uses summariseService directly).
+    assert.notDeepEqual(
+      crLlm,
+      weLlm,
+      `INTENTIONAL_STRUCTURAL_DIFFERENCE: LLM call sequences differ.\n  CR: ${crLlm}\n  WE: ${weLlm}`,
+    );
+  } finally {
+    crH.cleanup(); weH.cleanup();
   }
-
-  // DIVERGES: sequences differ — CycleRunner has HISTORY, WorkflowEngine has SCOPING+SUMMARISE.
-  assert.notDeepEqual(
-    crLlm,
-    weLlm,
-    `DIVERGES: LLM call sequences differ.\n  CR: ${crLlm}\n  WE: ${weLlm}`,
-  );
 });
 
 // ============================================================================
@@ -1041,9 +1142,13 @@ test('parityExecServiceCalledByBoth', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
-  await runCR(crH);
-  await runWE(weH, 'minimal');
+  try {
+    await runCR(crH);
+    await runWE(weH, 'minimal');
 
-  assert.equal(crH.execService.calls, 1, 'CR: execService must be called once');
-  assert.equal(weH.execService.calls, 1, 'WE: execService must be called once');
+    assert.equal(crH.execService.calls, 1, 'CR: execService must be called once');
+    assert.equal(weH.execService.calls, 1, 'WE: execService must be called once');
+  } finally {
+    crH.cleanup(); weH.cleanup();
+  }
 });

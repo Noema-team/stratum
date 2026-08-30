@@ -116,7 +116,11 @@ test('testValidationGateHasOnFail', () => {
   const vg = FULL_BUILD.steps.find(s => s.id === 'validation_gate');
   assert.ok(vg?.on_fail, 'validation_gate must have on_fail');
   assert.equal(vg!.on_fail!.target_step_id, 'debug');
-  assert.equal(vg!.on_fail!.iteration_loop, true, 'validation_gate on_fail should set iteration_loop');
+  // iteration_loop removed from on_fail per DDR-031: iteration increment now happens
+  // via the debug step returning _iterate:true after completing (validation recovery).
+  assert.equal(vg!.on_fail!.iteration_loop, undefined, 'iteration_loop must be absent from on_fail (DDR-031)');
+  // on_pass routes to evaluate, skipping debug in the success path.
+  assert.equal(vg!.on_pass?.target_step_id, 'evaluate', 'validation_gate must route to evaluate on pass');
 });
 
 test('testSnapshotLogsDecision', () => {

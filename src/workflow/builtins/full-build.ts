@@ -110,9 +110,12 @@ export const FULL_BUILD: WorkflowDefinition = {
       kind: 'review',
       label: 'VALIDATION_GATE',
       is_iteration_gate: true,
+      // on_pass: jump over debug (which lives between validation_gate and evaluate)
+      on_pass: { target_step_id: 'evaluate' },
       on_fail: {
         target_step_id: 'debug',
-        iteration_loop: true,     // increment iteration counter before routing
+        // iteration_loop removed: iteration increment happens via the debug step
+        // returning _iterate:true after it completes (DDR-031 validation recovery).
       },
     },
 

@@ -6,11 +6,13 @@ import type { CriticAgent } from '../critic-agent.js';
 import type { ConfirmService } from '../confirm-service.js';
 import type { ExecService, ValidationGateService } from '../exec-gate.js';
 import type { SnapshotService } from '../snapshot-service.js';
+import type { SummariseService } from '../summarise-service.js';
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
 import type { ShardingService } from '../sharding-service.js';
 import type { ScopingService } from '../scoping-service.js';
 import type { AgentStepRunner } from './agent-step-runner.js';
+import type { FailureReport } from '../types.js';
 import { updateArtifactEntries } from '../workflow/artifact-utils.js';
 
 // All service dependencies for the full-build workflow's step execution.
@@ -26,6 +28,7 @@ export interface FullBuildStepRunnerDeps {
   execService: ExecService;
   validationGateService: ValidationGateService;
   snapshotService: SnapshotService;
+  summariseService: SummariseService;
   shardingService?: ShardingService;
   scopingService?: ScopingService;
 }
@@ -40,6 +43,9 @@ export interface FullBuildCallbacks {
 // optional kind-override methods so WorkflowEngine has zero knowledge of
 // full-build step IDs, services, or callback contracts.
 export class FullBuildStepRunner implements StepRunner {
+  // Per-run critique retry counts. Keyed by workflowRunId to support concurrent runs.
+  private readonly _critiqueRetries = new Map<string, number>();
+
   constructor(
     private readonly deps: FullBuildStepRunnerDeps,
     private readonly callbacks: FullBuildCallbacks,
@@ -52,6 +58,9 @@ export class FullBuildStepRunner implements StepRunner {
       if (step.id === 'critique') return this.executeCritique(step, ctx);
       if (step.id === 'validation_gate') return this.executeValidationGate(ctx);
     }
+    if (step.id === 'scoping.produce') return this.executeScopingProduce(ctx);
+    if (step.id === 'summarise') return this.executeSummarise(ctx);
+    if (step.id === 'debug') return this.executeDebug(step, ctx);
     return this.deps.agentStepRunner.run(step, ctx);
   }
 
@@ -87,6 +96,18 @@ export class FullBuildStepRunner implements StepRunner {
     await this.markRunning(step.id, cycleNumber, iteration);
     if (step.id === 'snapshot') {
       await this.deps.snapshotService.run(cycleNumber, iteration);
+      if (step.logs_decision) {
+        // Fold former HISTORY step: append decision record to docs/decisions.md.
+        // This is an advisory write; failures are non-fatal.
+        const decisionsPath = path.join(this.deps.projectRoot, 'docs', 'decisions.md');
+        const entry = `\n## Cycle ${cycleNumber}.${iteration} — ${new Date().toISOString()}\n\nCycle completed.\n`;
+        try {
+          await fs.mkdir(path.dirname(decisionsPath), { recursive: true });
+          await fs.appendFile(decisionsPath, entry, 'utf8');
+        } catch {
+          // non-fatal: decisions.md append is advisory
+        }
+      }
     }
     await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: null };
@@ -96,12 +117,17 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async executeCritique(_step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome> {
     const { projectRoot } = this.deps;
-    const { planningDepth } = ctx;
+    const { planningDepth, workflowRunId } = ctx;
     const start = Date.now();
 
     if (!this.deps.criticAgent) {
       throw new Error('CriticAgent is required for the critique step');
     }
+
+    // Critique retry cap: deep = 1 retry, research = 3 retries.
+    // After cap is hit, fall through to PLAN regardless of critique result.
+    const limit = planningDepth === 'deep' ? 1 : planningDepth === 'research' ? 3 : Infinity;
+    const retries = this._critiqueRetries.get(workflowRunId) ?? 0;
 
     const [architecture, requirements, contextSummary, decisions, priorEvaluation] = await Promise.all([
       this.safeReadFile(path.join(projectRoot, 'docs/architecture.md')),
@@ -133,6 +159,23 @@ export class FullBuildStepRunner implements StepRunner {
     // updateArtifactEntries here because executeReview does not call it for review steps.
     await updateArtifactEntries(this.deps.mapManager, written, 'critic');
 
+    if (!result.pass && retries >= limit) {
+      // Retry cap reached: fall through to PLAN regardless.
+      this._critiqueRetries.delete(workflowRunId);
+      return {
+        success: true,
+        artifacts_written: written,
+        tokens_used: 0,
+        duration_ms: Date.now() - start,
+      };
+    }
+
+    if (!result.pass) {
+      this._critiqueRetries.set(workflowRunId, retries + 1);
+    } else {
+      this._critiqueRetries.delete(workflowRunId);
+    }
+
     return {
       success: result.pass,
       artifacts_written: written,
@@ -142,9 +185,10 @@ export class FullBuildStepRunner implements StepRunner {
     };
   }
 
-  private async executeValidationGate(_ctx: StepRunContext): Promise<StepRunOutcome> {
+  private async executeValidationGate(
+    _ctx: StepRunContext,
+  ): Promise<StepRunOutcome & { _failureReport?: FailureReport }> {
     const start = Date.now();
-    // workflowRunId is used as cycleId for the validation gate service.
     const result = await this.deps.validationGateService.run(_ctx.cycleNumber, _ctx.iteration, _ctx.workflowRunId);
     return {
       success: result.passed,
@@ -152,6 +196,65 @@ export class FullBuildStepRunner implements StepRunner {
       tokens_used: 0,
       duration_ms: Date.now() - start,
       error: result.passed ? undefined : (result.failure_report?.quick_summary ?? 'Validation failed'),
+      _failureReport: result.failure_report,
+    };
+  }
+
+  // -- produce helpers -------------------------------------------------------
+
+  private async executeScopingProduce(ctx: StepRunContext): Promise<StepRunOutcome> {
+    if (!this.deps.scopingService) {
+      return this.deps.agentStepRunner.run(
+        { id: 'scoping.produce', kind: 'produce', agentRole: 'facilitator', templateId: 'scoping' },
+        ctx,
+      );
+    }
+    const start = Date.now();
+    const cycleState = (ctx._legacyCycleState ?? {
+      cycle_number: ctx.cycleNumber,
+      iteration: ctx.iteration,
+      planning_depth: ctx.planningDepth,
+      intent: ctx.goal,
+      current_node: 'SCOPING',
+    }) as any;
+    await this.deps.scopingService.begin(ctx.cycleNumber, ctx.iteration, cycleState);
+    return {
+      success: true,
+      artifacts_written: ['docs/cycle-charter.md'],
+      tokens_used: 0,
+      duration_ms: Date.now() - start,
+    };
+  }
+
+  private async executeSummarise(ctx: StepRunContext): Promise<StepRunOutcome> {
+    const start = Date.now();
+    await this.deps.summariseService.run(ctx.cycleNumber, ctx.iteration);
+    return {
+      success: true,
+      artifacts_written: ['docs/cycle-summary.md'],
+      tokens_used: 0,
+      duration_ms: Date.now() - start,
+    };
+  }
+
+  private async executeDebug(
+    step: WorkflowStep,
+    ctx: StepRunContext,
+  ): Promise<StepRunOutcome & { next_step_id?: string; _iterate?: true }> {
+    const start = Date.now();
+    const result = await this.deps.agentStepRunner.run(step, ctx);
+    if (!result.success) {
+      return result;
+    }
+    const failureReport = ctx._failureReport;
+    const hasStructural = failureReport?.failed_categories?.some(c => c.structural) ?? false;
+    return {
+      success: true,
+      artifacts_written: result.artifacts_written,
+      tokens_used: result.tokens_used,
+      duration_ms: Date.now() - start,
+      next_step_id: hasStructural ? 'design' : 'plan',
+      _iterate: true,
     };
   }
 
@@ -168,8 +271,11 @@ export class FullBuildStepRunner implements StepRunner {
       return { outcome: 'completed', next_step_id: this.confirmNodeToStepId(reviseResult.next_node) };
     }
 
-    await this.deps.confirmService.approve(cycleNumber, iteration);
-    return { outcome: 'completed', next_step_id: '__next__' };
+    const approveResult = await this.deps.confirmService.approve(cycleNumber, iteration);
+    return {
+      outcome: 'completed',
+      next_step_id: this.confirmNodeToStepId(approveResult.next_node) ?? '__next__',
+    };
   }
 
   private async executeScopingCheckpoint(
@@ -231,7 +337,7 @@ export class FullBuildStepRunner implements StepRunner {
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
-  // Translate a legacy DAGNodeId from ConfirmService.revise() into a step id.
+  // Translate a legacy DAGNodeId from ConfirmService into a step id.
   private confirmNodeToStepId(nodeId: string | null): string | null {
     if (!nodeId) return null;
     const MAP: Record<string, string> = {

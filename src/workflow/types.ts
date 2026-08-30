@@ -1,4 +1,4 @@
-import type { AgentRole } from '../types.js';
+import type { AgentRole, FailureReport } from '../types.js';
 
 // ============================================================================
 // Step kinds — six generic primitives (DDR-031)
@@ -19,7 +19,8 @@ export interface WorkflowStep {
   agentRole?: AgentRole;
   templateId?: string;
 
-  // review — pass/fail evaluation; routes on failure
+  // review — pass/fail evaluation; explicit routing on pass/fail
+  on_pass?: { target_step_id: string };  // explicit target on pass (default: __next__)
   on_fail?: {
     target_step_id: string;       // must be a 'produce' step in this workflow
     iteration_loop?: boolean;     // increment iteration counter before routing (full-build pattern)
@@ -123,6 +124,10 @@ export interface StepRunOutcome {
   tokens_used: number;
   duration_ms: number;
   error?: string;
+  // Optional routing overrides — produce steps may set these to drive iteration
+  // increment and/or non-sequential routing (e.g. the debug step after validation failure).
+  next_step_id?: string;
+  _iterate?: true;
 }
 
 export interface StepRunner {
@@ -149,4 +154,7 @@ export interface StepRunContext {
   // Optional legacy fields kept for backward-compat adapters that still need
   // them; new adapters should ignore these.
   _legacyCycleState?: Record<string, unknown>;
+  // Failure report from the most-recent validation_gate failure, propagated
+  // into the debug step's context so the debugger can act on it.
+  _failureReport?: FailureReport;
 }
