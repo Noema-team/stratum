@@ -6,7 +6,6 @@ import { mkdtempSync } from 'fs';
 import { promises as realFs } from 'fs';
 import { SnapshotService } from '../src/snapshot-service.js';
 import { SummariseService } from '../src/summarise-service.js';
-import { DAGRunner, nextNode } from '../src/dag-runner.js';
 import { roleForNode } from '../src/agent-runner.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
 import type { CycleStateContext } from '../src/context-manager.js';
@@ -125,58 +124,6 @@ test('roleForNode: SUMMARISE → undefined (daemon-generated, no LLM)', () => {
 
 test('roleForNode: SNAPSHOT → undefined (system node)', () => {
   assert.strictEqual(roleForNode('SNAPSHOT'), undefined);
-});
-
-// ─── nextNode sequence ────────────────────────────────────────────────────────
-
-test('nextNode: EVALUATE → SUMMARISE', () => {
-  assert.strictEqual(nextNode('EVALUATE'), 'SUMMARISE');
-});
-
-test('nextNode: SUMMARISE → SNAPSHOT', () => {
-  assert.strictEqual(nextNode('SUMMARISE'), 'SNAPSHOT');
-});
-
-test('nextNode: SNAPSHOT → null (end of DAG)', () => {
-  assert.strictEqual(nextNode('SNAPSHOT'), null);
-});
-
-// ─── DAGRunner: EVALUATE node ─────────────────────────────────────────────────
-
-test('DAGRunner EVALUATE: advances to SUMMARISE', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'EVALUATE', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/evaluation.md'],
-    tokens_used: 300, duration_ms: 600, raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('EVALUATE', makeCycleState({ current_node: 'EVALUATE' }));
-
-  assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'SUMMARISE');
-});
-
-test('DAGRunner EVALUATE: artifact entries have generator=evaluator', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'EVALUATE', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/evaluation.md'],
-    tokens_used: 200, duration_ms: 400, raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  await dag.runNode('EVALUATE', makeCycleState({ current_node: 'EVALUATE' }));
-
-  const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/evaluation.md');
-  assert.ok(entry);
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'evaluator');
 });
 
 // ─── SummariseService tests ───────────────────────────────────────────────────

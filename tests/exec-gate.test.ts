@@ -5,7 +5,6 @@ import {
   ValidationGateService,
   VALIDATION_REQUIRED_NODES,
 } from '../src/exec-gate.js';
-import { nextNode } from '../src/dag-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { RunManifest, ManifestNodeEntry } from '../src/run-artifacts.js';
 import type { FailureReport } from '../src/types.js';
@@ -166,16 +165,6 @@ class MockRunArtifacts {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
-
-// ─── nextNode sequence ────────────────────────────────────────────────────────
-
-test('nextNode: EXEC → VALIDATION_GATE', () => {
-  assert.strictEqual(nextNode('EXEC'), 'VALIDATION_GATE');
-});
-
-test('nextNode: VALIDATION_GATE → DEBUG', () => {
-  assert.strictEqual(nextNode('VALIDATION_GATE'), 'DEBUG');
-});
 
 // ─── VALIDATION_REQUIRED_NODES ────────────────────────────────────────────────
 

@@ -41,10 +41,9 @@ import path from 'node:path';
 import { WorkflowEngine } from '../src/workflow/engine.js';
 import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
 import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
-import { nextNode } from '../src/dag-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { CycleStateContext } from '../src/context-manager.js';
-import type { AgentRunResult, DAGNodeId } from '../src/agent-runner.js';
+import type { AgentRunResult } from '../src/agent-runner.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/engine.js';
 import type { FailureReport, PlanningDepth } from '../src/types.js';
 
@@ -82,7 +81,7 @@ class SpyAgentRunner {
     this.capturedStates.set(nodeId, existing);
     return {
       success: true,
-      next_node: nextNode(nodeId as DAGNodeId),
+      next_node: null,
       artifacts_written: [],
       tokens_used: 0,
       duration_ms: 1,

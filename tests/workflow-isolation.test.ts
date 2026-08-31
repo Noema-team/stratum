@@ -24,7 +24,7 @@ function collectTsFiles(dir: string): string[] {
   return results;
 }
 
-test('src/workflow/** must not import dag-runner or cycle-runner', () => {
+test('src/workflow/** must not import cycle-runner', () => {
   const files = collectTsFiles(ROOT);
   assert.ok(files.length > 0, 'must find workflow source files');
 
@@ -32,7 +32,6 @@ test('src/workflow/** must not import dag-runner or cycle-runner', () => {
   for (const file of files) {
     const src = readFileSync(file, 'utf8');
     const rel = path.relative(process.cwd(), file);
-    if (/from ['"].*dag-runner/.test(src)) violations.push(`${rel}: imports dag-runner`);
     if (/from ['"].*cycle-runner/.test(src)) violations.push(`${rel}: imports cycle-runner`);
   }
 

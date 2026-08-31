@@ -4,8 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import { AgentRunner, APPEND_ONLY_PATHS, validateOutputPath } from '../src/agent-runner.js';
-import { DAGRunner, nextNode } from '../src/dag-runner.js';
-import type { AgentRunResult, DAGNodeId } from '../src/agent-runner.js';
 import type { CycleStateContext } from '../src/context-manager.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { AssembledContext } from '../src/types.js';
@@ -96,18 +94,6 @@ class MockRunArtifacts {
   public updates: Array<{ node: string; update: Partial<ManifestNodeEntry> }> = [];
   async updateNodeStatus(_cn: number, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>): Promise<void> {
     this.updates.push({ node: nodeId, update });
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-}
-
-class MockAgentRunner {
-  public calls: Array<{ node: string; state: CycleStateContext }> = [];
-  constructor(private result: AgentRunResult | Error) {}
-  async run(node: string, state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push({ node, state });
-    if (this.result instanceof Error) throw this.result;
-    return this.result;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
@@ -217,119 +203,6 @@ test('historian: blocks src/ paths', () => {
 
 test('historian: blocks docs/plan.md', () => {
   assert.strictEqual(validateOutputPath('docs/plan.md', 'historian'), false);
-});
-
-// ─── nextNode sequence: BUILD → HISTORY → EXEC ───────────────────────────────
-
-test('nextNode: BUILD → HISTORY', () => {
-  assert.strictEqual(nextNode('BUILD'), 'HISTORY');
-});
-
-test('nextNode: HISTORY → EXEC', () => {
-  assert.strictEqual(nextNode('HISTORY'), 'EXEC');
-});
-
-// ─── DAGRunner: BUILD node ────────────────────────────────────────────────────
-
-test('DAGRunner BUILD: advances DAG to HISTORY', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts', 'src/lib/util.ts'],
-    tokens_used: 500,
-    duration_ms: 1200,
-    raw_output_path: '.sle/runs/1-1/node-outputs/build.md',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'HISTORY');
-});
-
-test('DAGRunner BUILD: artifact entries have generator=builder', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts'],
-    tokens_used: 400,
-    duration_ms: 900,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'src/index.ts');
-  assert.ok(entry, 'artifact entry should exist for src/index.ts');
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'builder');
-});
-
-test('DAGRunner BUILD: multiple src files written', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts', 'src/lib/db.ts', 'src/routes/api.ts'],
-    tokens_used: 800,
-    duration_ms: 2000,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  assert.deepStrictEqual(result.artifacts_written, ['src/index.ts', 'src/lib/db.ts', 'src/routes/api.ts']);
-  assert.strictEqual(result.node, 'BUILD');
-});
-
-// ─── DAGRunner: HISTORY node ──────────────────────────────────────────────────
-
-test('DAGRunner HISTORY: advances DAG to EXEC', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'HISTORY', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/decisions.md', 'docs/cycle-summary.md'],
-    tokens_used: 200,
-    duration_ms: 400,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
-
-  assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'EXEC');
-});
-
-test('DAGRunner HISTORY: artifact entries have generator=historian', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'HISTORY', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/decisions.md'],
-    tokens_used: 150,
-    duration_ms: 300,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  await dag.runNode('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
-
-  const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/decisions.md');
-  assert.ok(entry, 'artifact entry for decisions.md should exist');
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'historian');
 });
 
 // ─── AgentRunner: append-only behavior for decisions.md ──────────────────────
