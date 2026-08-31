@@ -33,9 +33,9 @@ export interface FullBuildStepRunnerDeps {
 }
 
 export interface FullBuildCallbacks {
-  onCheckpoint: (runId: string, stepId: string, cycleNumber: number, iteration: number) => Promise<'approve' | 'halt'>;
-  onConfirmGate: (cycleNumber: number, iteration: number) => Promise<'approve' | 'revise' | 'halt'>;
-  onShardingGate: (cycleNumber: number, iteration: number) => Promise<'approve' | 'reject' | 'modify'>;
+  onCheckpoint: (workflowRunId: string, stepId: string, iteration: number) => Promise<'approve' | 'halt'>;
+  onConfirmGate: (workflowRunId: string, iteration: number) => Promise<'approve' | 'revise' | 'halt'>;
+  onShardingGate: (workflowRunId: string, iteration: number) => Promise<'approve' | 'reject' | 'modify'>;
 }
 
 // StepRunner implementation for the full-build workflow. Implements the three
@@ -66,45 +66,46 @@ export class FullBuildStepRunner implements StepRunner {
   // -- handleCheckpoint (checkpoint kind) ------------------------------------
 
   async handleCheckpoint(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
-    const { cycleNumber, iteration } = ctx;
-    if (step.id === 'confirm') return this.executeConfirm(cycleNumber, iteration);
-    if (step.id === 'sharding_approval') return this.executeShardingApproval(step, cycleNumber, iteration);
-    if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, cycleNumber, iteration, ctx.workflowRunId);
+    const { workflowRunId, iteration } = ctx;
+    if (step.id === 'confirm') return this.executeConfirm(workflowRunId, iteration);
+    if (step.id === 'sharding_approval') return this.executeShardingApproval(step, workflowRunId, iteration);
+    if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, workflowRunId, iteration);
     // Generic checkpoint fallback.
-    await this.markRunning(step.id, cycleNumber, iteration);
-    const action = await this.callbacks.onCheckpoint(ctx.workflowRunId, step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
+    const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   // -- handleExecute (execute kind) -----------------------------------------
 
   async handleExecute(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
-    const { cycleNumber, iteration } = ctx;
-    await this.markRunning(step.id, cycleNumber, iteration);
-    await this.deps.execService.run(cycleNumber, iteration);
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    const { workflowRunId, iteration } = ctx;
+    await this.markRunning(step.id, workflowRunId, iteration);
+    await this.deps.execService.run(workflowRunId, iteration);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   // -- handleCommit (commit kind) -------------------------------------------
 
   async handleCommit(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
-    const { cycleNumber, iteration } = ctx;
-    await this.markRunning(step.id, cycleNumber, iteration);
+    const { workflowRunId, iteration } = ctx;
+    await this.markRunning(step.id, workflowRunId, iteration);
     if (step.id === 'snapshot') {
-      await this.deps.snapshotService.run(cycleNumber, iteration);
+      await this.deps.snapshotService.run(workflowRunId, iteration);
       if (step.logs_decision) {
         // Fold former HISTORY step: append decision record to docs/decisions.md.
         // This is an advisory write; failures are non-fatal.
         const decisionsPath = path.join(this.deps.projectRoot, 'docs', 'decisions.md');
+        const planningDepth = ctx.workflowParameters?.['planning_depth'] as string | undefined;
         const entry = [
           '',
-          `## Cycle ${cycleNumber}.${iteration} — ${new Date().toISOString()}`,
+          `## ${workflowRunId} / iteration ${iteration} — ${new Date().toISOString()}`,
           '',
           `**Goal:** ${ctx.goal}`,
-          `**Planning depth:** ${ctx.planningDepth}`,
+          ...(planningDepth ? [`**Planning depth:** ${planningDepth}`] : []),
           `**Iteration:** ${iteration}`,
           `**Status:** complete`,
           '',
@@ -117,7 +118,7 @@ export class FullBuildStepRunner implements StepRunner {
         }
       }
     }
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: null };
   }
 
@@ -125,7 +126,8 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async executeCritique(_step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome> {
     const { projectRoot } = this.deps;
-    const { planningDepth, workflowRunId } = ctx;
+    const { workflowRunId } = ctx;
+    const planningDepth = ctx.workflowParameters?.['planning_depth'] as string | undefined;
     const start = Date.now();
 
     if (!this.deps.criticAgent) {
@@ -194,10 +196,10 @@ export class FullBuildStepRunner implements StepRunner {
   }
 
   private async executeValidationGate(
-    _ctx: StepRunContext,
+    ctx: StepRunContext,
   ): Promise<StepRunOutcome> {
     const start = Date.now();
-    const result = await this.deps.validationGateService.run(_ctx.cycleNumber, _ctx.iteration, _ctx.workflowRunId);
+    const result = await this.deps.validationGateService.run(ctx.workflowRunId, ctx.iteration);
     return {
       success: result.passed,
       artifacts_written: [],
@@ -228,7 +230,7 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async executeSummarise(ctx: StepRunContext): Promise<StepRunOutcome> {
     const start = Date.now();
-    await this.deps.summariseService.run(ctx.cycleNumber, ctx.iteration);
+    await this.deps.summariseService.run(ctx.workflowRunId, ctx.iteration);
     return {
       success: true,
       artifacts_written: ['docs/cycle-summary.md'],
@@ -245,7 +247,7 @@ export class FullBuildStepRunner implements StepRunner {
 
     // Load the durable failure report written by ValidationGateService.
     // Inject it into the context so ContextManager can assemble debugger context.
-    const failureReport = await this.deps.runArtifacts.readFailureReport(ctx.cycleNumber, ctx.iteration);
+    const failureReport = await this.deps.runArtifacts.readFailureReport(ctx.workflowRunId, ctx.iteration);
     const debugCtx: StepRunContext = {
       ...ctx,
       ...(failureReport !== null ? { failureReport } : {}),
@@ -268,14 +270,14 @@ export class FullBuildStepRunner implements StepRunner {
 
   // -- checkpoint helpers ---------------------------------------------------
 
-  private async executeConfirm(cycleNumber: number, iteration: number): Promise<StepResult> {
-    await this.deps.confirmService.gate(cycleNumber, iteration);
-    const action = await this.callbacks.onConfirmGate(cycleNumber, iteration);
+  private async executeConfirm(workflowRunId: string, iteration: number): Promise<StepResult> {
+    await this.deps.confirmService.gate(workflowRunId, iteration);
+    const action = await this.callbacks.onConfirmGate(workflowRunId, iteration);
 
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
 
     if (action === 'revise') {
-      const reviseResult = await this.deps.confirmService.revise(cycleNumber, iteration);
+      const reviseResult = await this.deps.confirmService.revise(workflowRunId, iteration);
       return {
         outcome: 'completed',
         next_step_id: this.confirmNodeToStepId(reviseResult.next_node),
@@ -283,7 +285,7 @@ export class FullBuildStepRunner implements StepRunner {
       };
     }
 
-    const approveResult = await this.deps.confirmService.approve(cycleNumber, iteration);
+    const approveResult = await this.deps.confirmService.approve(workflowRunId, iteration);
     return {
       outcome: 'completed',
       next_step_id: this.confirmNodeToStepId(approveResult.next_node) ?? '__next__',
@@ -292,42 +294,41 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async executeScopingCheckpoint(
     step: WorkflowStep,
-    cycleNumber: number,
-    iteration: number,
     workflowRunId: string,
+    iteration: number,
   ): Promise<StepResult> {
     if (!this.deps.scopingService) {
       throw new Error('ScopingService is required for the scoping.checkpoint step');
     }
-    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: true } }));
 
-    const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, cycleNumber, iteration);
+    const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, iteration);
 
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: false } }));
 
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
   private async executeShardingApproval(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
   ): Promise<StepResult> {
     const proposalPath = path.join(this.deps.projectRoot, '.sle', 'sharding-proposal.yaml');
     const proposalContent = await this.safeReadFile(proposalPath);
 
     if (!proposalContent) {
-      await this.skipStep(step, cycleNumber, iteration, 'no_sharding_proposal');
+      await this.skipStep(step, workflowRunId, iteration, 'no_sharding_proposal');
       return { outcome: 'skipped', next_step_id: '__next__', skip_reason: 'no_sharding_proposal' };
     }
 
-    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: true } }));
 
-    const action = await this.callbacks.onShardingGate(cycleNumber, iteration);
+    const action = await this.callbacks.onShardingGate(workflowRunId, iteration);
 
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: false } }));
 
@@ -337,10 +338,10 @@ export class FullBuildStepRunner implements StepRunner {
       }
       const proposal = yaml.load(proposalContent) as any;
       await this.deps.shardingService.createTasksFromProposal(proposal);
-      await this.markComplete(step.id, cycleNumber, iteration, ['.sle/tasks.yaml']);
+      await this.markComplete(step.id, workflowRunId, iteration, ['.sle/tasks.yaml']);
     } else if (action === 'reject') {
       try { await fs.unlink(proposalPath); } catch {}
-      await this.skipStep(step, cycleNumber, iteration, 'user_rejected_sharding');
+      await this.skipStep(step, workflowRunId, iteration, 'user_rejected_sharding');
     } else {
       // modify — loop back to this checkpoint
       return { outcome: 'completed', next_step_id: step.id };
@@ -360,8 +361,8 @@ export class FullBuildStepRunner implements StepRunner {
 
   // -- run artifact helpers -------------------------------------------------
 
-  private async markRunning(stepId: string, cycleNumber: number, iteration: number): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
+  private async markRunning(stepId: string, workflowRunId: string, iteration: number): Promise<void> {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, stepId, {
       status: 'running',
       started_at: new Date().toISOString(),
     });
@@ -369,11 +370,11 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async markComplete(
     stepId: string,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     artifactsWritten: string[],
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, stepId, {
       status: 'complete',
       completed_at: new Date().toISOString(),
       artifacts_written: artifactsWritten,
@@ -382,11 +383,11 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async skipStep(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     reason?: string,
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, step.id, {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
       status: 'skipped',
       completed_at: new Date().toISOString(),
       skip_reason: reason ?? 'condition_not_met',

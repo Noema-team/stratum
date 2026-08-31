@@ -24,10 +24,10 @@ export class SummariseService {
     this.fs = fsModule ?? nodeFsPromises;
   }
 
-  async run(cycleNumber: number, iteration: number): Promise<SummariseResult> {
+  async run(workflowRunId: string, iteration: number): Promise<SummariseResult> {
     const startedAt = new Date().toISOString();
 
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SUMMARISE', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'SUMMARISE', {
       status: 'running',
       started_at: startedAt,
     });
@@ -40,7 +40,8 @@ export class SummariseService {
     }));
 
     const map = await this.mapManager.read();
-    const manifest = await this.runArtifacts.readManifest(cycleNumber, iteration);
+    const manifest = await this.runArtifacts.readManifest(workflowRunId, iteration);
+    const cycleNumber = manifest.cycle_number;
 
     const completedNodes = (map.meta.dag?.completed_nodes ?? []).filter(
       (n) => n !== 'SUMMARISE'
@@ -78,7 +79,7 @@ export class SummariseService {
     await this.fs.writeFile(summaryPath, summaryContent, 'utf-8');
 
     const completedAt = new Date().toISOString();
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SUMMARISE', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'SUMMARISE', {
       status: 'complete',
       completed_at: completedAt,
       artifacts_written: [summaryRelPath],

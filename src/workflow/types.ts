@@ -79,7 +79,8 @@ export interface WorkflowStepContext {
   workItemId?: string;
   iteration: number;
   revision: number;
-  planningDepth: 'minimal' | 'standard' | 'deep' | 'research';
+  // Opaque workflow parameters — full-build reads planning_depth from here.
+  workflowParameters?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -162,10 +163,8 @@ export interface StepRunContext {
   workflowId: string;
   stepId: string;
   role?: AgentRole;
-  cycleNumber: number;
   iteration: number;
   revision: number;
-  planningDepth: 'minimal' | 'standard' | 'deep' | 'research';
   goal: string;
   projectRoot: string;
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).

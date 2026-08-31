@@ -23,7 +23,7 @@ function makeTempDir(): string {
 function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
     workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'evaluate',
-    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    iteration: 1, revision: 0,
     goal: 'Build a widget system', projectRoot: '/test', ...overrides,
   };
 }
@@ -88,13 +88,13 @@ class MockRunArtifacts {
     outcome: 'in_progress', nodes: [],
   };
 
-  async updateNodeStatus(_cn: number, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>): Promise<void> {
+  async updateNodeStatus(_cn: string, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>): Promise<void> {
     this.updates.push({ node: nodeId, update });
   }
-  async finalizeManifest(_cn: number, _it: number, outcome: string): Promise<void> {
+  async finalizeManifest(_cn: string, _it: number, outcome: string): Promise<void> {
     this.finalizedOutcome = outcome;
   }
-  async readManifest(_cn: number, _it: number): Promise<RunManifest> {
+  async readManifest(_cn: string, _it: number): Promise<RunManifest> {
     return JSON.parse(JSON.stringify(this.manifest));
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,7 +120,7 @@ test('SummariseService: returns success=true', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SummariseService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.strictEqual(result.success, true);
 });
@@ -131,7 +131,7 @@ test('SummariseService: writes docs/cycle-summary.md', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SummariseService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.strictEqual(result.summary_path, 'docs/cycle-summary.md');
   const content = await realFs.readFile(join(root, 'docs/cycle-summary.md'), 'utf-8');
@@ -146,7 +146,7 @@ test('SummariseService: summary includes cycle number and intent', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SummariseService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const content = await realFs.readFile(join(root, 'docs/cycle-summary.md'), 'utf-8');
   assert.ok(content.includes('Cycle 1'));
@@ -159,7 +159,7 @@ test('SummariseService: marks SUMMARISE running then complete in manifest', asyn
   const artifacts = new MockRunArtifacts();
   const svc = new SummariseService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const running = artifacts.updates.find((u) => u.node === 'SUMMARISE' && u.update.status === 'running');
   const complete = artifacts.updates.find((u) => u.node === 'SUMMARISE' && u.update.status === 'complete');
@@ -173,7 +173,7 @@ test('SummariseService: advances dag current_node to SNAPSHOT', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SummariseService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag;
@@ -188,7 +188,7 @@ test('SnapshotService: returns success=true', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.strictEqual(result.success, true);
 });
@@ -199,7 +199,7 @@ test('SnapshotService: creates snapshot directory', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const stat = await realFs.stat(result.snapshot_dir);
   assert.ok(stat.isDirectory(), 'snapshot_dir should be a directory');
@@ -211,7 +211,7 @@ test('SnapshotService: writes snapshot.json metadata', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const metaPath = join(result.snapshot_dir, 'snapshot.json');
   const meta: SnapshotMetadata = JSON.parse(await realFs.readFile(metaPath, 'utf-8'));
@@ -228,7 +228,7 @@ test('SnapshotService: snapshot.json includes cycle_id', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const meta: SnapshotMetadata = JSON.parse(
     await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')
@@ -242,7 +242,7 @@ test('SnapshotService: snapshot.json includes locked=true and evaluation_verdict
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const meta: SnapshotMetadata = JSON.parse(
     await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')
@@ -257,7 +257,7 @@ test('SnapshotService: writes .locked sentinel file', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const lockedPath = join(result.snapshot_dir, '.locked');
   const stat = await realFs.stat(lockedPath);
@@ -276,7 +276,7 @@ test('SnapshotService: copies artifact files to snapshot dir', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.deepStrictEqual(result.artifacts_copied.sort(), ['docs/plan.md', 'docs/requirements.md']);
 
@@ -299,7 +299,7 @@ test('SnapshotService: skips missing artifact files gracefully', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   // Only the existing file should be copied
   assert.deepStrictEqual(result.artifacts_copied, ['docs/requirements.md']);
@@ -312,7 +312,7 @@ test('SnapshotService: marks SNAPSHOT running then complete in manifest', async 
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const runningUpdate = artifacts.updates.find((u) => u.node === 'SNAPSHOT' && u.update.status === 'running');
   const completeUpdate = artifacts.updates.find((u) => u.node === 'SNAPSHOT' && u.update.status === 'complete');
@@ -326,7 +326,7 @@ test('SnapshotService: finalizes manifest as complete', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   assert.strictEqual(artifacts.finalizedOutcome, 'complete');
 });
@@ -337,7 +337,7 @@ test('SnapshotService: sets dag current_node to null after completion', async ()
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string | null } }).dag;
@@ -350,7 +350,7 @@ test('SnapshotService: adds SNAPSHOT to completed_nodes', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { completed_nodes: string[] } }).dag;
@@ -364,23 +364,24 @@ test('SnapshotService: returns unique snapshot_id per run', async () => {
   const svc1 = new SnapshotService(mgr1, new MockRunArtifacts() as never, root);
   const svc2 = new SnapshotService(mgr2, new MockRunArtifacts() as never, root);
 
-  const r1 = await svc1.run(1, 1);
-  const r2 = await svc2.run(1, 1);
+  const r1 = await svc1.run('test-run-1', 1);
+  const r2 = await svc2.run('test-run-1', 1);
 
   assert.notStrictEqual(r1.snapshot_id, r2.snapshot_id);
 });
 
-test('SnapshotService: snapshotDir uses v{cycle}.{iteration} pattern', () => {
+test('SnapshotService: snapshotDir uses workflowRunId/iteration pattern', () => {
   const root = '/project';
   const svc = new SnapshotService(
     new InMemoryMapManager() as never,
     new MockRunArtifacts() as never,
     root
   );
-  const dir = svc.snapshotDir(3, 2);
+  const dir = svc.snapshotDir('run-3', 2);
   assert.ok(dir.includes('.sle'));
   assert.ok(dir.includes('snapshots'));
-  assert.ok(dir.includes('v3.2'));
+  assert.ok(dir.includes('run-3'));
+  assert.ok(dir.includes('2'));
 });
 
 test('SnapshotService: snapshot.json lists only successfully copied files', async () => {
@@ -394,7 +395,7 @@ test('SnapshotService: snapshot.json lists only successfully copied files', asyn
   const artifacts = new MockRunArtifacts();
   const svc = new SnapshotService(mgr, artifacts as never, root);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   const meta: SnapshotMetadata = JSON.parse(
     await realFs.readFile(join(result.snapshot_dir, 'snapshot.json'), 'utf-8')

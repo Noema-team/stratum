@@ -121,11 +121,6 @@ function makeStubOpts(onCp: () => Promise<'approve' | 'halt'>): WorkflowEngineOp
   return { onCheckpoint: async () => onCp() };
 }
 
-const DUMMY_CTX: any = {
-  cycle_number: 1, cycle_id: 'c1', iteration: 1, revision: 0,
-  planning_depth: 'minimal', intent: 'T', target: null, project_root: '/tmp',
-};
-
 function makeHaltingAdapter(
   db: ReturnType<typeof openDb>,
   stepLog: string[],
@@ -138,10 +133,9 @@ function makeHaltingAdapter(
     getCapabilities: () => new Set(['repo.read']) as any,
     async execute(req: ExecutionRequest): Promise<ExecutionResult> {
       const engine = new WorkflowEngine(deps, opts);
-      const ctx = { ...DUMMY_CTX, cycle_id: req.workflowRunId, intent: req.goal };
       const startStepId = req.stepId !== '__start__' ? req.stepId : undefined;
       const result = await engine.run(
-        req.workflowId, 1, req.workflowRunId, ctx, startStepId, req.workItemId,
+        req.workflowId, req.workflowRunId, req.goal, startStepId, req.workItemId,
       );
       const isCheckpoint = result.status === 'halted' && !result.error;
       return {
@@ -254,11 +248,11 @@ test('testWrongWorkflowIdCannotAlterExistingRun', async () => {
 
   const engine = new WorkflowEngine(makeStubDeps(repo, stepLog), makeStubOpts(async () => 'halt'));
   // Create a run under HARNESS_WF.
-  await engine.run(HARNESS_WF, 1, 'run-id-wf', DUMMY_CTX, undefined, undefined);
+  await engine.run(HARNESS_WF, 'run-id-wf', 'T', undefined, undefined);
   const original = repo.findById('run-id-wf')!;
 
   // Present the same run_id but a completely different workflowId.
-  const result = await engine.run('wrong-workflow-id', 1, 'run-id-wf', DUMMY_CTX, undefined, undefined);
+  const result = await engine.run('wrong-workflow-id', 'run-id-wf', 'T', undefined, undefined);
   assert.ok(result.error?.includes('Identity mismatch'), `expected identity-mismatch error, got: ${result.error}`);
 
   // Run must be completely unmodified.
@@ -277,12 +271,12 @@ test('testWrongWorkItemIdCannotAlterExistingRun', async () => {
 
   const engine = new WorkflowEngine(makeStubDeps(repo, stepLog), makeStubOpts(async () => 'halt'));
   // Create a run bound to the real workItemId.
-  await engine.run(HARNESS_WF, 1, 'run-id-wi', DUMMY_CTX, undefined, wi.id);
+  await engine.run(HARNESS_WF, 'run-id-wi', 'T', undefined, wi.id);
   const original = repo.findById('run-id-wi')!;
   assert.equal(original.work_item_id, wi.id);
 
   // Present a different workItemId for the same run_id — identity check must reject.
-  const result = await engine.run(HARNESS_WF, 1, 'run-id-wi', DUMMY_CTX, undefined, 'wi-different');
+  const result = await engine.run(HARNESS_WF, 'run-id-wi', 'T', undefined, 'wi-different');
   assert.ok(result.error?.includes('Identity mismatch'), `expected identity-mismatch error, got: ${result.error}`);
 
   // Run must be completely unmodified.
@@ -306,12 +300,12 @@ test('testPersistedCursorCannotBeOverridden', async () => {
     makeStubDeps(repo, stepLog),
     makeStubOpts(async () => 'halt'),
   );
-  await engine.run(HARNESS_WF, 1, 'run-cursor-1', DUMMY_CTX, undefined, undefined);
+  await engine.run(HARNESS_WF, 'run-cursor-1', 'T', undefined, undefined);
   const halted = repo.findById('run-cursor-1')!;
   assert.equal(halted.current_step_id, 'ck');
 
   // Attempt to override cursor to 'snap' (pre-checkpoint step) — must be denied.
-  const result = await engine.run(HARNESS_WF, 1, 'run-cursor-1', DUMMY_CTX, 'snap', undefined);
+  const result = await engine.run(HARNESS_WF, 'run-cursor-1', 'T', 'snap', undefined);
   assert.equal(result.status, 'halted');
   assert.ok(result.error?.includes('Cursor override denied'), `expected override-denied error, got: ${result.error}`);
 
@@ -336,13 +330,13 @@ test('testCompletedRunCannotBeReExecuted', async () => {
     makeStubOpts(async () => 'approve'),
   );
   // Run to completion.
-  const r1 = await engine.run(THREE_STEP_WF, 1, 'run-done-1', DUMMY_CTX);
+  const r1 = await engine.run(THREE_STEP_WF, 'run-done-1', 'T');
   assert.equal(r1.status, 'complete');
 
   const before = [...stepLog];
 
   // Attempt re-execution — must be denied.
-  const r2 = await engine.run(THREE_STEP_WF, 1, 'run-done-1', DUMMY_CTX);
+  const r2 = await engine.run(THREE_STEP_WF, 'run-done-1', 'T');
   assert.equal(r2.status, 'complete');
   assert.ok(r2.error?.includes('already complete'), `expected already-complete error, got: ${r2.error}`);
 
@@ -364,7 +358,7 @@ test('testActiveResumedRunStartsAtPersistedCursor', async () => {
     makeStubDeps(repo, stepLog),
     makeStubOpts(async () => 'halt'),
   );
-  await engine.run(HARNESS_WF, 1, 'run-cursor-resume', DUMMY_CTX);
+  await engine.run(HARNESS_WF, 'run-cursor-resume', 'T');
   const halted = repo.findById('run-cursor-resume')!;
   assert.equal(halted.current_step_id, 'ck');
 
@@ -378,7 +372,7 @@ test('testActiveResumedRunStartsAtPersistedCursor', async () => {
     makeStubDeps(repo, stepLog),
     makeStubOpts(async () => 'approve'),
   );
-  const r = await engine2.run(HARNESS_WF, 1, 'run-cursor-resume', DUMMY_CTX, 'bld');
+  const r = await engine2.run(HARNESS_WF, 'run-cursor-resume', 'T', 'bld');
   assert.equal(r.status, 'complete');
   // Only 'bld' must have executed — 'snap' and 'ck' were already done.
   assert.deepEqual(stepLog, ['bld'], 'only bld must execute on resume from persisted cursor');
@@ -413,7 +407,7 @@ test('testIterationRevisionSurviveResume', async () => {
       const deps = makeStubDeps(repo2, stepLog);
       const engine = new WorkflowEngine(deps, makeStubOpts(async () => 'approve'));
       const r = await engine.run(
-        req.workflowId, 1, req.workflowRunId, DUMMY_CTX, req.stepId, req.workItemId,
+        req.workflowId, req.workflowRunId, req.goal, req.stepId, req.workItemId,
       );
       return {
         schemaVersion: 1,

@@ -49,8 +49,10 @@ export const FULL_BUILD: WorkflowDefinition = {
       id: 'critique',
       kind: 'review',
       label: 'CRITIQUE',
-      skip_if: (ctx) =>
-        ctx.planningDepth !== 'deep' && ctx.planningDepth !== 'research',
+      skip_if: (ctx) => {
+        const d = ctx.workflowParameters?.['planning_depth'] as string | undefined;
+        return d !== 'deep' && d !== 'research';
+      },
       on_fail: { target_step_id: 'design' },
     },
 

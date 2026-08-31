@@ -25,10 +25,10 @@ export class ExecService {
     private runArtifacts: RunArtifactManager
   ) {}
 
-  async run(cycleNumber: number, iteration: number): Promise<ExecResult> {
+  async run(workflowRunId: string, iteration: number): Promise<ExecResult> {
     const projectRoot = (this.mapManager as any).projectRoot || process.cwd();
     const realService = new ExecServiceReal(this.mapManager, this.runArtifacts, projectRoot);
-    return realService.run(cycleNumber, iteration);
+    return realService.run(workflowRunId, iteration);
   }
 }
 
@@ -43,14 +43,13 @@ export class ValidationGateService {
   ) {}
 
   async run(
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
-    cycleId: string
   ): Promise<ValidationGateResult> {
     const startedAt = new Date().toISOString();
-    const runDir = this.runArtifacts.runDir(cycleNumber, iteration);
+    const runDir = this.runArtifacts.runDir(workflowRunId, iteration);
 
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'VALIDATION_GATE', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'VALIDATION_GATE', {
       status: 'running',
       started_at: startedAt,
     });
@@ -223,7 +222,7 @@ export class ValidationGateService {
     });
 
     const completedAt = new Date().toISOString();
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'VALIDATION_GATE', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'VALIDATION_GATE', {
       status: gatePassed ? 'complete' : 'failed',
       completed_at: completedAt,
     });
@@ -231,7 +230,7 @@ export class ValidationGateService {
     // Write manifest.json with outcome and lists
     let updatedManifest: any = {};
     try {
-      const manifest = await this.runArtifacts.readManifest(cycleNumber, iteration);
+      const manifest = await this.runArtifacts.readManifest(workflowRunId, iteration);
       updatedManifest = {
         ...manifest,
         outcome: gatePassed ? 'complete' : 'halted',
@@ -252,8 +251,7 @@ export class ValidationGateService {
     } catch {
       // Manifest not found, construct default
       updatedManifest = {
-        cycle_id: cycleId,
-        cycle_number: cycleNumber,
+        cycle_id: workflowRunId,
         iteration: iteration,
         started_at: startedAt,
         outcome: gatePassed ? 'complete' : 'halted',
@@ -274,10 +272,10 @@ export class ValidationGateService {
     }
 
     const failureReport: FailureReport = {
-      cycle: cycleNumber,
+      cycle: 0,
       iteration,
       run_dir: runDir,
-      run_id: cycleId,
+      run_id: workflowRunId,
       quick_summary: updatedManifest.quick_summary,
       failed_categories: failedCategories.map((cat) => ({
         name: cat,
@@ -288,7 +286,7 @@ export class ValidationGateService {
     };
 
     if (!gatePassed) {
-      await this.runArtifacts.writeFailureReport(cycleNumber, iteration, failureReport);
+      await this.runArtifacts.writeFailureReport(workflowRunId, iteration, failureReport);
       return { passed: false, next_node: null, failed_nodes: failedCategories, failure_report: failureReport };
     }
 

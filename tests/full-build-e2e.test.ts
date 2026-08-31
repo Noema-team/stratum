@@ -117,14 +117,14 @@ class E2EVgsService {
     this.runArtifacts = runArtifacts;
   }
 
-  async run(cn: number, iter: number, _runId: string) {
+  async run(workflowRunId: string, iteration: number) {
     this.calls++;
     if (this.calls > this.failTimes) return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
     const report: FailureReport = {
-      cycle: cn, iteration: iter, run_dir: `.sle/runs/${cn}-${iter}`, run_id: 'r1',
+      cycle: 0, iteration, run_dir: `.sle/runs/${workflowRunId}/${iteration}`, run_id: workflowRunId,
       quick_summary: 'Build failed in e2e test', failed_categories: [], passed_categories: [],
     };
-    await this.runArtifacts.writeFailureReport(cn, iter, report);
+    await this.runArtifacts.writeFailureReport(workflowRunId, iteration, report);
     return { passed: false, next_node: null, failed_nodes: ['BUILD'], failure_report: report };
   }
 }
@@ -247,13 +247,7 @@ test('e2eHappyPathArtifactsReachDisk', async () => {
     const ctx = makeCycleCtx(projectRoot);
     const workflowRunId = ctx.cycle_id as string;
 
-    // Engine never creates the iter-1 run dir on fresh start — pre-create it.
-    await (engine as any).deps.runArtifacts.createRunDir(1, 1);
-    await (engine as any).deps.runArtifacts.createManifest({
-      cycleId: workflowRunId, cycleNumber: 1, iteration: 1, planningDepth: 'minimal',
-    });
-
-    const result = await engine.run('full-build', 1, workflowRunId, ctx);
+    const result = await engine.run('full-build', workflowRunId, 'E2E integration test', undefined, undefined, undefined, { planning_depth: 'minimal' });
 
     assert.equal(result.status, 'complete', `expected complete, got: ${result.status} — ${result.error}`);
 
@@ -313,13 +307,7 @@ test('e2eValidationFailPathDebugRunsWithFailureReport', async () => {
     const ctx = makeCycleCtx(projectRoot);
     const workflowRunId = ctx.cycle_id as string;
 
-    // Pre-create iter-1 run dir — engine creates iter-2 dir automatically on _iterate.
-    await (engine as any).deps.runArtifacts.createRunDir(1, 1);
-    await (engine as any).deps.runArtifacts.createManifest({
-      cycleId: workflowRunId, cycleNumber: 1, iteration: 1, planningDepth: 'minimal',
-    });
-
-    const result = await engine.run('full-build', 1, workflowRunId, ctx);
+    const result = await engine.run('full-build', workflowRunId, 'E2E integration test', undefined, undefined, undefined, { planning_depth: 'minimal' });
 
     assert.equal(result.status, 'complete',
       `expected complete, got: ${result.status} — ${result.error}`);
@@ -328,7 +316,7 @@ test('e2eValidationFailPathDebugRunsWithFailureReport', async () => {
     assert.equal(llm.calls.length, 9, `expected 9 LLM calls, got ${llm.calls.length}`);
 
     // Failure report was written to disk by VGS
-    const report = await runArtifacts.readFailureReport(1, 1);
+    const report = await runArtifacts.readFailureReport(workflowRunId, 1);
     assert.ok(report !== null, 'failure report should exist on disk after VGS failure');
     assert.ok(report!.quick_summary.includes('e2e test'), `unexpected summary: ${report!.quick_summary}`);
 

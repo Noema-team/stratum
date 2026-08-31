@@ -220,7 +220,7 @@ export class AgentRunner {
           max_tokens: this.runnerConfig.max_tokens,
           projectRoot: this.projectRoot,
           role,
-          cycleNumber: ctx.cycleNumber,
+          workflowRunId: ctx.workflowRunId,
           iteration: ctx.iteration,
           nodeId,
           runArtifacts: this.runArtifacts,
@@ -338,14 +338,15 @@ export class AgentRunner {
     nodeId: string,
     content: string
   ): Promise<string> {
-    const { cycleNumber, iteration } = ctx;
+    const { workflowRunId, iteration } = ctx;
     try {
-      await this.runArtifacts.writeNodeOutput(cycleNumber, iteration, nodeId, content);
+      await this.runArtifacts.writeNodeOutput(workflowRunId, iteration, nodeId, content);
       return path.join(
         this.projectRoot,
         '.sle',
         'runs',
-        `${cycleNumber}-${iteration}`,
+        workflowRunId,
+        String(iteration),
         'node-outputs',
         `${nodeId.toLowerCase()}.md`
       );

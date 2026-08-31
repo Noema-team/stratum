@@ -105,20 +105,19 @@ export class CycleService {
     }
 
     const updatedMap = await this.mapManager.read();
-    const cycleNumber = updatedMap.cycle.number;
     const iteration = updatedMap.cycle.iteration;
 
-    await this.runArtifacts.createRunDir(cycleNumber, iteration);
+    await this.runArtifacts.createRunDir(cycleId, iteration);
     await this.runArtifacts.createManifest({
       cycleId,
-      cycleNumber,
+      cycleNumber: updatedMap.cycle.number,
       iteration,
       planningDepth,
     });
 
     return {
       cycle_id: cycleId,
-      cycle_number: cycleNumber,
+      cycle_number: updatedMap.cycle.number,
       planning_depth: updatedMap.cycle.planning_depth,
       intent: params.intent,
       started_at: updatedMap.cycle.started_at!,
@@ -154,9 +153,10 @@ export class CycleService {
   async getCurrentRun(): Promise<RunManifest | null> {
     const map = await this.mapManager.read();
     if (map.meta.status !== 'cycling' && map.meta.status !== 'halted') return null;
-    const { number: cycleNumber, iteration } = map.cycle;
+    const cycleId = map.meta.active_cycle_id;
+    if (!cycleId) return null;
     try {
-      return await this.runArtifacts.readManifest(cycleNumber, iteration);
+      return await this.runArtifacts.readManifest(cycleId, map.cycle.iteration);
     } catch {
       return null;
     }
@@ -172,7 +172,8 @@ export class CycleService {
     }
     const map = await this.mapManager.read();
     try {
-      await this.runArtifacts.finalizeManifest(map.cycle.number, map.cycle.iteration, 'halted');
+      const cycleId = map.meta.active_cycle_id ?? '';
+      await this.runArtifacts.finalizeManifest(cycleId, map.cycle.iteration, 'halted');
     } catch {
       // manifest may not exist if halted before first node
     }
@@ -201,17 +202,18 @@ export class CycleService {
       );
     }
     const map = await this.mapManager.read();
-    const cycleNumber = map.cycle.number;
+    const cycleId = map.meta.active_cycle_id ?? '';
     const iteration = map.cycle.iteration;
 
-    const alreadyExists = await this.runArtifacts.dirExists(cycleNumber, iteration);
+    const alreadyExists = await this.runArtifacts.dirExists(cycleId, iteration);
     if (!alreadyExists) {
-      await this.runArtifacts.createRunDir(cycleNumber, iteration);
+      await this.runArtifacts.createRunDir(cycleId, iteration);
       await this.runArtifacts.createManifest({
-        cycleId: map.meta.active_cycle_id ?? '',
-        cycleNumber,
+        cycleId,
+        cycleNumber: map.cycle.number,
         iteration,
         planningDepth: map.cycle.planning_depth,
+        ifNotExists: true,
       });
     }
   }

@@ -1,7 +1,6 @@
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
 import type { WorkflowRunRepository } from '../storage/repositories.js';
-import type { PlanningDepth } from '../types.js';
 import type {
   CapHitAction,
   WorkflowDefinition,
@@ -37,7 +36,6 @@ export interface WorkflowEngineOptions {
   onCheckpoint: (
     workflowRunId: string,
     stepId: string,
-    cycleNumber: number,
     iteration: number,
   ) => Promise<'approve' | 'halt'>;
   // Called when the iteration cap is reached. Default: halt.
@@ -47,13 +45,6 @@ export interface WorkflowEngineOptions {
     stepId: string,
     iteration: number,
   ) => Promise<CapHitAction>;
-}
-
-const VALID_DEPTHS = new Set<string>(['minimal', 'standard', 'deep', 'research']);
-
-function extractPlanningDepth(params?: Record<string, unknown>): PlanningDepth {
-  const d = params?.['planning_depth'];
-  return (typeof d === 'string' && VALID_DEPTHS.has(d)) ? (d as PlanningDepth) : 'minimal';
 }
 
 // ============================================================================
@@ -94,7 +85,6 @@ export class WorkflowEngine {
 
   async run(
     workflowId: string,
-    cycleNumber: number,
     workflowRunId: string,
     goal: string,
     startStepId?: string,
@@ -156,8 +146,6 @@ export class WorkflowEngine {
       // Restore frozen parameters from the persisted run (not from the caller).
       resolvedParameters = existingRun.resolvedParameters ?? resolvedParameters;
     }
-
-    const planningDepth = extractPlanningDepth(resolvedParameters);
 
     const def = getWorkflow(workflowId);
     if (!def) {
@@ -262,12 +250,10 @@ export class WorkflowEngine {
     if (!existingRun) {
       const stepIds = def.steps.map(s => s.id);
       try {
-        await this.deps.runArtifacts.createRunDir(cycleNumber, iteration);
+        await this.deps.runArtifacts.createRunDir(workflowRunId, iteration);
         await this.deps.runArtifacts.createManifest({
           cycleId: workflowRunId,
-          cycleNumber,
           iteration,
-          planningDepth,
           stepIds,
           ifNotExists: true,
         });
@@ -286,11 +272,11 @@ export class WorkflowEngine {
         workflowId,
         iteration,
         revision,
-        planningDepth,
+        workflowParameters: resolvedParameters,
       };
 
       if (step.skip_if?.(stepCtx)) {
-        await this.skipStep(step, cycleNumber, iteration);
+        await this.skipStep(step, workflowRunId, iteration);
         // Cursor was already pointing to this step; advance to next.
         const nextIndex = stepIndex + 1;
         if (nextIndex < def.steps.length) {
@@ -306,8 +292,8 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const ctx = this.makeStepRunContext(step, cycleNumber, iteration, revision, planningDepth, goal, workflowId, workflowRunId, resolvedParameters);
-      const result = await this.executeStep(step, cycleNumber, iteration, ctx, workflowRunId);
+      const ctx = this.makeStepRunContext(step, workflowRunId, iteration, revision, goal, workflowId, resolvedParameters);
+      const result = await this.executeStep(step, workflowRunId, iteration, ctx);
 
       // Generic revision increment — produced by confirm-revise (and any future step
       // that signals a plan revision without starting a new iteration).
@@ -400,12 +386,10 @@ export class WorkflowEngine {
 
           const stepIds = def.steps.map(s => s.id);
           try {
-            await this.deps.runArtifacts.createRunDir(cycleNumber, iteration);
+            await this.deps.runArtifacts.createRunDir(workflowRunId, iteration);
             await this.deps.runArtifacts.createManifest({
               cycleId: workflowRunId,
-              cycleNumber,
               iteration,
-              planningDepth,
               stepIds,
             });
           } catch {
@@ -471,18 +455,17 @@ export class WorkflowEngine {
 
   private async executeStep(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     switch (step.kind) {
-      case 'gather':     return this.executeGather(step, cycleNumber, iteration);
-      case 'produce':    return this.executeProduce(step, cycleNumber, iteration, ctx, workflowRunId);
-      case 'review':     return this.executeReview(step, cycleNumber, iteration, ctx, workflowRunId);
-      case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, iteration, ctx, workflowRunId);
-      case 'execute':    return this.executeExec(step, cycleNumber, iteration, ctx, workflowRunId);
-      case 'commit':     return this.executeCommit(step, cycleNumber, iteration, ctx, workflowRunId);
+      case 'gather':     return this.executeGather(step, workflowRunId, iteration);
+      case 'produce':    return this.executeProduce(step, workflowRunId, iteration, ctx);
+      case 'review':     return this.executeReview(step, workflowRunId, iteration, ctx);
+      case 'checkpoint': return this.executeCheckpoint(step, workflowRunId, iteration, ctx, workflowRunId);
+      case 'execute':    return this.executeExec(step, workflowRunId, iteration, ctx);
+      case 'commit':     return this.executeCommit(step, workflowRunId, iteration, ctx);
     }
   }
 
@@ -490,11 +473,11 @@ export class WorkflowEngine {
 
   private async executeGather(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
   ): Promise<StepResult> {
-    await this.markRunning(step.id, cycleNumber, iteration);
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markRunning(step.id, workflowRunId, iteration);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -502,18 +485,17 @@ export class WorkflowEngine {
 
   private async executeProduce(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    _workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
-    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
 
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
-      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, step.id, {
+      await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
         status: 'failed',
         completed_at: new Date().toISOString(),
         duration_ms: result.duration_ms,
@@ -521,7 +503,7 @@ export class WorkflowEngine {
       return { outcome: 'failed', next_step_id: null, error: result.error };
     }
 
-    await this.markComplete(step.id, cycleNumber, iteration, result.artifacts_written);
+    await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
     if (result.artifacts_written.length > 0) {
       await updateArtifactEntries(this.deps.mapManager, result.artifacts_written, step.agentRole ?? 'builder');
     }
@@ -546,18 +528,17 @@ export class WorkflowEngine {
 
   private async executeReview(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    _workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
-    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
 
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
-      await this.markComplete(step.id, cycleNumber, iteration, []);
+      await this.markComplete(step.id, workflowRunId, iteration, []);
       return {
         outcome: 'completed',
         next_step_id: step.on_fail?.target_step_id ?? null,
@@ -566,7 +547,7 @@ export class WorkflowEngine {
       };
     }
 
-    await this.markComplete(step.id, cycleNumber, iteration, result.artifacts_written);
+    await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
     const passTarget = step.on_pass?.target_step_id ?? '__next__';
     return { outcome: 'completed', next_step_id: passTarget, duration_ms: Date.now() - start };
   }
@@ -577,18 +558,18 @@ export class WorkflowEngine {
 
   private async executeCheckpoint(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    workflowRunId: string,
+    _runId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCheckpoint) {
       return this.deps.stepRunner.handleCheckpoint(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, iteration);
-    const action = await this.opts.onCheckpoint(workflowRunId, step.id, cycleNumber, iteration);
+    await this.markRunning(step.id, workflowRunId, iteration);
+    const action = await this.opts.onCheckpoint(workflowRunId, step.id, iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -596,16 +577,15 @@ export class WorkflowEngine {
 
   private async executeExec(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    _workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleExecute) {
       return this.deps.stepRunner.handleExecute(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, iteration);
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markRunning(step.id, workflowRunId, iteration);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -613,16 +593,15 @@ export class WorkflowEngine {
 
   private async executeCommit(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     ctx: StepRunContext,
-    _workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCommit) {
       return this.deps.stepRunner.handleCommit(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, iteration);
-    await this.markComplete(step.id, cycleNumber, iteration, []);
+    await this.markRunning(step.id, workflowRunId, iteration);
+    await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: null };
   }
 
@@ -632,19 +611,19 @@ export class WorkflowEngine {
 
   private async skipStep(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     reason?: string,
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, step.id, {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
       status: 'skipped',
       completed_at: new Date().toISOString(),
       skip_reason: reason ?? 'condition_not_met',
     });
   }
 
-  private async markRunning(stepId: string, cycleNumber: number, iteration: number): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
+  private async markRunning(stepId: string, workflowRunId: string, iteration: number): Promise<void> {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, stepId, {
       status: 'running',
       started_at: new Date().toISOString(),
     });
@@ -652,28 +631,24 @@ export class WorkflowEngine {
 
   private async markComplete(
     stepId: string,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     artifactsWritten: string[],
   ): Promise<void> {
-    await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, stepId, {
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, stepId, {
       status: 'complete',
       completed_at: new Date().toISOString(),
       artifacts_written: artifactsWritten,
     });
   }
 
-  // makeStepRunContext receives all fields explicitly — the engine never derives
-  // context from external sources or legacy CycleStateContext.
   private makeStepRunContext(
     step: WorkflowStep,
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     revision: number,
-    planningDepth: PlanningDepth,
     goal: string,
     workflowId: string,
-    workflowRunId: string,
     resolvedParameters?: Record<string, unknown>,
   ): StepRunContext {
     return {
@@ -681,10 +656,8 @@ export class WorkflowEngine {
       workflowId,
       stepId: step.id,
       role: step.agentRole,
-      cycleNumber,
       iteration,
       revision,
-      planningDepth,
       goal,
       projectRoot: this.deps.projectRoot ?? process.cwd(),
       workflowParameters: resolvedParameters,
@@ -739,7 +712,7 @@ export class WorkflowEngine {
     externalMaxIterations?: number,
   ): Promise<WorkflowRunResult | { _route: string } | null> {
     const cap = externalMaxIterations ?? def.max_iterations ?? Infinity;
-    if (iteration < cap) return null;
+    if (iteration <= cap) return null;
 
     const capAction: CapHitAction = this.opts.onCapHit
       ? await this.opts.onCapHit(workflowRunId, stepId, iteration)
@@ -758,7 +731,7 @@ export class WorkflowEngine {
       run_id: workflowRunId,
       status: 'halted',
       final_step_id: stepId,
-      iterations_used: iteration,
+      iterations_used: iteration - 1,
       error: `Iteration cap (${cap}) reached`,
     };
   }

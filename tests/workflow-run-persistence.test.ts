@@ -83,11 +83,6 @@ function makeStubOpts(overrides: Partial<WorkflowEngineOptions> = {}): WorkflowE
   };
 }
 
-const DUMMY_CYCLE_CTX: any = {
-  cycle_number: 1, cycle_id: 'cycle-1',
-  iteration: 1, revision: 0, planning_depth: 'minimal',
-  intent: 'Test', target: null, project_root: '/tmp',
-};
 
 // ============================================================================
 // 1. WorkflowRunRepository — CRUD
@@ -195,7 +190,7 @@ test('testEngineCreatesWorkflowRunRowOnStart', async () => {
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('wf-persist-start', 1, 'run-persist-start', DUMMY_CYCLE_CTX, undefined, undefined);
+  await engine.run('wf-persist-start', 'run-persist-start', 'Test', undefined, undefined);
   const found = repo.findById('run-persist-start');
   assert.ok(found, 'engine must create a WorkflowRun row when run starts');
   assert.equal(found.workflow_id, 'wf-persist-start');
@@ -211,7 +206,7 @@ test('testEngineMarksRunCompleteOnSuccess', async () => {
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  const result = await engine.run('wf-persist-complete', 1, 'run-complete-id', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-persist-complete', 'run-complete-id', 'Test');
   assert.equal(result.status, 'complete');
   const found = repo.findById('run-complete-id')!;
   assert.equal(found.status, 'complete');
@@ -231,7 +226,7 @@ test('testEngineMarksRunHaltedOnStepFailure', async () => {
     } as any,
   });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('wf-persist-fail', 1, 'run-fail-id', DUMMY_CYCLE_CTX);
+  await engine.run('wf-persist-fail', 'run-fail-id', 'Test');
   const found = repo.findById('run-fail-id')!;
   assert.equal(found.status, 'halted');
   assert.equal(found.awaiting_checkpoint, null);
@@ -243,7 +238,7 @@ test('testEngineWorksWithoutRepository', async () => {
   ]));
   // No workflowRunRepository in deps — engine must not throw
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('wf-no-repo', 1, 'run-no-repo', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-no-repo', 'run-no-repo', 'Test');
   assert.equal(result.status, 'complete');
 });
 
@@ -261,7 +256,7 @@ test('testCheckpointHaltSetsAwaitingCheckpoint', async () => {
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const opts = makeStubOpts({ onCheckpoint: async () => 'halt' });
   const engine = new WorkflowEngine(deps, opts);
-  const result = await engine.run('wf-cp-halt', 1, 'run-cp-halt', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-cp-halt', 'run-cp-halt', 'Test');
   assert.equal(result.status, 'halted');
   const found = repo.findById('run-cp-halt')!;
   assert.equal(found.status, 'halted');
@@ -278,7 +273,7 @@ test('testCheckpointApproveDoesNotSetAwaitingCheckpoint', async () => {
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts({ onCheckpoint: async () => 'approve' }));
-  await engine.run('wf-cp-approve', 1, 'run-cp-approve', DUMMY_CYCLE_CTX);
+  await engine.run('wf-cp-approve', 'run-cp-approve', 'Test');
   const found = repo.findById('run-cp-approve')!;
   assert.equal(found.status, 'complete');
   assert.equal(found.awaiting_checkpoint, null);
@@ -299,7 +294,7 @@ test('testResumeFromCheckpointSkipsPriorSteps', async () => {
   });
   const engine = new WorkflowEngine(deps, makeStubOpts());
   // Resume from 'build' — simulates restart after checkpoint was approved
-  await engine.run('wf-resume', 1, 'run-resume', DUMMY_CYCLE_CTX, 'build');
+  await engine.run('wf-resume', 'run-resume', 'Test', 'build');
   assert.ok(!visited.includes('design'), 'design must not run on resume from build');
   assert.ok(visited.includes('build'), 'build must run on resume from build');
 });
@@ -312,8 +307,8 @@ test('testMultipleRunsGetIndependentRows', async () => {
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('wf-multi', 1, 'run-multi-a', DUMMY_CYCLE_CTX);
-  await engine.run('wf-multi', 2, 'run-multi-b', DUMMY_CYCLE_CTX);
+  await engine.run('wf-multi', 'run-multi-a', 'Test');
+  await engine.run('wf-multi', 'run-multi-b', 'Test');
   const a = repo.findById('run-multi-a');
   const b = repo.findById('run-multi-b');
   assert.ok(a && b, 'both runs must have rows');
@@ -331,7 +326,7 @@ test('testRunIdIsPreservedThroughoutLifecycle', async () => {
   ]));
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  const result = await engine.run('wf-identity', 1, 'canonical-run-id', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-identity', 'canonical-run-id', 'Test');
   assert.equal(result.run_id, 'canonical-run-id');
   const found = repo.findById('canonical-run-id')!;
   assert.equal(found.run_id, 'canonical-run-id');
@@ -364,7 +359,7 @@ test('testWorkItemIdPersistedInRow', async () => {
   const deps = makeStubDeps({ workflowRunRepository: repo });
   const engine = new WorkflowEngine(deps, makeStubOpts());
   // NOTE: workItemId is the 6th arg; pass undefined for startStepId
-  await engine.run('wf-wi-link', 1, 'run-wi', DUMMY_CYCLE_CTX, undefined, workItemId);
+  await engine.run('wf-wi-link', 'run-wi', 'Test', undefined, workItemId);
   const found = repo.findById('run-wi')!;
   assert.equal(found.work_item_id, workItemId);
 });
@@ -410,7 +405,7 @@ test('confirmReviseIncrementsRevision', async () => {
   const deps = makeStubDeps({ workflowRunRepository: repo, stepRunner: stepRunner as any });
   const engine = new WorkflowEngine(deps, makeStubOpts());
 
-  const result = await engine.run('wf-revise', 1, 'run-revise', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-revise', 'run-revise', 'Test');
   assert.equal(result.status, 'complete');
 
   // After first revise, an update with revision=1 must exist.
@@ -464,7 +459,7 @@ test('iterationIncrementResetsRevision', async () => {
   const deps = makeStubDeps({ workflowRunRepository: repo, stepRunner: stepRunner as any });
   const engine = new WorkflowEngine(deps, makeStubOpts());
 
-  const result = await engine.run('wf-iter-reset', 1, 'run-iter-reset', DUMMY_CYCLE_CTX);
+  const result = await engine.run('wf-iter-reset', 'run-iter-reset', 'Test');
   assert.equal(result.status, 'complete');
 
   // After confirm revise, an update with revision=1 must exist.

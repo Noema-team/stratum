@@ -127,14 +127,9 @@ function makeTestAdapter(
     async execute(req: ExecutionRequest): Promise<ExecutionResult> {
       const start = Date.now();
       const engine = new WorkflowEngine(deps, opts);
-      const cycleCtx: any = {
-        cycle_number: 1, cycle_id: req.workflowRunId,
-        iteration: 1, revision: 0, planning_depth: 'minimal',
-        intent: req.goal, current_node: null, target: null, project_root: '/tmp',
-      };
       const startStepId = req.stepId !== '__start__' ? req.stepId : undefined;
       const result = await engine.run(
-        req.workflowId, 1, req.workflowRunId, cycleCtx,
+        req.workflowId, req.workflowRunId, req.goal,
         startStepId, req.workItemId,
       );
       const isCheckpoint = result.status === 'halted' && !result.error;

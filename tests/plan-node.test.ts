@@ -22,7 +22,7 @@ function makeTempDir(): string {
 test('testWriteAndReadFailureReport', async () => {
   const root = makeTempDir();
   const ram = new RealRunArtifactManager({ projectRoot: root });
-  await ram.createRunDir(1, 1);
+  await ram.createRunDir('run-1', 1);
 
   const report: FailureReport = {
     cycle: 1,
@@ -36,18 +36,18 @@ test('testWriteAndReadFailureReport', async () => {
     ],
     passed_categories: ['style'],
   };
-  await ram.writeFailureReport(1, 1, report);
+  await ram.writeFailureReport('run-1', 1, report);
 
-  const read = await ram.readFailureReport(1, 1);
+  const read = await ram.readFailureReport('run-1', 1);
   assert.deepStrictEqual(read, report);
 });
 
 test('testReadFailureReportMissingReturnsNull', async () => {
   const root = makeTempDir();
   const ram = new RealRunArtifactManager({ projectRoot: root });
-  await ram.createRunDir(1, 1);
+  await ram.createRunDir('run-1', 1);
 
-  const result = await ram.readFailureReport(1, 1);
+  const result = await ram.readFailureReport('run-1', 1);
   assert.strictEqual(result, null);
 });
 
@@ -74,7 +74,7 @@ test('testFailureContextInContextAssembly', async () => {
 
   const ctx = await cm.assemble('planner', {
     workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
-    cycleNumber: 1, iteration: 2, revision: 0, planningDepth: 'standard',
+    iteration: 2, revision: 0,
     goal: 'Build widgets', projectRoot: root, failureReport: report,
   } as StepRunContext);
 
@@ -90,7 +90,7 @@ test('testNoFailureContextOnIteration1', async () => {
 
   const ctx = await cm.assemble('planner', {
     workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
-    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    iteration: 1, revision: 0,
     goal: 'Build widgets', projectRoot: root, failureReport: {
       cycle: 1, iteration: 0, run_dir: '', run_id: '',
       quick_summary: 'X', failed_categories: ['a'], passed_categories: [],
@@ -117,7 +117,7 @@ test('testPlannerContextExcludesImplementationFiles', async () => {
   const cm = new ContextManager(root, DEFAULT_CONFIG);
   const ctx = await cm.assemble('planner', {
     workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
-    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    iteration: 1, revision: 0,
     goal: 'Build widgets', projectRoot: root,
   } as StepRunContext);
 

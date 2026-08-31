@@ -105,11 +105,11 @@ test('testFullBuildKinds', () => {
 test('testCritiqueHasSkipCondition', () => {
   const critique = FULL_BUILD.steps.find(s => s.id === 'critique');
   assert.ok(critique?.skip_if, 'critique must have a skip_if predicate');
-  const ctx = { runId: 'r', workflowId: 'full-build', iteration: 1, revision: 0, planningDepth: 'minimal' as const };
-  assert.equal(critique!.skip_if!(ctx), true, 'should skip at minimal depth');
-  assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'standard' }), true, 'should skip at standard depth');
-  assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'deep' }), false, 'should NOT skip at deep');
-  assert.equal(critique!.skip_if!({ ...ctx, planningDepth: 'research' }), false, 'should NOT skip at research');
+  const ctx = { workflowRunId: 'r', workflowId: 'full-build', iteration: 1, revision: 0, workflowParameters: { planning_depth: 'minimal' } };
+  assert.equal(critique!.skip_if!(ctx as any), true, 'should skip at minimal depth');
+  assert.equal(critique!.skip_if!({ ...ctx, workflowParameters: { planning_depth: 'standard' } } as any), true, 'should skip at standard depth');
+  assert.equal(critique!.skip_if!({ ...ctx, workflowParameters: { planning_depth: 'deep' } } as any), false, 'should NOT skip at deep');
+  assert.equal(critique!.skip_if!({ ...ctx, workflowParameters: { planning_depth: 'research' } } as any), false, 'should NOT skip at research');
 });
 
 test('testValidationGateHasOnFail', () => {
@@ -197,16 +197,6 @@ function makeSimpleWorkflow(steps: WorkflowDefinition['steps']): WorkflowDefinit
   return { id: 'test-wf', label: 'Test', steps };
 }
 
-const DUMMY_CYCLE_CTX: any = {
-  cycle_number: 1,
-  cycle_id: 'cycle-1',
-  iteration: 1,
-  revision: 0,
-  planning_depth: 'minimal',
-  intent: 'Test',
-  target: null,
-  project_root: '/tmp',
-};
 
 test('testEngineRunsGatherStep', async () => {
   registerWorkflow(makeSimpleWorkflow([
@@ -214,7 +204,7 @@ test('testEngineRunsGatherStep', async () => {
   ]));
 
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  const result = await engine.run('test-wf', 'c1', 'Test');
   assert.equal(result.status, 'complete');
 });
 
@@ -231,7 +221,7 @@ test('testEngineRunsProduceStep', async () => {
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  await engine.run('test-wf', 'c1', 'Test');
   assert.ok(called, 'stepRunner.run should have been called for produce step');
 });
 
@@ -247,7 +237,7 @@ test('testEngineHaltsOnProduceFailure', async () => {
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  const result = await engine.run('test-wf', 'c1', 'Test');
   assert.equal(result.status, 'halted');
   assert.ok(result.error?.includes('agent timeout'));
 });
@@ -267,14 +257,14 @@ test('testEngineSkipsConditionalStep', async () => {
   });
 
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  await engine.run('test-wf', 'c1', 'Test');
   // 'r' is skipped — should not appear in stepRunner calls
   assert.ok(!visited.includes('r'), 'review step should have been skipped');
 });
 
 test('testEngineHaltsForUnknownWorkflow', async () => {
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('definitely-not-registered', 1, 'c1', DUMMY_CYCLE_CTX);
+  const result = await engine.run('definitely-not-registered', 'c1', 'Test');
   assert.equal(result.status, 'halted');
   assert.ok(result.error?.includes('Unknown workflow'));
 });
@@ -287,7 +277,7 @@ test('testCheckpointHaltsPropagates', async () => {
 
   const opts = makeStubOpts({ onCheckpoint: async () => 'halt' });
   const engine = new WorkflowEngine(makeStubDeps(), opts);
-  const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  const result = await engine.run('test-wf', 'c1', 'Test');
   assert.equal(result.status, 'halted');
   assert.equal(result.final_step_id, 'cp');
 });
@@ -301,13 +291,13 @@ test('testEngineResultRunIdMatchesSuppliedId', async () => {
     { id: 'p', kind: 'produce', agentRole: 'designer' },
   ]));
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('test-wf', 1, 'supplied-run-id-abc', DUMMY_CYCLE_CTX);
+  const result = await engine.run('test-wf', 'supplied-run-id-abc', 'Test');
   assert.equal(result.run_id, 'supplied-run-id-abc', 'result.run_id must echo caller-supplied ID');
 });
 
 test('testEngineErrorResultRunIdMatchesSuppliedId', async () => {
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('no-such-workflow', 1, 'canonical-xyz', DUMMY_CYCLE_CTX);
+  const result = await engine.run('no-such-workflow', 'canonical-xyz', 'Test');
   assert.equal(result.run_id, 'canonical-xyz', 'error result must return caller-supplied ID, not a fresh UUID');
 });
 
@@ -316,7 +306,7 @@ test('testEngineBadStartStepRunIdMatchesSuppliedId', async () => {
     { id: 'only-step', kind: 'produce', agentRole: 'designer' },
   ]));
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const result = await engine.run('test-wf', 1, 'run-bad-step', DUMMY_CYCLE_CTX, 'nonexistent-step');
+  const result = await engine.run('test-wf', 'run-bad-step', 'Test', 'nonexistent-step');
   assert.equal(result.run_id, 'run-bad-step', 'bad startStepId error must return caller-supplied ID');
 });
 
@@ -334,7 +324,7 @@ test('testStepRunContextReceivesCanonicalWorkflowRunId', async () => {
     } as any,
   });
   const engine = new WorkflowEngine(deps, makeStubOpts());
-  await engine.run('test-wf', 1, 'ctx-test-run-id', DUMMY_CYCLE_CTX);
+  await engine.run('test-wf', 'ctx-test-run-id', 'Test');
   assert.equal(capturedIds.length, 1);
   assert.equal(capturedIds[0], 'ctx-test-run-id', 'StepRunContext.workflowRunId must equal caller-supplied ID');
 });
@@ -348,7 +338,7 @@ test('testCheckpointCallbackReceivesCanonicalWorkflowRunId', async () => {
     onCheckpoint: async (runId) => { capturedRunIds.push(runId); return 'approve'; },
   });
   const engine = new WorkflowEngine(makeStubDeps(), opts);
-  await engine.run('test-wf', 1, 'checkpoint-run-id', DUMMY_CYCLE_CTX);
+  await engine.run('test-wf', 'checkpoint-run-id', 'Test');
   assert.equal(capturedRunIds.length, 1);
   assert.equal(capturedRunIds[0], 'checkpoint-run-id', 'onCheckpoint must receive canonical workflowRunId');
 });
@@ -358,8 +348,8 @@ test('testTwoRunsProduceDifferentRunIds', async () => {
     { id: 'p', kind: 'produce', agentRole: 'designer' },
   ]));
   const engine = new WorkflowEngine(makeStubDeps(), makeStubOpts());
-  const r1 = await engine.run('test-wf', 1, 'run-id-first', DUMMY_CYCLE_CTX);
-  const r2 = await engine.run('test-wf', 1, 'run-id-second', DUMMY_CYCLE_CTX);
+  const r1 = await engine.run('test-wf', 'run-id-first', 'Test');
+  const r2 = await engine.run('test-wf', 'run-id-second', 'Test');
   assert.equal(r1.run_id, 'run-id-first');
   assert.equal(r2.run_id, 'run-id-second');
   assert.notEqual(r1.run_id, r2.run_id, 'two separate runs with distinct supplied IDs must not share a run_id');
@@ -381,7 +371,7 @@ test('testConfirmCheckpointApproveAdvances', async () => {
 
   // Generic onCheckpoint 'approve' advances through all checkpoints, including 'confirm'.
   const engine = new WorkflowEngine(deps, makeStubOpts({ onCheckpoint: async () => 'approve' }));
-  const result = await engine.run('test-wf', 1, 'c1', DUMMY_CYCLE_CTX);
+  const result = await engine.run('test-wf', 'c1', 'Test');
   assert.equal(result.status, 'complete');
   assert.ok(visited.some(v => v === 'build'), 'build step should have run after CONFIRM approval');
 });

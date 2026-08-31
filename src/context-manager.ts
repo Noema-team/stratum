@@ -198,10 +198,10 @@ const FACILITATOR_SCOPING_SLICES: SliceDef[] = [
 // ─── Dynamic Slice Resolution ─────────────────────────────────────────────────
 
 function getRoleSlices(role: AgentRole, ctx: StepRunContext): SliceDef[] {
-  const depth = ctx.planningDepth;
+  const depth = ctx.workflowParameters?.['planning_depth'] as string | undefined;
 
   function filterDepth(slices: SliceDef[]): SliceDef[] {
-    return slices.filter(s => !s.requires_depth || meetsDepth(s.requires_depth, depth));
+    return slices.filter(s => !s.requires_depth || (depth !== undefined && meetsDepth(s.requires_depth, depth as import('./types.js').PlanningDepth)));
   }
 
   switch (role) {
@@ -441,11 +441,12 @@ export class ContextManager {
   // ─── Component 3: State summary ────────────────────────────────────────────
 
   private buildStateSummary(ctx: StepRunContext): string {
+    const planningDepth = ctx.workflowParameters?.['planning_depth'] as string | undefined;
     const lines = [
       '## Current State',
-      `- Cycle: ${ctx.cycleNumber}`,
+      `- Run: ${ctx.workflowRunId}`,
       `- Iteration: ${ctx.iteration}`,
-      `- Planning depth: ${ctx.planningDepth}`,
+      ...(planningDepth ? [`- Planning depth: ${planningDepth}`] : []),
       `- Step: ${ctx.stepId ?? 'not started'}`,
       `- Intent: "${ctx.goal}"`,
     ];

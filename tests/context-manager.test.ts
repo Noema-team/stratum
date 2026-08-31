@@ -31,10 +31,9 @@ function baseState(overrides: Partial<StepRunContext> = {}): StepRunContext {
     workflowRunId: 'test-run-1',
     workflowId: 'full-build',
     stepId: 'DESIGN',
-    cycleNumber: 1,
     iteration: 1,
     revision: 0,
-    planningDepth: 'standard',
+    workflowParameters: { planning_depth: 'standard' },
     goal: 'Build a widget',
     projectRoot: ROOT,
     ...overrides,
@@ -48,7 +47,7 @@ test('testStateSummaryContainsAllFields', async () => {
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble('designer', baseState());
 
-  assert.ok(result.state_summary.includes('Cycle: 1'), 'cycle_number missing');
+  assert.ok(result.state_summary.includes('Run: test-run-1'), 'workflowRunId missing');
   assert.ok(result.state_summary.includes('Iteration: 1'), 'iteration missing');
   assert.ok(result.state_summary.includes('standard'), 'planning_depth missing');
   assert.ok(result.state_summary.includes('DESIGN'), 'current_node missing');
@@ -256,7 +255,7 @@ test('testBuilderRoleLoadsArtifactsAtDeepDepth', async () => {
     [docPath('build-plan')]: '# Build Plan',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', planningDepth: 'deep' }));
+  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', workflowParameters: { planning_depth: 'deep' } }));
 
   assert.ok('requirements' in result.artifact_slices, 'requirements missing');
   assert.ok('architecture' in result.artifact_slices, 'architecture missing');
@@ -273,7 +272,7 @@ test('testBuilderExcludesPlanAtStandardDepth', async () => {
     [docPath('plan')]: '# Plan — should not appear',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', planningDepth: 'standard' }));
+  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', workflowParameters: { planning_depth: 'standard' } }));
 
   assert.ok('requirements' in result.artifact_slices);
   assert.ok('architecture' in result.artifact_slices);

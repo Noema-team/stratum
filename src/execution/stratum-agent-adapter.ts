@@ -46,23 +46,24 @@ export class StratumAgentAdapter implements ExecutionAdapter {
     const params = validateFullBuildParams(rawParams);
 
     // Per-request cap-hit behavior overrides the injected engineOpts when specified.
-    const mergedOpts: WorkflowEngineOptions = params.on_cap_hit
-      ? {
-          ...this.engineOpts,
-          onCapHit: async () => fullBuildCapHitAction(params.on_cap_hit),
-        }
-      : this.engineOpts;
+    const mergedOpts: WorkflowEngineOptions = {
+      ...this.engineOpts,
+      onCapHit: async () => fullBuildCapHitAction(params.on_cap_hit),
+    };
+
+    // Persist normalized params (with all defaults filled) so resume reads
+    // the same values regardless of any later WorkItem.workflowParameters change.
+    const normalizedParams: Record<string, unknown> = { ...params };
 
     const engine = new WorkflowEngine(this.engineDeps, mergedOpts);
     const result = await engine.run(
       request.workflowId,
-      1,
       request.workflowRunId,
       request.goal,
       entryStepId,
       request.workItemId,
       params.max_iterations,
-      rawParams,
+      normalizedParams,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —

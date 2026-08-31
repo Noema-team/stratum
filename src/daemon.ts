@@ -166,9 +166,9 @@ export class DaemonServer {
         const map = await this.deps.cycleService.getCurrent();
         if (data.gate === 'CONFIRM') {
           if (data.decision === 'approve') {
-            await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+            await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
           } else if (data.decision === 'revise') {
-            await this.deps.confirmService.revise(map.cycle_number, map.iteration, data.message);
+            await this.deps.confirmService.revise(map.cycle_id ?? '', map.iteration, data.message);
           } else {
             await this.deps.cycleService.halt();
           }
@@ -615,14 +615,13 @@ export class DaemonServer {
         const result = await this.deps.cycleService.start(parsed.data as any);
         try {
           await this.deps.scopingService.begin({
-            workflowRunId: `daemon-${result.cycle_number}-1`,
+            workflowRunId: result.cycle_id,
             workflowId: 'full-build',
             stepId: 'scoping.produce',
             role: 'facilitator' as const,
-            cycleNumber: result.cycle_number,
             iteration: 1,
             revision: 0,
-            planningDepth: result.planning_depth,
+            workflowParameters: { planning_depth: result.planning_depth },
             goal: result.intent,
             projectRoot: this.config.projectRoot ?? process.cwd(),
           });
@@ -740,14 +739,13 @@ export class DaemonServer {
         await this.deps.scopingService.submitResponse(
           params.text ?? '',
           {
-            workflowRunId: `daemon-${cycle.cycle_number}-${cycle.iteration}`,
+            workflowRunId: cycle.cycle_id ?? '',
             workflowId: 'full-build',
             stepId: 'scoping.produce',
             role: 'facilitator' as const,
-            cycleNumber: cycle.cycle_number,
             iteration: cycle.iteration,
             revision: 0,
-            planningDepth: cycle.planning_depth,
+            workflowParameters: { planning_depth: cycle.planning_depth },
             goal: cycle.intent ?? '',
             projectRoot: this.config.projectRoot ?? process.cwd(),
             facilitatorMode: 'scoping' as const,
@@ -787,7 +785,7 @@ export class DaemonServer {
     if (pathName === '/api/v2/cycles/current/approve' && method === 'POST') {
       try {
         const map = await this.deps.cycleService.getCurrent();
-        const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+        const result = await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
         this.sendResponse(res, {
           ok: true,
           data: result,
@@ -805,7 +803,7 @@ export class DaemonServer {
         const body = (await this.parseBody(req)) as { note?: string };
         const map = await this.deps.cycleService.getCurrent();
         const result = await this.deps.confirmService.revise(
-          map.cycle_number,
+          map.cycle_id ?? '',
           map.iteration,
           body.note
         );
@@ -838,7 +836,7 @@ export class DaemonServer {
         const action = parsed.data.action;
         const map = await this.deps.cycleService.getCurrent();
         if (action === 'approve') {
-          const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+          const result = await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
           this.sendResponse(res, {
             ok: true,
             data: result,
@@ -846,7 +844,7 @@ export class DaemonServer {
           });
         } else if (action === 'revise') {
           const result = await this.deps.confirmService.revise(
-            map.cycle_number,
+            map.cycle_id ?? '',
             map.iteration,
             parsed.data.note
           );

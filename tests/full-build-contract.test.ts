@@ -62,11 +62,11 @@ class SpyRunArtifacts {
       planning_depth: 'standard', started_at: '', outcome: 'in_progress' as const, nodes: [],
     };
   }
-  async writeFailureReport(cycleNumber: number, iteration: number, report: FailureReport): Promise<void> {
-    this.reports.set(`${cycleNumber}-${iteration}`, report);
+  async writeFailureReport(workflowRunId: string, iteration: number, report: FailureReport): Promise<void> {
+    this.reports.set(`${workflowRunId}-${iteration}`, report);
   }
-  async readFailureReport(cycleNumber: number, iteration: number): Promise<FailureReport | null> {
-    return this.reports.get(`${cycleNumber}-${iteration}`) ?? null;
+  async readFailureReport(workflowRunId: string, iteration: number): Promise<FailureReport | null> {
+    return this.reports.get(`${workflowRunId}-${iteration}`) ?? null;
   }
   [key: string]: unknown;
 }
@@ -128,16 +128,16 @@ class SpyValidationGateService {
     this.failTimes = failTimes;
     this.runArtifacts = runArtifacts;
   }
-  async run(cycleNumber: number, iteration: number, _id: string) {
+  async run(workflowRunId: string, iteration: number) {
     this.calls++;
     if (this.calls > this.failTimes) return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
     const report: FailureReport = {
-      cycle: 1, iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
+      cycle: 0, iteration, run_dir: `.sle/runs/${workflowRunId}/1`, run_id: workflowRunId,
       quick_summary: 'BUILD failed',
       failed_categories: [{ name: 'BUILD', method: 'executable', error_summary: 'Node BUILD failed' }],
       passed_categories: [],
     };
-    await this.runArtifacts?.writeFailureReport(cycleNumber, iteration, report);
+    await this.runArtifacts?.writeFailureReport(workflowRunId, iteration, report);
     return { passed: false, next_node: null, failed_nodes: ['BUILD'], failure_report: report };
   }
   [key: string]: unknown;
@@ -151,16 +151,16 @@ class SpyStructuralValidationGateService {
     this.failTimes = failTimes;
     this.runArtifacts = runArtifacts;
   }
-  async run(cycleNumber: number, iteration: number, _id: string) {
+  async run(workflowRunId: string, iteration: number) {
     this.calls++;
     if (this.calls > this.failTimes) return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
     const report: FailureReport = {
-      cycle: 1, iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
+      cycle: 0, iteration, run_dir: `.sle/runs/${workflowRunId}/1`, run_id: workflowRunId,
       quick_summary: 'Structural failure',
       failed_categories: [{ name: 'DESIGN', method: 'executable' as const, error_summary: 'Arch violation', structural: true }],
       passed_categories: [],
     };
-    await this.runArtifacts?.writeFailureReport(cycleNumber, iteration, report);
+    await this.runArtifacts?.writeFailureReport(workflowRunId, iteration, report);
     return { passed: false, next_node: null, failed_nodes: ['DESIGN'], failure_report: report };
   }
   [key: string]: unknown;
@@ -335,7 +335,7 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
 }
 
 async function run(h: Harness, depth: PlanningDepth = 'minimal', maxIterations?: number) {
-  return h.engine.run('full-build', 1, 'contract-run-1', 'contract test', undefined, undefined, maxIterations, { planning_depth: depth });
+  return h.engine.run('full-build', 'contract-run-1', 'contract test', undefined, undefined, maxIterations, { planning_depth: depth });
 }
 
 // ============================================================================
@@ -388,7 +388,7 @@ test('contractDecisionsmdHasRealContent', async () => {
     assert.ok(content.includes('minimal'), 'decisions.md must contain planning depth');
     assert.ok(content.includes('**Iteration:** 1'), 'decisions.md must contain iteration');
     assert.ok(content.includes('**Status:** complete'), 'decisions.md must contain status');
-    assert.ok(content.includes('## Cycle 1.1'), 'decisions.md must contain cycle header');
+    assert.ok(content.includes('contract-run-1'), 'decisions.md must contain run id');
   } finally {
     h.cleanup();
   }
@@ -653,7 +653,7 @@ test('contractShardingApproveCreatesTasks', async () => {
 
     const ss = new SpyShardingService();
     const h = makeHarness({ projectRoot, shardingAction: 'approve', shardingService: ss });
-    const result = await h.engine.run('full-build', 1, 'contract-shard-run', 'contract test');
+    const result = await h.engine.run('full-build', 'contract-shard-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after sharding approve: ${result.error}`);
     assert.equal(ss.createCalls, 1, 'shardingService.createTasksFromProposal must be called once');
@@ -675,7 +675,7 @@ test('contractShardingRejectDeletesProposal', async () => {
     writeFileSync(proposalPath, 'shards:\n  - id: shard-1\n');
 
     const h = makeHarness({ projectRoot, shardingAction: 'reject' });
-    const result = await h.engine.run('full-build', 1, 'contract-reject-run', 'contract test');
+    const result = await h.engine.run('full-build', 'contract-reject-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after sharding reject: ${result.error}`);
     assert.equal(h.shardingService.createCalls, 0, 'shardingService must not be called on reject');
@@ -711,7 +711,7 @@ test('contractShardingModifyLoopsToApprove', async () => {
         return shardingCalls <= 2 ? 'modify' : 'approve';
       },
     });
-    const result = await h.engine.run('full-build', 1, 'contract-modify-run', 'contract test');
+    const result = await h.engine.run('full-build', 'contract-modify-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after modify×2+approve: ${result.error}`);
     assert.equal(shardingCalls, 3, 'sharding gate must be called 3 times (modify, modify, approve)');

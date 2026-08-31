@@ -13,15 +13,15 @@ class InMemoryRunArtifactManager implements RunArtifactManager {
   private manifests = new Map<string, RunManifest>();
   private packs = new Map<string, ContextPack>();
 
-  private key(c: number, i: number): string { return `${c}-${i}`; }
+  private key(c: string, i: number): string { return `${c}-${i}`; }
 
-  runDir(c: number, i: number): string { return `.sle/runs/${this.key(c, i)}`; }
-  async createRunDir(c: number, i: number): Promise<string> {
+  runDir(c: string, i: number): string { return `.sle/runs/${this.key(c, i)}`; }
+  async createRunDir(c: string, i: number): Promise<string> {
     this.dirs.add(this.key(c, i));
     return this.runDir(c, i);
   }
   async createManifest(params: { cycleId: string; cycleNumber: number; iteration: number; planningDepth: import('../src/types.js').PlanningDepth }): Promise<void> {
-    this.manifests.set(this.key(params.cycleNumber, params.iteration), {
+    this.manifests.set(this.key(params.cycleId, params.iteration), {
       cycle_id: params.cycleId,
       cycle_number: params.cycleNumber,
       iteration: params.iteration,
@@ -31,36 +31,38 @@ class InMemoryRunArtifactManager implements RunArtifactManager {
       nodes: [],
     });
   }
-  async readManifest(c: number, i: number): Promise<RunManifest> {
+  async readManifest(c: string, i: number): Promise<RunManifest> {
     const m = this.manifests.get(this.key(c, i));
     if (!m) throw new Error(`No manifest for ${c}-${i}`);
     return JSON.parse(JSON.stringify(m)) as RunManifest;
   }
-  async updateManifest(c: number, i: number, updater: (m: RunManifest) => RunManifest): Promise<void> {
+  async updateManifest(c: string, i: number, updater: (m: RunManifest) => RunManifest): Promise<void> {
     const m = await this.readManifest(c, i);
     this.manifests.set(this.key(c, i), updater(m));
   }
-  async updateNodeStatus(c: number, i: number, nodeId: string, update: Record<string, unknown>): Promise<void> {
+  async updateNodeStatus(c: string, i: number, nodeId: string, update: Record<string, unknown>): Promise<void> {
     await this.updateManifest(c, i, (m) => ({
       ...m,
       nodes: m.nodes.map((n) => n.id === nodeId ? { ...n, ...update } : n),
     }));
   }
-  async finalizeManifest(c: number, i: number, outcome: 'complete' | 'halted'): Promise<void> {
+  async finalizeManifest(c: string, i: number, outcome: 'complete' | 'halted'): Promise<void> {
     await this.updateManifest(c, i, (m) => ({ ...m, outcome, completed_at: new Date().toISOString() }));
   }
-  async writeContextPack(c: number, i: number, pack: ContextPack): Promise<void> {
+  async writeContextPack(c: string, i: number, pack: ContextPack): Promise<void> {
     this.packs.set(this.key(c, i), pack);
   }
-  async readContextPack(c: number, i: number): Promise<ContextPack> {
+  async readContextPack(c: string, i: number): Promise<ContextPack> {
     return this.packs.get(this.key(c, i)) ?? {};
   }
-  async writeNodeOutput(_c: number, _i: number, _nodeId: string, _content: string): Promise<void> {}
-  async dirExists(c: number, i: number): Promise<boolean> {
+  async writeNodeOutput(_c: string, _i: number, _nodeId: string, _content: string): Promise<void> {}
+  async dirExists(c: string, i: number): Promise<boolean> {
     return this.dirs.has(this.key(c, i));
   }
+  async writeFailureReport(_c: string, _i: number, _report: unknown): Promise<void> {}
+  async readFailureReport(_c: string, _i: number): Promise<null> { return null; }
   getDirs(): Set<string> { return this.dirs; }
-  getManifest(c: number, i: number): RunManifest | undefined { return this.manifests.get(this.key(c, i)); }
+  getManifest(c: string, i: number): RunManifest | undefined { return this.manifests.get(this.key(c, i)); }
 }
 
 // ─── In-memory map manager ───────────────────────────────────────────────────
@@ -199,8 +201,8 @@ test('testStartCycleWithDiscoveryComplete', async () => {
   assert.strictEqual(after.cycle.intent, 'Add user authentication to the API');
 
   // Phase B: run dir created and manifest written
-  assert.ok(ram.getDirs().has('1-1'));
-  const manifest = ram.getManifest(1, 1);
+  assert.ok(ram.getDirs().has(`${result.cycle_id}-1`));
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.cycle_id, result.cycle_id);
   assert.strictEqual(manifest!.outcome, 'in_progress');
@@ -490,10 +492,10 @@ test('testRunDirCreatedOnStart', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, ram } = createService(map);
 
-  await svc.start({ intent: 'Add user authentication to the API' });
+  const result = await svc.start({ intent: 'Add user authentication to the API' });
 
-  assert.ok(ram.getDirs().has('1-1'), 'Run dir 1-1 should be created');
-  const manifest = ram.getManifest(1, 1);
+  assert.ok(ram.getDirs().has(`${result.cycle_id}-1`), 'Run dir should be created');
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.planning_depth, 'standard');
 });
@@ -502,10 +504,10 @@ test('testHaltFinalizesManifest', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, ram } = createService(map);
 
-  await svc.start({ intent: 'Add user authentication to the API' });
+  const result = await svc.start({ intent: 'Add user authentication to the API' });
   await svc.halt();
 
-  const manifest = ram.getManifest(1, 1);
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.outcome, 'halted');
   assert.ok(manifest!.completed_at !== undefined);
