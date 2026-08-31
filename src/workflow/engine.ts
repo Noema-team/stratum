@@ -39,6 +39,13 @@ export interface WorkflowEngineOptions {
     cycleNumber: number,
     iteration: number,
   ) => Promise<'approve' | 'halt'>;
+  // Called when the iteration cap is reached. Default: 'halt'.
+  // 'force_pass' routes to 'evaluate' and continues; 'user_prompt' = halt.
+  onCapHit?: (
+    workflowRunId: string,
+    stepId: string,
+    iteration: number,
+  ) => Promise<'halt' | 'force_pass' | 'user_prompt'>;
 }
 
 // ============================================================================
@@ -82,6 +89,7 @@ export class WorkflowEngine {
     cycleStateCtx: CycleStateContext,
     startStepId?: string,
     workItemId?: string,
+    maxIterations?: number,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -209,9 +217,6 @@ export class WorkflowEngine {
     let iteration = cycleStateCtx.iteration;
     let revision = 0;
     let cycleState = { ...cycleStateCtx, iteration };
-    // Failure report from the most-recent validation_gate failure. Populated by
-    // executeReview when validation_gate fails; cleared after debug step runs.
-    let pendingFailureReport: unknown;
 
     const startedAt = new Date().toISOString();
 
@@ -270,14 +275,12 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId, pendingFailureReport);
+      const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId);
 
-      // Capture failure_report from validation_gate failure; clear after debug completes.
-      if ((result as any)._failureReport !== undefined) {
-        pendingFailureReport = (result as any)._failureReport;
-      }
-      if (step.id === 'debug') {
-        pendingFailureReport = undefined;
+      // Generic revision increment — produced by confirm-revise (and any future step
+      // that signals a plan revision without starting a new iteration).
+      if (result._increment_revision === true) {
+        revision += 1;
       }
 
       // ---- failure -----------------------------------------------------------
@@ -336,10 +339,26 @@ export class WorkflowEngine {
           // Increment iteration locally — authoritative. The FullBuildStepRunner's
           // mapManager.update() is an advisory legacy sync, not the source of truth.
           iteration += 1;
+          revision = 0;  // new iteration resets revision
           cycleState = { ...cycleState, iteration };
 
-          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id, revision);
-          if (capResult) return capResult;
+          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id, revision, maxIterations);
+          if (capResult !== null) {
+            if ('_forcedRoute' in capResult) {
+              // force_pass: route to the named step (e.g. 'evaluate') and continue.
+              const forceIndex = def.steps.findIndex(s => s.id === capResult._forcedRoute);
+              if (forceIndex !== -1) {
+                await this.updateRunCursor(workflowRunId, {
+                  status: 'active',
+                  current_step_id: def.steps[forceIndex].id,
+                  iteration, revision, awaiting_checkpoint: null,
+                });
+                stepIndex = forceIndex;
+                continue;
+              }
+            }
+            return capResult as WorkflowRunResult;
+          }
 
           // Advance cursor to loop target with updated iteration.
           await this.updateRunCursor(workflowRunId, {
@@ -425,11 +444,10 @@ export class WorkflowEngine {
     cycleNumber: number,
     cycleState: CycleStateContext,
     workflowRunId: string,
-    failureReport?: unknown,
-  ): Promise<StepResult & { _iterate?: true; _failureReport?: unknown }> {
+  ): Promise<StepResult & { _iterate?: true }> {
     switch (step.kind) {
       case 'gather':     return this.executeGather(step, cycleNumber, cycleState);
-      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState, workflowRunId, failureReport);
+      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState, workflowRunId);
       case 'review':     return this.executeReview(step, cycleNumber, cycleState, workflowRunId);
       case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, cycleState, workflowRunId);
       case 'execute':    return this.executeExec(step, cycleNumber, cycleState, workflowRunId);
@@ -456,12 +474,11 @@ export class WorkflowEngine {
     cycleNumber: number,
     cycleState: CycleStateContext,
     workflowRunId: string,
-    failureReport?: unknown,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
 
-    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId, failureReport);
+    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
@@ -501,7 +518,7 @@ export class WorkflowEngine {
     cycleNumber: number,
     cycleState: CycleStateContext,
     workflowRunId: string,
-  ): Promise<StepResult & { _iterate?: true; _failureReport?: unknown }> {
+  ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
     await this.markRunning(step.id, cycleNumber, cycleState.iteration);
 
@@ -514,11 +531,8 @@ export class WorkflowEngine {
         outcome: 'completed',
         next_step_id: step.on_fail?.target_step_id ?? null,
         _iterate: step.on_fail?.iteration_loop ? true : undefined,
-        // Propagate failure_report (e.g. from validation_gate) so the engine run
-        // loop can pass it into the next step's StepRunContext (e.g. debug).
-        _failureReport: (result as any)._failureReport,
         duration_ms: Date.now() - start,
-      } as StepResult & { _iterate?: true; _failureReport?: unknown };
+      };
     }
 
     await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
@@ -624,14 +638,7 @@ export class WorkflowEngine {
     cycleNumber: number,
     cycleState: CycleStateContext,
     workflowRunId: string,
-    failureReport?: unknown,
   ): StepRunContext {
-    // Include _failureReport in _legacyCycleState so AgentStepRunner can propagate
-    // it into the CycleStateContext passed to the underlying agentRunner (e.g. debug step).
-    const legacyState: Record<string, unknown> = {
-      ...(cycleState as unknown as Record<string, unknown>),
-      ...(failureReport !== undefined ? { _failureReport: failureReport } : {}),
-    };
     return {
       workflowRunId,
       cycleNumber,
@@ -639,8 +646,7 @@ export class WorkflowEngine {
       planningDepth: cycleState.planning_depth,
       goal: String(cycleState.intent ?? ''),
       projectRoot: this.deps.projectRoot ?? process.cwd(),
-      _legacyCycleState: legacyState,
-      _failureReport: failureReport as any,
+      _legacyCycleState: cycleState as unknown as Record<string, unknown>,
     };
   }
 
@@ -687,9 +693,19 @@ export class WorkflowEngine {
     workflowRunId: string,
     stepId: string,
     revision: number,
-  ): Promise<WorkflowRunResult | null> {
-    const maxIterations = def.max_iterations ?? Infinity;
-    if (iteration < maxIterations) return null;
+    externalMaxIterations?: number,
+  ): Promise<WorkflowRunResult | { _forcedRoute: string } | null> {
+    const cap = externalMaxIterations ?? def.max_iterations ?? Infinity;
+    if (iteration < cap) return null;
+
+    const behavior = this.opts.onCapHit
+      ? await this.opts.onCapHit(workflowRunId, stepId, iteration)
+      : 'halt';
+
+    if (behavior === 'force_pass') {
+      return { _forcedRoute: 'evaluate' };
+    }
+    // halt or user_prompt (user_prompt = halt; document as execution-recovery debt)
     await this.updateRunCursor(workflowRunId, {
       status: 'halted',
       current_step_id: stepId,
@@ -700,7 +716,7 @@ export class WorkflowEngine {
       status: 'halted',
       final_step_id: stepId,
       iterations_used: iteration,
-      error: `Iteration cap (${maxIterations}) reached`,
+      error: `Iteration cap (${cap}) reached`,
     };
   }
 }

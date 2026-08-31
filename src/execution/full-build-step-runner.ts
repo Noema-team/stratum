@@ -12,7 +12,6 @@ import type { RunArtifactManager } from '../run-artifacts.js';
 import type { ShardingService } from '../sharding-service.js';
 import type { ScopingService } from '../scoping-service.js';
 import type { AgentStepRunner } from './agent-step-runner.js';
-import type { FailureReport } from '../types.js';
 import { updateArtifactEntries } from '../workflow/artifact-utils.js';
 
 // All service dependencies for the full-build workflow's step execution.
@@ -100,7 +99,16 @@ export class FullBuildStepRunner implements StepRunner {
         // Fold former HISTORY step: append decision record to docs/decisions.md.
         // This is an advisory write; failures are non-fatal.
         const decisionsPath = path.join(this.deps.projectRoot, 'docs', 'decisions.md');
-        const entry = `\n## Cycle ${cycleNumber}.${iteration} — ${new Date().toISOString()}\n\nCycle completed.\n`;
+        const entry = [
+          '',
+          `## Cycle ${cycleNumber}.${iteration} — ${new Date().toISOString()}`,
+          '',
+          `**Goal:** ${ctx.goal}`,
+          `**Planning depth:** ${ctx.planningDepth}`,
+          `**Iteration:** ${iteration}`,
+          `**Status:** complete`,
+          '',
+        ].join('\n');
         try {
           await fs.mkdir(path.dirname(decisionsPath), { recursive: true });
           await fs.appendFile(decisionsPath, entry, 'utf8');
@@ -187,7 +195,7 @@ export class FullBuildStepRunner implements StepRunner {
 
   private async executeValidationGate(
     _ctx: StepRunContext,
-  ): Promise<StepRunOutcome & { _failureReport?: FailureReport }> {
+  ): Promise<StepRunOutcome> {
     const start = Date.now();
     const result = await this.deps.validationGateService.run(_ctx.cycleNumber, _ctx.iteration, _ctx.workflowRunId);
     return {
@@ -196,7 +204,6 @@ export class FullBuildStepRunner implements StepRunner {
       tokens_used: 0,
       duration_ms: Date.now() - start,
       error: result.passed ? undefined : (result.failure_report?.quick_summary ?? 'Validation failed'),
-      _failureReport: result.failure_report,
     };
   }
 
@@ -242,11 +249,23 @@ export class FullBuildStepRunner implements StepRunner {
     ctx: StepRunContext,
   ): Promise<StepRunOutcome & { next_step_id?: string; _iterate?: true }> {
     const start = Date.now();
-    const result = await this.deps.agentStepRunner.run(step, ctx);
+
+    // Load the durable failure report written by ValidationGateService.
+    // Set it as _legacyCycleState.failure_report (the real CycleStateContext field)
+    // so AgentStepRunner can propagate it to the underlying debugger agent.
+    const failureReport = await this.deps.runArtifacts.readFailureReport(ctx.cycleNumber, ctx.iteration);
+    const debugCtx: StepRunContext = {
+      ...ctx,
+      _legacyCycleState: {
+        ...(ctx._legacyCycleState ?? {}),
+        ...(failureReport !== null ? { failure_report: failureReport } : {}),
+      },
+    };
+
+    const result = await this.deps.agentStepRunner.run(step, debugCtx);
     if (!result.success) {
       return result;
     }
-    const failureReport = ctx._failureReport;
     const hasStructural = failureReport?.failed_categories?.some(c => c.structural) ?? false;
     return {
       success: true,
@@ -268,7 +287,11 @@ export class FullBuildStepRunner implements StepRunner {
 
     if (action === 'revise') {
       const reviseResult = await this.deps.confirmService.revise(cycleNumber, iteration);
-      return { outcome: 'completed', next_step_id: this.confirmNodeToStepId(reviseResult.next_node) };
+      return {
+        outcome: 'completed',
+        next_step_id: this.confirmNodeToStepId(reviseResult.next_node),
+        _increment_revision: true,
+      };
     }
 
     const approveResult = await this.deps.confirmService.approve(cycleNumber, iteration);

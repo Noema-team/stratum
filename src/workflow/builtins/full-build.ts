@@ -15,7 +15,6 @@ import type { WorkflowDefinition } from '../types.js';
 export const FULL_BUILD: WorkflowDefinition = {
   id: 'full-build',
   label: 'Full Build',
-  max_iterations: 3,
   steps: [
     // ── SCOPING: gather → produce → checkpoint ─────────────────────────────
     {

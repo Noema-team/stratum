@@ -1,4 +1,4 @@
-import type { AgentRole, FailureReport } from '../types.js';
+import type { AgentRole } from '../types.js';
 
 // ============================================================================
 // Step kinds — six generic primitives (DDR-031)
@@ -95,6 +95,9 @@ export interface StepResult {
   skip_reason?: string;
   // For checkpoint steps — the awaiting_checkpoint value to set
   checkpoint_step_id?: string;
+  // Signals the engine to increment WorkflowRun.revision and reset on new iteration.
+  // Produced by confirm-revise; the engine handles it generically without step-id checks.
+  _increment_revision?: true;
 }
 
 // ============================================================================
@@ -154,7 +157,4 @@ export interface StepRunContext {
   // Optional legacy fields kept for backward-compat adapters that still need
   // them; new adapters should ignore these.
   _legacyCycleState?: Record<string, unknown>;
-  // Failure report from the most-recent validation_gate failure, propagated
-  // into the debug step's context so the debugger can act on it.
-  _failureReport?: FailureReport;
 }

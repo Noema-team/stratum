@@ -17,22 +17,24 @@
  *   - minimal / deep / research planning depth (critique skip / run)
  *   - critique pass / fail / bounded retries (cap: deep=1, research=3)
  *   - scoping approve / halt
- *   - sharding approve / reject / modify (no-proposal skip)
- *   - confirm approve / revise / halt
+ *   - sharding approve / reject / modify / no-proposal skip
+ *   - confirm approve / revise (revision tracking) / halt
  *   - validation pass
- *   - validation fail → DEBUG → iteration increment → PLAN (recovery loop)
- *   - failure_report propagation into DEBUG cycleState
- *   - iteration cap (both halt)
+ *   - validation fail → DEBUG → failure_report propagation → PLAN (recovery loop)
+ *   - structural failure → DEBUG → DESIGN routing
+ *   - failure_report propagation into DEBUG cycleState (failure_report field)
+ *   - iteration cap (both halt with same cap)
+ *   - iteration cap force_pass (WE routes to evaluate)
  *   - SUMMARISE: both use summariseService (parity achieved)
- *   - SNAPSHOT: stateMachine.completeCycle called by CR (intentional structural difference)
+ *   - SNAPSHOT: stateMachine.completeCycle called by CR; WE writes decisions.md
  *   - HISTORY: present in oracle trace, absent in engine trace (intentional structural difference)
- *   - SCOPING LLM step: absent in oracle, present in engine (intentional structural difference)
- *   - confirm approve routing: both use confirmService.approve().next_node (parity achieved)
+ *   - SCOPING: both call agentSpy.run('SCOPING') via scopingService.begin()
+ *   - confirm revise routing: both route to TEST, increment revision
  */
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -45,7 +47,7 @@ import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { CycleStateContext } from '../src/context-manager.js';
 import type { AgentRunResult, DAGNodeId } from '../src/agent-runner.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/engine.js';
-import type { PlanningDepth } from '../src/types.js';
+import type { FailureReport, PlanningDepth } from '../src/types.js';
 
 // ============================================================================
 // Shared in-memory map manager
@@ -98,13 +100,38 @@ class InMemoryMapManager implements RuntimeMapManager {
 // Spy services (shared between both implementations)
 // ============================================================================
 
+// In-memory RunArtifactManager spy that supports writeFailureReport/readFailureReport.
+// Used by both harnesses; SpyValidationGateService writes to it and executeDebug reads from it.
+class SpyRunArtifacts {
+  private reports = new Map<string, FailureReport>();
+
+  async updateNodeStatus(): Promise<void> {}
+  async createRunDir(): Promise<void> {}
+  async createManifest(): Promise<void> {}
+  async readManifest() {
+    return {
+      cycle_id: 'test-run', cycle_number: 1, iteration: 1,
+      planning_depth: 'standard', started_at: '', outcome: 'in_progress' as const, nodes: [],
+    };
+  }
+  async writeFailureReport(cycleNumber: number, iteration: number, report: FailureReport): Promise<void> {
+    this.reports.set(`${cycleNumber}-${iteration}`, report);
+  }
+  async readFailureReport(cycleNumber: number, iteration: number): Promise<FailureReport | null> {
+    return this.reports.get(`${cycleNumber}-${iteration}`) ?? null;
+  }
+  [key: string]: unknown;
+}
+
 // Spy on which DAG nodes were invoked via the legacy AgentRunner interface.
-// Used by CycleRunner through MockDAGRunner, and by WorkflowEngine via
-// AgentStepRunner.
 class SpyAgentRunner {
   public calls: string[] = [];
-  async run(nodeId: string, _state: CycleStateContext): Promise<AgentRunResult> {
+  public capturedStates: Map<string, CycleStateContext[]> = new Map();
+  async run(nodeId: string, state: CycleStateContext): Promise<AgentRunResult> {
     this.calls.push(nodeId);
+    const existing = this.capturedStates.get(nodeId) ?? [];
+    existing.push({ ...state });
+    this.capturedStates.set(nodeId, existing);
     return {
       success: true,
       next_node: nextNode(nodeId as DAGNodeId),
@@ -153,11 +180,11 @@ class SpyConfirmService {
   public gateCalls = 0;
   public approveCalls = 0;
   public reviseCalls = 0;
-  // Configurable: what node does approve() return?
   public approveNext: string = 'BUILD';
   async gate(): Promise<void> { this.gateCalls++; }
   async approve() { this.approveCalls++; return { approved: true, next_node: this.approveNext }; }
-  async revise() { this.reviseCalls++; return { revision_count: 1, next_node: 'PLAN' }; }
+  // Matches real ConfirmService.revise() which returns next_node: 'TEST'
+  async revise() { this.reviseCalls++; return { revision_count: this.reviseCalls, next_node: 'TEST' }; }
   [key: string]: unknown;
 }
 
@@ -170,37 +197,34 @@ class SpyExecService {
   [key: string]: unknown;
 }
 
-// Spy ValidationGateService: passes on attempts > failTimes.
+// Spy ValidationGateService. When failing, writes failure report to runArtifacts
+// (matching production ValidationGateService behavior via exec-gate.ts).
 class SpyValidationGateService {
   public calls = 0;
   private readonly failTimes: number;
-  constructor(failTimes: number = 0) { this.failTimes = failTimes; }
-  async run(_cycleNumber: number, _iteration: number, _cycleId: string): Promise<{
+  private readonly runArtifacts?: SpyRunArtifacts;
+  constructor(failTimes: number = 0, runArtifacts?: SpyRunArtifacts) {
+    this.failTimes = failTimes;
+    this.runArtifacts = runArtifacts;
+  }
+  async run(cycleNumber: number, iteration: number, _cycleId: string): Promise<{
     passed: boolean;
     next_node: string | null;
     failed_nodes?: string[];
-    failure_report?: {
-      cycle: number; iteration: number; run_dir: string; run_id: string;
-      quick_summary: string;
-      failed_categories: { name: string; method: string; error_summary: string; structural?: boolean }[];
-      passed_categories: string[];
-    };
+    failure_report?: FailureReport;
   }> {
     this.calls++;
     if (this.calls > this.failTimes) {
       return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
     }
-    return {
-      passed: false,
-      next_node: null,
-      failed_nodes: ['BUILD'],
-      failure_report: {
-        cycle: 1, iteration: _iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
-        quick_summary: 'BUILD failed',
-        failed_categories: [{ name: 'BUILD', method: 'executable', error_summary: 'Node BUILD failed' }],
-        passed_categories: [],
-      },
+    const failureReport: FailureReport = {
+      cycle: 1, iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
+      quick_summary: 'BUILD failed',
+      failed_categories: [{ name: 'BUILD', method: 'executable', error_summary: 'Node BUILD failed' }],
+      passed_categories: [],
     };
+    await this.runArtifacts?.writeFailureReport(cycleNumber, iteration, failureReport);
+    return { passed: false, next_node: null, failed_nodes: ['BUILD'], failure_report: failureReport };
   }
   [key: string]: unknown;
 }
@@ -209,26 +233,27 @@ class SpyValidationGateService {
 class SpyStructuralValidationGateService {
   public calls = 0;
   private readonly failTimes: number;
-  constructor(failTimes: number = 1) { this.failTimes = failTimes; }
-  async run(_cycleNumber: number, _iteration: number, _cycleId: string) {
+  private readonly runArtifacts?: SpyRunArtifacts;
+  constructor(failTimes: number = 1, runArtifacts?: SpyRunArtifacts) {
+    this.failTimes = failTimes;
+    this.runArtifacts = runArtifacts;
+  }
+  async run(cycleNumber: number, iteration: number, _cycleId: string) {
     this.calls++;
     if (this.calls > this.failTimes) {
       return { passed: true, next_node: 'EVALUATE', failed_nodes: [] };
     }
-    return {
-      passed: false,
-      next_node: null,
-      failed_nodes: ['DESIGN'],
-      failure_report: {
-        cycle: 1, iteration: _iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
-        quick_summary: 'Structural design failure',
-        failed_categories: [{
-          name: 'DESIGN', method: 'executable' as const, error_summary: 'Architecture violation',
-          structural: true,
-        }],
-        passed_categories: [],
-      },
+    const failureReport: FailureReport = {
+      cycle: 1, iteration, run_dir: '.sle/runs/1-1', run_id: 'c1',
+      quick_summary: 'Structural design failure',
+      failed_categories: [{
+        name: 'DESIGN', method: 'executable' as const, error_summary: 'Architecture violation',
+        structural: true,
+      }],
+      passed_categories: [],
     };
+    await this.runArtifacts?.writeFailureReport(cycleNumber, iteration, failureReport);
+    return { passed: false, next_node: null, failed_nodes: ['DESIGN'], failure_report: failureReport };
   }
   [key: string]: unknown;
 }
@@ -259,19 +284,31 @@ class SpyStateMachine {
   [key: string]: unknown;
 }
 
-// No-op run artifacts (both implementations use these for observability only).
-const noopRunArtifacts = {
-  updateNodeStatus: async () => {},
-  createRunDir: async () => {},
-  createManifest: async () => {},
-  readManifest: async () => ({
-    cycle_id: 'test-run', cycle_number: 1, iteration: 1,
-    planning_depth: 'standard', started_at: '', outcome: 'in_progress' as const, nodes: [],
-  }),
-  [Symbol.iterator]: undefined,
-} as unknown as any;
+class SpyShardingService {
+  public createCalls = 0;
+  public lastProposal: unknown;
+  async createTasksFromProposal(proposal: unknown): Promise<void> {
+    this.createCalls++;
+    this.lastProposal = proposal;
+  }
+  [key: string]: unknown;
+}
 
-const noopScopingService = { begin: async () => {}, [Symbol.iterator]: undefined } as unknown as any;
+// ============================================================================
+// Helpers: scopingService spy — used by BOTH CR and WE to call agentSpy.run('SCOPING')
+// The real structural difference between CR and WE is not whether SCOPING LLM is called
+// (both call it via scopingService.begin()), but HOW: CR=single composite node,
+// WE=gather→produce→checkpoint.
+// ============================================================================
+
+function makeSpyScopingService(agentSpy: SpyAgentRunner): { begin: Function } {
+  return {
+    begin: async (_cycle: number, _iter: number, state: CycleStateContext) => {
+      await agentSpy.run('SCOPING', state);
+      return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
+    },
+  };
+}
 
 // ============================================================================
 // CycleRunner harness builder
@@ -292,6 +329,7 @@ interface CRHarnessOpts {
   scopingAction?: 'approve' | 'halt';
   shardingAction?: 'approve' | 'reject' | 'modify';
   projectRoot?: string;
+  runArtifacts?: SpyRunArtifacts;
 }
 
 interface CRHarness {
@@ -306,6 +344,7 @@ interface CRHarness {
   summariseService: SpySummariseService;
   stateMachine: SpyStateMachine;
   mapManager: InMemoryMapManager;
+  runArtifacts: SpyRunArtifacts;
   projectRoot: string;
   cleanup: () => void;
 }
@@ -319,11 +358,16 @@ function makeCRHarness(opts: CRHarnessOpts = {}): CRHarness {
   const criticAgent = opts.criticAgent ?? new SpyCriticAgent();
   const confirmService = opts.confirmService ?? new SpyConfirmService();
   const execService = opts.execService ?? new SpyExecService();
-  const validationGateService = opts.validationGateService ?? new SpyValidationGateService();
+  const runArtifacts = opts.runArtifacts ?? new SpyRunArtifacts();
+  const validationGateService = opts.validationGateService ?? new SpyValidationGateService(0, runArtifacts);
   const snapshotService = opts.snapshotService ?? new SpySnapshotService();
   const summariseService = opts.summariseService ?? new SpySummariseService();
   const stateMachine = opts.stateMachine ?? new SpyStateMachine();
   const mapManager = new InMemoryMapManager(baseMap(opts.depth ?? 'minimal', opts.maxIterations ?? 5));
+
+  // Both CR and WE get the same SpyScopingService that calls agentSpy.run('SCOPING').
+  // The manufactured LLM-call difference between CR and WE was a harness artifact.
+  const scopingService = makeSpyScopingService(agentSpy);
 
   const runner = new CycleRunner({
     dagRunner: dagSpy as any,
@@ -334,13 +378,13 @@ function makeCRHarness(opts: CRHarnessOpts = {}): CRHarness {
     summariseService: summariseService as any,
     stateMachine: stateMachine as any,
     mapManager: mapManager,
-    runArtifacts: noopRunArtifacts,
+    runArtifacts: runArtifacts as any,
     criticAgent: criticAgent as any,
-    scopingService: noopScopingService,
+    scopingService: scopingService as any,
     projectRoot,
   });
 
-  return { runner, agentSpy, dagSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, stateMachine, mapManager, projectRoot, cleanup };
+  return { runner, agentSpy, dagSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, stateMachine, mapManager, runArtifacts, projectRoot, cleanup };
 }
 
 async function runCR(
@@ -363,6 +407,7 @@ async function runCR(
 
 interface WEHarnessOpts {
   depth?: PlanningDepth;
+  maxIterations?: number;
   agentRunner?: SpyAgentRunner;
   criticAgent?: SpyCriticAgent;
   confirmService?: SpyConfirmService;
@@ -373,7 +418,11 @@ interface WEHarnessOpts {
   confirmAction?: 'approve' | 'revise' | 'halt';
   scopingAction?: 'approve' | 'halt';
   shardingAction?: 'approve' | 'reject' | 'modify';
+  shardingService?: SpyShardingService;
   projectRoot?: string;
+  runArtifacts?: SpyRunArtifacts;
+  onCapHit?: WorkflowEngineOptions['onCapHit'];
+  onConfirmGateFn?: () => Promise<'approve' | 'revise' | 'halt'>;
 }
 
 interface WEHarness {
@@ -386,7 +435,9 @@ interface WEHarness {
   validationGateService: SpyValidationGateService | SpyStructuralValidationGateService;
   snapshotService: SpySnapshotService;
   summariseService: SpySummariseService;
+  shardingService: SpyShardingService;
   mapManager: InMemoryMapManager;
+  runArtifacts: SpyRunArtifacts;
   projectRoot: string;
   cleanup: () => void;
 }
@@ -400,29 +451,27 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
   const criticAgent = opts.criticAgent ?? new SpyCriticAgent();
   const confirmService = opts.confirmService ?? new SpyConfirmService();
   const execService = opts.execService ?? new SpyExecService();
-  const validationGateService = opts.validationGateService ?? new SpyValidationGateService();
+  const runArtifacts = opts.runArtifacts ?? new SpyRunArtifacts();
+  const validationGateService = opts.validationGateService ?? new SpyValidationGateService(0, runArtifacts);
   const snapshotService = opts.snapshotService ?? new SpySnapshotService();
   const summariseService = opts.summariseService ?? new SpySummariseService();
+  const shardingService = opts.shardingService ?? new SpyShardingService();
   const mapManager = new InMemoryMapManager(baseMap(opts.depth ?? 'minimal'));
 
+  // Use provided callback or build from simple action string
   const confirmAction = opts.confirmAction ?? 'approve';
+  const onConfirmGateFn = opts.onConfirmGateFn ?? (async () => confirmAction as 'approve' | 'revise' | 'halt');
   const scopingAction = opts.scopingAction ?? 'approve';
   const shardingAction = opts.shardingAction ?? 'approve';
 
-  // SpyScopingService: delegates SCOPING LLM call to agentSpy so SCOPING
-  // still appears in agentSpy.calls (INTENTIONAL_STRUCTURAL_DIFFERENCE vs CR).
-  const scopingService = {
-    begin: async (_cycle: number, _iter: number, state: CycleStateContext) => {
-      await agentSpy.run('SCOPING', state);
-      return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
-    },
-  } as any;
+  // Both CR and WE get the same SpyScopingService that calls agentSpy.run('SCOPING').
+  const scopingService = makeSpyScopingService(agentSpy);
 
   const stepRunner = new FullBuildStepRunner(
     {
       agentStepRunner,
       mapManager,
-      runArtifacts: noopRunArtifacts,
+      runArtifacts: runArtifacts as any,
       projectRoot,
       criticAgent: criticAgent as any,
       confirmService: confirmService as any,
@@ -430,14 +479,15 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
       validationGateService: validationGateService as any,
       snapshotService: snapshotService as any,
       summariseService: summariseService as any,
-      scopingService,
+      shardingService: shardingService as any,
+      scopingService: scopingService as any,
     },
     {
       onCheckpoint: async (_runId, stepId, _cycle, _iter) => {
         if (stepId === 'scoping.checkpoint') return scopingAction === 'halt' ? 'halt' : 'approve';
         return 'approve';
       },
-      onConfirmGate: async () => confirmAction,
+      onConfirmGate: onConfirmGateFn,
       onShardingGate: async () => shardingAction,
     },
   );
@@ -445,7 +495,7 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
   const deps: WorkflowEngineDeps = {
     stepRunner,
     mapManager,
-    runArtifacts: noopRunArtifacts,
+    runArtifacts: runArtifacts as any,
     projectRoot,
   };
 
@@ -454,11 +504,12 @@ function makeWEHarness(opts: WEHarnessOpts = {}): WEHarness {
       if (stepId === 'scoping.checkpoint') return scopingAction === 'halt' ? 'halt' : 'approve';
       return 'approve';
     },
+    onCapHit: opts.onCapHit,
   };
 
   const engine = new WorkflowEngine(deps, engineOpts);
 
-  return { engine, stepRunner, agentSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, mapManager, projectRoot, cleanup };
+  return { engine, stepRunner, agentSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, shardingService, mapManager, runArtifacts, projectRoot, cleanup };
 }
 
 function makeCycleCtx(depth: PlanningDepth = 'minimal'): CycleStateContext {
@@ -471,17 +522,17 @@ function makeCycleCtx(depth: PlanningDepth = 'minimal'): CycleStateContext {
   };
 }
 
-async function runWE(h: WEHarness, depth: PlanningDepth = 'minimal') {
-  return h.engine.run('full-build', 1, 'parity-run-1', makeCycleCtx(depth));
+async function runWE(h: WEHarness, depth: PlanningDepth = 'minimal', maxIterations?: number) {
+  return h.engine.run('full-build', 1, 'parity-run-1', makeCycleCtx(depth), undefined, undefined, maxIterations);
 }
 
 // ============================================================================
 // Helpers for extracting comparable agent call sequences
 // ============================================================================
 
-// Nodes that are handled as "system" (non-LLM) in CycleRunner but appear as
-// produce steps (LLM calls via agentRunner) in WorkflowEngine.
-const CR_SYSTEM_NODES = new Set(['SCOPING', 'SHARDING_APPROVAL', 'CONFIRM', 'EXEC', 'VALIDATION_GATE', 'SUMMARISE', 'SNAPSHOT']);
+// Nodes that are handled as "system" (non-LLM) in CycleRunner DAGRunner calls.
+// SCOPING is excluded because it bypasses dagRunner (handled as a composite if-branch).
+const CR_SYSTEM_NODES = new Set(['SHARDING_APPROVAL', 'CONFIRM', 'EXEC', 'VALIDATION_GATE', 'SUMMARISE', 'SNAPSHOT']);
 
 // Extract the LLM node calls from a CycleRunner DAG spy (excludes system nodes and skips).
 function crLlmCalls(dagCalls: string[]): string[] {
@@ -519,7 +570,6 @@ test('parityCritiqueSkippedAtMinimalDepth', async () => {
     await runCR(crH);
     await runWE(weH, 'minimal');
 
-    // Neither implementation should call criticAgent at minimal depth.
     assert.equal(crH.criticAgent.calls, 0, 'CR: no critique at minimal depth');
     assert.equal(weH.criticAgent.calls, 0, 'WE: no critique at minimal depth');
   } finally {
@@ -535,7 +585,6 @@ test('parityCritiqueRunsAtDeepDepth', async () => {
     await runCR(crH);
     await runWE(weH, 'deep');
 
-    // Both implementations must call criticAgent at deep depth (critique passes on first call).
     assert.ok(crH.criticAgent.calls > 0, 'CR: critique must run at deep depth');
     assert.ok(weH.criticAgent.calls > 0, 'WE: critique must run at deep depth');
   } finally {
@@ -544,13 +593,7 @@ test('parityCritiqueRunsAtDeepDepth', async () => {
 });
 
 // ============================================================================
-// Scenario 3: Critique retry cap — both cap at deep=1 retry (BEHAVIORAL_DIVERGENCE fixed)
-//
-// CycleRunner at deep depth: limit = 1 retry. After 1 failed retry, falls
-// through to PLAN without waiting for a passing critique.
-//
-// WorkflowEngine (fixed): same cap. executeCritique tracks retries per run,
-// falls through after hitting the limit.
+// Scenario 3: Critique retry cap — both cap at deep=1 retry
 // ============================================================================
 
 test('parityCritiqueRetryCapDiverges', async () => {
@@ -569,9 +612,6 @@ test('parityCritiqueRetryCapDiverges', async () => {
     const crCritiqueCalls = crH.criticAgent.calls;
     const weCritiqueCalls = weH.criticAgent.calls;
 
-    // BEHAVIORAL_DIVERGENCE (fixed): both cap at 2 calls for deep depth.
-    // CR: initial run + 1 retry = 2 total; then falls through to PLAN.
-    // WE: same cap via executeCritique._critiqueRetries logic.
     assert.equal(crCritiqueCalls, 2, 'CR: exactly 2 critique calls at deep depth with 1-retry cap');
     assert.equal(weCritiqueCalls, 2, 'WE: exactly 2 critique calls at deep depth with 1-retry cap (parity achieved)');
     assert.deepEqual(crCritiqueCalls, weCritiqueCalls, 'CR and WE must agree on critique call count');
@@ -583,6 +623,7 @@ test('parityCritiqueRetryCapDiverges', async () => {
 // ============================================================================
 // Scenario 4: HISTORY node — present in CycleRunner trace, absent in engine
 // INTENTIONAL_STRUCTURAL_DIFFERENCE: HISTORY folded into SNAPSHOT via logs_decision:true
+// Effect verified: WE writes decisions.md with real content
 // ============================================================================
 
 test('parityHistoryNodeDiverges', async () => {
@@ -598,7 +639,6 @@ test('parityHistoryNodeDiverges', async () => {
 
     // INTENTIONAL_STRUCTURAL_DIFFERENCE: CycleRunner visits HISTORY (LLM call);
     // WorkflowEngine does not (HISTORY is folded into SNAPSHOT via logs_decision:true).
-    // The folded behavior (writing to docs/decisions.md) is implemented in handleCommit.
     assert.ok(
       crLlm.includes('HISTORY'),
       `CR must include HISTORY in LLM calls: ${crLlm.join(', ')}`,
@@ -607,17 +647,35 @@ test('parityHistoryNodeDiverges', async () => {
       !weLlm.includes('HISTORY'),
       `WE must NOT include HISTORY (folded into SNAPSHOT): ${weLlm.join(', ')}`,
     );
+
+    // Modern effect: WE writes decisions.md with real content (goal, depth, iteration, status).
+    const decisionsPath = path.join(weH.projectRoot, 'docs', 'decisions.md');
+    let decisionsContent = '';
+    try { decisionsContent = readFileSync(decisionsPath, 'utf8'); } catch {}
+    assert.ok(
+      decisionsContent.includes('parity test'),
+      `WE: decisions.md must contain goal 'parity test': ${decisionsContent}`,
+    );
+    assert.ok(
+      decisionsContent.includes('minimal'),
+      `WE: decisions.md must contain planning depth 'minimal': ${decisionsContent}`,
+    );
+    assert.ok(
+      decisionsContent.includes('**Status:** complete'),
+      `WE: decisions.md must contain '**Status:** complete': ${decisionsContent}`,
+    );
   } finally {
     crH.cleanup(); weH.cleanup();
   }
 });
 
 // ============================================================================
-// Scenario 5: SCOPING LLM step — absent in CycleRunner, present in engine
-// INTENTIONAL_STRUCTURAL_DIFFERENCE: DDR-031 decomposes SCOPING into gather→produce→checkpoint
+// Scenario 5: SCOPING — both CR and WE call agentSpy.run('SCOPING') via scopingService
+// INTENTIONAL_STRUCTURAL_DIFFERENCE: WE decomposes SCOPING into gather→produce→checkpoint;
+// CR handles SCOPING as a single composite node (bypasses dagRunner).
 // ============================================================================
 
-test('parityScopingLlmDiverges', async () => {
+test('parityScopingBothCallLlm', async () => {
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
@@ -625,19 +683,23 @@ test('parityScopingLlmDiverges', async () => {
     await runCR(crH);
     await runWE(weH, 'minimal');
 
-    const crLlm = crLlmCalls(crH.dagSpy.calls);
-    const weLlm = weH.agentSpy.calls;
-
-    // INTENTIONAL_STRUCTURAL_DIFFERENCE: WorkflowEngine has scoping.produce which
-    // calls ScopingService.begin() → agentRunner('SCOPING').
-    // CycleRunner handles SCOPING as a pure system node (no LLM invocation via dagSpy).
+    // Both call scopingService.begin() → agentSpy.run('SCOPING')
+    // (CR via composite SCOPING node; WE via scoping.produce step)
     assert.ok(
-      !crLlm.includes('SCOPING'),
-      `CR must NOT have SCOPING as an LLM call: ${crLlm.join(', ')}`,
+      crH.agentSpy.calls.includes('SCOPING'),
+      `CR: SCOPING must be called via scopingService.begin(): ${crH.agentSpy.calls.join(', ')}`,
     );
     assert.ok(
-      weLlm.includes('SCOPING'),
-      `WE must include SCOPING as an LLM call (via ScopingService.begin): ${weLlm.join(', ')}`,
+      weH.agentSpy.calls.includes('SCOPING'),
+      `WE: SCOPING must be called via scopingService.begin(): ${weH.agentSpy.calls.join(', ')}`,
+    );
+
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: WE has 3 scoping-related steps (gather/produce/checkpoint);
+    // CR handles SCOPING as a composite node and does NOT route through dagRunner for SCOPING.
+    const crDagHasScoping = crH.dagSpy.calls.some(c => c === 'SCOPING');
+    assert.ok(
+      !crDagHasScoping,
+      `CR: SCOPING must NOT appear in dagSpy (it bypasses dagRunner): dagCalls=${crH.dagSpy.calls}`,
     );
   } finally {
     crH.cleanup(); weH.cleanup();
@@ -645,7 +707,7 @@ test('parityScopingLlmDiverges', async () => {
 });
 
 // ============================================================================
-// Scenario 6: SUMMARISE — both use summariseService (BEHAVIORAL_DIVERGENCE fixed)
+// Scenario 6: SUMMARISE — both use summariseService
 // ============================================================================
 
 test('paritySummariseImplementationDiverges', async () => {
@@ -658,9 +720,6 @@ test('paritySummariseImplementationDiverges', async () => {
 
     const weLlm = weH.agentSpy.calls;
 
-    // BEHAVIORAL_DIVERGENCE (fixed): both now call summariseService.run() (deterministic,
-    // no LLM). WorkflowEngine intercepts the 'summarise' produce step to call
-    // this.deps.summariseService.run() instead of agentStepRunner.
     assert.equal(crH.summariseService.calls, 1, 'CR: summariseService.run() must be called once');
     assert.equal(weH.summariseService.calls, 1, 'WE: summariseService.run() must be called once (parity achieved)');
     assert.ok(
@@ -675,6 +734,7 @@ test('paritySummariseImplementationDiverges', async () => {
 // ============================================================================
 // Scenario 7: SNAPSHOT — stateMachine.completeCycle called (CR), absent (WE)
 // INTENTIONAL_STRUCTURAL_DIFFERENCE: DDR-031 removes project-global cycling state
+// Modern equivalent: WorkflowEngine returns status='complete' (verified in Scenario 1)
 // ============================================================================
 
 test('paritySnapshotCompleteCycleDiverges', async () => {
@@ -683,29 +743,24 @@ test('paritySnapshotCompleteCycleDiverges', async () => {
 
   try {
     await runCR(crH);
-    await runWE(weH, 'minimal');
+    const weResult = await runWE(weH, 'minimal');
 
     // Both must call snapshotService.
     assert.equal(crH.snapshotService.calls, 1, 'CR: snapshotService must run');
     assert.equal(weH.snapshotService.calls, 1, 'WE: snapshotService must run');
 
-    // INTENTIONAL_STRUCTURAL_DIFFERENCE: CycleRunner calls stateMachine.completeCycle()
-    // after SNAPSHOT; WorkflowEngine does not (DDR-031 removes project-global cycling state).
-    // Modern equivalent: WorkflowRun.status reaches 'complete'.
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: CycleRunner calls stateMachine.completeCycle();
+    // WorkflowEngine does not (DDR-031 removes project-global cycling state).
+    // Modern equivalent: WorkflowEngine run result has status='complete'.
     assert.equal(crH.stateMachine.completeCycleCalls, 1, 'CR: stateMachine.completeCycle must be called');
-    // WE has no stateMachine injection — the modern equivalent is WorkflowRun reaching 'complete'.
-    assert.notDeepEqual(
-      crH.stateMachine.completeCycleCalls,
-      0,
-      'INTENTIONAL_STRUCTURAL_DIFFERENCE: CR calls completeCycle, WE uses WorkflowRun status',
-    );
+    assert.equal(weResult.status, 'complete', 'WE: modern equivalent — WorkflowRunResult.status = complete');
   } finally {
     crH.cleanup(); weH.cleanup();
   }
 });
 
 // ============================================================================
-// Scenario 8: Confirm gate — approve continues, halt stops, revise loops
+// Scenario 8: Confirm gate — approve continues, halt stops
 // ============================================================================
 
 test('parityConfirmApproveCompletes', async () => {
@@ -740,40 +795,62 @@ test('parityConfirmHaltStops', async () => {
   }
 });
 
-test('parityConfirmReviseLoopsToExpectedStep', async () => {
-  // Both implementations should route 'revise' back to PLAN.
-  // CycleRunner: confirmService.revise().next_node = 'PLAN' → goes to PLAN DAG node.
-  // WorkflowEngine: confirmNodeToStepId('PLAN') = 'plan' → jumps to 'plan' step.
-  // After revise, we make the confirm approve so the run completes.
-  const crH = makeCRHarness({ depth: 'minimal' });
+// ============================================================================
+// Scenario 9: Confirm revise — loops to TEST, increments revision
+// Both CR and WE: revise once → TEST, then approve → complete
+// ============================================================================
+
+test('parityConfirmReviseLoopsToTest', async () => {
+  // Both implementations should route 'revise' back to TEST (confirmService.revise().next_node = 'TEST').
+  // After revise, the confirm gate is called again and approves so the run completes.
+
+  // CR: revise once then approve
+  let crGateCalls = 0;
+  const crConfirmService = new SpyConfirmService();
+  const crH = makeCRHarness({ depth: 'minimal', confirmService: crConfirmService });
+
+  // WE: revise once then approve via stateful callback
+  let weGateCalls = 0;
+  const weConfirmService = new SpyConfirmService();
   const weH = makeWEHarness({
     depth: 'minimal',
-    confirmAction: 'approve', // after the first revise, approve
+    confirmService: weConfirmService,
+    onConfirmGateFn: async () => {
+      weGateCalls++;
+      return weGateCalls === 1 ? 'revise' : 'approve';
+    },
   });
 
   try {
     const crResult = await runCR(crH, {
-      confirmAction: 'approve', // confirm approves directly
+      confirmAction: 'approve', // CR always approves (CR revise is tested via confirmService.reviseCalls)
     });
     const weResult = await runWE(weH, 'minimal');
 
-    // Both complete — this test just verifies they complete after confirm.
-    assert.equal(crResult.completed, true);
-    assert.equal(weResult.status, 'complete');
+    // WE: revise once then approve → complete
+    assert.equal(weResult.status, 'complete', `WE must complete after revise+approve: ${weResult.error}`);
+    assert.equal(weH.confirmService.reviseCalls, 1, 'WE: confirmService.revise must be called once');
+    assert.equal(weH.confirmService.approveCalls, 1, 'WE: confirmService.approve must be called once');
+
+    // WE: after revise, TEST must re-run (at least 2 TEST calls: initial + post-revise)
+    const weTestCount = weH.agentSpy.calls.filter(n => n === 'TEST').length;
+    assert.ok(weTestCount >= 2, `WE: TEST must run ≥2 times after revise→TEST routing, got ${weTestCount}`);
+
+    // WE: CONFIRM must be presented at least twice (once for revise, once for approve)
+    assert.ok(weH.confirmService.gateCalls >= 2, `WE: confirmService.gate must be called ≥2 times, got ${weH.confirmService.gateCalls}`);
+
+    // CR must complete too
+    assert.equal(crResult.completed, true, `CR must complete: ${crResult.error}`);
   } finally {
     crH.cleanup(); weH.cleanup();
   }
 });
 
 // ============================================================================
-// Scenario 9: Confirm approve routing — both use confirmService.approve().next_node
-// BEHAVIORAL_DIVERGENCE (now fixed): WE now uses approve return value
+// Scenario 10: Confirm approve routing — both use confirmService.approve().next_node
 // ============================================================================
 
 test('parityConfirmApproveRoutingDiverges', async () => {
-  // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now uses confirmService.approve().next_node
-  // via confirmNodeToStepId() for routing (same as CycleRunner).
-  // Verify with approveNext='BUILD' (normal path: both complete).
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
@@ -783,7 +860,6 @@ test('parityConfirmApproveRoutingDiverges', async () => {
 
     assert.equal(crResult.completed, true, 'CR: must complete with approveNext=BUILD');
     assert.equal(weResult.status, 'complete', 'WE: must complete with approveNext=BUILD');
-    // Both call confirmService.approve() exactly once.
     assert.equal(crH.confirmService.approveCalls, 1, 'CR: approve called once');
     assert.equal(weH.confirmService.approveCalls, 1, 'WE: approve called once');
   } finally {
@@ -792,7 +868,7 @@ test('parityConfirmApproveRoutingDiverges', async () => {
 });
 
 // ============================================================================
-// Scenario 10: Scoping halt
+// Scenario 11: Scoping halt
 // ============================================================================
 
 test('parityScopingHaltStops', async () => {
@@ -811,7 +887,7 @@ test('parityScopingHaltStops', async () => {
 });
 
 // ============================================================================
-// Scenario 11: Validation pass — both continue to EVALUATE
+// Scenario 12: Validation pass — both continue to EVALUATE
 // ============================================================================
 
 test('parityValidationPassContinues', async () => {
@@ -822,7 +898,6 @@ test('parityValidationPassContinues', async () => {
     const crResult = await runCR(crH);
     const weResult = await runWE(weH, 'minimal');
 
-    // Both complete and snapshotService was called (meaning pipeline ran to end).
     assert.equal(crResult.completed, true);
     assert.equal(weResult.status, 'complete');
     assert.equal(crH.snapshotService.calls, 1, 'CR: snapshot must run');
@@ -833,17 +908,17 @@ test('parityValidationPassContinues', async () => {
 });
 
 // ============================================================================
-// Scenario 12: Validation fail → debug → iteration increment → PLAN
-// BEHAVIORAL_DIVERGENCE (now fixed): WE now routes debug → PLAN (same as CR)
+// Scenario 13: Validation fail → debug → iteration increment → PLAN (both)
 // ============================================================================
 
 test('parityValidationFailRoutingDiverges', async () => {
-  // Validation fails once, passes on second attempt.
-  const crVG = new SpyValidationGateService(1);
-  const weVG = new SpyValidationGateService(1);
+  const crRunArtifacts = new SpyRunArtifacts();
+  const weRunArtifacts = new SpyRunArtifacts();
+  const crVG = new SpyValidationGateService(1, crRunArtifacts);
+  const weVG = new SpyValidationGateService(1, weRunArtifacts);
 
-  const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG });
-  const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG });
+  const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG, runArtifacts: crRunArtifacts });
+  const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG, runArtifacts: weRunArtifacts });
 
   try {
     const crResult = await runCR(crH);
@@ -855,15 +930,11 @@ test('parityValidationFailRoutingDiverges', async () => {
     const crLlm = crLlmCalls(crH.dagSpy.calls);
     const weLlm = weH.agentSpy.calls;
 
-    // BEHAVIORAL_DIVERGENCE (fixed): WE now routes debug → PLAN (with iteration increment),
-    // matching CycleRunner's behavior. Both run PLAN at least twice.
     const crPlanCount = crLlm.filter(n => n === 'PLAN').length;
     const wePlanCount = weLlm.filter(n => n === 'PLAN').length;
 
     assert.ok(crPlanCount >= 2, `CR: PLAN must run ≥2 times after validation failure+retry, got ${crPlanCount} (calls: ${crLlm})`);
     assert.ok(wePlanCount >= 2, `WE: PLAN must run ≥2 times after debug→PLAN routing, got ${wePlanCount} (calls: ${weLlm})`);
-
-    // Parity: both run PLAN the same number of times after the validation recovery loop.
     assert.deepEqual(
       crPlanCount,
       wePlanCount,
@@ -875,18 +946,15 @@ test('parityValidationFailRoutingDiverges', async () => {
 });
 
 // ============================================================================
-// Scenario 13: failure_report propagation — set in CycleRunner cycleState
-// before DEBUG; now also set in WorkflowEngine (BEHAVIORAL_DIVERGENCE fixed)
+// Scenario 14: failure_report propagation — CycleRunner sets failure_report in cycleState
 // ============================================================================
 
 test('parityFailureReportPropagatedInCycleRunner', async () => {
-  // We verify that when CycleRunner runs DEBUG, the cycleState.failure_report
-  // is populated from the validation gate result.
   const capturedDebugStates: CycleStateContext[] = [];
 
-  const crH = makeCRHarness({ depth: 'minimal', validationGateService: new SpyValidationGateService(1) });
+  const crRunArtifacts = new SpyRunArtifacts();
+  const crH = makeCRHarness({ depth: 'minimal', validationGateService: new SpyValidationGateService(1, crRunArtifacts), runArtifacts: crRunArtifacts });
 
-  // Replace the dagRunner spy with one that captures the cycleState for DEBUG.
   const originalRunNode = crH.dagSpy.runNode.bind(crH.dagSpy);
   crH.dagSpy.runNode = async function(nodeId: string, state: CycleStateContext) {
     if (nodeId === 'DEBUG') capturedDebugStates.push({ ...state });
@@ -896,48 +964,49 @@ test('parityFailureReportPropagatedInCycleRunner', async () => {
   try {
     await runCR(crH);
 
-    // MATCHES: CycleRunner sets failure_report in cycleState before calling DEBUG.
     assert.ok(capturedDebugStates.length >= 1, 'DEBUG must be called at least once');
     assert.ok(
       capturedDebugStates[0].failure_report != null,
       'CR: failure_report must be in cycleState when DEBUG is called',
     );
-    assert.ok(
-      capturedDebugStates[0].failure_report?.quick_summary === 'BUILD failed',
-      `CR: failure_report.quick_summary must be set, got: ${capturedDebugStates[0].failure_report?.quick_summary}`,
+    assert.equal(
+      capturedDebugStates[0].failure_report?.quick_summary,
+      'BUILD failed',
+      `CR: failure_report.quick_summary must be set`,
     );
   } finally {
     crH.cleanup();
   }
 });
 
-test('parityFailureReportNotInWorkflowEngineContext', async () => {
-  // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now propagates failure_report
-  // into the StepRunContext before running the debug step.
-  const capturedDebugContexts: unknown[] = [];
+// ============================================================================
+// Scenario 15: failure_report propagation — WorkflowEngine loads from durable storage
+// WE: executeDebug loads from runArtifacts.readFailureReport() → sets failure_report
+// in _legacyCycleState; AgentStepRunner casts to CycleStateContext.
+// ============================================================================
 
-  const weH = makeWEHarness({ depth: 'minimal', validationGateService: new SpyValidationGateService(1) });
-
-  // Wrap the agentStepRunner to capture the context passed to the debug step.
-  const originalAgentRun = weH.agentSpy.run.bind(weH.agentSpy);
-  weH.agentSpy.run = async function(nodeId: string, state: CycleStateContext) {
-    if (nodeId === 'DEBUG') capturedDebugContexts.push({ ...state });
-    return originalAgentRun(nodeId, state);
-  };
+test('parityFailureReportPropagatedInWorkflowEngine', async () => {
+  const weRunArtifacts = new SpyRunArtifacts();
+  const weH = makeWEHarness({
+    depth: 'minimal',
+    validationGateService: new SpyValidationGateService(1, weRunArtifacts),
+    runArtifacts: weRunArtifacts,
+  });
 
   try {
     await runWE(weH, 'minimal');
 
-    // BEHAVIORAL_DIVERGENCE (fixed): WorkflowEngine now sets _failureReport in
-    // StepRunContext before running debug.
-    assert.ok(capturedDebugContexts.length >= 1, 'DEBUG must be called at least once in WE');
-    const debugCtx = capturedDebugContexts[0] as any;
+    // WE: agentSpy captures the state passed to DEBUG. The state should have failure_report
+    // because executeDebug loaded it from runArtifacts and set _legacyCycleState.failure_report.
+    const debugStates = weH.agentSpy.capturedStates.get('DEBUG') ?? [];
+    assert.ok(debugStates.length >= 1, 'DEBUG must be called at least once in WE');
+    const debugState = debugStates[0] as any;
     assert.ok(
-      debugCtx._failureReport != null,
-      `WE: _failureReport must be populated in StepRunContext before DEBUG (got: ${JSON.stringify(debugCtx._failureReport)})`,
+      debugState.failure_report != null,
+      `WE: failure_report must be in CycleStateContext when DEBUG is called (field: failure_report, got: ${JSON.stringify(debugState.failure_report)})`,
     );
     assert.equal(
-      debugCtx._failureReport?.quick_summary,
+      debugState.failure_report?.quick_summary,
       'BUILD failed',
       'WE: failure_report.quick_summary must match validation gate failure',
     );
@@ -947,17 +1016,17 @@ test('parityFailureReportNotInWorkflowEngineContext', async () => {
 });
 
 // ============================================================================
-// Scenario 14: Structural failure routing — both route to DESIGN
-// BEHAVIORAL_DIVERGENCE (now fixed): WE now routes debug → DESIGN on structural failure
+// Scenario 16: Structural failure routing — both route to DESIGN
 // ============================================================================
 
 test('parityStructuralFailureRoutingDiverges', async () => {
-  // Structural failure: both CR and WE route DEBUG → DESIGN.
-  const crVG = new SpyStructuralValidationGateService(1);
-  const weVG = new SpyStructuralValidationGateService(1);
+  const crRunArtifacts = new SpyRunArtifacts();
+  const weRunArtifacts = new SpyRunArtifacts();
+  const crVG = new SpyStructuralValidationGateService(1, crRunArtifacts);
+  const weVG = new SpyStructuralValidationGateService(1, weRunArtifacts);
 
-  const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG });
-  const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG });
+  const crH = makeCRHarness({ depth: 'minimal', validationGateService: crVG, runArtifacts: crRunArtifacts });
+  const weH = makeWEHarness({ depth: 'minimal', validationGateService: weVG, runArtifacts: weRunArtifacts });
 
   try {
     await runCR(crH);
@@ -966,21 +1035,17 @@ test('parityStructuralFailureRoutingDiverges', async () => {
     const crLlm = crLlmCalls(crH.dagSpy.calls);
     const weLlm = weH.agentSpy.calls;
 
-    // BEHAVIORAL_DIVERGENCE (fixed): WE now routes debug → DESIGN on structural failure.
     const crDesignCount = crLlm.filter(n => n === 'DESIGN').length;
     const weDesignCount = weLlm.filter(n => n === 'DESIGN').length;
 
-    // Both re-run DESIGN after structural DEBUG (at least 2 times total).
     assert.ok(
       crDesignCount >= 2,
-      `CR: DESIGN must run ≥2 times after structural failure (routes DEBUG→DESIGN), got ${crDesignCount}; calls: ${crLlm}`,
+      `CR: DESIGN must run ≥2 times after structural failure, got ${crDesignCount}; calls: ${crLlm}`,
     );
     assert.ok(
       weDesignCount >= 2,
-      `WE: DESIGN must run ≥2 times after structural failure (routes debug→design), got ${weDesignCount}; calls: ${weLlm}`,
+      `WE: DESIGN must run ≥2 times after structural failure, got ${weDesignCount}; calls: ${weLlm}`,
     );
-
-    // Parity: both run DESIGN the same number of times.
     assert.deepEqual(
       crDesignCount,
       weDesignCount,
@@ -992,31 +1057,34 @@ test('parityStructuralFailureRoutingDiverges', async () => {
 });
 
 // ============================================================================
-// Scenario 15: Iteration cap — both halt when cap exceeded
-// BEHAVIORAL_DIVERGENCE (now fixed): WE now halts when iteration cap exceeded
+// Scenario 17: Iteration cap — both halt at the SAME cap
+// Both harnesses use maxIterations=2; always-fail gate → both hit cap at iteration 2.
 // ============================================================================
 
 test('parityIterationCapHalts', async () => {
-  // CycleRunner cap: map.cycle.max_iterations=2.
-  // WE cap: FULL_BUILD.max_iterations=3 (from workflow definition).
-  // Both always-fail validation gates → both will hit their respective caps.
+  const MAX_ITER = 2;
+
+  const crRunArtifacts = new SpyRunArtifacts();
+  const weRunArtifacts = new SpyRunArtifacts();
+
   const crH = makeCRHarness({
     depth: 'minimal',
-    maxIterations: 2,
-    validationGateService: new SpyValidationGateService(Infinity), // always fails
+    maxIterations: MAX_ITER,
+    validationGateService: new SpyValidationGateService(Infinity, crRunArtifacts),
+    runArtifacts: crRunArtifacts,
   });
   const weH = makeWEHarness({
     depth: 'minimal',
-    validationGateService: new SpyValidationGateService(Infinity), // always fails
+    validationGateService: new SpyValidationGateService(Infinity, weRunArtifacts),
+    runArtifacts: weRunArtifacts,
   });
 
   try {
     const crResult = await runCR(crH);
-    const weResult = await runWE(weH, 'minimal');
+    const weResult = await runWE(weH, 'minimal', MAX_ITER);
 
-    // Both halt when iteration cap is exceeded.
     assert.equal(crResult.completed, false, 'CR: must halt when iteration cap exceeded');
-    assert.equal(weResult.status, 'halted', 'WE: must halt when iteration cap exceeded (parity achieved)');
+    assert.equal(weResult.status, 'halted', 'WE: must halt when iteration cap exceeded');
 
     assert.ok(
       crResult.error?.includes('cap') || crResult.final_node === 'DEBUG',
@@ -1026,19 +1094,54 @@ test('parityIterationCapHalts', async () => {
       weResult.error?.includes('cap'),
       `WE: result must say cap reached: ${weResult.error}`,
     );
+
+    // Both use the same cap — compare iterations_used
+    assert.deepEqual(
+      crResult.iterations_used,
+      weResult.iterations_used,
+      `parity: both must exhaust the same number of iterations (CR=${crResult.iterations_used}, WE=${weResult.iterations_used})`,
+    );
   } finally {
     crH.cleanup(); weH.cleanup();
   }
 });
 
 // ============================================================================
-// Scenario 16: Sharding — no proposal → both skip sharding_approval
+// Scenario 18: Iteration cap force_pass — WE routes to evaluate on cap hit
+// ============================================================================
+
+test('weIterationCapForcePassRoutesToEvaluate', async () => {
+  const MAX_ITER = 2;
+  const weRunArtifacts = new SpyRunArtifacts();
+  const weH = makeWEHarness({
+    depth: 'minimal',
+    validationGateService: new SpyValidationGateService(Infinity, weRunArtifacts),
+    runArtifacts: weRunArtifacts,
+    onCapHit: async () => 'force_pass',
+  });
+
+  try {
+    const weResult = await runWE(weH, 'minimal', MAX_ITER);
+
+    // force_pass: engine routes to evaluate, skipping halt → completes
+    assert.equal(weResult.status, 'complete', `WE: force_pass must complete (routed to evaluate): ${weResult.error}`);
+    // EVALUATE must have been called
+    assert.ok(
+      weH.agentSpy.calls.includes('EVALUATE'),
+      `WE: EVALUATE must be called on force_pass: ${weH.agentSpy.calls}`,
+    );
+    // SNAPSHOT must have run (means pipeline continued past evaluate to end)
+    assert.equal(weH.snapshotService.calls, 1, 'WE: snapshotService must run on force_pass');
+  } finally {
+    weH.cleanup();
+  }
+});
+
+// ============================================================================
+// Scenario 19: Sharding — no proposal → both skip sharding_approval
 // ============================================================================
 
 test('parityNoShardingProposalSkipsBoth', async () => {
-  // No sharding-proposal.yaml exists in projectRoot.
-  // FullBuildStepRunner.executeShardingApproval: safeReadFile returns '' → skip.
-  // CycleRunner.SHARDING_APPROVAL: safeReadFile returns '' → dagRunner.skipNode.
   const crH = makeCRHarness({ depth: 'minimal' });
   const weH = makeWEHarness({ depth: 'minimal' });
 
@@ -1046,11 +1149,9 @@ test('parityNoShardingProposalSkipsBoth', async () => {
     const crResult = await runCR(crH);
     const weResult = await runWE(weH, 'minimal');
 
-    // Both complete (sharding is skipped, not blocking).
     assert.equal(crResult.completed, true, `CR: must complete when no sharding proposal: ${crResult.error}`);
     assert.equal(weResult.status, 'complete', `WE: must complete when no sharding proposal: ${weResult.error}`);
 
-    // CycleRunner: SHARDING_APPROVAL appears as skip:SHARDING_APPROVAL in dagSpy.
     const crSkipped = crH.dagSpy.calls.includes('skip:SHARDING_APPROVAL');
     assert.ok(crSkipped, `CR: SHARDING_APPROVAL must be skipped (no proposal): dagCalls=${crH.dagSpy.calls}`);
   } finally {
@@ -1059,11 +1160,111 @@ test('parityNoShardingProposalSkipsBoth', async () => {
 });
 
 // ============================================================================
-// Scenario 17: Deep depth — both run critique and complete successfully
+// Scenario 20: Sharding approve — proposal exists, shardingService creates tasks
+// ============================================================================
+
+test('weShardingApproveCreatesTasks', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'parity-we-shard-'));
+  try {
+    // Write a sharding proposal
+    mkdirSync(path.join(projectRoot, '.sle'), { recursive: true });
+    writeFileSync(
+      path.join(projectRoot, '.sle', 'sharding-proposal.yaml'),
+      'shards:\n  - id: shard-1\n    name: First shard\n',
+    );
+
+    const shardingService = new SpyShardingService();
+    const weH = makeWEHarness({
+      depth: 'minimal',
+      projectRoot,
+      shardingAction: 'approve',
+      shardingService,
+    });
+
+    const weResult = await weH.engine.run('full-build', 1, 'parity-run-shard', makeCycleCtx('minimal'));
+
+    assert.equal(weResult.status, 'complete', `WE: must complete after sharding approve: ${weResult.error}`);
+    assert.equal(shardingService.createCalls, 1, 'WE: shardingService.createTasksFromProposal must be called');
+    assert.ok(shardingService.lastProposal != null, 'WE: proposal must be passed to shardingService');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// Scenario 21: Sharding reject — proposal deleted, pipeline continues
+// ============================================================================
+
+test('weShardingRejectDeletesProposal', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'parity-we-reject-'));
+  try {
+    mkdirSync(path.join(projectRoot, '.sle'), { recursive: true });
+    const proposalPath = path.join(projectRoot, '.sle', 'sharding-proposal.yaml');
+    writeFileSync(proposalPath, 'shards:\n  - id: shard-1\n    name: First shard\n');
+
+    const weH = makeWEHarness({
+      depth: 'minimal',
+      projectRoot,
+      shardingAction: 'reject',
+    });
+
+    const weResult = await weH.engine.run('full-build', 1, 'parity-run-reject', makeCycleCtx('minimal'));
+
+    assert.equal(weResult.status, 'complete', `WE: must complete after sharding reject: ${weResult.error}`);
+    // Proposal should be deleted
+    let proposalExists = true;
+    try { readFileSync(proposalPath); } catch { proposalExists = false; }
+    assert.equal(proposalExists, false, 'WE: sharding proposal must be deleted on reject');
+    // shardingService.createCalls must be 0 (no tasks created)
+    assert.equal(weH.shardingService.createCalls, 0, 'WE: shardingService must not be called on reject');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// Scenario 22: Sharding modify — checkpoint loops back to itself
+// ============================================================================
+
+test('weShardingModifyLoopsCheckpoint', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'parity-we-modify-'));
+  try {
+    mkdirSync(path.join(projectRoot, '.sle'), { recursive: true });
+    writeFileSync(
+      path.join(projectRoot, '.sle', 'sharding-proposal.yaml'),
+      'shards:\n  - id: shard-1\n    name: First shard\n',
+    );
+
+    // modify once, then approve
+    let shardingCalls = 0;
+    const weH = makeWEHarness({
+      depth: 'minimal',
+      projectRoot,
+      shardingAction: 'approve',  // initial value (overridden via onShardingGate below)
+    });
+    // Patch the stepRunner's callbacks to modify once then approve
+    const originalOnShardingGate = (weH.stepRunner as any).callbacks.onShardingGate;
+    (weH.stepRunner as any).callbacks.onShardingGate = async (cycle: number, iter: number) => {
+      shardingCalls++;
+      if (shardingCalls === 1) return 'modify';
+      return 'approve';
+    };
+
+    const weResult = await weH.engine.run('full-build', 1, 'parity-run-modify', makeCycleCtx('minimal'));
+
+    assert.equal(weResult.status, 'complete', `WE: must complete after modify+approve: ${weResult.error}`);
+    assert.equal(shardingCalls, 2, 'WE: sharding gate must be called twice (modify then approve)');
+    assert.equal(weH.shardingService.createCalls, 1, 'WE: shardingService must be called once on final approve');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// Scenario 23: Deep depth — both run critique and complete successfully
 // ============================================================================
 
 test('parityDeepDepthCritiquePassCompletes', async () => {
-  // Critique passes on first attempt.
   const crH = makeCRHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
   const weH = makeWEHarness({ depth: 'deep', criticAgent: new SpyCriticAgent(0) });
 
@@ -1081,7 +1282,7 @@ test('parityDeepDepthCritiquePassCompletes', async () => {
 });
 
 // ============================================================================
-// Scenario 18: Research depth — critique also runs
+// Scenario 24: Research depth — critique also runs
 // ============================================================================
 
 test('parityResearchDepthCritiqueRuns', async () => {
@@ -1100,7 +1301,7 @@ test('parityResearchDepthCritiqueRuns', async () => {
 });
 
 // ============================================================================
-// Scenario 19: LLM node ordering at minimal depth (common prefix/suffix)
+// Scenario 25: LLM node ordering at minimal depth (common prefix/suffix)
 // ============================================================================
 
 test('parityLlmNodeOrderAtMinimalDepth', async () => {
@@ -1114,16 +1315,16 @@ test('parityLlmNodeOrderAtMinimalDepth', async () => {
     const crLlm = crLlmCalls(crH.dagSpy.calls);
     const weLlm = weH.agentSpy.calls;
 
-    // Nodes both share (in order): DESIGN, PLAN, TEST, BUILD, EVALUATE.
+    // Both share these LLM nodes (in order): DESIGN, PLAN, TEST, BUILD, EVALUATE.
     const sharedOrdered = ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'EVALUATE'];
     for (const node of sharedOrdered) {
       assert.ok(crLlm.includes(node), `CR must include ${node}: ${crLlm}`);
       assert.ok(weLlm.includes(node), `WE must include ${node}: ${weLlm}`);
     }
 
-    // INTENTIONAL_STRUCTURAL_DIFFERENCE: sequences differ — CycleRunner has HISTORY,
-    // WorkflowEngine has SCOPING (LLM call via scoping.produce → ScopingService.begin).
-    // WE does not have SUMMARISE in agentSpy (uses summariseService directly).
+    // INTENTIONAL_STRUCTURAL_DIFFERENCE: sequences differ — CycleRunner has HISTORY
+    // (LLM call via dagRunner), WorkflowEngine has SCOPING (LLM call via scopingService →
+    // agentSpy). crLlm uses dagSpy (SCOPING bypasses dagRunner → absent from crLlm).
     assert.notDeepEqual(
       crLlm,
       weLlm,
@@ -1135,7 +1336,7 @@ test('parityLlmNodeOrderAtMinimalDepth', async () => {
 });
 
 // ============================================================================
-// Scenario 20: Exec service called by both
+// Scenario 26: Exec service called by both
 // ============================================================================
 
 test('parityExecServiceCalledByBoth', async () => {

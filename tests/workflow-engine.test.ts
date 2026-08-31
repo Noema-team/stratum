@@ -129,7 +129,9 @@ test('testSnapshotLogsDecision', () => {
 });
 
 test('testFullBuildMaxIterations', () => {
-  assert.ok(typeof FULL_BUILD.max_iterations === 'number' && FULL_BUILD.max_iterations > 0);
+  // max_iterations is no longer baked into the definition (DDR-031); it is passed externally
+  // to WorkflowEngine.run() so tests can control caps without mutating the definition.
+  assert.ok(!('max_iterations' in FULL_BUILD), 'max_iterations must not be in FULL_BUILD definition');
 });
 
 // ============================================================================
