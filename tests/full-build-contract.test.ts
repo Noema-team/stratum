@@ -764,6 +764,75 @@ test('contractExecCalledOnce', async () => {
 });
 
 // ============================================================================
+// Contract 18: Phantom iteration — cap hit does NOT create iteration 3 artifact
+// ============================================================================
+
+class TrackingRunArtifacts extends SpyRunArtifacts {
+  public createdDirs: Array<{ workflowRunId: string; iteration: number }> = [];
+  override async createRunDir(workflowRunId: string, iteration: number): Promise<void> {
+    this.createdDirs.push({ workflowRunId, iteration });
+  }
+}
+
+test('contractCapHaltDoesNotCreatePhantomIteration', async () => {
+  const ra = new TrackingRunArtifacts();
+  const vg = new SpyValidationGateService(Infinity, ra);  // always fails → iterates
+  const h = makeHarness({ validationGateService: vg, runArtifacts: ra });
+
+  try {
+    const result = await run(h, 'minimal', 2);
+    assert.equal(result.status, 'halted');
+    assert.equal(result.iterations_used, 2, 'iterations_used must equal cap');
+    // iteration 2 dir may be created; iteration 3 dir must NOT exist
+    const dirs = ra.createdDirs.map(d => d.iteration);
+    assert.ok(!dirs.includes(3), `phantom iteration 3 must not be created; created: ${JSON.stringify(ra.createdDirs)}`);
+  } finally { h.cleanup(); }
+});
+
+test('contractCapHaltIterationsUsedEqualsCapNotCapPlusOne', async () => {
+  const ra = new SpyRunArtifacts();
+  const vg = new SpyValidationGateService(Infinity, ra);
+  const h = makeHarness({ validationGateService: vg, runArtifacts: ra });
+
+  try {
+    const result = await run(h, 'minimal', 1);
+    assert.equal(result.status, 'halted');
+    assert.equal(result.iterations_used, 1, 'cap=1: iterations_used must be 1, not 2');
+  } finally { h.cleanup(); }
+});
+
+test('contractForcePassRoutesCxtIterationEqualsCapNotCapPlusOne', async () => {
+  const ra = new TrackingRunArtifacts();
+  const vg = new SpyValidationGateService(Infinity, ra);  // always fails → iterates
+  const capturedCtxs: StepRunContext[] = [];
+  const agentRunner = {
+    async run(role: string, ctx: StepRunContext): Promise<AgentRunResult> {
+      if (role === 'evaluator') capturedCtxs.push({ ...ctx });
+      return { success: true, next_node: null, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' };
+    },
+  };
+  const h = makeHarness({
+    validationGateService: vg,
+    runArtifacts: ra,
+    agentRunner: agentRunner as any,
+    onCapHit: async () => ({ action: 'route' as const, targetStepId: 'evaluate' }),
+  });
+
+  try {
+    const result = await run(h, 'minimal', 2);
+    assert.equal(result.status, 'complete', `force_pass must complete: ${result.error}`);
+    // evaluator must have run with iteration === 2, not 3
+    const evalCtx = capturedCtxs.find(c => c.iteration === 2);
+    assert.ok(evalCtx != null, `evaluator must run with iteration=2; got iterations: ${capturedCtxs.map(c => c.iteration)}`);
+    const phantom = capturedCtxs.find(c => c.iteration === 3);
+    assert.ok(phantom == null, 'evaluator must NOT run with phantom iteration=3');
+    // no artifact dir for iteration 3
+    const dirs = ra.createdDirs.map(d => d.iteration);
+    assert.ok(!dirs.includes(3), `phantom iteration 3 artifact dir must not be created; dirs: ${JSON.stringify(ra.createdDirs)}`);
+  } finally { h.cleanup(); }
+});
+
+// ============================================================================
 // NOTE: _critiqueRetries is process-local (resets on process restart).
 // This is execution-recovery debt — not fixed in this pass.
 // The retry counter is held in FullBuildStepRunner._critiqueRetries Map<runId, number>.

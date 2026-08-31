@@ -2,7 +2,7 @@ import { WorkflowEngine } from '../workflow/engine.js';
 import { getWorkflow } from '../workflow/registry.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../workflow/engine.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet, ExecutorCapability } from './types.js';
-import { validateFullBuildParams, fullBuildCapHitAction } from './workflow-parameters.js';
+import { resolveWorkflowInvocation } from './workflow-invocation.js';
 
 const STRATUM_CAPABILITIES: ReadonlySet<ExecutorCapability> = new Set<ExecutorCapability>([
   'repo.read',
@@ -36,24 +36,17 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       ? request.stepId
       : (def?.steps[0]?.id ?? 'scoping.gather');
 
-    // Load the frozen resolved parameters from the persisted WorkflowRun, if available.
-    // On resume the engine will overwrite with the persisted value anyway, but this
-    // lets the adapter pass the right parameters on initial dispatch too.
+    // Load frozen resolved parameters from the persisted WorkflowRun when available.
     const persistedRun = this.engineDeps.workflowRunRepository?.findById(request.workflowRunId);
     const rawParams = persistedRun?.resolvedParameters ?? request.workflowParameters;
 
-    // Strict validation — throws on explicit invalid values (not silently defaults).
-    const params = validateFullBuildParams(rawParams);
+    // Resolve workflow-specific parameter contract and cap semantics via seam.
+    const invocation = resolveWorkflowInvocation(request.workflowId, rawParams);
 
-    // Per-request cap-hit behavior overrides the injected engineOpts when specified.
     const mergedOpts: WorkflowEngineOptions = {
       ...this.engineOpts,
-      onCapHit: async () => fullBuildCapHitAction(params.on_cap_hit),
+      onCapHit: invocation.onCapHit,
     };
-
-    // Persist normalized params (with all defaults filled) so resume reads
-    // the same values regardless of any later WorkItem.workflowParameters change.
-    const normalizedParams: Record<string, unknown> = { ...params };
 
     const engine = new WorkflowEngine(this.engineDeps, mergedOpts);
     const result = await engine.run(
@@ -62,8 +55,8 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       request.goal,
       entryStepId,
       request.workItemId,
-      params.max_iterations,
-      normalizedParams,
+      invocation.maxIterations,
+      invocation.normalizedParams,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —

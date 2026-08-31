@@ -24,6 +24,7 @@ import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
 import type { StepRunContext } from '../src/workflow/types.js';
 import type { FailureReport, PlanningDepth } from '../src/types.js';
+import { resolveWorkflowInvocation } from '../src/execution/workflow-invocation.js';
 
 // ============================================================================
 // Spies
@@ -247,4 +248,36 @@ test('adapterForcePassRoutesToEvaluate', async () => {
     assert.ok(agentSpy.calls.includes('evaluator'),
       `force_pass must route to evaluator; calls: ${agentSpy.calls.join(', ')}`);
   } finally { cleanup(); }
+});
+
+// ============================================================================
+// resolveWorkflowInvocation seam — non-full-build workflows bypass FullBuildParams
+// ============================================================================
+
+test('resolveWorkflowInvocationFullBuildFillsDefaults', () => {
+  // full-build: raw params with no max_iterations → defaults filled
+  const invocation = resolveWorkflowInvocation('full-build', { planning_depth: 'minimal' });
+  assert.equal(invocation.maxIterations, 10, 'full-build must get default max_iterations=10');
+  assert.equal((invocation.normalizedParams as any).max_iterations, 10);
+  assert.equal((invocation.normalizedParams as any).on_cap_hit, 'halt');
+});
+
+test('resolveWorkflowInvocationNonFullBuildPassesRawParams', () => {
+  const raw = { some_param: 'value', other: 42 };
+  const invocation = resolveWorkflowInvocation('draft-artifact', raw);
+  // maxIterations is undefined — no cap imposed
+  assert.equal(invocation.maxIterations, undefined, 'non-full-build must not impose max_iterations');
+  // params pass through verbatim — no FullBuildParams defaults injected
+  assert.deepEqual(invocation.normalizedParams, raw,
+    'non-full-build params must not be normalized through FullBuildParams');
+  // specifically: full-build defaults must NOT appear
+  assert.equal((invocation.normalizedParams as any).planning_depth, undefined,
+    'planning_depth default must not be injected for non-full-build workflows');
+});
+
+test('resolveWorkflowInvocationNonFullBuildDoesNotThrowOnMissingFullBuildFields', () => {
+  // validateFullBuildParams would throw for invalid planning_depth — non-full-build must not
+  assert.doesNotThrow(() => {
+    resolveWorkflowInvocation('draft-artifact', { planning_depth: 'not-a-valid-depth' });
+  }, 'non-full-build must not validate through FullBuildParams schema');
 });

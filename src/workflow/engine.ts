@@ -354,28 +354,46 @@ export class WorkflowEngine {
         }
 
         if ((result as any)._iterate === true) {
-          // Increment iteration locally — authoritative. The FullBuildStepRunner's
-          // mapManager.update() is an advisory legacy sync, not the source of truth.
-          iteration += 1;
-          revision = 0;  // new iteration resets revision
+          const currentIteration = iteration;
+          const nextIteration = iteration + 1;
+          const cap = maxIterations ?? def.max_iterations ?? Infinity;
 
-          const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id, revision, maxIterations);
-          if (capResult !== null) {
-            if ('_route' in capResult) {
-              // route action: skip to the named step and continue.
-              const forceIndex = def.steps.findIndex(s => s.id === (capResult as any)._route);
+          if (nextIteration > cap) {
+            // Cap hit: invoke policy WITHOUT mutating iteration/revision.
+            const capAction: CapHitAction = this.opts.onCapHit
+              ? await this.opts.onCapHit(workflowRunId, step.id, currentIteration)
+              : { action: 'halt' };
+
+            if (capAction.action === 'route' && capAction.targetStepId) {
+              const forceIndex = def.steps.findIndex(s => s.id === capAction.targetStepId);
               if (forceIndex !== -1) {
                 await this.updateRunCursor(workflowRunId, {
                   status: 'active',
                   current_step_id: def.steps[forceIndex].id,
-                  iteration, revision, awaiting_checkpoint: null,
+                  iteration: currentIteration, revision, awaiting_checkpoint: null,
                 });
                 stepIndex = forceIndex;
                 continue;
               }
             }
-            return capResult as WorkflowRunResult;
+            // halt (default if route target not found)
+            await this.updateRunCursor(workflowRunId, {
+              status: 'halted',
+              current_step_id: step.id,
+              iteration: currentIteration, revision, awaiting_checkpoint: null,
+            });
+            return {
+              run_id: workflowRunId,
+              status: 'halted',
+              final_step_id: step.id,
+              iterations_used: currentIteration,
+              error: `Iteration cap (${cap}) reached`,
+            };
           }
+
+          // Cap not hit: advance to new iteration.
+          iteration = nextIteration;
+          revision = 0;
 
           // Advance cursor to loop target with updated iteration.
           await this.updateRunCursor(workflowRunId, {
@@ -703,36 +721,4 @@ export class WorkflowEngine {
     });
   }
 
-  private async checkIterationCap(
-    def: WorkflowDefinition,
-    iteration: number,
-    workflowRunId: string,
-    stepId: string,
-    revision: number,
-    externalMaxIterations?: number,
-  ): Promise<WorkflowRunResult | { _route: string } | null> {
-    const cap = externalMaxIterations ?? def.max_iterations ?? Infinity;
-    if (iteration <= cap) return null;
-
-    const capAction: CapHitAction = this.opts.onCapHit
-      ? await this.opts.onCapHit(workflowRunId, stepId, iteration)
-      : { action: 'halt' };
-
-    if (capAction.action === 'route') {
-      return { _route: capAction.targetStepId };
-    }
-    // halt
-    await this.updateRunCursor(workflowRunId, {
-      status: 'halted',
-      current_step_id: stepId,
-      iteration, revision, awaiting_checkpoint: null,
-    });
-    return {
-      run_id: workflowRunId,
-      status: 'halted',
-      final_step_id: stepId,
-      iterations_used: iteration - 1,
-      error: `Iteration cap (${cap}) reached`,
-    };
-  }
 }
