@@ -19,6 +19,7 @@ import type {
   WorkflowDefinition,
   WorkflowEngineDeps,
   WorkflowEngineOptions,
+  WorkflowRun,
 } from '../src/workflow/index.js';
 
 // ============================================================================
@@ -366,4 +367,116 @@ test('testWorkItemIdPersistedInRow', async () => {
   await engine.run('wf-wi-link', 1, 'run-wi', DUMMY_CYCLE_CTX, undefined, workItemId);
   const found = repo.findById('run-wi')!;
   assert.equal(found.work_item_id, workItemId);
+});
+
+// ============================================================================
+// 4. Revision contract — confirm-revise increments revision;
+//    iteration increment resets revision to 0.
+// ============================================================================
+
+// Subclass that captures every update() call so we can inspect revision history.
+class RecordingRunRepo extends WorkflowRunRepository {
+  public updates: Array<Pick<WorkflowRun, 'iteration' | 'revision' | 'current_step_id'>> = [];
+  update(run: WorkflowRun): void {
+    super.update(run);
+    this.updates.push({ iteration: run.iteration, revision: run.revision, current_step_id: run.current_step_id });
+  }
+}
+
+test('confirmReviseIncrementsRevision', async () => {
+  // Workflow: design → confirm → design → confirm → end
+  //   Confirm calls 1 and 2 each return _increment_revision + route back to design.
+  //   Confirm call 3 approves and advances.
+  let confirmCallCount = 0;
+  const stepRunner = {
+    run: async () => ({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 }),
+    handleCheckpoint: async () => {
+      confirmCallCount++;
+      if (confirmCallCount < 3) {
+        return { outcome: 'completed' as const, next_step_id: 'design', _increment_revision: true as const };
+      }
+      return { outcome: 'completed' as const, next_step_id: '__next__' };
+    },
+  };
+
+  registerWorkflow(makeWorkflow('wf-revise', [
+    { id: 'design', kind: 'produce' },
+    { id: 'confirm', kind: 'checkpoint' },
+    { id: 'final', kind: 'gather' },
+  ]));
+
+  const db = openMemoryDb();
+  const repo = new RecordingRunRepo(db);
+  const deps = makeStubDeps({ workflowRunRepository: repo, stepRunner: stepRunner as any });
+  const engine = new WorkflowEngine(deps, makeStubOpts());
+
+  const result = await engine.run('wf-revise', 1, 'run-revise', DUMMY_CYCLE_CTX);
+  assert.equal(result.status, 'complete');
+
+  // After first revise, an update with revision=1 must exist.
+  const rev1Update = repo.updates.find(u => u.revision === 1);
+  assert.ok(rev1Update, `expected an update with revision=1; updates: ${JSON.stringify(repo.updates)}`);
+
+  // After second revise, an update with revision=2 must exist.
+  const rev2Update = repo.updates.find(u => u.revision === 2);
+  assert.ok(rev2Update, `expected an update with revision=2; updates: ${JSON.stringify(repo.updates)}`);
+
+  // Final persisted state should have revision=2 (third confirm just advances, no increment).
+  const final = repo.findById('run-revise')!;
+  assert.equal(final.revision, 2);
+  assert.equal(final.status, 'complete');
+});
+
+test('iterationIncrementResetsRevision', async () => {
+  // Workflow: confirm(revise once) → build → debug(_iterate) → build → end
+  //   Revision goes to 1 after confirm revise.
+  //   After debug returns _iterate:true, iteration=2 and revision resets to 0.
+  let confirmDone = false;
+  let debugDone = false;
+
+  const stepRunner = {
+    run: async (step: { id: string }) => {
+      if (step.id === 'debug' && !debugDone) {
+        debugDone = true;
+        return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1,
+          next_step_id: 'build', _iterate: true as const };
+      }
+      return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 };
+    },
+    handleCheckpoint: async () => {
+      if (!confirmDone) {
+        confirmDone = true;
+        return { outcome: 'completed' as const, next_step_id: 'build', _increment_revision: true as const };
+      }
+      return { outcome: 'completed' as const, next_step_id: '__next__' };
+    },
+  };
+
+  registerWorkflow(makeWorkflow('wf-iter-reset', [
+    { id: 'confirm', kind: 'checkpoint' },
+    { id: 'build', kind: 'produce' },
+    { id: 'debug', kind: 'produce' },
+    { id: 'final', kind: 'gather' },
+  ]));
+
+  const db = openMemoryDb();
+  const repo = new RecordingRunRepo(db);
+  const deps = makeStubDeps({ workflowRunRepository: repo, stepRunner: stepRunner as any });
+  const engine = new WorkflowEngine(deps, makeStubOpts());
+
+  const result = await engine.run('wf-iter-reset', 1, 'run-iter-reset', DUMMY_CYCLE_CTX);
+  assert.equal(result.status, 'complete');
+
+  // After confirm revise, an update with revision=1 must exist.
+  const rev1Update = repo.updates.find(u => u.revision === 1);
+  assert.ok(rev1Update, `expected revision=1 update; updates: ${JSON.stringify(repo.updates)}`);
+
+  // After the debug step triggers _iterate, an update with iteration=2, revision=0 must appear.
+  const iterResetUpdate = repo.updates.find(u => u.iteration === 2 && u.revision === 0);
+  assert.ok(iterResetUpdate, `expected iteration=2, revision=0 update; updates: ${JSON.stringify(repo.updates)}`);
+
+  // Final persisted state: iteration=2, revision=0.
+  const final = repo.findById('run-iter-reset')!;
+  assert.equal(final.iteration, 2);
+  assert.equal(final.revision, 0);
 });

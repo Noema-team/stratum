@@ -73,6 +73,9 @@ export interface ExecutionRequest {
   constraints: Array<{ description: string; type?: string }>;
   permissions: ExecutionPermissions;
   budget: ExecutionBudget;
+  // Workflow-specific run parameters. Validated per workflowId by the adapter.
+  // full-build recognises: planning_depth, max_iterations, on_cap_hit.
+  workflowParameters?: Record<string, unknown>;
 }
 
 // ============================================================================
