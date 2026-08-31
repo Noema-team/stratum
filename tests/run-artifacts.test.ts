@@ -108,18 +108,22 @@ test('testUpdateNodeStatusComplete', async () => {
   assert.deepStrictEqual(design!.artifacts_written, ['docs/requirements.md', 'docs/architecture.md']);
 });
 
-test('testUpdateNodeUnknownIdThrows', async () => {
+test('testUpdateNodeUnknownIdAddsEntry', async () => {
   const root = makeTempDir();
   const mgr = new RunArtifactManager({ projectRoot: root });
   await mgr.createRunDir(1, 1);
   await mgr.createManifest({ cycleId: 'abc123de-0000-0000-0000-000000000001', cycleNumber: 1, iteration: 1, planningDepth: 'standard' });
 
-  // Unknown node update is a no-op (nodes.map just skips)
-  // Should not throw
+  // Unknown node: added dynamically (observability, non-fatal)
   await mgr.updateNodeStatus(1, 1, 'NONEXISTENT', { status: 'running' });
   const manifest = await mgr.readManifest(1, 1);
-  // All nodes still pending - no effect
-  for (const node of manifest.nodes) {
+
+  const added = manifest.nodes.find((n) => n.id === 'NONEXISTENT');
+  assert.ok(added, 'unknown node should be added to manifest');
+  assert.strictEqual(added!.status, 'running');
+
+  // Original nodes unaffected
+  for (const node of manifest.nodes.filter((n) => n.id !== 'NONEXISTENT')) {
     assert.strictEqual(node.status, 'pending');
   }
 });

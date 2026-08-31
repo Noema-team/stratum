@@ -72,6 +72,7 @@ const WI: WorkItem = {
   parentId: undefined,
   acceptanceCriteria: [], constraints: [], requiredEvidence: [],
   dependencies: [], createdAt: NOW, updatedAt: NOW,
+  workflowParameters: undefined,
 };
 
 const SE: StepExecution = {

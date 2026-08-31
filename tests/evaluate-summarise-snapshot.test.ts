@@ -6,9 +6,8 @@ import { mkdtempSync } from 'fs';
 import { promises as realFs } from 'fs';
 import { SnapshotService } from '../src/snapshot-service.js';
 import { SummariseService } from '../src/summarise-service.js';
-import { roleForNode } from '../src/agent-runner.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
-import type { CycleStateContext } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { ManifestNodeEntry, RunManifest } from '../src/run-artifacts.js';
 import type { SnapshotMetadata } from '../src/snapshot-service.js';
@@ -21,10 +20,11 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-snapshot-test-'));
 }
 
-function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1, iteration: 1, planning_depth: 'standard',
-    intent: 'Build a widget system', current_node: 'EVALUATE', ...overrides,
+    workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'evaluate',
+    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    goal: 'Build a widget system', projectRoot: '/test', ...overrides,
   };
 }
 
@@ -102,29 +102,15 @@ class MockRunArtifacts {
 }
 
 class MockAgentRunner {
-  public calls: Array<{ node: string }> = [];
+  public calls: Array<{ role: string }> = [];
   constructor(private result: AgentRunResult) {}
-  async run(node: string, _state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push({ node });
+  async run(role: string, _ctx: StepRunContext): Promise<AgentRunResult> {
+    this.calls.push({ role });
     return this.result;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
-
-// ─── Role mappings ────────────────────────────────────────────────────────────
-
-test('roleForNode: EVALUATE → evaluator', () => {
-  assert.strictEqual(roleForNode('EVALUATE'), 'evaluator');
-});
-
-test('roleForNode: SUMMARISE → undefined (daemon-generated, no LLM)', () => {
-  assert.strictEqual(roleForNode('SUMMARISE'), undefined);
-});
-
-test('roleForNode: SNAPSHOT → undefined (system node)', () => {
-  assert.strictEqual(roleForNode('SNAPSHOT'), undefined);
-});
 
 // ─── SummariseService tests ───────────────────────────────────────────────────
 

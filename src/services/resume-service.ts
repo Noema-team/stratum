@@ -345,6 +345,7 @@ export class ResumeService {
           constraints: workItem.constraints,
           permissions: { pushBranch: false, createPr: false, merge: false },
           budget: {},
+          workflowParameters: run.resolvedParameters,
         });
       } catch (err) {
         const completedAt = new Date().toISOString();

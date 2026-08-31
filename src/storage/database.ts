@@ -293,6 +293,15 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_workflow_runs_work_item ON workflow_runs(work_item_id);
   CREATE INDEX idx_workflow_runs_status    ON workflow_runs(status);
   `,
+
+  // Migration 7: workflow parameter provenance chain.
+  // work_items.workflow_parameters_json: requested workflow configuration from the requester.
+  // workflow_runs.resolved_parameters_json: validated, frozen snapshot used by this specific run.
+  // On resume the engine reads resolved_parameters_json — never re-reads workflow_parameters_json.
+  `
+  ALTER TABLE work_items    ADD COLUMN workflow_parameters_json TEXT;
+  ALTER TABLE workflow_runs ADD COLUMN resolved_parameters_json TEXT;
+  `,
 ];
 
 // ============================================================================

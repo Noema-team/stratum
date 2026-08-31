@@ -42,6 +42,10 @@ export const WorkItemSchema = z.object({
   parentId: UUIDSchema.optional(),
   dependencies: z.array(UUIDSchema),
 
+  // Workflow-specific configuration for this work item. Validated and frozen
+  // onto WorkflowRun.resolvedParameters at initial dispatch.
+  workflowParameters: z.record(z.unknown()).optional(),
+
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
 });

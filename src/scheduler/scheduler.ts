@@ -153,6 +153,7 @@ export class Scheduler {
         budget: {
           maxAttempts: this.config.maxAttempts,
         },
+        workflowParameters: item.workflowParameters,
       });
 
       const completedAt = new Date().toISOString();

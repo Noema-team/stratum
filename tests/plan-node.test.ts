@@ -7,7 +7,7 @@ import { join } from 'path';
 import { ContextManager } from '../src/context-manager.js';
 import { DEFAULT_CONFIG } from '../src/context-manager.js';
 import { buildUserMessage } from '../src/agent-runner.js';
-import type { CycleStateContext } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { FailureReport } from '../src/types.js';
 import { RunArtifactManager as RealRunArtifactManager } from '../src/run-artifacts.js';
 
@@ -73,10 +73,10 @@ test('testFailureContextInContextAssembly', async () => {
   };
 
   const ctx = await cm.assemble('planner', {
-    cycle_number: 1, iteration: 2, planning_depth: 'standard',
-    intent: 'Build widgets', current_node: 'PLAN',
-    failure_report: report,
-  });
+    workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
+    cycleNumber: 1, iteration: 2, revision: 0, planningDepth: 'standard',
+    goal: 'Build widgets', projectRoot: root, failureReport: report,
+  } as StepRunContext);
 
   assert.ok(ctx.failure_context !== undefined, 'failure_context should be set on iteration 2');
   assert.ok(ctx.failure_context!.includes('correctness'), 'failed category not in failure_context');
@@ -89,13 +89,13 @@ test('testNoFailureContextOnIteration1', async () => {
   const cm = new ContextManager(root, DEFAULT_CONFIG, fsMock);
 
   const ctx = await cm.assemble('planner', {
-    cycle_number: 1, iteration: 1, planning_depth: 'standard',
-    intent: 'Build widgets', current_node: 'PLAN',
-    failure_report: {
+    workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
+    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    goal: 'Build widgets', projectRoot: root, failureReport: {
       cycle: 1, iteration: 0, run_dir: '', run_id: '',
       quick_summary: 'X', failed_categories: ['a'], passed_categories: [],
     },
-  });
+  } as StepRunContext);
 
   // iteration=1, so failure_context should NOT be injected even with report
   assert.strictEqual(ctx.failure_context, undefined);
@@ -116,9 +116,10 @@ test('testPlannerContextExcludesImplementationFiles', async () => {
 
   const cm = new ContextManager(root, DEFAULT_CONFIG);
   const ctx = await cm.assemble('planner', {
-    cycle_number: 1, iteration: 1, planning_depth: 'standard',
-    intent: 'Build widgets', current_node: 'PLAN',
-  });
+    workflowRunId: 'test-run-1', workflowId: 'full-build', stepId: 'PLAN',
+    cycleNumber: 1, iteration: 1, revision: 0, planningDepth: 'standard',
+    goal: 'Build widgets', projectRoot: root,
+  } as StepRunContext);
 
   // Planner reads: requirements, architecture, cycle-charter
   assert.ok('requirements' in ctx.artifact_slices, 'requirements should be in planner context');

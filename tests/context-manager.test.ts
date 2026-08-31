@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'assert';
-import { ContextManager, DEFAULT_CONFIG, CycleStateContext } from '../src/context-manager.js';
+import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { AgentRole } from '../src/types.js';
 
 // ─── In-memory FS mock ────────────────────────────────────────────────────────
@@ -25,13 +26,17 @@ function docPath(key: string): string {
   return `/project/.sle/project-docs/${key}.md`;
 }
 
-function baseState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function baseState(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1,
+    workflowRunId: 'test-run-1',
+    workflowId: 'full-build',
+    stepId: 'DESIGN',
+    cycleNumber: 1,
     iteration: 1,
-    planning_depth: 'standard',
-    intent: 'Build a widget',
-    current_node: 'DESIGN',
+    revision: 0,
+    planningDepth: 'standard',
+    goal: 'Build a widget',
+    projectRoot: ROOT,
     ...overrides,
   };
 }
@@ -53,7 +58,7 @@ test('testStateSummaryContainsAllFields', async () => {
 test('testTaskDescriptionContainsNodeAndIntent', async () => {
   const fsMock = makeFsMock({});
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('designer', baseState({ current_node: 'PLAN' }));
+  const result = await cm.assemble('designer', baseState({ stepId: 'PLAN' }));
 
   assert.ok(result.task.includes('Build a widget'), 'intent not in task');
   assert.ok(result.task.length > 0, 'task is empty');
@@ -65,7 +70,7 @@ test('testArtifactSlicesLoadedForRole', async () => {
     [docPath('test-plan')]: '# Test Plan\nTest here.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('tester', baseState({ current_node: 'TEST' }));
+  const result = await cm.assemble('tester', baseState({ stepId: 'TEST' }));
 
   assert.ok('requirements' in result.artifact_slices, 'requirements slice missing');
   assert.ok('test-plan' in result.artifact_slices, 'test-plan slice missing');
@@ -144,7 +149,7 @@ test('testFailureContextNotInjectedOnIteration1', async () => {
     'designer',
     baseState({
       iteration: 1,
-      failure_report: {
+      failureReport: {
         cycle: 1,
         iteration: 1,
         run_id: 'run-001',
@@ -166,7 +171,7 @@ test('testFailureContextInjectedOnIteration2', async () => {
     'designer',
     baseState({
       iteration: 2,
-      failure_report: {
+      failureReport: {
         cycle: 1,
         iteration: 1,
         run_id: 'run-001',
@@ -251,7 +256,7 @@ test('testBuilderRoleLoadsArtifactsAtDeepDepth', async () => {
     [docPath('build-plan')]: '# Build Plan',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('builder', baseState({ current_node: 'BUILD', planning_depth: 'deep' }));
+  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', planningDepth: 'deep' }));
 
   assert.ok('requirements' in result.artifact_slices, 'requirements missing');
   assert.ok('architecture' in result.artifact_slices, 'architecture missing');
@@ -268,7 +273,7 @@ test('testBuilderExcludesPlanAtStandardDepth', async () => {
     [docPath('plan')]: '# Plan — should not appear',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('builder', baseState({ current_node: 'BUILD', planning_depth: 'standard' }));
+  const result = await cm.assemble('builder', baseState({ stepId: 'BUILD', planningDepth: 'standard' }));
 
   assert.ok('requirements' in result.artifact_slices);
   assert.ok('architecture' in result.artifact_slices);
@@ -278,10 +283,10 @@ test('testBuilderExcludesPlanAtStandardDepth', async () => {
 test('testNullCurrentNode', async () => {
   const fsMock = makeFsMock({});
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('designer', baseState({ current_node: null }));
+  // stepId is required string — empty string produces a sensible fallback
+  const result = await cm.assemble('designer', baseState({ stepId: '' }));
 
-  assert.ok(result.task.length > 0, 'task empty with null node');
-  assert.ok(result.state_summary.includes('not started'), 'null node not shown');
+  assert.ok(result.task.length > 0, 'task empty with empty stepId');
 });
 
 test('testEphemeralArtifactsInjected', async () => {
@@ -291,7 +296,7 @@ test('testEphemeralArtifactsInjected', async () => {
     'planner',
     baseState({
       iteration: 2,
-      failure_report: {
+      failureReport: {
         cycle: 1,
         iteration: 1,
         run_id: 'run-001',
@@ -316,7 +321,7 @@ test('testFacilitatorChatMode', async () => {
     [docPath('open-questions')]: '# Questions\nUnknowns.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'chat' }));
+  const result = await cm.assemble('facilitator', baseState({ facilitatorMode: 'chat' }));
 
   assert.ok('system-description' in result.artifact_slices);
   assert.ok('open-questions' in result.artifact_slices);
@@ -328,7 +333,7 @@ test('testFacilitatorDecisionMode', async () => {
     [docPath('test-plan')]: '# Test Plan\nTests.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'decision' }));
+  const result = await cm.assemble('facilitator', baseState({ facilitatorMode: 'decision' }));
 
   assert.ok('plan' in result.artifact_slices, 'plan missing in decision mode');
   assert.ok('test-plan' in result.artifact_slices, 'test-plan missing in decision mode');
@@ -340,7 +345,7 @@ test('testFacilitatorScopingMode', async () => {
     [docPath('cycle-charter')]: '# Charter\nCharter.',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('facilitator', baseState({ facilitator_mode: 'scoping' }));
+  const result = await cm.assemble('facilitator', baseState({ facilitatorMode: 'scoping' }));
 
   assert.ok('cycle-scope-draft' in result.artifact_slices, 'scope-draft missing in scoping mode');
   assert.ok('cycle-charter' in result.artifact_slices, 'cycle-charter missing in scoping mode');
@@ -353,7 +358,7 @@ test('testTesterNeverReceivesArchitecture', async () => {
     [docPath('test-plan')]: '# Tests',
   });
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
-  const result = await cm.assemble('tester', baseState({ current_node: 'TEST' }));
+  const result = await cm.assemble('tester', baseState({ stepId: 'TEST' }));
 
   assert.ok(!('architecture' in result.artifact_slices), 'TDD violation: Tester received architecture');
   assert.ok('requirements' in result.artifact_slices);
@@ -369,7 +374,7 @@ test('testSourceFilesInjectedForBuilder', async () => {
   const cm = new ContextManager(ROOT, DEFAULT_CONFIG, fsMock);
   const result = await cm.assemble(
     'builder',
-    baseState({ source_files: ['src/service.ts'] })
+    baseState({ sourceFiles: ['src/service.ts'] })
   );
 
   assert.ok('service' in result.artifact_slices, 'source file not injected for builder');
@@ -386,7 +391,7 @@ test('testDebuggerLoadsRunArtifacts', async () => {
   const result = await cm.assemble(
     'debugger',
     baseState({
-      failure_report: {
+      failureReport: {
         cycle: 1,
         iteration: 1,
         run_id: 'run-001',

@@ -7,14 +7,14 @@ import { join } from 'path';
 import {
   parseAgentOutput,
   buildUserMessage,
-  roleForNode,
   validateOutputPath,
   AgentRunner,
   type AgentRunResult,
 } from '../src/agent-runner.js';
 import type { AssembledContext } from '../src/types.js';
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
-import type { ContextManager, CycleStateContext } from '../src/context-manager.js';
+import type { ContextManager } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { RunArtifactManager } from '../src/run-artifacts.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -23,13 +23,17 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-agent-test-'));
 }
 
-function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1,
+    workflowRunId: 'test-run-1',
+    workflowId: 'full-build',
+    stepId: 'DESIGN',
+    cycleNumber: 1,
     iteration: 1,
-    planning_depth: 'standard',
-    intent: 'Build a widget',
-    current_node: 'DESIGN',
+    revision: 0,
+    planningDepth: 'standard',
+    goal: 'Build a widget',
+    projectRoot: '/test',
     ...overrides,
   };
 }
@@ -319,26 +323,6 @@ test('testBuildUserMessageNoFailureContextWhenAbsent', async () => {
   assert.ok(!msg.includes('Relevant Artifacts'));
 });
 
-// ─── roleForNode tests ────────────────────────────────────────────────────────
-
-test('testRoleForNodeKnownNodes', async () => {
-  assert.strictEqual(roleForNode('SCOPING'), 'facilitator');
-  assert.strictEqual(roleForNode('DESIGN'), 'designer');
-  assert.strictEqual(roleForNode('PLAN'), 'planner');
-  assert.strictEqual(roleForNode('TEST'), 'tester');
-  assert.strictEqual(roleForNode('BUILD'), 'builder');
-  assert.strictEqual(roleForNode('HISTORY'), 'historian');
-  assert.strictEqual(roleForNode('EVALUATE'), 'evaluator');
-});
-
-test('testRoleForNodeUnknownReturnsUndefined', async () => {
-  assert.strictEqual(roleForNode('EXEC'), undefined);
-  assert.strictEqual(roleForNode('VALIDATION_GATE'), undefined);
-  assert.strictEqual(roleForNode('SNAPSHOT'), undefined);
-  assert.strictEqual(roleForNode('SUMMARISE'), undefined); // daemon-generated, no LLM
-  assert.strictEqual(roleForNode('NONEXISTENT'), undefined);
-});
-
 test('testValidateOutputPathBuilderDenyList', async () => {
   // Builder cannot write to .sle/ or docs/
   assert.strictEqual(validateOutputPath('.sle/map.yaml', 'builder'), false);
@@ -390,7 +374,7 @@ Architecture content.`;
   const llm = new MockLLMProvider(output, 100);
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  const result = await runner.run('DESIGN', makeCycleState({ current_node: 'DESIGN' }));
+  const result = await runner.run('designer', makeStepRunCtx({ stepId: 'DESIGN' }));
 
   assert.ok(result.success, `Expected success, got: ${result.error}`);
   assert.deepStrictEqual(result.artifacts_written, ['docs/requirements.md', 'docs/architecture.md']);
@@ -419,7 +403,7 @@ Step 1.`;
   const llm = new MockLLMProvider(output);
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  const result = await runner.run('PLAN', makeCycleState({ current_node: 'PLAN' }));
+  const result = await runner.run('planner', makeStepRunCtx({ stepId: 'PLAN' }));
 
   assert.ok(result.success);
   assert.ok(result.raw_output_path.length > 0);
@@ -434,7 +418,7 @@ test('testRunnerReturnsFailureOnLLMError', async () => {
   const llm = new MockLLMProvider(new Error('Connection refused'));
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  const result = await runner.run('DESIGN', makeCycleState());
+  const result = await runner.run('designer', makeStepRunCtx());
 
   assert.strictEqual(result.success, false);
   assert.ok(result.error?.includes('Connection refused'));
@@ -449,27 +433,13 @@ test('testRunnerReturnsFailureOnParseError', async () => {
   const llm = new MockLLMProvider('This output has no SLE-OUTPUT preamble at all.', 10);
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  const result = await runner.run('DESIGN', makeCycleState());
+  const result = await runner.run('designer', makeStepRunCtx());
 
   assert.strictEqual(result.success, false);
   assert.ok(result.error?.includes('Output parsing failed'));
   assert.strictEqual(result.tokens_used, 10);
   // raw output still written even on parse failure
   assert.strictEqual(ram.written['DESIGN'], 'This output has no SLE-OUTPUT preamble at all.');
-});
-
-test('testRunnerReturnsFailureForUnknownNode', async () => {
-  const root = makeTempDir();
-  const { mock } = makeFsMock();
-  const ram = new MockRunArtifactManager();
-  const cm = new MockContextManager(makeAssembledContext());
-  const llm = new MockLLMProvider('anything');
-  const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
-
-  const result = await runner.run('EXEC', makeCycleState({ current_node: 'EXEC' }));
-
-  assert.strictEqual(result.success, false);
-  assert.ok(result.error?.includes('No agent role mapped'));
 });
 
 test('testRunnerPassesSystemPromptToLLM', async () => {
@@ -493,7 +463,7 @@ Test plan content.`;
   const llm = new MockLLMProvider(output);
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  await runner.run('TEST', makeCycleState({ current_node: 'TEST' }));
+  await runner.run('tester', makeStepRunCtx({ stepId: 'TEST' }));
 
   assert.strictEqual(llm.calls.length, 1);
   const systemMsg = llm.calls[0].messages.find((m) => m.role === 'system');
@@ -528,7 +498,7 @@ export const svc = {};
   const llm = new MockLLMProvider(output);
   const runner = new AgentRunner(cm, llm, root, ram, { model: 'test-model' }, mock);
 
-  const result = await runner.run('BUILD', makeCycleState({ current_node: 'BUILD' }));
+  const result = await runner.run('builder', makeStepRunCtx({ stepId: 'BUILD' }));
 
   assert.ok(result.success, `Expected success: ${result.error}`);
   assert.deepStrictEqual(result.artifacts_written, ['src/controller.ts', 'src/service.ts']);

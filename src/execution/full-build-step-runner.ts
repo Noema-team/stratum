@@ -217,14 +217,7 @@ export class FullBuildStepRunner implements StepRunner {
       );
     }
     const start = Date.now();
-    const cycleState = (ctx._legacyCycleState ?? {
-      cycle_number: ctx.cycleNumber,
-      iteration: ctx.iteration,
-      planning_depth: ctx.planningDepth,
-      intent: ctx.goal,
-      current_node: 'SCOPING',
-    }) as any;
-    await this.deps.scopingService.begin(ctx.cycleNumber, ctx.iteration, cycleState);
+    await this.deps.scopingService.begin(ctx);
     return {
       success: true,
       artifacts_written: ['docs/cycle-charter.md'],
@@ -251,15 +244,11 @@ export class FullBuildStepRunner implements StepRunner {
     const start = Date.now();
 
     // Load the durable failure report written by ValidationGateService.
-    // Set it as _legacyCycleState.failure_report (the real CycleStateContext field)
-    // so AgentStepRunner can propagate it to the underlying debugger agent.
+    // Inject it into the context so ContextManager can assemble debugger context.
     const failureReport = await this.deps.runArtifacts.readFailureReport(ctx.cycleNumber, ctx.iteration);
     const debugCtx: StepRunContext = {
       ...ctx,
-      _legacyCycleState: {
-        ...(ctx._legacyCycleState ?? {}),
-        ...(failureReport !== null ? { failure_report: failureReport } : {}),
-      },
+      ...(failureReport !== null ? { failureReport } : {}),
     };
 
     const result = await this.deps.agentStepRunner.run(step, debugCtx);

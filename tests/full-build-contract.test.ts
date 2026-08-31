@@ -42,8 +42,8 @@ import { WorkflowEngine } from '../src/workflow/engine.js';
 import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
 import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
-import type { CycleStateContext } from '../src/context-manager.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/engine.js';
 import type { FailureReport, PlanningDepth } from '../src/types.js';
 
@@ -73,12 +73,12 @@ class SpyRunArtifacts {
 
 class SpyAgentRunner {
   public calls: string[] = [];
-  public capturedStates: Map<string, CycleStateContext[]> = new Map();
-  async run(nodeId: string, state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push(nodeId);
-    const existing = this.capturedStates.get(nodeId) ?? [];
-    existing.push({ ...state });
-    this.capturedStates.set(nodeId, existing);
+  public capturedStates: Map<string, StepRunContext[]> = new Map();
+  async run(role: string, ctx: StepRunContext): Promise<AgentRunResult> {
+    this.calls.push(role);
+    const existing = this.capturedStates.get(role) ?? [];
+    existing.push({ ...ctx });
+    this.capturedStates.set(role, existing);
     return {
       success: true,
       next_node: null,
@@ -289,8 +289,8 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
   const onShardingGateFn = opts.onShardingGateFn ?? (async () => (opts.shardingAction ?? 'approve') as 'approve' | 'reject' | 'modify');
 
   const scopingService = {
-    begin: async (_c: number, _i: number, state: CycleStateContext) => {
-      await agentSpy.run('SCOPING', state);
+    begin: async (ctx: StepRunContext) => {
+      await agentSpy.run('facilitator', ctx);
       return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
     },
   };
@@ -334,12 +334,8 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
   return { engine, stepRunner, agentSpy, criticAgent, confirmService, execService, validationGateService, snapshotService, summariseService, shardingService, runArtifacts, mapManager, projectRoot, cleanup };
 }
 
-function ctx(depth: PlanningDepth = 'minimal'): CycleStateContext {
-  return { cycle_number: 1, iteration: 1, planning_depth: depth, intent: 'contract test', current_node: null };
-}
-
 async function run(h: Harness, depth: PlanningDepth = 'minimal', maxIterations?: number) {
-  return h.engine.run('full-build', 1, 'contract-run-1', ctx(depth), undefined, undefined, maxIterations);
+  return h.engine.run('full-build', 1, 'contract-run-1', 'contract test', undefined, undefined, maxIterations, { planning_depth: depth });
 }
 
 // ============================================================================
@@ -358,16 +354,16 @@ test('contractHappyPathCompletes', async () => {
     assert.equal(h.summariseService.calls, 1, 'summariseService must be called once');
 
     // Core LLM nodes all ran
-    for (const node of ['DESIGN', 'PLAN', 'TEST', 'BUILD', 'EVALUATE']) {
-      assert.ok(h.agentSpy.calls.includes(node), `${node} must run`);
+    for (const role of ['designer', 'planner', 'tester', 'builder', 'evaluator']) {
+      assert.ok(h.agentSpy.calls.includes(role), `${role} must run`);
     }
 
     // SCOPING ran via scopingService.begin()
-    assert.ok(h.agentSpy.calls.includes('SCOPING'), 'SCOPING must run via scopingService');
+    assert.ok(h.agentSpy.calls.includes('facilitator'), 'facilitator must run via scopingService');
 
     // SUMMARISE did NOT run via agentSpy (uses summariseService directly)
-    const summariseCalls = h.agentSpy.calls.filter(n => n === 'SUMMARISE').length;
-    assert.equal(summariseCalls, 0, 'SUMMARISE must not appear in agentSpy (uses summariseService)');
+    const summariseCalls = h.agentSpy.calls.filter(n => n === 'historian').length;
+    assert.equal(summariseCalls, 0, 'historian (SUMMARISE) must not appear in agentSpy (uses summariseService)');
 
     // HISTORY did NOT run (folded into SNAPSHOT via logs_decision)
     assert.ok(!h.agentSpy.calls.includes('HISTORY'), 'HISTORY must not appear (folded into SNAPSHOT)');
@@ -450,8 +446,8 @@ test('contractScopingServiceCalled', async () => {
   const h = makeHarness();
   try {
     await run(h);
-    assert.ok(h.agentSpy.calls.includes('SCOPING'), 'scopingService.begin() must call agentSpy with SCOPING');
-    assert.equal(h.agentSpy.calls.indexOf('SCOPING'), 0, 'SCOPING must be first LLM call');
+    assert.ok(h.agentSpy.calls.includes('facilitator'), 'scopingService.begin() must call agentSpy with facilitator role');
+    assert.equal(h.agentSpy.calls.indexOf('facilitator'), 0, 'facilitator must be first LLM call');
   } finally { h.cleanup(); }
 });
 
@@ -461,7 +457,7 @@ test('contractScopingHaltStops', async () => {
     const result = await run(h);
     assert.equal(result.status, 'halted', 'engine must halt on scoping approval rejection');
     // No LLM nodes after SCOPING should have run
-    assert.ok(!h.agentSpy.calls.includes('DESIGN'), 'DESIGN must not run after scoping halt');
+    assert.ok(!h.agentSpy.calls.includes('designer'), 'designer must not run after scoping halt');
   } finally { h.cleanup(); }
 });
 
@@ -487,7 +483,7 @@ test('contractConfirmHaltStops', async () => {
     const result = await run(h);
     assert.equal(result.status, 'halted', 'engine must halt on confirm halt');
     // BUILD must not have run
-    assert.ok(!h.agentSpy.calls.includes('BUILD'), 'BUILD must not run after confirm halt');
+    assert.ok(!h.agentSpy.calls.includes('builder'), 'builder must not run after confirm halt');
   } finally { h.cleanup(); }
 });
 
@@ -512,8 +508,8 @@ test('contractConfirmReviseLoopsToTestIncrementsRevision', async () => {
     assert.ok(cs.gateCalls >= 2, `gate must be called ≥2 times, got ${cs.gateCalls}`);
 
     // TEST must have run at least twice (initial + post-revise)
-    const testCount = h.agentSpy.calls.filter(n => n === 'TEST').length;
-    assert.ok(testCount >= 2, `TEST must run ≥2 times after revise→TEST, got ${testCount}`);
+    const testCount = h.agentSpy.calls.filter(n => n === 'tester').length;
+    assert.ok(testCount >= 2, `tester must run ≥2 times after revise→TEST, got ${testCount}`);
 
     // CONFIRM must have been presented at least twice
     assert.ok(gateCalls >= 2, 'confirm gate must re-present after revise');
@@ -529,7 +525,7 @@ test('contractValidationPassRunsEvaluateAndSnapshot', async () => {
   try {
     const result = await run(h);
     assert.equal(result.status, 'complete');
-    assert.ok(h.agentSpy.calls.includes('EVALUATE'), 'EVALUATE must run on validation pass');
+    assert.ok(h.agentSpy.calls.includes('evaluator'), 'evaluator must run on validation pass');
     assert.equal(h.snapshotService.calls, 1, 'snapshotService must run on validation pass');
   } finally { h.cleanup(); }
 });
@@ -548,18 +544,18 @@ test('contractValidationFailDebugLoadFailureReportToPlan', async () => {
     assert.equal(result.status, 'complete', `must complete after 1 failure: ${result.error}`);
 
     // DEBUG was called
-    assert.ok(h.agentSpy.calls.includes('DEBUG'), 'DEBUG must run after validation failure');
+    assert.ok(h.agentSpy.calls.includes('debugger'), 'debugger must run after validation failure');
 
-    // failure_report was loaded into cycleState before DEBUG
-    const debugStates = h.agentSpy.capturedStates.get('DEBUG') ?? [];
-    assert.ok(debugStates.length >= 1, 'DEBUG must be called at least once');
+    // failureReport was loaded into ctx before DEBUG
+    const debugStates = h.agentSpy.capturedStates.get('debugger') ?? [];
+    assert.ok(debugStates.length >= 1, 'debugger must be called at least once');
     const debugState = debugStates[0] as any;
-    assert.ok(debugState.failure_report != null, 'failure_report must be set in state when DEBUG runs');
-    assert.equal(debugState.failure_report.quick_summary, 'BUILD failed');
+    assert.ok(debugState.failureReport != null, 'failureReport must be set in ctx when debugger runs');
+    assert.equal(debugState.failureReport.quick_summary, 'BUILD failed');
 
     // PLAN ran at least twice (initial + post-debug)
-    const planCount = h.agentSpy.calls.filter(n => n === 'PLAN').length;
-    assert.ok(planCount >= 2, `PLAN must run ≥2 times after DEBUG→PLAN, got ${planCount}`);
+    const planCount = h.agentSpy.calls.filter(n => n === 'planner').length;
+    assert.ok(planCount >= 2, `planner must run ≥2 times after debugger→PLAN, got ${planCount}`);
   } finally { h.cleanup(); }
 });
 
@@ -577,17 +573,17 @@ test('contractStructuralFailDebugRoutesToDesign', async () => {
     assert.equal(result.status, 'complete', `must complete after structural failure: ${result.error}`);
 
     // DEBUG was called
-    assert.ok(h.agentSpy.calls.includes('DEBUG'), 'DEBUG must run after structural failure');
+    assert.ok(h.agentSpy.calls.includes('debugger'), 'debugger must run after structural failure');
 
-    // failure_report has structural=true flag
-    const debugStates = h.agentSpy.capturedStates.get('DEBUG') ?? [];
+    // failureReport has structural=true flag
+    const debugStates = h.agentSpy.capturedStates.get('debugger') ?? [];
     const debugState = debugStates[0] as any;
-    const hasStructural = debugState.failure_report?.failed_categories?.some((c: any) => c.structural) ?? false;
-    assert.ok(hasStructural, 'failure_report must have structural=true category');
+    const hasStructural = debugState.failureReport?.failed_categories?.some((c: any) => c.structural) ?? false;
+    assert.ok(hasStructural, 'failureReport must have structural=true category');
 
     // DESIGN ran at least twice (initial + post-debug)
-    const designCount = h.agentSpy.calls.filter(n => n === 'DESIGN').length;
-    assert.ok(designCount >= 2, `DESIGN must run ≥2 times after structural DEBUG→DESIGN, got ${designCount}`);
+    const designCount = h.agentSpy.calls.filter(n => n === 'designer').length;
+    assert.ok(designCount >= 2, `designer must run ≥2 times after structural debugger→DESIGN, got ${designCount}`);
   } finally { h.cleanup(); }
 });
 
@@ -618,13 +614,13 @@ test('contractIterationCapForcePassCompletes', async () => {
   const h = makeHarness({
     validationGateService: vg,
     runArtifacts: ra,
-    onCapHit: async () => 'force_pass',
+    onCapHit: async () => ({ action: 'route' as const, targetStepId: 'evaluate' }),
   });
 
   try {
     const result = await run(h, 'minimal', 2);
     assert.equal(result.status, 'complete', `force_pass must complete: ${result.error}`);
-    assert.ok(h.agentSpy.calls.includes('EVALUATE'), 'EVALUATE must run on force_pass');
+    assert.ok(h.agentSpy.calls.includes('evaluator'), 'evaluator must run on force_pass');
     assert.equal(h.snapshotService.calls, 1, 'SNAPSHOT must run on force_pass');
   } finally { h.cleanup(); }
 });
@@ -657,7 +653,7 @@ test('contractShardingApproveCreatesTasks', async () => {
 
     const ss = new SpyShardingService();
     const h = makeHarness({ projectRoot, shardingAction: 'approve', shardingService: ss });
-    const result = await h.engine.run('full-build', 1, 'contract-shard-run', ctx());
+    const result = await h.engine.run('full-build', 1, 'contract-shard-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after sharding approve: ${result.error}`);
     assert.equal(ss.createCalls, 1, 'shardingService.createTasksFromProposal must be called once');
@@ -679,7 +675,7 @@ test('contractShardingRejectDeletesProposal', async () => {
     writeFileSync(proposalPath, 'shards:\n  - id: shard-1\n');
 
     const h = makeHarness({ projectRoot, shardingAction: 'reject' });
-    const result = await h.engine.run('full-build', 1, 'contract-reject-run', ctx());
+    const result = await h.engine.run('full-build', 1, 'contract-reject-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after sharding reject: ${result.error}`);
     assert.equal(h.shardingService.createCalls, 0, 'shardingService must not be called on reject');
@@ -715,7 +711,7 @@ test('contractShardingModifyLoopsToApprove', async () => {
         return shardingCalls <= 2 ? 'modify' : 'approve';
       },
     });
-    const result = await h.engine.run('full-build', 1, 'contract-modify-run', ctx());
+    const result = await h.engine.run('full-build', 1, 'contract-modify-run', 'contract test');
 
     assert.equal(result.status, 'complete', `must complete after modify×2+approve: ${result.error}`);
     assert.equal(shardingCalls, 3, 'sharding gate must be called 3 times (modify, modify, approve)');
@@ -750,7 +746,7 @@ test('contractSummariseUsesSummariseService', async () => {
   try {
     await run(h);
     assert.equal(ss.calls, 1, 'summariseService.run must be called once');
-    assert.ok(!h.agentSpy.calls.includes('SUMMARISE'), 'SUMMARISE must not appear in agentSpy calls');
+    assert.ok(!h.agentSpy.calls.includes('historian'), 'historian (SUMMARISE) must not appear in agentSpy calls');
   } finally { h.cleanup(); }
 });
 

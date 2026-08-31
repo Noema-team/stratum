@@ -1,8 +1,9 @@
-import type { CycleStateContext } from '../context-manager.js';
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
 import type { WorkflowRunRepository } from '../storage/repositories.js';
+import type { PlanningDepth } from '../types.js';
 import type {
+  CapHitAction,
   WorkflowDefinition,
   WorkflowRun,
   WorkflowRunResult,
@@ -39,13 +40,20 @@ export interface WorkflowEngineOptions {
     cycleNumber: number,
     iteration: number,
   ) => Promise<'approve' | 'halt'>;
-  // Called when the iteration cap is reached. Default: 'halt'.
-  // 'force_pass' routes to 'evaluate' and continues; 'user_prompt' = halt.
+  // Called when the iteration cap is reached. Default: halt.
+  // Returning { action: 'route', targetStepId } skips to that step and continues.
   onCapHit?: (
     workflowRunId: string,
     stepId: string,
     iteration: number,
-  ) => Promise<'halt' | 'force_pass' | 'user_prompt'>;
+  ) => Promise<CapHitAction>;
+}
+
+const VALID_DEPTHS = new Set<string>(['minimal', 'standard', 'deep', 'research']);
+
+function extractPlanningDepth(params?: Record<string, unknown>): PlanningDepth {
+  const d = params?.['planning_depth'];
+  return (typeof d === 'string' && VALID_DEPTHS.has(d)) ? (d as PlanningDepth) : 'minimal';
 }
 
 // ============================================================================
@@ -65,17 +73,19 @@ export class WorkflowEngine {
   // caller (Scheduler or adapter). The engine never mints its own run ID —
   // every WorkflowRunResult.run_id echoes the supplied value.
   //
+  // goal is the human-readable intent for this run (formerly cycleStateCtx.intent).
+  // resolvedParameters are the validated, frozen workflow parameters for this run.
+  // They are persisted on WorkflowRun at initial dispatch and re-read on resume —
+  // the caller must never re-derive them from WorkItem on resume.
+  //
   // Cursor invariant: WorkflowRun.current_step_id = the next step eligible
   // to execute. The cursor is advanced to the next step only after the
   // current step completes successfully — it is never left pointing at a
   // step that has already been completed.
   //
   // Iteration tracking: the engine maintains a local iteration counter that
-  // starts from cycleStateCtx.iteration. The engine does not read back from
-  // mapManager to determine the current iteration — that would couple run
-  // state to project-global cycle state and break concurrent WorkflowRuns.
-  // The mapManager write in executeReview (legacy FullBuild compatibility)
-  // remains a one-way advisory sync only.
+  // starts from 1 (or the persisted value on resume). The engine does not read
+  // back from mapManager to determine the current iteration.
   //
   // Fail-closed: when workflowRunRepository is injected, any failure to persist
   // a lifecycle transition propagates as an error, preventing the engine from
@@ -86,10 +96,11 @@ export class WorkflowEngine {
     workflowId: string,
     cycleNumber: number,
     workflowRunId: string,
-    cycleStateCtx: CycleStateContext,
+    goal: string,
     startStepId?: string,
     workItemId?: string,
     maxIterations?: number,
+    resolvedParameters?: Record<string, unknown>,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -142,16 +153,20 @@ export class WorkflowEngine {
       }
       // Use persisted cursor as the authoritative start step.
       startStepId = existingRun.current_step_id;
+      // Restore frozen parameters from the persisted run (not from the caller).
+      resolvedParameters = existingRun.resolvedParameters ?? resolvedParameters;
     }
+
+    const planningDepth = extractPlanningDepth(resolvedParameters);
 
     const def = getWorkflow(workflowId);
     if (!def) {
       const now = new Date().toISOString();
-      const iter = existingRun?.iteration ?? cycleStateCtx.iteration;
+      const iter = existingRun?.iteration ?? 1;
       const rev = existingRun?.revision ?? 0;
       const haltStep = existingRun?.current_step_id ?? startStepId ?? '__unknown__';
       if (!existingRun) {
-        await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+        await this.saveRunCursor(workflowRunId, workflowId, workItemId, resolvedParameters, {
           status: 'halted',
           current_step_id: haltStep,
           iteration: iter,
@@ -183,11 +198,11 @@ export class WorkflowEngine {
 
     if (startIndex === -1) {
       const now = new Date().toISOString();
-      const iter = existingRun?.iteration ?? cycleStateCtx.iteration;
+      const iter = existingRun?.iteration ?? 1;
       const rev = existingRun?.revision ?? 0;
       const haltStep = existingRun?.current_step_id ?? startStepId ?? '__invalid__';
       if (!existingRun) {
-        await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+        await this.saveRunCursor(workflowRunId, workflowId, workItemId, resolvedParameters, {
           status: 'halted',
           current_step_id: haltStep,
           iteration: iter,
@@ -213,16 +228,15 @@ export class WorkflowEngine {
       };
     }
 
-    // Local authoritative iteration counter. Never read back from mapManager.
-    let iteration = cycleStateCtx.iteration;
+    // Local authoritative iteration counter.
+    let iteration = 1;
     let revision = 0;
-    let cycleState = { ...cycleStateCtx, iteration };
 
     const startedAt = new Date().toISOString();
 
     // Save initial cursor: current_step_id = startStep = "next step eligible to execute".
     // createOrValidate — idempotent on resume (row already exists with correct identity).
-    await this.saveRunCursor(workflowRunId, workflowId, workItemId, {
+    await this.saveRunCursor(workflowRunId, workflowId, workItemId, resolvedParameters, {
       status: 'active',
       current_step_id: def.steps[startIndex].id,
       iteration,
@@ -240,7 +254,25 @@ export class WorkflowEngine {
       if (persisted) {
         iteration = persisted.iteration;
         revision = persisted.revision;
-        cycleState = { ...cycleStateCtx, iteration };
+      }
+    }
+
+    // Initialize iteration-1 run directory and manifest for fresh runs.
+    // This is observability infrastructure only — failure must not abort execution.
+    if (!existingRun) {
+      const stepIds = def.steps.map(s => s.id);
+      try {
+        await this.deps.runArtifacts.createRunDir(cycleNumber, iteration);
+        await this.deps.runArtifacts.createManifest({
+          cycleId: workflowRunId,
+          cycleNumber,
+          iteration,
+          planningDepth,
+          stepIds,
+          ifNotExists: true,
+        });
+      } catch {
+        // non-fatal: runArtifacts are legacy observability, not control-plane state
       }
     }
 
@@ -248,14 +280,13 @@ export class WorkflowEngine {
 
     while (stepIndex < def.steps.length) {
       const step = def.steps[stepIndex];
-      cycleState = { ...cycleState, iteration };
 
       const stepCtx: WorkflowStepContext = {
         runId: workflowRunId,
         workflowId,
         iteration,
         revision,
-        planningDepth: cycleState.planning_depth,
+        planningDepth,
       };
 
       if (step.skip_if?.(stepCtx)) {
@@ -275,7 +306,8 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const result = await this.executeStep(step, cycleNumber, cycleState, workflowRunId);
+      const ctx = this.makeStepRunContext(step, cycleNumber, iteration, revision, planningDepth, goal, workflowId, workflowRunId, resolvedParameters);
+      const result = await this.executeStep(step, cycleNumber, iteration, ctx, workflowRunId);
 
       // Generic revision increment — produced by confirm-revise (and any future step
       // that signals a plan revision without starting a new iteration).
@@ -340,13 +372,12 @@ export class WorkflowEngine {
           // mapManager.update() is an advisory legacy sync, not the source of truth.
           iteration += 1;
           revision = 0;  // new iteration resets revision
-          cycleState = { ...cycleState, iteration };
 
           const capResult = await this.checkIterationCap(def, iteration, workflowRunId, step.id, revision, maxIterations);
           if (capResult !== null) {
-            if ('_forcedRoute' in capResult) {
-              // force_pass: route to the named step (e.g. 'evaluate') and continue.
-              const forceIndex = def.steps.findIndex(s => s.id === capResult._forcedRoute);
+            if ('_route' in capResult) {
+              // route action: skip to the named step and continue.
+              const forceIndex = def.steps.findIndex(s => s.id === (capResult as any)._route);
               if (forceIndex !== -1) {
                 await this.updateRunCursor(workflowRunId, {
                   status: 'active',
@@ -367,13 +398,15 @@ export class WorkflowEngine {
             iteration, revision, awaiting_checkpoint: null,
           });
 
+          const stepIds = def.steps.map(s => s.id);
           try {
             await this.deps.runArtifacts.createRunDir(cycleNumber, iteration);
             await this.deps.runArtifacts.createManifest({
               cycleId: workflowRunId,
               cycleNumber,
               iteration,
-              planningDepth: cycleState.planning_depth,
+              planningDepth,
+              stepIds,
             });
           } catch {
             // non-fatal: runArtifacts are legacy observability, not control-plane state
@@ -408,9 +441,6 @@ export class WorkflowEngine {
       // ---- __next__: advance cursor to next sequential step ------------------
       const nextIndex = stepIndex + 1;
       if (nextIndex < def.steps.length) {
-        // Crash-boundary: step[I] succeeded; cursor now advances to step[I+1].
-        // A crash between this persist and the next step's execution causes step[I+1]
-        // to be re-executed on restart (at-least-once for non-idempotent steps).
         await this.updateRunCursor(workflowRunId, {
           status: 'active',
           current_step_id: def.steps[nextIndex].id,
@@ -442,16 +472,17 @@ export class WorkflowEngine {
   private async executeStep(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
+    iteration: number,
+    ctx: StepRunContext,
     workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     switch (step.kind) {
-      case 'gather':     return this.executeGather(step, cycleNumber, cycleState);
-      case 'produce':    return this.executeProduce(step, cycleNumber, cycleState, workflowRunId);
-      case 'review':     return this.executeReview(step, cycleNumber, cycleState, workflowRunId);
-      case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, cycleState, workflowRunId);
-      case 'execute':    return this.executeExec(step, cycleNumber, cycleState, workflowRunId);
-      case 'commit':     return this.executeCommit(step, cycleNumber, cycleState, workflowRunId);
+      case 'gather':     return this.executeGather(step, cycleNumber, iteration);
+      case 'produce':    return this.executeProduce(step, cycleNumber, iteration, ctx, workflowRunId);
+      case 'review':     return this.executeReview(step, cycleNumber, iteration, ctx, workflowRunId);
+      case 'checkpoint': return this.executeCheckpoint(step, cycleNumber, iteration, ctx, workflowRunId);
+      case 'execute':    return this.executeExec(step, cycleNumber, iteration, ctx, workflowRunId);
+      case 'commit':     return this.executeCommit(step, cycleNumber, iteration, ctx, workflowRunId);
     }
   }
 
@@ -460,10 +491,10 @@ export class WorkflowEngine {
   private async executeGather(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
+    iteration: number,
   ): Promise<StepResult> {
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
+    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -472,17 +503,17 @@ export class WorkflowEngine {
   private async executeProduce(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
-    workflowRunId: string,
+    iteration: number,
+    ctx: StepRunContext,
+    _workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
+    await this.markRunning(step.id, cycleNumber, iteration);
 
-    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
-      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, cycleState.iteration, step.id, {
+      await this.deps.runArtifacts.updateNodeStatus(cycleNumber, iteration, step.id, {
         status: 'failed',
         completed_at: new Date().toISOString(),
         duration_ms: result.duration_ms,
@@ -490,7 +521,7 @@ export class WorkflowEngine {
       return { outcome: 'failed', next_step_id: null, error: result.error };
     }
 
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
+    await this.markComplete(step.id, cycleNumber, iteration, result.artifacts_written);
     if (result.artifacts_written.length > 0) {
       await updateArtifactEntries(this.deps.mapManager, result.artifacts_written, step.agentRole ?? 'builder');
     }
@@ -516,17 +547,17 @@ export class WorkflowEngine {
   private async executeReview(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
-    workflowRunId: string,
+    iteration: number,
+    ctx: StepRunContext,
+    _workflowRunId: string,
   ): Promise<StepResult & { _iterate?: true }> {
     const start = Date.now();
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
+    await this.markRunning(step.id, cycleNumber, iteration);
 
-    const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
     const result = await this.deps.stepRunner.run(step, ctx);
 
     if (!result.success) {
-      await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
+      await this.markComplete(step.id, cycleNumber, iteration, []);
       return {
         outcome: 'completed',
         next_step_id: step.on_fail?.target_step_id ?? null,
@@ -535,7 +566,7 @@ export class WorkflowEngine {
       };
     }
 
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, result.artifacts_written);
+    await this.markComplete(step.id, cycleNumber, iteration, result.artifacts_written);
     const passTarget = step.on_pass?.target_step_id ?? '__next__';
     return { outcome: 'completed', next_step_id: passTarget, duration_ms: Date.now() - start };
   }
@@ -547,17 +578,17 @@ export class WorkflowEngine {
   private async executeCheckpoint(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
+    iteration: number,
+    ctx: StepRunContext,
     workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCheckpoint) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleCheckpoint(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    const action = await this.opts.onCheckpoint(workflowRunId, step.id, cycleNumber, cycleState.iteration);
+    await this.markRunning(step.id, cycleNumber, iteration);
+    const action = await this.opts.onCheckpoint(workflowRunId, step.id, cycleNumber, iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
+    await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -566,15 +597,15 @@ export class WorkflowEngine {
   private async executeExec(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
-    workflowRunId: string,
+    iteration: number,
+    ctx: StepRunContext,
+    _workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleExecute) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleExecute(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
+    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -583,15 +614,15 @@ export class WorkflowEngine {
   private async executeCommit(
     step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
-    workflowRunId: string,
+    iteration: number,
+    ctx: StepRunContext,
+    _workflowRunId: string,
   ): Promise<StepResult> {
     if (this.deps.stepRunner.handleCommit) {
-      const ctx = this.makeStepRunContext(cycleNumber, cycleState, workflowRunId);
       return this.deps.stepRunner.handleCommit(step, ctx);
     }
-    await this.markRunning(step.id, cycleNumber, cycleState.iteration);
-    await this.markComplete(step.id, cycleNumber, cycleState.iteration, []);
+    await this.markRunning(step.id, cycleNumber, iteration);
+    await this.markComplete(step.id, cycleNumber, iteration, []);
     return { outcome: 'completed', next_step_id: null };
   }
 
@@ -632,21 +663,31 @@ export class WorkflowEngine {
     });
   }
 
-  // makeStepRunContext receives workflowRunId explicitly — the engine never
-  // derives run identity from cycleState (which is legacy full-build state).
+  // makeStepRunContext receives all fields explicitly — the engine never derives
+  // context from external sources or legacy CycleStateContext.
   private makeStepRunContext(
+    step: WorkflowStep,
     cycleNumber: number,
-    cycleState: CycleStateContext,
+    iteration: number,
+    revision: number,
+    planningDepth: PlanningDepth,
+    goal: string,
+    workflowId: string,
     workflowRunId: string,
+    resolvedParameters?: Record<string, unknown>,
   ): StepRunContext {
     return {
       workflowRunId,
+      workflowId,
+      stepId: step.id,
+      role: step.agentRole,
       cycleNumber,
-      iteration: cycleState.iteration,
-      planningDepth: cycleState.planning_depth,
-      goal: String(cycleState.intent ?? ''),
+      iteration,
+      revision,
+      planningDepth,
+      goal,
       projectRoot: this.deps.projectRoot ?? process.cwd(),
-      _legacyCycleState: cycleState as unknown as Record<string, unknown>,
+      workflowParameters: resolvedParameters,
     };
   }
 
@@ -661,13 +702,15 @@ export class WorkflowEngine {
     runId: string,
     workflowId: string,
     workItemId: string | undefined,
-    fields: Omit<WorkflowRun, 'run_id' | 'workflow_id' | 'work_item_id'>,
+    resolvedParameters: Record<string, unknown> | undefined,
+    fields: Omit<WorkflowRun, 'run_id' | 'workflow_id' | 'work_item_id' | 'resolvedParameters'>,
   ): Promise<void> {
     if (!this.deps.workflowRunRepository) return;
     this.deps.workflowRunRepository.createOrValidate({
       run_id: runId,
       workflow_id: workflowId,
       work_item_id: workItemId,
+      resolvedParameters,
       ...fields,
     });
   }
@@ -694,18 +737,18 @@ export class WorkflowEngine {
     stepId: string,
     revision: number,
     externalMaxIterations?: number,
-  ): Promise<WorkflowRunResult | { _forcedRoute: string } | null> {
+  ): Promise<WorkflowRunResult | { _route: string } | null> {
     const cap = externalMaxIterations ?? def.max_iterations ?? Infinity;
     if (iteration < cap) return null;
 
-    const behavior = this.opts.onCapHit
+    const capAction: CapHitAction = this.opts.onCapHit
       ? await this.opts.onCapHit(workflowRunId, stepId, iteration)
-      : 'halt';
+      : { action: 'halt' };
 
-    if (behavior === 'force_pass') {
-      return { _forcedRoute: 'evaluate' };
+    if (capAction.action === 'route') {
+      return { _route: capAction.targetStepId };
     }
-    // halt or user_prompt (user_prompt = halt; document as execution-recovery debt)
+    // halt
     await this.updateRunCursor(workflowRunId, {
       status: 'halted',
       current_step_id: stepId,

@@ -246,8 +246,8 @@ export class WorkItemRepository {
       INSERT INTO work_items
         (id, project_id, objective_id, repository_ids_json, title, goal, workflow_id,
          state, priority, acceptance_criteria_json, constraints_json, required_evidence_json,
-         parent_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         parent_id, created_at, updated_at, workflow_parameters_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM work_items WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM work_items WHERE project_id = ? ORDER BY priority DESC, created_at');
@@ -275,6 +275,7 @@ export class WorkItemRepository {
       JSON.stringify(wi.constraints),
       JSON.stringify(wi.requiredEvidence),
       wi.parentId ?? null, wi.createdAt, wi.updatedAt,
+      wi.workflowParameters !== undefined ? JSON.stringify(wi.workflowParameters) : null,
     );
     for (const depId of wi.dependencies) {
       this.addDep.run(wi.id, depId);
@@ -353,6 +354,9 @@ function rowToWorkItem(r: Record<string, unknown>, dependencies: string[]): Work
     requiredEvidence: JSON.parse(r.required_evidence_json as string),
     parentId: r.parent_id as string | undefined ?? undefined,
     dependencies,
+    workflowParameters: r.workflow_parameters_json
+      ? JSON.parse(r.workflow_parameters_json as string)
+      : undefined,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
   };
@@ -769,8 +773,9 @@ export class WorkflowRunRepository {
     this.insertIgnore = db.prepare(`
       INSERT INTO workflow_runs
         (run_id, workflow_id, work_item_id, status, current_step_id,
-         iteration, revision, awaiting_checkpoint, started_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         iteration, revision, awaiting_checkpoint, started_at, updated_at,
+         resolved_parameters_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO NOTHING
     `);
     this.updateStmt = db.prepare(`
@@ -799,6 +804,7 @@ export class WorkflowRunRepository {
       run.run_id, run.workflow_id, run.work_item_id ?? null, run.status,
       run.current_step_id, run.iteration, run.revision,
       run.awaiting_checkpoint ?? null, run.started_at, run.updated_at,
+      run.resolvedParameters !== undefined ? JSON.stringify(run.resolvedParameters) : null,
     );
     if (result.changes === 0) {
       // Row already exists — verify identity fields match.
@@ -870,5 +876,8 @@ function rowToWorkflowRun(r: Record<string, unknown>): WorkflowRun {
     awaiting_checkpoint: r.awaiting_checkpoint as string | null ?? null,
     started_at: r.started_at as string,
     updated_at: r.updated_at as string,
+    resolvedParameters: r.resolved_parameters_json
+      ? JSON.parse(r.resolved_parameters_json as string)
+      : undefined,
   };
 }

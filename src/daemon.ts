@@ -614,12 +614,17 @@ export class DaemonServer {
       try {
         const result = await this.deps.cycleService.start(parsed.data as any);
         try {
-          await this.deps.scopingService.begin(result.cycle_number, 1, {
-            cycle_number: result.cycle_number,
+          await this.deps.scopingService.begin({
+            workflowRunId: `daemon-${result.cycle_number}-1`,
+            workflowId: 'full-build',
+            stepId: 'scoping.produce',
+            role: 'facilitator' as const,
+            cycleNumber: result.cycle_number,
             iteration: 1,
-            planning_depth: result.planning_depth,
-            intent: result.intent,
-            current_node: 'SCOPING',
+            revision: 0,
+            planningDepth: result.planning_depth,
+            goal: result.intent,
+            projectRoot: this.config.projectRoot ?? process.cwd(),
           });
         } catch {
           // scoping draft generation failure doesn't abort the start response
@@ -732,19 +737,21 @@ export class DaemonServer {
       const params = body as { text?: string };
       try {
         const cycle = await this.deps.cycleService.getCurrent();
-        const cycleState = {
-          cycle_number: cycle.cycle_number,
-          iteration: cycle.iteration,
-          planning_depth: cycle.planning_depth,
-          intent: cycle.intent ?? '',
-          current_node: 'SCOPING',
-          facilitator_mode: 'scoping' as const,
-        };
         await this.deps.scopingService.submitResponse(
           params.text ?? '',
-          cycle.cycle_number,
-          cycle.iteration,
-          cycleState
+          {
+            workflowRunId: `daemon-${cycle.cycle_number}-${cycle.iteration}`,
+            workflowId: 'full-build',
+            stepId: 'scoping.produce',
+            role: 'facilitator' as const,
+            cycleNumber: cycle.cycle_number,
+            iteration: cycle.iteration,
+            revision: 0,
+            planningDepth: cycle.planning_depth,
+            goal: cycle.intent ?? '',
+            projectRoot: this.config.projectRoot ?? process.cwd(),
+            facilitatorMode: 'scoping' as const,
+          },
         );
         this.sendResponse(res, {
           ok: true,

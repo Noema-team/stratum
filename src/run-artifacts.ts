@@ -84,7 +84,23 @@ export class RunArtifactManager {
     cycleNumber: number;
     iteration: number;
     planningDepth: PlanningDepth;
+    // Step IDs for this workflow run. Falls back to CORE_DAG_NODES when absent
+    // (legacy full-build compatibility). Pass the WorkflowDefinition step IDs here.
+    stepIds?: string[];
+    // When true, skip writing if manifest.json already exists (idempotent on resume).
+    ifNotExists?: boolean;
   }): Promise<void> {
+    const dir = this.runDir(params.cycleNumber, params.iteration);
+    const manifestPath = path.join(dir, 'manifest.json');
+    if (params.ifNotExists) {
+      try {
+        await this.fs.access(manifestPath);
+        return; // already exists — skip
+      } catch {
+        // does not exist — proceed
+      }
+    }
+    const nodeIds = params.stepIds ?? (CORE_DAG_NODES as readonly string[]);
     const manifest: RunManifest = {
       cycle_id: params.cycleId,
       cycle_number: params.cycleNumber,
@@ -92,14 +108,13 @@ export class RunArtifactManager {
       planning_depth: params.planningDepth,
       started_at: new Date().toISOString(),
       outcome: 'in_progress',
-      nodes: CORE_DAG_NODES.map((id) => ({
+      nodes: nodeIds.map((id) => ({
         id,
         status: 'pending',
         artifacts_written: [],
       })),
     };
-    const dir = this.runDir(params.cycleNumber, params.iteration);
-    await this.fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+    await this.fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
   }
 
   async readManifest(cycleNumber: number, iteration: number): Promise<RunManifest> {
@@ -125,12 +140,26 @@ export class RunArtifactManager {
     nodeId: string,
     update: Partial<Omit<ManifestNodeEntry, 'id'>>
   ): Promise<void> {
-    await this.updateManifest(cycleNumber, iteration, (manifest) => {
-      const nodes = manifest.nodes.map((n) =>
-        n.id === nodeId ? { ...n, ...update } : n
-      );
-      return { ...manifest, nodes };
-    });
+    try {
+      await this.updateManifest(cycleNumber, iteration, (manifest) => {
+        // Add the node entry if it wasn't pre-declared (e.g. workflow uses stepIds
+        // that differ from CORE_DAG_NODES, or the manifest predates this step).
+        const existing = manifest.nodes.find(n => n.id === nodeId);
+        if (!existing) {
+          return {
+            ...manifest,
+            nodes: [...manifest.nodes, { id: nodeId, status: 'pending', artifacts_written: [], ...update }],
+          };
+        }
+        const nodes = manifest.nodes.map((n) =>
+          n.id === nodeId ? { ...n, ...update } : n
+        );
+        return { ...manifest, nodes };
+      });
+    } catch {
+      // Non-fatal: manifest may not exist yet (run dir created after first step).
+      // RunArtifacts are observability — updateNodeStatus must never abort execution.
+    }
   }
 
   async finalizeManifest(

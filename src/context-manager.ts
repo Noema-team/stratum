@@ -6,8 +6,8 @@ import type {
   ContextManagerConfig,
   FailureReport,
   PlanningDepth,
-  SLETask,
 } from './types.js';
+import type { StepRunContext } from './workflow/types.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -24,6 +24,8 @@ export interface SliceRule {
   source_weight?: SourceWeight;
 }
 
+// CycleStateContext — legacy compatibility type for callers not yet migrated to StepRunContext.
+// New code must use StepRunContext from workflow/types.ts instead.
 export interface CycleStateContext {
   cycle_number: number;
   iteration: number;
@@ -33,12 +35,8 @@ export interface CycleStateContext {
   failure_report?: FailureReport;
   revision_count?: number;
   revision_note?: string;
-  task?: SLETask;
-  // Facilitator operating mode — defaults to 'chat'
   facilitator_mode?: FacilitatorMode;
-  // Ephemeral artifacts injected by the DAG runner (e.g. doc:debug-diagnosis)
   ephemeral?: Record<string, string>;
-  // Builder source files from map.yaml repo.key_files
   source_files?: string[];
 }
 
@@ -199,8 +197,8 @@ const FACILITATOR_SCOPING_SLICES: SliceDef[] = [
 
 // ─── Dynamic Slice Resolution ─────────────────────────────────────────────────
 
-function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
-  const depth = state.planning_depth;
+function getRoleSlices(role: AgentRole, ctx: StepRunContext): SliceDef[] {
+  const depth = ctx.planningDepth;
 
   function filterDepth(slices: SliceDef[]): SliceDef[] {
     return slices.filter(s => !s.requires_depth || meetsDepth(s.requires_depth, depth));
@@ -216,7 +214,7 @@ function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
     case 'planner': {
       const base = filterDepth(PLANNER_SLICES);
       // Inject ephemeral debug-diagnosis on retry
-      if (state.iteration > 1 && state.ephemeral?.['doc:debug-diagnosis']) {
+      if (ctx.iteration > 1 && ctx.ephemeral?.['doc:debug-diagnosis']) {
         base.push({ ref: 'doc:debug-diagnosis', mode: 'full', source_weight: 'cycle_produced' });
       }
       return base;
@@ -227,9 +225,8 @@ function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
 
     case 'builder': {
       const base = filterDepth(BUILDER_SLICES);
-      // Add source files as individual entries
-      if (state.source_files) {
-        for (const file of state.source_files) {
+      if (ctx.sourceFiles) {
+        for (const file of ctx.sourceFiles) {
           base.push({ ref: file, mode: 'full', source_weight: 'inferred' });
         }
       }
@@ -238,11 +235,10 @@ function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
 
     case 'debugger': {
       const base = filterDepth(DEBUGGER_SLICES);
-      // Add per-failed-category run artifacts
-      if (state.failure_report) {
-        const runDir = state.failure_report.run_dir;
+      if (ctx.failureReport) {
+        const runDir = ctx.failureReport.run_dir;
         if (runDir) {
-          for (const cat of state.failure_report.failed_categories) {
+          for (const cat of ctx.failureReport.failed_categories) {
             const name = getCategoryName(cat);
             base.push({ ref: `run:tests/${name}/result.json`, mode: 'full', source_weight: 'cycle_produced' });
             base.push({ ref: `run:metrics/${name}.json`, mode: 'full', source_weight: 'cycle_produced' });
@@ -263,7 +259,7 @@ function getRoleSlices(role: AgentRole, state: CycleStateContext): SliceDef[] {
       return filterDepth(HISTORIAN_SLICES);
 
     case 'facilitator': {
-      const mode = state.facilitator_mode ?? 'chat';
+      const mode = ctx.facilitatorMode ?? 'chat';
       switch (mode) {
         case 'decision': return filterDepth(FACILITATOR_DECISION_SLICES);
         case 'scoping':  return filterDepth(FACILITATOR_SCOPING_SLICES);
@@ -381,19 +377,19 @@ export class ContextManager {
     this.fs = fsModule ?? nodeFsPromises;
   }
 
-  async assemble(role: AgentRole, cycleState: CycleStateContext): Promise<AssembledContext> {
+  async assemble(role: AgentRole, ctx: StepRunContext): Promise<AssembledContext> {
     const rawSystemPrompt = await this.loadSystemPrompt(role);
-    const stateSummary = this.buildStateSummary(cycleState);
-    const task = this.buildTaskDescription(cycleState);
+    const stateSummary = this.buildStateSummary(ctx);
+    const task = this.buildTaskDescription(role, ctx);
 
     const failureContext =
-      cycleState.iteration > 1 && cycleState.failure_report
-        ? this.formatFailureContext(cycleState.failure_report)
+      ctx.iteration > 1 && ctx.failureReport
+        ? this.formatFailureContext(ctx.failureReport)
         : undefined;
 
     const { slices, truncated } = await this.loadArtifactSlices(
       role,
-      cycleState,
+      ctx,
       rawSystemPrompt,
       stateSummary,
       task,
@@ -444,19 +440,19 @@ export class ContextManager {
 
   // ─── Component 3: State summary ────────────────────────────────────────────
 
-  private buildStateSummary(cycleState: CycleStateContext): string {
+  private buildStateSummary(ctx: StepRunContext): string {
     const lines = [
       '## Current State',
-      `- Cycle: ${cycleState.cycle_number}`,
-      `- Iteration: ${cycleState.iteration}`,
-      `- Planning depth: ${cycleState.planning_depth}`,
-      `- Current node: ${cycleState.current_node ?? 'not started'}`,
-      `- Intent: "${cycleState.intent}"`,
+      `- Cycle: ${ctx.cycleNumber}`,
+      `- Iteration: ${ctx.iteration}`,
+      `- Planning depth: ${ctx.planningDepth}`,
+      `- Step: ${ctx.stepId ?? 'not started'}`,
+      `- Intent: "${ctx.goal}"`,
     ];
-    if (cycleState.revision_count && cycleState.revision_count > 0) {
-      lines.push(`- Revision: ${cycleState.revision_count}`);
-      if (cycleState.revision_note) {
-        lines.push(`- Revision note: "${cycleState.revision_note}"`);
+    if (ctx.revision > 0) {
+      lines.push(`- Revision: ${ctx.revision}`);
+      if (ctx.revisionNote) {
+        lines.push(`- Revision note: "${ctx.revisionNote}"`);
       }
     }
     return truncateContent(lines.join('\n'), tokensToChars(this.config.summary_max_tokens)).text;
@@ -464,15 +460,16 @@ export class ContextManager {
 
   // ─── Component 4: Task description ────────────────────────────────────────
 
-  private buildTaskDescription(cycleState: CycleStateContext): string {
-    if (cycleState.task?.description) {
-      return cycleState.task.description;
-    }
-    const node = cycleState.current_node;
-    const base = node
-      ? (NODE_TASK_DESCRIPTIONS[node] ?? `Execute the ${node} step.`)
+  private buildTaskDescription(role: AgentRole, ctx: StepRunContext): string {
+    const stepId = ctx.stepId;
+    // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
+    const base = stepId
+      ? (NODE_TASK_DESCRIPTIONS[stepId] ??
+         NODE_TASK_DESCRIPTIONS[stepId.toUpperCase()] ??
+         NODE_TASK_DESCRIPTIONS[role.toUpperCase()] ??
+         `Execute the ${stepId} step.`)
       : 'Prepare for the cycle.';
-    return `${base}\n\nCycle intent: "${cycleState.intent}"`;
+    return `${base}\n\nCycle intent: "${ctx.goal}"`;
   }
 
   // ─── Component 5: Failure context ─────────────────────────────────────────
@@ -495,7 +492,7 @@ export class ContextManager {
 
   private async loadArtifactSlices(
     role: AgentRole,
-    cycleState: CycleStateContext,
+    ctx: StepRunContext,
     systemPrompt: string,
     stateSummary: string,
     task: string,
@@ -510,8 +507,8 @@ export class ContextManager {
 
     const artifactBudget = Math.max(this.config.hard_ceiling - fixedTokens, 500);
 
-    const runDir = cycleState.failure_report?.run_dir;
-    const sliceDefs = this.resolveSliceDefs(role, cycleState, runDir);
+    const runDir = ctx.failureReport?.run_dir;
+    const sliceDefs = this.resolveSliceDefs(role, ctx, runDir);
 
     // Load content for each slice
     interface LoadedSlice {
@@ -527,7 +524,7 @@ export class ContextManager {
 
     for (const def of sliceDefs) {
       const key = refToSliceKey(def.ref);
-      const content = await this.loadSliceContent(def, cycleState, runDir);
+      const content = await this.loadSliceContent(def, ctx, runDir);
       if (!content) continue;
 
       const processed = applyLoadingMode(content, def);
@@ -620,33 +617,20 @@ export class ContextManager {
   // Resolve the slice definitions for a role, applying conditions
   private resolveSliceDefs(
     role: AgentRole,
-    state: CycleStateContext,
+    ctx: StepRunContext,
     _runDir: string | undefined
   ): SliceDef[] {
-    const task = state.task;
-
-    // Declared mode: use task context_declarations if present
-    if (task?.context_declarations && task.context_declarations.length > 0) {
-      const decl = task.context_declarations[0];
-      return decl.slices.map((ref: string) => ({
-        ref,
-        mode: 'full' as SliceMode,
-        source_weight: 'user_defined' as SourceWeight,
-      }));
-    }
-
-    // Inferred mode: use role-specific slice definitions
-    return getRoleSlices(role, state);
+    return getRoleSlices(role, ctx);
   }
 
   // Load the raw content for a single slice definition
   private async loadSliceContent(
     def: SliceDef,
-    state: CycleStateContext,
+    ctx: StepRunContext,
     runDir: string | undefined
   ): Promise<string | null> {
-    // Ephemeral artifacts — injected by DAG runner, no disk read
-    const ephemeralContent = state.ephemeral?.[def.ref];
+    // Ephemeral artifacts — injected for this step, no disk read
+    const ephemeralContent = ctx.ephemeral?.[def.ref];
     if (ephemeralContent !== undefined) return ephemeralContent;
 
     // summary_only: check for pre-generated summary first

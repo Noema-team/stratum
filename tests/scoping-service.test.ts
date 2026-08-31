@@ -7,7 +7,7 @@ import { join } from 'path';
 import { ScopingService } from '../src/scoping-service.js';
 import { TagService } from '../src/tag-service.js';
 import type { AgentRunner, AgentRunResult } from '../src/agent-runner.js';
-import type { CycleStateContext } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -16,13 +16,17 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-scoping-test-'));
 }
 
-function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1,
+    workflowRunId: 'test-run-1',
+    workflowId: 'full-build',
+    stepId: 'scoping.produce',
+    cycleNumber: 1,
     iteration: 1,
-    planning_depth: 'standard',
-    intent: 'Build a widget system',
-    current_node: 'SCOPING',
+    revision: 0,
+    planningDepth: 'standard',
+    goal: 'Build a widget system',
+    projectRoot: '/test',
     ...overrides,
   };
 }
@@ -30,15 +34,15 @@ function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateC
 // ─── Mock AgentRunner ─────────────────────────────────────────────────────────
 
 class MockAgentRunner implements AgentRunner {
-  public calls: Array<{ node: string; state: CycleStateContext }> = [];
+  public calls: Array<{ role: string; ctx: StepRunContext }> = [];
 
   constructor(
     private result: AgentRunResult | Error,
     private charterContent?: string
   ) {}
 
-  async run(node: string, state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push({ node, state });
+  async run(role: string, ctx: StepRunContext): Promise<AgentRunResult> {
+    this.calls.push({ role, ctx });
     if (this.result instanceof Error) throw this.result;
     return this.result;
   }
@@ -147,11 +151,11 @@ test('testBeginCallsAgentRunnerWithScopingNode', async () => {
   const mgr = new InMemoryMapManager();
 
   const svc = new ScopingService(runner, mgr, root);
-  const result = await svc.begin(1, 1, makeCycleState());
+  const result = await svc.begin(makeStepRunCtx());
 
   assert.strictEqual(runner.calls.length, 1);
-  assert.strictEqual(runner.calls[0].node, 'SCOPING');
-  assert.strictEqual(runner.calls[0].state.current_node, 'SCOPING');
+  assert.strictEqual(runner.calls[0].role, 'facilitator');
+  assert.strictEqual(runner.calls[0].ctx.stepId, 'scoping.produce');
   assert.strictEqual(result.awaiting_scoping, true);
   assert.strictEqual(result.charter_path, 'docs/cycle-charter.md');
 });
@@ -169,10 +173,10 @@ test('testBeginForcesCurrentNodeToScoping', async () => {
   const mgr = new InMemoryMapManager();
   const svc = new ScopingService(runner, mgr, root);
 
-  await svc.begin(1, 1, makeCycleState({ current_node: 'DESIGN' }));
+  await svc.begin(makeStepRunCtx({ stepId: 'design' }));
 
-  // Even if cycleState had DESIGN, begin should override to SCOPING
-  assert.strictEqual(runner.calls[0].state.current_node, 'SCOPING');
+  // Even if ctx had a different stepId, begin should override to scoping.produce
+  assert.strictEqual(runner.calls[0].ctx.stepId, 'scoping.produce');
 });
 
 test('testBeginSetsAwaitingScopingTrueInMap', async () => {
@@ -188,7 +192,7 @@ test('testBeginSetsAwaitingScopingTrueInMap', async () => {
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, false);
 
   const svc = new ScopingService(runner, mgr, root);
-  await svc.begin(1, 1, makeCycleState());
+  await svc.begin(makeStepRunCtx());
 
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, true);
 });
@@ -207,7 +211,7 @@ test('testBeginThrowsWhenAgentRunnerFails', async () => {
   const svc = new ScopingService(runner, mgr, root);
 
   await assert.rejects(
-    () => svc.begin(1, 1, makeCycleState()),
+    () => svc.begin(makeStepRunCtx()),
     /SCOPING node failed/
   );
 });
@@ -316,12 +320,12 @@ test('testBeginLoadsNextCycleTaggedRefsIntoEphemeral', async () => {
   });
   const svc = new ScopingService(runner, mgr, root, undefined, tagService);
 
-  await svc.begin(1, 1, makeCycleState());
+  await svc.begin(makeStepRunCtx());
 
-  const state = runner.calls[0].state;
-  assert.ok(state.ephemeral?.next_cycle_tagged_refs, 'ephemeral context should include tagged refs');
-  assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('node:rate-limiting'));
-  assert.ok(state.ephemeral!.next_cycle_tagged_refs.includes('doc:architecture'));
+  const ctx = runner.calls[0].ctx;
+  assert.ok(ctx.ephemeral?.next_cycle_tagged_refs, 'ephemeral context should include tagged refs');
+  assert.ok(ctx.ephemeral!.next_cycle_tagged_refs.includes('node:rate-limiting'));
+  assert.ok(ctx.ephemeral!.next_cycle_tagged_refs.includes('doc:architecture'));
 });
 
 test('testBeginWithoutTagServiceOmitsTaggedContext', async () => {
@@ -335,9 +339,9 @@ test('testBeginWithoutTagServiceOmitsTaggedContext', async () => {
   });
   const svc = new ScopingService(runner, mgr, root);
 
-  await svc.begin(1, 1, makeCycleState());
+  await svc.begin(makeStepRunCtx());
 
-  assert.strictEqual(runner.calls[0].state.ephemeral, undefined);
+  assert.strictEqual(runner.calls[0].ctx.ephemeral, undefined);
 });
 
 test('testApproveClearsNextCycleTags', async () => {
@@ -394,7 +398,7 @@ All widget CRUD operations working.`;
   const svc = new ScopingService(runner, mgr, root);
 
   // 1. Begin scoping
-  const beginResult = await svc.begin(1, 1, makeCycleState());
+  const beginResult = await svc.begin(makeStepRunCtx());
   assert.strictEqual(beginResult.awaiting_scoping, true);
   assert.ok(beginResult.draft.includes('Cycle Charter'));
   assert.strictEqual(mgr.map.cycle.awaiting_scoping, true);
@@ -436,9 +440,9 @@ test('testProcessResponseIncrementsRoundCount', async () => {
   const svc = new ScopingService(runner, mgr, root);
 
   assert.strictEqual(svc.getRoundCount(), 0);
-  await svc.processResponse('Round 1 answer', makeCycleState());
+  await svc.processResponse('Round 1 answer', makeStepRunCtx());
   assert.strictEqual(svc.getRoundCount(), 1);
-  await svc.processResponse('Round 2 answer', makeCycleState());
+  await svc.processResponse('Round 2 answer', makeStepRunCtx());
   assert.strictEqual(svc.getRoundCount(), 2);
 });
 
@@ -451,11 +455,11 @@ test('testProcessResponseThrowsWhenMaxRoundsExceeded', async () => {
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
   const svc = new ScopingService(runner, mgr, root);
 
-  await svc.processResponse('Round 1', makeCycleState());
-  await svc.processResponse('Round 2', makeCycleState());
+  await svc.processResponse('Round 1', makeStepRunCtx());
+  await svc.processResponse('Round 2', makeStepRunCtx());
 
   await assert.rejects(
-    () => svc.processResponse('Round 3', makeCycleState()),
+    () => svc.processResponse('Round 3', makeStepRunCtx()),
     /max rounds/
   );
 });
@@ -466,11 +470,11 @@ test('testSubmitResponseWithCycleStateRunsFacilitator', async () => {
   const runner = new MockAgentRunner({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0, raw_output_path: '' });
   const svc = new ScopingService(runner, mgr, root);
 
-  await svc.submitResponse('Add auth.', 1, 1, makeCycleState());
+  await svc.submitResponse('Add auth.', makeStepRunCtx());
 
   assert.strictEqual(runner.calls.length, 1);
-  assert.strictEqual(runner.calls[0].node, 'SCOPING');
-  assert.strictEqual(runner.calls[0].state.ephemeral?.scoping_response, 'Add auth.');
+  assert.strictEqual(runner.calls[0].role, 'facilitator');
+  assert.strictEqual(runner.calls[0].ctx.ephemeral?.scoping_response, 'Add auth.');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import type { AgentRole } from '../types.js';
+import type { AgentRole, FailureReport, FacilitatorMode } from '../types.js';
 
 // ============================================================================
 // Step kinds — six generic primitives (DDR-031)
@@ -64,6 +64,9 @@ export interface WorkflowRun {
   awaiting_checkpoint: string | null;
   started_at: string;
   updated_at: string;
+  // Validated, frozen workflow parameters for this run.
+  // Set at initial dispatch from WorkItem.workflowParameters; never re-read from WorkItem on resume.
+  resolvedParameters?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -113,6 +116,13 @@ export interface WorkflowRunResult {
 }
 
 // ============================================================================
+// CapHitAction — returned by onCapHit; replaces raw 'halt' | 'force_pass' strings.
+// The full-build adapter maps force_pass → { action: 'route', targetStepId: 'evaluate' }.
+// ============================================================================
+
+export type CapHitAction = { action: 'halt' } | { action: 'route'; targetStepId: string };
+
+// ============================================================================
 // StepRunner — the narrow seam between WorkflowEngine and the execution layer.
 //
 // WorkflowEngine calls StepRunner.run(step, ctx) for 'produce' and generic
@@ -144,17 +154,30 @@ export interface StepRunner {
   handleCommit?(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult>;
 }
 
-// Execution context passed to StepRunner — a forward-compatible replacement for
-// the legacy CycleStateContext. Fields grow as the new path matures; legacy
-// callers may populate only the fields they know.
+// Execution context passed to StepRunner — the canonical replacement for the
+// legacy CycleStateContext. All fields are populated by the engine from its
+// own state; adapters must not re-derive them from external sources.
 export interface StepRunContext {
   workflowRunId: string;
+  workflowId: string;
+  stepId: string;
+  role?: AgentRole;
   cycleNumber: number;
   iteration: number;
+  revision: number;
   planningDepth: 'minimal' | 'standard' | 'deep' | 'research';
   goal: string;
   projectRoot: string;
-  // Optional legacy fields kept for backward-compat adapters that still need
-  // them; new adapters should ignore these.
-  _legacyCycleState?: Record<string, unknown>;
+  // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
+  workflowParameters?: Record<string, unknown>;
+  // Populated by debug step from durable failure report on disk.
+  failureReport?: FailureReport;
+  // Set by confirm-revise when a plan revision note is provided.
+  revisionNote?: string;
+  // Facilitator operating mode — defaults to 'chat'.
+  facilitatorMode?: FacilitatorMode;
+  // Ephemeral artifacts injected for a specific step execution.
+  ephemeral?: Record<string, string>;
+  // Builder source files (from map.yaml repo.key_files).
+  sourceFiles?: string[];
 }

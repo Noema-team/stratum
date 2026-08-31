@@ -21,8 +21,8 @@ import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/
 import type { FullBuildCallbacks } from '../src/execution/full-build-step-runner.js';
 import type { ExecutionRequest } from '../src/execution/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
-import type { CycleStateContext } from '../src/context-manager.js';
 import type { AgentRunResult } from '../src/agent-runner.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { FailureReport, PlanningDepth } from '../src/types.js';
 
 // ============================================================================
@@ -48,8 +48,8 @@ class SpyRunArtifacts {
 
 class SpyAgentRunner {
   public calls: string[] = [];
-  async run(nodeId: string, state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push(nodeId);
+  async run(role: string, _ctx: StepRunContext): Promise<AgentRunResult> {
+    this.calls.push(role);
     return { success: true, next_node: null as any, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' };
   }
   [key: string]: unknown;
@@ -141,8 +141,8 @@ function makeAdapter(opts: AdapterHarnessOpts = {}): {
   };
 
   const scopingService = {
-    begin: async (_c: number, _i: number, state: CycleStateContext) => {
-      await agentSpy.run('SCOPING', state);
+    begin: async (ctx: StepRunContext) => {
+      await agentSpy.run('facilitator', ctx);
       return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
     },
   };
@@ -244,7 +244,7 @@ test('adapterForcePassRoutesToEvaluate', async () => {
     }));
     assert.equal(result.outcome, 'succeeded',
       `force_pass must succeed; got: ${result.outcome} (${result.failure?.message})`);
-    assert.ok(agentSpy.calls.includes('EVALUATE'),
-      `force_pass must route to EVALUATE; calls: ${agentSpy.calls.join(', ')}`);
+    assert.ok(agentSpy.calls.includes('evaluator'),
+      `force_pass must route to evaluator; calls: ${agentSpy.calls.join(', ')}`);
   } finally { cleanup(); }
 });

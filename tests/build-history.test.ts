@@ -4,7 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import { AgentRunner, APPEND_ONLY_PATHS, validateOutputPath } from '../src/agent-runner.js';
-import type { CycleStateContext } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { AssembledContext } from '../src/types.js';
 import type { ILLMProvider, LLMCompletionResult } from '../src/llm-provider.js';
@@ -19,13 +19,17 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-build-history-'));
 }
 
-function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1,
+    workflowRunId: 'test-run-1',
+    workflowId: 'full-build',
+    stepId: 'BUILD',
+    cycleNumber: 1,
     iteration: 1,
-    planning_depth: 'standard',
-    intent: 'Build a widget system',
-    current_node: 'BUILD',
+    revision: 0,
+    planningDepth: 'standard',
+    goal: 'Build a widget system',
+    projectRoot: '/test',
     ...overrides,
   };
 }
@@ -243,7 +247,7 @@ test('AgentRunner HISTORY: appends to decisions.md on first write', async () => 
   const llm = new MockLLMProvider(HISTORIAN_OUTPUT_1, 80);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  const result = await runner.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  const result = await runner.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   assert.ok(result.success, result.error);
   const decisionsKey = join(root, 'docs/decisions.md');
@@ -261,12 +265,12 @@ test('AgentRunner HISTORY: second run appends (does not overwrite) decisions.md'
   // First HISTORY run
   const llm1 = new MockLLMProvider(HISTORIAN_OUTPUT_1, 80);
   const runner1 = new AgentRunner(cm as never, llm1, root, ram as never, { model: 'test' }, mock);
-  await runner1.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner1.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   // Second HISTORY run
   const llm2 = new MockLLMProvider(HISTORIAN_OUTPUT_2, 80);
   const runner2 = new AgentRunner(cm as never, llm2, root, ram as never, { model: 'test' }, mock);
-  await runner2.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner2.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   // Both runs should have appended (2 total appends)
   assert.strictEqual(appended[decisionsKey]?.length, 2, 'expected 2 append operations');
@@ -298,7 +302,7 @@ Completed successfully.`;
   const llm = new MockLLMProvider(summaryOutput, 60);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  await runner.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   const summaryKey = join(root, 'docs/cycle-summary.md');
   assert.ok(written[summaryKey]?.includes('Cycle 1 Summary'), 'cycle-summary.md should be written');
@@ -333,7 +337,7 @@ export const helper = () => 42;
   const llm = new MockLLMProvider(builderOutput, 200);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  const result = await runner.run('BUILD', makeCycleState({ current_node: 'BUILD' }));
+  const result = await runner.run('builder', makeStepRunCtx({ stepId: 'BUILD' }));
 
   assert.ok(result.success, result.error);
   assert.deepStrictEqual(result.artifacts_written, ['src/index.ts', 'src/lib/util.ts']);
