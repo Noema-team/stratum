@@ -42,6 +42,10 @@ export class LocalTaskStore implements TaskStore {
     const now = new Date().toISOString();
     const id = `task-${slugify(task.title)}`;
 
+    // Idempotent upsert: if a task with this ID already exists, return it unchanged.
+    const existing = tasks.find(t => t.id === id);
+    if (existing) return existing;
+
     const newTask: SLETask = {
       ...task,
       id,

@@ -207,7 +207,7 @@ test('createStratumApplication: stop() drain — tick in flight when stop() call
 // ── Checkpoint Decision options ────────────────────────────────────────────────
 
 test('getCheckpointDecisionOptions: confirm → approve + revise', () => {
-  const opts = getCheckpointDecisionOptions('confirm');
+  const opts = getCheckpointDecisionOptions('full-build', 'confirm');
   const ids = opts.map(o => o.id);
   assert.ok(ids.includes('approve'), 'confirm should have approve');
   assert.ok(ids.includes('revise'), 'confirm should have revise');
@@ -215,7 +215,7 @@ test('getCheckpointDecisionOptions: confirm → approve + revise', () => {
 });
 
 test('getCheckpointDecisionOptions: sharding_approval → approve + reject + modify', () => {
-  const opts = getCheckpointDecisionOptions('sharding_approval');
+  const opts = getCheckpointDecisionOptions('full-build', 'sharding_approval');
   const ids = opts.map(o => o.id);
   assert.ok(ids.includes('approve'));
   assert.ok(ids.includes('reject'));
@@ -223,21 +223,29 @@ test('getCheckpointDecisionOptions: sharding_approval → approve + reject + mod
 });
 
 test('getCheckpointDecisionOptions: scoping.checkpoint → approve only', () => {
-  const opts = getCheckpointDecisionOptions('scoping.checkpoint');
+  const opts = getCheckpointDecisionOptions('full-build', 'scoping.checkpoint');
   assert.equal(opts.length, 1);
   assert.equal(opts[0].id, 'approve');
 });
 
 test('getCheckpointDecisionOptions: unknown step → approve + reject (generic fallback)', () => {
-  const opts = getCheckpointDecisionOptions('some.unknown.step');
+  const opts = getCheckpointDecisionOptions('full-build', 'some.unknown.step');
   const ids = opts.map(o => o.id);
   assert.ok(ids.includes('approve'));
   assert.ok(ids.includes('reject'));
   assert.equal(ids.length, 2);
 });
 
-test('getCheckpointDecisionOptions: undefined → generic fallback', () => {
-  const opts = getCheckpointDecisionOptions(undefined);
+test('getCheckpointDecisionOptions: unknown workflow → generic fallback regardless of step', () => {
+  const opts = getCheckpointDecisionOptions('other-workflow', 'confirm');
+  const ids = opts.map(o => o.id);
+  assert.ok(ids.includes('approve'));
+  assert.ok(ids.includes('reject'));
+  assert.equal(ids.length, 2, 'unknown workflow must not inherit full-build semantics');
+});
+
+test('getCheckpointDecisionOptions: undefined step → generic fallback', () => {
+  const opts = getCheckpointDecisionOptions('full-build', undefined);
   assert.equal(opts.length, 2);
   assert.equal(opts[0].id, 'approve');
   assert.equal(opts[1].id, 'reject');
@@ -264,7 +272,15 @@ test('resolveCheckpoint: generic approve → continue, no cancel, no revision', 
       { onCheckpoint: async () => 'halt', onConfirmGate: async () => 'halt', onShardingGate: async () => 'halt' },
     );
 
-    const resolution = await runner.resolveCheckpoint('some_generic_checkpoint', 'approve', randomUUID(), 1);
+    const resolution = await runner.resolveCheckpoint({
+      workflowId: 'unknown-workflow',
+      stepId: 'some_generic_checkpoint',
+      decisionId: randomUUID(),
+      selectedOptionId: 'approve',
+      workflowRunId: randomUUID(),
+      iteration: 1,
+      revision: 0,
+    });
     assert.equal(resolution.cancel, false);
     assert.equal(resolution.remainAtCheckpoint, false);
     assert.equal(resolution.incrementRevision, false);
@@ -292,7 +308,15 @@ test('resolveCheckpoint: generic reject → cancel: true', async () => {
       { onCheckpoint: async () => 'halt', onConfirmGate: async () => 'halt', onShardingGate: async () => 'halt' },
     );
 
-    const resolution = await runner.resolveCheckpoint('some_checkpoint', 'reject', randomUUID(), 1);
+    const resolution = await runner.resolveCheckpoint({
+      workflowId: 'unknown-workflow',
+      stepId: 'some_checkpoint',
+      decisionId: randomUUID(),
+      selectedOptionId: 'reject',
+      workflowRunId: randomUUID(),
+      iteration: 1,
+      revision: 0,
+    });
     assert.equal(resolution.cancel, true);
     assert.equal(resolution.remainAtCheckpoint, false);
   } finally {
@@ -319,7 +343,15 @@ test('resolveCheckpoint: sharding_approval modify → remainAtCheckpoint: true',
       { onCheckpoint: async () => 'halt', onConfirmGate: async () => 'halt', onShardingGate: async () => 'halt' },
     );
 
-    const resolution = await runner.resolveCheckpoint('sharding_approval', 'modify', randomUUID(), 1);
+    const resolution = await runner.resolveCheckpoint({
+      workflowId: 'full-build',
+      stepId: 'sharding_approval',
+      decisionId: randomUUID(),
+      selectedOptionId: 'modify',
+      workflowRunId: randomUUID(),
+      iteration: 1,
+      revision: 0,
+    });
     assert.equal(resolution.remainAtCheckpoint, true);
     assert.equal(resolution.cancel, false);
   } finally {
@@ -350,7 +382,15 @@ test('resolveCheckpoint: confirm revise → incrementRevision: true', async () =
       { onCheckpoint: async () => 'halt', onConfirmGate: async () => 'halt', onShardingGate: async () => 'halt' },
     );
 
-    const resolution = await runner.resolveCheckpoint('confirm', 'revise', randomUUID(), 1);
+    const resolution = await runner.resolveCheckpoint({
+      workflowId: 'full-build',
+      stepId: 'confirm',
+      decisionId: randomUUID(),
+      selectedOptionId: 'revise',
+      workflowRunId: randomUUID(),
+      iteration: 1,
+      revision: 0,
+    });
     assert.equal(resolution.incrementRevision, true);
     assert.equal(resolution.cancel, false);
     assert.equal(resolution.remainAtCheckpoint, false);

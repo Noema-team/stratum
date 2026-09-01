@@ -15,7 +15,6 @@ import { resolveRepositories, selectAdapter } from '../execution/dispatch-primit
 import { LeaseManager } from '../scheduler/lease-manager.js';
 import { DEFAULT_SCHEDULER_CONFIG } from '../scheduler/types.js';
 import type { CheckpointResolver } from '../execution/checkpoint-resolver.js';
-import { getCheckpointDecisionOptions } from '../execution/checkpoint-resolver.js';
 
 // ============================================================================
 // ResumeService — resolves a checkpoint Decision and continues the same run.
@@ -246,57 +245,9 @@ export class ResumeService {
       .listByWorkflowRun(workflowRunId)
       .filter(se => se.state === 'waiting');
 
-    // ── (3b) Execute checkpoint side effects via resolver. ────────────────────
-    // Throws on failure → run stays safely halted; no state is committed.
-    // Must happen BEFORE any DB transaction so a partial failure is safe.
-    let checkpointResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
-      remainAtCheckpoint: false,
-      incrementRevision: false,
-      cancel: resolution.selectedOptionId === 'reject',
-    };
-
-    if (this.checkpointResolver) {
-      checkpointResolution = await this.checkpointResolver.resolveCheckpoint(
-        run.awaiting_checkpoint!,
-        resolution.selectedOptionId!,
-        workflowRunId,
-        run.iteration,
-      );
-    }
-
-    // If the resolver says "remain at checkpoint" (e.g. sharding modify),
-    // leave the Decision pending and the run halted — nothing to commit.
-    if (checkpointResolution.remainAtCheckpoint) {
-      return;
-    }
-
-    // ── Cancel path (fully atomic — no execution) ─────────────────────────────
-    if (checkpointResolution.cancel) {
-      this.db.transaction(() => {
-        for (const se of waitingExecs) {
-          this.stepExecRepo.updateState(se.id, 'cancelled', { completedAt: now });
-        }
-        this.workService.resolveDecision(decisionId, resolution, 'cancelled');
-        this.runRepo.update({
-          ...run,
-          status: 'halted',
-          current_step_id: run.awaiting_checkpoint!,
-          awaiting_checkpoint: null,
-          updated_at: now,
-        });
-      })();
-      return;
-    }
-
-    // ── Continue path ──────────────────────────────────────────────────────────
-    const continuationStepId =
-      checkpointResolution.overrideContinuationStepId !== undefined
-        ? checkpointResolution.overrideContinuationStepId === '__next__'
-          ? naturalNextStepId
-          : checkpointResolution.overrideContinuationStepId
-        : naturalNextStepId;
-
-    // (4a) Adapter selection — same logic as Scheduler.tryDispatch.
+    // ── (4a) Adapter selection BEFORE resolver — same logic as Scheduler.tryDispatch.
+    // Must happen before resolveCheckpoint so a retry after resolver success + crash
+    // does not fail at "no adapter" after the side effect was already applied.
     const adapter = selectAdapter(this.registry);
     if (!adapter) {
       throw new ResumeServiceError(
@@ -308,7 +259,7 @@ export class ResumeService {
     // (4b) Repository resolution — fail closed; missing repository is a kernel error.
     const repositories = resolveRepositories(workItem.repositoryIds, this.repoRepo);
 
-    // (4c) Acquire repository write leases — same invariant as Scheduler.
+    // (4c) Acquire repository write leases BEFORE resolver — same invariant as Scheduler.
     const toLease = workItem.repositoryIds.length > 0 ? workItem.repositoryIds : [null as string | null];
     for (const repoId of toLease) {
       const lease = this.leaseManager.tryAcquireWrite(workItemId, repoId, this.leaseExpiryMs);
@@ -321,7 +272,61 @@ export class ResumeService {
       }
     }
 
+    // ── (3b) Execute checkpoint side effects via resolver, then commit or cancel.
+    // Leases are held for the duration so retries cannot race with another dispatch.
+    // leaseManager.releaseAll is called in the outer finally below.
     try {
+      let checkpointResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
+        remainAtCheckpoint: false,
+        incrementRevision: false,
+        cancel: resolution.selectedOptionId === 'reject',
+      };
+
+      if (this.checkpointResolver) {
+        checkpointResolution = await this.checkpointResolver.resolveCheckpoint({
+          workflowId: run.workflow_id,
+          stepId: run.awaiting_checkpoint!,
+          decisionId,
+          selectedOptionId: resolution.selectedOptionId!,
+          rationale: resolution.rationale ?? undefined,
+          workflowRunId,
+          iteration: run.iteration,
+          revision: run.revision,
+        });
+      }
+
+      // If the resolver says "remain at checkpoint" (e.g. sharding modify),
+      // leave the Decision pending and the run halted — nothing to commit.
+      if (checkpointResolution.remainAtCheckpoint) {
+        return;
+      }
+
+      // ── Cancel path (fully atomic — no execution) ───────────────────────────
+      if (checkpointResolution.cancel) {
+        this.db.transaction(() => {
+          for (const se of waitingExecs) {
+            this.stepExecRepo.updateState(se.id, 'cancelled', { completedAt: now });
+          }
+          this.workService.resolveDecision(decisionId, resolution, 'cancelled');
+          this.runRepo.update({
+            ...run,
+            status: 'halted',
+            current_step_id: run.awaiting_checkpoint!,
+            awaiting_checkpoint: null,
+            updated_at: now,
+          });
+        })();
+        return;
+      }
+
+      // ── Continue path ────────────────────────────────────────────────────────
+      const continuationStepId =
+        checkpointResolution.overrideContinuationStepId !== undefined
+          ? checkpointResolution.overrideContinuationStepId === '__next__'
+            ? naturalNextStepId
+            : checkpointResolution.overrideContinuationStepId
+          : naturalNextStepId;
+
       // (5) Atomic transition:
       //   • close waiting StepExecution(s) → 'succeeded'
       //   • resolve Decision + WorkItem(needs_decision → running)
@@ -400,10 +405,22 @@ export class ResumeService {
         this.stepExecRepo.updateState(stepExecutionId, 'succeeded', { completedAt: doneAt });
         this.workService.markInReview({ workItemId });
       } else if (execResult.outcome === 'blocked') {
+        // Fail closed — require checkpointStepId and non-empty options in the first
+        // DecisionRequest. A missing contract is an adapter bug; mark run failed.
+        const nextDecisionReq = execResult.decisionRequests[0];
+        if (!execResult.checkpointStepId || !nextDecisionReq || !nextDecisionReq.options.length) {
+          this.stepExecRepo.updateState(stepExecutionId, 'failed', {
+            completedAt: doneAt,
+            failure: {
+              code: 'invalid_checkpoint_contract',
+              message: 'blocked outcome missing checkpointStepId or non-empty DecisionRequest options',
+            },
+          });
+          this.workService.fail({ workItemId, reason: 'invalid_checkpoint_contract' });
+          return;
+        }
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt: doneAt });
-        const nextDecisionOptions =
-          execResult.decisionRequests[0]?.options ??
-          getCheckpointDecisionOptions(execResult.checkpointStepId);
+        const nextDecisionOptions = nextDecisionReq.options;
         this.workService.needsDecision({
           workItemId,
           decision: {

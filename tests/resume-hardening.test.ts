@@ -138,12 +138,24 @@ function makeHaltingAdapter(
         req.workflowId, req.workflowRunId, req.goal, startStepId, req.workItemId,
       );
       const isCheckpoint = result.status === 'halted' && !result.error;
+      const checkpointStepId = isCheckpoint ? (result.final_step_id ?? undefined) : undefined;
       return {
         schemaVersion: 1,
         stepExecutionId: req.stepExecutionId,
         outcome: result.status === 'complete' ? 'succeeded' : isCheckpoint ? 'blocked' : 'failed',
-        artifacts: [], evidenceClaims: [], decisionRequests: [],
-        checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
+        artifacts: [], evidenceClaims: [],
+        checkpointStepId,
+        decisionRequests: isCheckpoint && checkpointStepId
+          ? [{
+              type: 'checkpoint',
+              title: 'Workflow paused',
+              summary: `Waiting at step: ${checkpointStepId}`,
+              options: [
+                { id: 'approve', label: 'Approve', description: 'Continue' },
+                { id: 'reject',  label: 'Reject',  description: 'Cancel'  },
+              ],
+            }]
+          : [],
         usage: { durationMs: 1 },
         failure: result.error ? { code: 'workflow_error', message: result.error } : undefined,
       };

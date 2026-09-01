@@ -255,12 +255,13 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     },
 
     async stop(): Promise<void> {
-      // Required shutdown order:
-      //   1. Stop accepting new ticks + await any in-flight tick
-      //   2. Close HTTP server (drains in-flight requests)
-      //   3. Close SQLite
-      await schedulerLoop.stop();
-      await controlPlaneServer.close();
+      // Initiate HTTP close and scheduler drain together so neither blocks the
+      // other — a long in-flight tick must not delay HTTP teardown and vice versa.
+      // SQLite closes last, after both are fully drained.
+      await Promise.all([
+        controlPlaneServer.close(),
+        schedulerLoop.stop(),
+      ]);
       db.close();
     },
   };

@@ -48,7 +48,7 @@ export interface DecisionRequest {
   type: string;
   title: string;
   summary: string;
-  options?: Array<{ id: string; label: string; description: string }>;
+  options: Array<{ id: string; label: string; description: string }>;
 }
 
 export interface ExecutionFailureInfo {

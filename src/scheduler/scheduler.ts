@@ -164,14 +164,23 @@ export class Scheduler {
         this.workService.markInReview({ workItemId });
       } else if (execResult.outcome === 'blocked') {
         // Workflow paused at a human-in-the-loop checkpoint.
-        // Mark the step execution 'waiting' (not cancelled — it successfully reached
-        // the checkpoint) and create a first-class Decision so operators can track
-        // and resolve the pause. WorkItem transitions to 'needs_decision'.
+        // Fail closed: require a checkpointStepId and non-empty options in the first
+        // DecisionRequest. A missing or malformed contract is an adapter bug and must
+        // not silently fall back to generic options — mark the run failed instead.
+        const decisionReq = execResult.decisionRequests[0];
+        if (!execResult.checkpointStepId || !decisionReq || !decisionReq.options.length) {
+          this.stepExecRepo.updateState(stepExecutionId, 'failed', {
+            completedAt,
+            failure: {
+              code: 'invalid_checkpoint_contract',
+              message: 'blocked outcome missing checkpointStepId or non-empty DecisionRequest options',
+            },
+          });
+          this.workService.fail({ workItemId, reason: 'invalid_checkpoint_contract' });
+          return { workItemId, outcome: 'failed', error: 'invalid_checkpoint_contract' };
+        }
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt });
-        const decisionOptions = execResult.decisionRequests[0]?.options ?? [
-          { id: 'approve', label: 'Approve', description: 'Continue the workflow past this checkpoint' },
-          { id: 'reject', label: 'Reject', description: 'Cancel the workflow run' },
-        ];
+        const decisionOptions = decisionReq.options;
         this.workService.needsDecision({
           workItemId,
           decision: {

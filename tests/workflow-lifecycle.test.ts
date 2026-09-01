@@ -151,8 +151,16 @@ function makeTestAdapter(
         artifacts: [],
         evidenceClaims: [],
         checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
-        decisionRequests: isCheckpoint
-          ? [{ type: 'checkpoint', title: 'Workflow paused', summary: '' }]
+        decisionRequests: isCheckpoint && result.final_step_id
+          ? [{
+              type: 'checkpoint',
+              title: 'Workflow paused',
+              summary: `Waiting at step: ${result.final_step_id}`,
+              options: [
+                { id: 'approve', label: 'Approve', description: 'Continue' },
+                { id: 'reject',  label: 'Reject',  description: 'Cancel'  },
+              ],
+            }]
           : [],
         usage: { durationMs: Date.now() - start },
         failure: result.error ? { code: 'workflow_error', message: result.error } : undefined,

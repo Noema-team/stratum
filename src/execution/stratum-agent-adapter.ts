@@ -81,7 +81,7 @@ export class StratumAgentAdapter implements ExecutionAdapter {
             type: 'checkpoint',
             title: 'Workflow paused',
             summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}`,
-            options: getCheckpointDecisionOptions(result.final_step_id),
+            options: getCheckpointDecisionOptions(request.workflowId, result.final_step_id),
           }]
         : [],
       usage: { durationMs: Date.now() - start },
