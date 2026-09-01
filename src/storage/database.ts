@@ -302,6 +302,32 @@ const MIGRATIONS: string[] = [
   ALTER TABLE work_items    ADD COLUMN workflow_parameters_json TEXT;
   ALTER TABLE workflow_runs ADD COLUMN resolved_parameters_json TEXT;
   `,
+
+  // Migration 8: checkpoint application journal (A.3 — durable idempotency).
+  // Records APPLYING (before side effects) and APPLIED (after side effects) transitions.
+  // Replaces filesystem checkpoint receipts as the idempotency authority for resume.
+  // decision_id is the PK and FK to decisions; one row per resolved checkpoint.
+  `
+  CREATE TABLE checkpoint_applications (
+    decision_id          TEXT PRIMARY KEY REFERENCES decisions(id),
+    workflow_run_id      TEXT NOT NULL REFERENCES workflow_runs(run_id),
+    workflow_id          TEXT NOT NULL,
+    step_id              TEXT NOT NULL,
+    iteration            INTEGER NOT NULL,
+    revision_before      INTEGER NOT NULL,
+    selected_option_id   TEXT NOT NULL,
+    rationale            TEXT,
+    state                TEXT NOT NULL CHECK(state IN ('applying','applied')),
+    continuation_step_id TEXT,
+    remain_at_checkpoint INTEGER NOT NULL DEFAULT 0,
+    increment_revision   INTEGER NOT NULL DEFAULT 0,
+    cancel               INTEGER NOT NULL DEFAULT 0,
+    started_at           TEXT NOT NULL,
+    applied_at           TEXT
+  );
+
+  CREATE INDEX idx_checkpoint_applications_run ON checkpoint_applications(workflow_run_id);
+  `,
 ];
 
 // ============================================================================

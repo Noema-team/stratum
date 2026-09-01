@@ -881,3 +881,200 @@ function rowToWorkflowRun(r: Record<string, unknown>): WorkflowRun {
       : undefined,
   };
 }
+
+// ============================================================================
+// CheckpointApplicationRepository — durable idempotency journal (Migration 8)
+// ============================================================================
+
+export class CheckpointApplicationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CheckpointApplicationConflictError';
+  }
+}
+
+export interface CheckpointApplicationInput {
+  decisionId: string;
+  workflowRunId: string;
+  workflowId: string;
+  stepId: string;
+  iteration: number;
+  revisionBefore: number;
+  selectedOptionId: string;
+  rationale?: string;
+}
+
+export interface CheckpointApplication {
+  decisionId: string;
+  workflowRunId: string;
+  workflowId: string;
+  stepId: string;
+  iteration: number;
+  revisionBefore: number;
+  selectedOptionId: string;
+  rationale: string | null;
+  state: 'applying' | 'applied';
+  continuationStepId: string | null;
+  remainAtCheckpoint: boolean;
+  incrementRevision: boolean;
+  cancel: boolean;
+  startedAt: string;
+  appliedAt: string | null;
+}
+
+export interface CheckpointApplicationResolution {
+  continuationStepId: string | null;
+  remainAtCheckpoint: boolean;
+  incrementRevision: boolean;
+  cancel: boolean;
+}
+
+export class CheckpointApplicationRepository {
+  private readonly insertIgnore: Database.Statement;
+  private readonly byId: Database.Statement;
+  private readonly markAppliedStmt: Database.Statement;
+
+  constructor(db: Database.Database) {
+    this.insertIgnore = db.prepare(`
+      INSERT INTO checkpoint_applications
+        (decision_id, workflow_run_id, workflow_id, step_id, iteration, revision_before,
+         selected_option_id, rationale, state, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'applying', ?)
+      ON CONFLICT(decision_id) DO NOTHING
+    `);
+    this.byId = db.prepare(
+      'SELECT * FROM checkpoint_applications WHERE decision_id = ?',
+    );
+    this.markAppliedStmt = db.prepare(`
+      UPDATE checkpoint_applications
+      SET state = 'applied',
+          continuation_step_id = ?,
+          remain_at_checkpoint = ?,
+          increment_revision = ?,
+          cancel = ?,
+          applied_at = ?
+      WHERE decision_id = ? AND state = 'applying'
+    `);
+  }
+
+  // createOrLoadApplying: INSERT OR IGNORE; on conflict, validate all identity fields;
+  // fail closed on any mismatch; return the existing or newly created row.
+  createOrLoadApplying(input: CheckpointApplicationInput): CheckpointApplication {
+    const now = new Date().toISOString();
+    const normalizedRationale = input.rationale ?? null;
+
+    const result = this.insertIgnore.run(
+      input.decisionId, input.workflowRunId, input.workflowId, input.stepId,
+      input.iteration, input.revisionBefore, input.selectedOptionId,
+      normalizedRationale, now,
+    );
+
+    const row = this.byId.get(input.decisionId) as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`CheckpointApplication '${input.decisionId}' not found after insert`);
+    }
+
+    if (result.changes === 0) {
+      // Row already exists — validate all identity fields match.
+      const stored = rowToCheckpointApplication(row);
+      if (stored.workflowRunId !== input.workflowRunId) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': workflow_run_id mismatch ` +
+          `(stored='${stored.workflowRunId}', incoming='${input.workflowRunId}')`,
+        );
+      }
+      if (stored.workflowId !== input.workflowId) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': workflow_id mismatch`,
+        );
+      }
+      if (stored.stepId !== input.stepId) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': step_id mismatch`,
+        );
+      }
+      if (stored.iteration !== input.iteration) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': iteration mismatch`,
+        );
+      }
+      if (stored.revisionBefore !== input.revisionBefore) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': revision_before mismatch`,
+        );
+      }
+      if (stored.selectedOptionId !== input.selectedOptionId) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': selected_option_id mismatch ` +
+          `(stored='${stored.selectedOptionId}', incoming='${input.selectedOptionId}')`,
+        );
+      }
+      if (stored.rationale !== normalizedRationale) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${input.decisionId}': rationale mismatch ` +
+          `(stored=${JSON.stringify(stored.rationale)}, incoming=${JSON.stringify(normalizedRationale)})`,
+        );
+      }
+    }
+
+    return rowToCheckpointApplication(row);
+  }
+
+  // markApplied: transitions APPLYING → APPLIED and stores the exact resolution.
+  // If the row is already APPLIED (concurrent crash recovery), verifies the resolution
+  // matches the stored one — fail closed on any rewrite attempt.
+  markApplied(decisionId: string, resolution: CheckpointApplicationResolution): void {
+    const now = new Date().toISOString();
+    const result = this.markAppliedStmt.run(
+      resolution.continuationStepId ?? null,
+      resolution.remainAtCheckpoint ? 1 : 0,
+      resolution.incrementRevision ? 1 : 0,
+      resolution.cancel ? 1 : 0,
+      now,
+      decisionId,
+    );
+    if (result.changes === 0) {
+      // Row is already APPLIED — verify stored resolution matches exactly.
+      const row = this.byId.get(decisionId) as Record<string, unknown> | undefined;
+      if (!row) {
+        throw new Error(`CheckpointApplication '${decisionId}' not found during markApplied`);
+      }
+      const existing = rowToCheckpointApplication(row);
+      if (
+        existing.continuationStepId !== resolution.continuationStepId ||
+        existing.remainAtCheckpoint !== resolution.remainAtCheckpoint ||
+        existing.incrementRevision !== resolution.incrementRevision ||
+        existing.cancel !== resolution.cancel
+      ) {
+        throw new CheckpointApplicationConflictError(
+          `CheckpointApplication '${decisionId}': APPLIED resolution cannot be rewritten`,
+        );
+      }
+    }
+  }
+
+  findByDecisionId(decisionId: string): CheckpointApplication | undefined {
+    const row = this.byId.get(decisionId) as Record<string, unknown> | undefined;
+    return row ? rowToCheckpointApplication(row) : undefined;
+  }
+}
+
+function rowToCheckpointApplication(r: Record<string, unknown>): CheckpointApplication {
+  return {
+    decisionId: r.decision_id as string,
+    workflowRunId: r.workflow_run_id as string,
+    workflowId: r.workflow_id as string,
+    stepId: r.step_id as string,
+    iteration: r.iteration as number,
+    revisionBefore: r.revision_before as number,
+    selectedOptionId: r.selected_option_id as string,
+    rationale: (r.rationale as string | null) ?? null,
+    state: r.state as 'applying' | 'applied',
+    continuationStepId: (r.continuation_step_id as string | null) ?? null,
+    remainAtCheckpoint: Boolean(r.remain_at_checkpoint),
+    incrementRevision: Boolean(r.increment_revision),
+    cancel: Boolean(r.cancel),
+    startedAt: r.started_at as string,
+    appliedAt: (r.applied_at as string | null) ?? null,
+  };
+}

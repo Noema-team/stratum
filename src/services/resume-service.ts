@@ -8,6 +8,7 @@ import {
   WorkItemRepository,
   StepExecutionRepository,
   RepositoryRepository,
+  CheckpointApplicationRepository,
 } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
 import type { ExecutorRegistry } from '../execution/registry.js';
@@ -58,6 +59,7 @@ export class ResumeService {
   private readonly leaseExpiryMs: number;
 
   private readonly checkpointResolver: CheckpointResolver | null;
+  private readonly checkpointApplicationRepo: CheckpointApplicationRepository;
 
   constructor(
     private readonly db: Database.Database,
@@ -76,6 +78,7 @@ export class ResumeService {
     this.leaseManager = new LeaseManager(db);
     this.leaseExpiryMs = config.leaseExpiryMs ?? DEFAULT_SCHEDULER_CONFIG.leaseExpiryMs;
     this.checkpointResolver = checkpointResolver ?? null;
+    this.checkpointApplicationRepo = new CheckpointApplicationRepository(db);
   }
 
   async resume(
@@ -276,33 +279,104 @@ export class ResumeService {
     // Leases are held for the duration so retries cannot race with another dispatch.
     // leaseManager.releaseAll is called in the outer finally below.
     try {
-      let checkpointResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
-        remainAtCheckpoint: false,
-        incrementRevision: false,
-        cancel: resolution.selectedOptionId === 'reject',
-      };
+      // ── Journal: write APPLYING before any side effects ──────────────────────
+      // 'modify' is the only option that keeps the Decision pending with no side
+      // effects — it doesn't need a journal row and can be retried freely.
+      let continuationStepId: string | null;
+      let journaledResolution: { remainAtCheckpoint: boolean; incrementRevision: boolean; cancel: boolean };
 
-      if (this.checkpointResolver) {
-        checkpointResolution = await this.checkpointResolver.resolveCheckpoint({
-          workflowId: run.workflow_id,
-          stepId: run.awaiting_checkpoint!,
-          decisionId,
-          selectedOptionId: resolution.selectedOptionId!,
-          rationale: resolution.rationale ?? undefined,
-          workflowRunId,
-          iteration: run.iteration,
-          revision: run.revision,
+      if (resolution.selectedOptionId === 'modify') {
+        // modify: no journal, no finalization — call resolver for optional effects and return.
+        if (this.checkpointResolver) {
+          await this.checkpointResolver.resolveCheckpoint({
+            workflowId: run.workflow_id,
+            stepId: run.awaiting_checkpoint!,
+            decisionId,
+            selectedOptionId: 'modify',
+            rationale: resolution.rationale ?? undefined,
+            workflowRunId,
+            iteration: run.iteration,
+            revision: run.revision,
+          });
+        }
+        return;
+      }
+
+      const appRow = this.checkpointApplicationRepo.createOrLoadApplying({
+        decisionId,
+        workflowRunId,
+        workflowId: run.workflow_id,
+        stepId: run.awaiting_checkpoint!,
+        iteration: run.iteration,
+        revisionBefore: run.revision,
+        selectedOptionId: resolution.selectedOptionId!,
+        rationale: resolution.rationale ?? undefined,
+      });
+
+      if (appRow.state === 'applied') {
+        // Primitive already ran — skip it and use the stored resolution.
+        continuationStepId = appRow.continuationStepId;
+        journaledResolution = {
+          remainAtCheckpoint: appRow.remainAtCheckpoint,
+          incrementRevision: appRow.incrementRevision,
+          cancel: appRow.cancel,
+        };
+      } else {
+        // APPLYING — execute the primitive.
+        let rawResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
+          remainAtCheckpoint: false,
+          incrementRevision: false,
+          cancel: resolution.selectedOptionId === 'reject',
+        };
+
+        if (this.checkpointResolver) {
+          rawResolution = await this.checkpointResolver.resolveCheckpoint({
+            workflowId: run.workflow_id,
+            stepId: run.awaiting_checkpoint!,
+            decisionId,
+            selectedOptionId: resolution.selectedOptionId!,
+            rationale: resolution.rationale ?? undefined,
+            workflowRunId,
+            iteration: run.iteration,
+            revision: run.revision,
+          });
+        }
+
+        journaledResolution = {
+          remainAtCheckpoint: rawResolution.remainAtCheckpoint,
+          incrementRevision: rawResolution.incrementRevision,
+          cancel: rawResolution.cancel,
+        };
+
+        // Compute the resolved continuation step now so it can be stored in the journal.
+        if (rawResolution.remainAtCheckpoint || rawResolution.cancel) {
+          continuationStepId = null;
+        } else {
+          continuationStepId =
+            rawResolution.overrideContinuationStepId !== undefined
+              ? rawResolution.overrideContinuationStepId === '__next__'
+                ? naturalNextStepId
+                : rawResolution.overrideContinuationStepId
+              : naturalNextStepId;
+        }
+
+        // Mark APPLIED — stores the exact resolution for crash recovery.
+        this.checkpointApplicationRepo.markApplied(decisionId, {
+          continuationStepId,
+          remainAtCheckpoint: rawResolution.remainAtCheckpoint,
+          incrementRevision: rawResolution.incrementRevision,
+          cancel: rawResolution.cancel,
         });
       }
 
       // If the resolver says "remain at checkpoint" (e.g. sharding modify),
       // leave the Decision pending and the run halted — nothing to commit.
-      if (checkpointResolution.remainAtCheckpoint) {
+      if (journaledResolution.remainAtCheckpoint) {
         return;
       }
 
       // ── Cancel path (fully atomic — no execution) ───────────────────────────
-      if (checkpointResolution.cancel) {
+      if (journaledResolution.cancel) {
         this.db.transaction(() => {
           for (const se of waitingExecs) {
             this.stepExecRepo.updateState(se.id, 'cancelled', { completedAt: now });
@@ -320,12 +394,7 @@ export class ResumeService {
       }
 
       // ── Continue path ────────────────────────────────────────────────────────
-      const continuationStepId =
-        checkpointResolution.overrideContinuationStepId !== undefined
-          ? checkpointResolution.overrideContinuationStepId === '__next__'
-            ? naturalNextStepId
-            : checkpointResolution.overrideContinuationStepId
-          : naturalNextStepId;
+      // continuationStepId is already resolved (journal stores the definitive value).
 
       // (5) Atomic transition:
       //   • close waiting StepExecution(s) → 'succeeded'
@@ -344,7 +413,7 @@ export class ResumeService {
           status: continuationStepId ? 'active' : 'complete',
           current_step_id: continuationStepId ?? run.awaiting_checkpoint!,
           awaiting_checkpoint: null,
-          revision: checkpointResolution.incrementRevision ? run.revision + 1 : run.revision,
+          revision: journaledResolution.incrementRevision ? run.revision + 1 : run.revision,
           updated_at: now,
         });
         if (continuationStepId) {

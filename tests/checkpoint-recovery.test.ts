@@ -1,9 +1,11 @@
 /**
- * Checkpoint recovery tests — Blocker 5 of A.2 correction.
+ * Checkpoint primitive behavior tests — verifies that resolveCheckpoint applies
+ * the correct side effects for each full-build checkpoint type and returns the
+ * expected CheckpointResolution.
  *
- * Verifies that resolveCheckpoint is crash-safe and idempotent via the receipt
- * mechanism, and that all full-build checkpoint types are handled correctly
- * on first attempt and on retry.
+ * Idempotency / retry safety are handled at the ResumeService layer via the
+ * SQLite checkpoint_applications journal (A.3) and tested in checkpoint-journal.test.ts.
+ * Receipt-based tests have been removed.
  */
 
 import { test } from 'node:test';
@@ -145,20 +147,18 @@ function makeRunner(
 
 // ── CONFIRM approve ────────────────────────────────────────────────────────────
 
-test('CONFIRM approve: first call returns {overrideContinuationStepId: build}', async () => {
+test('CONFIRM approve: returns {overrideContinuationStepId: build}', async () => {
   const root = makeTmpRoot();
   try {
     const confirmService = makeConfirmService();
     const runner = makeRunner(root, { confirmService });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
     const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'confirm',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'approve',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
     });
@@ -173,53 +173,21 @@ test('CONFIRM approve: first call returns {overrideContinuationStepId: build}', 
   }
 });
 
-test('CONFIRM approve: receipt gate prevents double-apply on retry', async () => {
+test('CONFIRM approve partial recovery: not_awaiting_confirmation + map=false → build routing', async () => {
   const root = makeTmpRoot();
   try {
-    const confirmService = makeConfirmService();
-    const runner = makeRunner(root, { confirmService });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
-
-    const input = {
-      workflowId: 'full-build',
-      stepId: 'confirm',
-      decisionId,
-      selectedOptionId: 'approve',
-      workflowRunId: wrid,
-      iteration: 1,
-      revision: 0,
-    };
-
-    const res1 = await runner.resolveCheckpoint(input);
-    const res2 = await runner.resolveCheckpoint(input); // retry
-
-    // Same resolution returned both times.
-    assert.deepEqual(res1, res2);
-    // confirmService.approve() called exactly once — receipt gate short-circuited retry.
-    assert.deepEqual(confirmService.calls, ['approve']);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('CONFIRM approve partial recovery: no receipt + not_awaiting_confirmation + map=false → build routing', async () => {
-  const root = makeTmpRoot();
-  try {
-    // Simulate: approve() completed both effects (map updated) but receipt was never written.
-    // On retry: approve() throws not_awaiting_confirmation, map shows awaiting_confirmation=false.
+    // Simulate: approve() completed both effects (map updated) but resolver crashed.
+    // On retry: approve() throws not_awaiting_confirmation, map shows false.
     const mapManager = makeMapManager({ awaiting_confirmation: false });
     const confirmService = makeConfirmService({ throwCode: 'not_awaiting_confirmation' });
     const runner = makeRunner(root, { mapManager, confirmService });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
     const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'confirm',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'approve',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
     });
@@ -227,19 +195,6 @@ test('CONFIRM approve partial recovery: no receipt + not_awaiting_confirmation +
     assert.equal(res.overrideContinuationStepId, 'build', 'recovery must produce build routing');
     assert.equal(res.cancel, false);
     assert.equal(res.incrementRevision, false);
-
-    // Receipt is written after recovery so a subsequent retry doesn't re-recover.
-    const res2 = await runner.resolveCheckpoint({
-      workflowId: 'full-build',
-      stepId: 'confirm',
-      decisionId,
-      selectedOptionId: 'approve',
-      workflowRunId: wrid,
-      iteration: 1,
-      revision: 0,
-    });
-    assert.deepEqual(res, res2);
-    // approve() called once (threw on the recovery attempt); retry served from receipt.
     assert.equal(confirmService.calls.length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -253,15 +208,13 @@ test('CONFIRM revise: returns TEST routing with incrementRevision=true', async (
   try {
     const confirmService = makeConfirmService();
     const runner = makeRunner(root, { confirmService });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
     const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'confirm',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'revise',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
     });
@@ -275,43 +228,12 @@ test('CONFIRM revise: returns TEST routing with incrementRevision=true', async (
   }
 });
 
-test('CONFIRM revise: retry returns same TEST routing (no re-application)', async () => {
-  const root = makeTmpRoot();
-  try {
-    const confirmService = makeConfirmService();
-    const runner = makeRunner(root, { confirmService });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
-
-    const input = {
-      workflowId: 'full-build',
-      stepId: 'confirm',
-      decisionId,
-      selectedOptionId: 'revise',
-      workflowRunId: wrid,
-      iteration: 1,
-      revision: 0,
-    };
-
-    const res1 = await runner.resolveCheckpoint(input);
-    const res2 = await runner.resolveCheckpoint(input);
-
-    assert.equal(res1.overrideContinuationStepId, 'test');
-    assert.deepEqual(res1, res2);
-    // revise() called once; retry served from receipt.
-    assert.deepEqual(confirmService.calls, ['revise']);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test('CONFIRM revise: rationale is forwarded as note to confirmService.revise()', async () => {
   const root = makeTmpRoot();
   try {
     const captured: string[] = [];
     const confirmService = makeConfirmService({ captureNote: captured });
     const runner = makeRunner(root, { confirmService });
-    const wrid = randomUUID();
 
     await runner.resolveCheckpoint({
       workflowId: 'full-build',
@@ -319,7 +241,7 @@ test('CONFIRM revise: rationale is forwarded as note to confirmService.revise()'
       decisionId: randomUUID(),
       selectedOptionId: 'revise',
       rationale: 'needs-more-tests',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
     });
@@ -332,41 +254,30 @@ test('CONFIRM revise: rationale is forwarded as note to confirmService.revise()'
 
 // ── SCOPING approve ────────────────────────────────────────────────────────────
 
-test('SCOPING approve: scopingService.approve() called; run-artifact=complete; retry safe', async () => {
+test('SCOPING approve: scopingService.approve() called; run-artifact=complete', async () => {
   const root = makeTmpRoot();
   try {
     const scopingService = makeScopingService();
     const runArtifacts = makeRunArtifacts(root);
     const runner = makeRunner(root, { scopingService, runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
-    const input = {
+    const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'scoping.checkpoint',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'approve',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
-    };
+    });
 
-    const res1 = await runner.resolveCheckpoint(input);
-
-    assert.equal(res1.remainAtCheckpoint, false);
-    assert.equal(res1.cancel, false);
-    // scopingService.approve() was called.
+    assert.equal(res.remainAtCheckpoint, false);
+    assert.equal(res.cancel, false);
     assert.deepEqual(scopingService.calls, ['approve']);
-    // Run-artifact marked complete.
     assert.ok(
       runArtifacts.statusLog.some(e => e.startsWith('scoping.checkpoint:complete')),
       'scoping.checkpoint should be marked complete in run-artifacts',
     );
-
-    // Retry: receipt found; scopingService.approve() not called again.
-    const res2 = await runner.resolveCheckpoint(input);
-    assert.deepEqual(res1, res2);
-    assert.equal(scopingService.calls.length, 1, 'scopingService.approve() must not be called twice');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -374,44 +285,35 @@ test('SCOPING approve: scopingService.approve() called; run-artifact=complete; r
 
 // ── SHARDING approve ───────────────────────────────────────────────────────────
 
-test('SHARDING approve: tasks created once; run-artifact=complete with .sle/tasks.yaml; retry safe', async () => {
+test('SHARDING approve: tasks created; run-artifact=complete with .sle/tasks.yaml', async () => {
   const root = makeTmpRoot();
   try {
     const shardingService = makeShardingService();
     const runArtifacts = makeRunArtifacts(root);
     const runner = makeRunner(root, { shardingService, runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
     // Write a minimal proposal file.
     const sle = join(root, '.sle');
     mkdirSync(sle, { recursive: true });
     writeFileSync(join(sle, 'sharding-proposal.yaml'), 'tasks:\n  - id: T-1\n    title: "task one"\n', 'utf8');
 
-    const input = {
+    const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'sharding_approval',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'approve',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
-    };
+    });
 
-    const res1 = await runner.resolveCheckpoint(input);
-
-    assert.equal(res1.remainAtCheckpoint, false);
-    assert.equal(res1.cancel, false);
+    assert.equal(res.remainAtCheckpoint, false);
+    assert.equal(res.cancel, false);
     assert.deepEqual(shardingService.calls, ['createTasksFromProposal']);
     assert.ok(
       runArtifacts.statusLog.some(e => e.startsWith('sharding_approval:complete')),
       'sharding_approval should be marked complete',
     );
-
-    // Retry: receipt served; tasks not created again.
-    const res2 = await runner.resolveCheckpoint(input);
-    assert.deepEqual(res1, res2);
-    assert.equal(shardingService.calls.length, 1, 'createTasksFromProposal must not be called twice');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -419,13 +321,11 @@ test('SHARDING approve: tasks created once; run-artifact=complete with .sle/task
 
 // ── SHARDING reject ────────────────────────────────────────────────────────────
 
-test('SHARDING reject: proposal removed; run-artifact=skipped(user_rejected_sharding); retry safe', async () => {
+test('SHARDING reject: proposal removed; run-artifact=skipped(user_rejected_sharding)', async () => {
   const root = makeTmpRoot();
   try {
     const runArtifacts = makeRunArtifacts(root);
     const runner = makeRunner(root, { runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
 
     // Write proposal.
     const sle = join(root, '.sle');
@@ -433,20 +333,18 @@ test('SHARDING reject: proposal removed; run-artifact=skipped(user_rejected_shar
     const proposalPath = join(sle, 'sharding-proposal.yaml');
     writeFileSync(proposalPath, 'tasks: []', 'utf8');
 
-    const input = {
+    const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'sharding_approval',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'reject',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
-    };
+    });
 
-    const res1 = await runner.resolveCheckpoint(input);
-
-    assert.equal(res1.remainAtCheckpoint, false);
-    assert.equal(res1.cancel, false);
+    assert.equal(res.remainAtCheckpoint, false);
+    assert.equal(res.cancel, false);
 
     // Proposal file removed.
     await assert.rejects(fs.access(proposalPath), 'proposal file should have been deleted');
@@ -456,13 +354,6 @@ test('SHARDING reject: proposal removed; run-artifact=skipped(user_rejected_shar
       runArtifacts.statusLog.some(e => e === 'sharding_approval:skipped'),
       'sharding_approval should be marked skipped',
     );
-
-    // Retry: receipt served.
-    const res2 = await runner.resolveCheckpoint(input);
-    assert.deepEqual(res1, res2);
-    // statusLog still has exactly one skipped entry (unlink is idempotent, no double-skip from receipt).
-    const skipCount = runArtifacts.statusLog.filter(e => e === 'sharding_approval:skipped').length;
-    assert.equal(skipCount, 1, 'updateNodeStatus(skipped) must only run once');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -470,100 +361,23 @@ test('SHARDING reject: proposal removed; run-artifact=skipped(user_rejected_shar
 
 // ── SHARDING modify ────────────────────────────────────────────────────────────
 
-test('SHARDING modify: returns remainAtCheckpoint=true; no receipt written', async () => {
+test('SHARDING modify: returns remainAtCheckpoint=true', async () => {
   const root = makeTmpRoot();
   try {
-    const runArtifacts = makeRunArtifacts(root);
-    const runner = makeRunner(root, { runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
+    const runner = makeRunner(root);
 
     const res = await runner.resolveCheckpoint({
       workflowId: 'full-build',
       stepId: 'sharding_approval',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'modify',
-      workflowRunId: wrid,
+      workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
     });
 
     assert.equal(res.remainAtCheckpoint, true);
     assert.equal(res.cancel, false);
-
-    // No receipt should exist — decision stays pending.
-    const receiptDir = runArtifacts.runDir(wrid, 1);
-    const receiptPath = join(receiptDir, `checkpoint-receipt-${decisionId}.json`);
-    await assert.rejects(
-      fs.access(receiptPath),
-      'no receipt should be written for modify — decision stays pending',
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-// ── Fail-closed: corrupt receipt ───────────────────────────────────────────────
-
-test('Corrupt receipt: throws instead of silently re-applying', async () => {
-  const root = makeTmpRoot();
-  try {
-    const runArtifacts = makeRunArtifacts(root);
-    const runner = makeRunner(root, { runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
-
-    // Write a corrupt receipt.
-    const receiptDir = runArtifacts.runDir(wrid, 1);
-    mkdirSync(receiptDir, { recursive: true });
-    writeFileSync(join(receiptDir, `checkpoint-receipt-${decisionId}.json`), '{not valid json', 'utf8');
-
-    await assert.rejects(
-      runner.resolveCheckpoint({
-        workflowId: 'full-build',
-        stepId: 'confirm',
-        decisionId,
-        selectedOptionId: 'approve',
-        workflowRunId: wrid,
-        iteration: 1,
-        revision: 0,
-      }),
-      /Corrupt checkpoint receipt/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('Corrupt receipt: receipt with missing required fields throws', async () => {
-  const root = makeTmpRoot();
-  try {
-    const runArtifacts = makeRunArtifacts(root);
-    const runner = makeRunner(root, { runArtifacts });
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
-
-    // Write a receipt that has no resolution field.
-    const receiptDir = runArtifacts.runDir(wrid, 1);
-    mkdirSync(receiptDir, { recursive: true });
-    writeFileSync(
-      join(receiptDir, `checkpoint-receipt-${decisionId}.json`),
-      JSON.stringify({ decisionId, stepId: 'confirm', selectedOptionId: 'approve' }),
-      'utf8',
-    );
-
-    await assert.rejects(
-      runner.resolveCheckpoint({
-        workflowId: 'full-build',
-        stepId: 'confirm',
-        decisionId,
-        selectedOptionId: 'approve',
-        workflowRunId: wrid,
-        iteration: 1,
-        revision: 0,
-      }),
-      /Corrupt checkpoint receipt/,
-    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -599,27 +413,23 @@ test('CONFIRM approve recovery: unexpected map state (awaiting_confirmation=true
 
 // ── Generic fallback ───────────────────────────────────────────────────────────
 
-test('Generic approve (unknown workflow): cancel=false, no receipt mismatch on retry', async () => {
+test('Generic approve (unknown workflow): cancel=false', async () => {
   const root = makeTmpRoot();
   try {
     const runner = makeRunner(root);
-    const decisionId = randomUUID();
 
-    const input = {
+    const res = await runner.resolveCheckpoint({
       workflowId: 'some-other-workflow',
       stepId: 'any_checkpoint',
-      decisionId,
+      decisionId: randomUUID(),
       selectedOptionId: 'approve',
       workflowRunId: randomUUID(),
       iteration: 1,
       revision: 0,
-    };
+    });
 
-    const res1 = await runner.resolveCheckpoint(input);
-    assert.equal(res1.cancel, false);
-
-    const res2 = await runner.resolveCheckpoint(input);
-    assert.deepEqual(res1, res2);
+    assert.equal(res.cancel, false);
+    assert.equal(res.remainAtCheckpoint, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -642,42 +452,6 @@ test('Generic reject (unknown workflow): cancel=true', async () => {
 
     assert.equal(res.cancel, true);
     assert.equal(res.remainAtCheckpoint, false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('Receipt mismatch: different stepId for same decisionId → throws', async () => {
-  const root = makeTmpRoot();
-  try {
-    const runner = makeRunner(root);
-    const wrid = randomUUID();
-    const decisionId = randomUUID();
-
-    // Write first resolution.
-    await runner.resolveCheckpoint({
-      workflowId: 'some-other-workflow',
-      stepId: 'step-a',
-      decisionId,
-      selectedOptionId: 'approve',
-      workflowRunId: wrid,
-      iteration: 1,
-      revision: 0,
-    });
-
-    // Attempt with different stepId for same decisionId.
-    await assert.rejects(
-      runner.resolveCheckpoint({
-        workflowId: 'some-other-workflow',
-        stepId: 'step-b',
-        decisionId,
-        selectedOptionId: 'approve',
-        workflowRunId: wrid,
-        iteration: 1,
-        revision: 0,
-      }),
-      /Checkpoint receipt mismatch/,
-    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

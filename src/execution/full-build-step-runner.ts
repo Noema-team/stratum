@@ -15,15 +15,6 @@ import type { AgentStepRunner } from './agent-step-runner.js';
 import { updateArtifactEntries } from '../workflow/artifact-utils.js';
 import type { CheckpointResolution, CheckpointResolver, CheckpointResolverInput } from './checkpoint-resolver.js';
 
-// Durable idempotency record written after all checkpoint side effects succeed.
-interface CheckpointReceipt {
-  decisionId: string;
-  stepId: string;
-  selectedOptionId: string;
-  resolution: CheckpointResolution;
-  recordedAt: string;
-}
-
 // All service dependencies for the full-build workflow's step execution.
 // This keeps full-build-specific concerns (CriticAgent, ValidationGateService,
 // sharding, scoping, etc.) outside of WorkflowEngine.
@@ -143,21 +134,10 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
   // On retry the receipt is returned verbatim — effects are never re-applied.
   // A corrupt/unreadable receipt fails closed (throws).
 
+  // resolveCheckpoint is a pure action primitive — idempotency is handled at the
+  // ResumeService layer via the SQLite checkpoint_applications journal (A.3).
   async resolveCheckpoint(input: CheckpointResolverInput): Promise<CheckpointResolution> {
-    const { workflowId, stepId, decisionId, selectedOptionId, rationale, workflowRunId, iteration } = input;
-
-    // Receipt gate — primary idempotency check.
-    const existing = await this.readReceipt(workflowRunId, iteration, decisionId);
-    if (existing) {
-      if (existing.stepId !== stepId || existing.selectedOptionId !== selectedOptionId) {
-        throw new Error(
-          `Checkpoint receipt mismatch for decisionId '${decisionId}': ` +
-          `stored (${existing.stepId}/${existing.selectedOptionId}) vs ` +
-          `incoming (${stepId}/${selectedOptionId})`,
-        );
-      }
-      return existing.resolution;
-    }
+    const { workflowId, stepId, selectedOptionId, rationale, workflowRunId, iteration } = input;
 
     let resolution: CheckpointResolution;
 
@@ -177,7 +157,7 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
         resolution = await this.applyScopingApprove(stepId, workflowRunId, iteration);
       } else if (stepId === 'sharding_approval') {
         if (selectedOptionId === 'modify') {
-          // No receipt for modify — decision stays pending, nothing committed.
+          // modify: no side effects — decision stays pending.
           return { remainAtCheckpoint: true, incrementRevision: false, cancel: false };
         } else if (selectedOptionId === 'reject') {
           resolution = await this.applyShardingReject(stepId, workflowRunId, iteration);
@@ -196,54 +176,7 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
       resolution = this.genericCheckpointResolution(selectedOptionId, stepId);
     }
 
-    // Write receipt AFTER all side effects complete.
-    await this.writeReceipt(workflowRunId, iteration, {
-      decisionId,
-      stepId,
-      selectedOptionId,
-      resolution,
-      recordedAt: new Date().toISOString(),
-    });
-
     return resolution;
-  }
-
-  // -- Receipt helpers (durable idempotency) ---------------------------------
-
-  private receiptPath(workflowRunId: string, iteration: number, decisionId: string): string {
-    return path.join(
-      this.deps.runArtifacts.runDir(workflowRunId, iteration),
-      `checkpoint-receipt-${decisionId}.json`,
-    );
-  }
-
-  private async readReceipt(
-    workflowRunId: string,
-    iteration: number,
-    decisionId: string,
-  ): Promise<CheckpointReceipt | null> {
-    const rPath = this.receiptPath(workflowRunId, iteration, decisionId);
-    try {
-      const content = await fs.readFile(rPath, 'utf8');
-      const parsed = JSON.parse(content);
-      if (!parsed || typeof parsed.decisionId !== 'string' || !parsed.resolution) {
-        throw new Error('missing required fields');
-      }
-      return parsed as CheckpointReceipt;
-    } catch (err: any) {
-      if (err.code === 'ENOENT') return null;
-      throw new Error(`Corrupt checkpoint receipt for decisionId '${decisionId}': ${err.message}`);
-    }
-  }
-
-  private async writeReceipt(
-    workflowRunId: string,
-    iteration: number,
-    receipt: CheckpointReceipt,
-  ): Promise<void> {
-    const rPath = this.receiptPath(workflowRunId, iteration, receipt.decisionId);
-    await fs.mkdir(path.dirname(rPath), { recursive: true });
-    await fs.writeFile(rPath, JSON.stringify(receipt, null, 2), 'utf8');
   }
 
   // -- Shared checkpoint action primitives -----------------------------------
