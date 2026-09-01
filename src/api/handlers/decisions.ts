@@ -1,5 +1,5 @@
 import type { Router } from '../router.js';
-import type { DecisionRepository } from '../../storage/repositories.js';
+import type { DecisionRepository, ProjectRepository } from '../../storage/repositories.js';
 import type { WorkService, WorkServiceError } from '../../services/work-service.js';
 import type { ResumeService } from '../../services/resume-service.js';
 import { ResumeServiceError } from '../../services/resume-service.js';
@@ -21,13 +21,24 @@ export function makeDecisionHandlers(
   router: Router,
   decisions: DecisionRepository,
   workService: WorkService,
-  resumeService?: ResumeService,
+  resumeService: ResumeService | undefined,
+  projects: ProjectRepository,
+  workspaceId: string,
 ): void {
-  router.add('GET', '/projects/:id/decisions', (req) => ok(decisions.listByProject(req.params.id)));
+  router.add('GET', '/projects/:id/decisions', (req) => {
+    const p = projects.findById(req.params.id);
+    if (!p || p.workspaceId !== workspaceId)
+      return err('not_found', `Project '${req.params.id}' not found`);
+    return ok(decisions.listByProject(req.params.id));
+  });
 
   router.add('GET', '/decisions/:id', (req) => {
     const d = decisions.findById(req.params.id);
-    return d ? ok(d) : err('not_found', `Decision '${req.params.id}' not found`);
+    if (!d) return err('not_found', `Decision '${req.params.id}' not found`);
+    const p = projects.findById(d.projectId);
+    if (!p || p.workspaceId !== workspaceId)
+      return err('not_found', `Decision '${req.params.id}' not found`);
+    return ok(d);
   });
 
   router.add('POST', '/decisions/:id/resolve', async (req) => {
@@ -40,11 +51,11 @@ export function makeDecisionHandlers(
       }
       const resolution = parsed.data;
 
-      // Checkpoint Decisions route through ResumeService when available — this
-      // enforces the full durable checkpoint/resume lifecycle (cursor advance,
-      // StepExecution creation, adapter invocation) in a single atomic path.
       const decision = decisions.findById(req.params.id);
       if (!decision) return err('not_found', `Decision '${req.params.id}' not found`);
+      const p = projects.findById(decision.projectId);
+      if (!p || p.workspaceId !== workspaceId)
+        return err('not_found', `Decision '${req.params.id}' not found`);
 
       if (decision.type === 'checkpoint') {
         // Checkpoint Decisions MUST route through ResumeService to enforce the

@@ -19,9 +19,14 @@ import { makeDecisionHandlers } from './handlers/decisions.js';
 import { makeEvidenceHandlers } from './handlers/evidence.js';
 import { makeEventHandlers } from './handlers/events.js';
 import { makeWorkflowHandlers } from './handlers/workflows.js';
+import { makeCompatHandlers } from './handlers/compat.js';
 import type { WorkService } from '../services/work-service.js';
 import type { EvidenceService } from '../services/evidence-service.js';
 import type { ResumeService } from '../services/resume-service.js';
+import type { InitService } from '../init-service.js';
+import type { IntakeService } from '../intake-service.js';
+import type { ChatService } from '../chat-service.js';
+import type { DynamicLLMProvider } from '../llm-provider.js';
 import { TokenStore } from '../auth/token-store.js';
 import { AuditLogger } from '../audit/audit-logger.js';
 import { NotificationService } from '../notifications/notification-service.js';
@@ -41,6 +46,13 @@ export interface ControlPlaneServerOptions {
   // TLS: provide both certPath and keyPath to serve HTTPS instead of HTTP.
   // Use a reverse proxy (nginx/caddy) when you need SNI or certificate management.
   tls?: { certPath: string; keyPath: string };
+
+  // Project-local services for compatibility routes (/api/v2/*)
+  projectRoot?: string;
+  initService?: InitService;
+  intakeService?: IntakeService;
+  chatService?: ChatService;
+  llmProvider?: DynamicLLMProvider;
 }
 
 export type ControlPlaneProtocol = 'http' | 'https';
@@ -53,6 +65,9 @@ export class ControlPlaneServer {
   constructor(opts: ControlPlaneServerOptions) {
     this.port = opts.port ?? 7373;
     this.protocol = opts.tls ? 'https' : 'http';
+
+    const startedAt = new Date();
+    const projectRoot = opts.projectRoot ?? process.cwd();
 
     const router = new Router();
     const tokens = new TokenStore(opts.db);
@@ -72,11 +87,21 @@ export class ControlPlaneServer {
 
     makeAttentionHandlers(router, attention, projects, opts.workspaceId);
     makeProjectHandlers(router, projects, opts.workspaceId);
-    makeWorkHandlers(router, workItems, opts.workService);
-    makeDecisionHandlers(router, decisions, opts.workService, opts.resumeService);
-    makeEvidenceHandlers(router, evidence, opts.evidenceService);
-    makeEventHandlers(router, events, opts.workspaceId);
+    makeWorkHandlers(router, workItems, opts.workService, projects, opts.workspaceId);
+    makeDecisionHandlers(router, decisions, opts.workService, opts.resumeService, projects, opts.workspaceId);
+    makeEvidenceHandlers(router, evidence, opts.evidenceService, workItems, projects, opts.workspaceId);
+    makeEventHandlers(router, events, opts.workspaceId, workItems, projects);
     makeWorkflowHandlers(router);
+    makeCompatHandlers(router, {
+      projectRoot,
+      port: this.port,
+      startedAt,
+      workItems,
+      llmProvider: opts.llmProvider,
+      initService: opts.initService,
+      intakeService: opts.intakeService,
+      chatService: opts.chatService,
+    });
 
     // Token management
     router.add('POST', '/tokens', req => {
@@ -170,9 +195,13 @@ export class ControlPlaneServer {
     });
 
     // Per-work-item observability: step executions, executor, failure categories, durations.
+    // Workspace-scoped: cross-workspace items are not found.
     router.add('GET', '/observability/work/:id', req => {
       const item = workItems.findById(req.params.id);
       if (!item) return err('not_found', `WorkItem ${req.params.id} not found`);
+      const p = projects.findById(item.projectId);
+      if (!p || p.workspaceId !== opts.workspaceId)
+        return err('not_found', `WorkItem ${req.params.id} not found`);
 
       const steps = stepExecutions.listByWorkItem(req.params.id);
       const ev = evidence.listByWorkItem(req.params.id);

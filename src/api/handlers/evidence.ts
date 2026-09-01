@@ -1,17 +1,38 @@
 import type { Router } from '../router.js';
-import type { EvidenceRepository } from '../../storage/repositories.js';
+import type { EvidenceRepository, WorkItemRepository, ProjectRepository } from '../../storage/repositories.js';
 import type { EvidenceService } from '../../services/evidence-service.js';
 import { ok, err } from '../types.js';
 import type { EvidenceStatus } from '../../domain/index.js';
+
+function inWorkspace(
+  workItems: WorkItemRepository,
+  projects: ProjectRepository,
+  workspaceId: string,
+  workItemId: string,
+): boolean {
+  const wi = workItems.findById(workItemId);
+  if (!wi) return false;
+  const p = projects.findById(wi.projectId);
+  return p?.workspaceId === workspaceId;
+}
 
 export function makeEvidenceHandlers(
   router: Router,
   evidenceRepo: EvidenceRepository,
   evidenceService: EvidenceService,
+  workItems: WorkItemRepository,
+  projects: ProjectRepository,
+  workspaceId: string,
 ): void {
-  router.add('GET', '/work/:id/evidence', (req) => ok(evidenceRepo.listByWorkItem(req.params.id)));
+  router.add('GET', '/work/:id/evidence', (req) => {
+    if (!inWorkspace(workItems, projects, workspaceId, req.params.id))
+      return err('not_found', `WorkItem '${req.params.id}' not found`);
+    return ok(evidenceRepo.listByWorkItem(req.params.id));
+  });
 
   router.add('POST', '/work/:id/evidence', (req) => {
+    if (!inWorkspace(workItems, projects, workspaceId, req.params.id))
+      return err('not_found', `WorkItem '${req.params.id}' not found`);
     try {
       const b = (req.body ?? {}) as Record<string, unknown>;
       if (!b.type || !b.status) {

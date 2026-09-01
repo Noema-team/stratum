@@ -1,5 +1,5 @@
 import type { Router } from '../router.js';
-import type { WorkItemRepository } from '../../storage/repositories.js';
+import type { WorkItemRepository, ProjectRepository } from '../../storage/repositories.js';
 import type { WorkService, WorkServiceError } from '../../services/work-service.js';
 import { ok, err } from '../types.js';
 import type { WorkItem, WorkItemState } from '../../domain/index.js';
@@ -16,6 +16,11 @@ function body(req: { body: unknown }): Record<string, unknown> {
   return (req.body ?? {}) as Record<string, unknown>;
 }
 
+function inWorkspace(projects: ProjectRepository, workspaceId: string, projectId: string): boolean {
+  const p = projects.findById(projectId);
+  return p?.workspaceId === workspaceId;
+}
+
 // Public lifecycle surface:
 //   GET  /work/:id
 //   GET  /projects/:id/work
@@ -30,13 +35,20 @@ export function makeWorkHandlers(
   router: Router,
   workItems: WorkItemRepository,
   workService: WorkService,
+  projects: ProjectRepository,
+  workspaceId: string,
 ): void {
   router.add('GET', '/work/:id', (req) => {
     const wi = workItems.findById(req.params.id);
-    return wi ? ok(wi) : err('not_found', `WorkItem '${req.params.id}' not found`);
+    if (!wi) return err('not_found', `WorkItem '${req.params.id}' not found`);
+    if (!inWorkspace(projects, workspaceId, wi.projectId))
+      return err('not_found', `WorkItem '${req.params.id}' not found`);
+    return ok(wi);
   });
 
   router.add('GET', '/projects/:id/work', (req) => {
+    if (!inWorkspace(projects, workspaceId, req.params.id))
+      return err('not_found', `Project '${req.params.id}' not found`);
     const { state } = req.query;
     const items = state
       ? workItems.listByState(req.params.id, state as WorkItemState)
@@ -48,6 +60,9 @@ export function makeWorkHandlers(
   // All optional supplied fields are validated before use — malformed values
   // return 400 rather than being silently coerced to defaults.
   router.add('POST', '/projects/:id/work', (req) => {
+    if (!inWorkspace(projects, workspaceId, req.params.id))
+      return err('not_found', `Project '${req.params.id}' not found`);
+
     const b = body(req);
 
     // Required fields
@@ -115,6 +130,10 @@ export function makeWorkHandlers(
   // Marks a draft WorkItem as ready for Scheduler dispatch.
   // Everything after ready (running, in_review, completed) is Scheduler-owned.
   router.add('POST', '/work/:id/ready', (req) => {
+    const wi = workItems.findById(req.params.id);
+    if (!wi) return err('not_found', `WorkItem '${req.params.id}' not found`);
+    if (!inWorkspace(projects, workspaceId, wi.projectId))
+      return err('not_found', `WorkItem '${req.params.id}' not found`);
     try { return ok(workService.markReady({ workItemId: req.params.id })); }
     catch (e) { return svcErr(e); }
   });

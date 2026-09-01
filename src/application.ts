@@ -4,7 +4,7 @@
 //       SchedulerLoop, StratumAgentAdapter, WorkflowEngine deps, all project
 //       services needed by FullBuildStepRunner, and ControlPlaneServer.
 //
-// Does NOT start DaemonServer. cli.ts is not switched to this module yet.
+// Does NOT start a legacy daemon. cli.ts is not switched to this module yet.
 // That happens after the cutover E2E test passes (Commit C).
 
 import path from 'node:path';
@@ -42,6 +42,9 @@ import { RunArtifactManager } from './run-artifacts.js';
 import { RuntimeMapManagerImpl } from './runtime-map.js';
 import { ShardingService } from './sharding-service.js';
 import { LinkIndexManager } from './link-index.js';
+import { InitService } from './init-service.js';
+import { IntakeService } from './intake-service.js';
+import { ChatService } from './chat-service.js';
 
 // ── SchedulerLoop ─────────────────────────────────────────────────────────────
 
@@ -176,6 +179,11 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   const linkIndexManager = new LinkIndexManager(projectRoot, mapManager);
   const shardingService = new ShardingService(projectRoot, linkIndexManager);
 
+  // ── Project-local compat services ──────────────────────────────────────────
+  const initService = new InitService({ projectRoot });
+  const intakeService = new IntakeService(projectRoot, mapManager, linkIndexManager);
+  const chatService = new ChatService(projectRoot, mapManager, llmProvider);
+
   // Checkpoint callbacks: delegate to ResumeService/WorkService so the HTTP
   // decision path and the inline callback path share the same authority.
   // Inline callbacks always halt — all real resolutions come via HTTP + resolver.
@@ -242,6 +250,11 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     resumeService,
     port,
     requireAuth,
+    projectRoot,
+    initService,
+    intakeService,
+    chatService,
+    llmProvider: llmProvider instanceof DynamicLLMProvider ? llmProvider : undefined,
   });
 
   // ── Application shell ──────────────────────────────────────────────────────

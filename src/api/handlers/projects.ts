@@ -11,6 +11,8 @@ export function makeProjectHandlers(
 
   router.add('GET', '/projects/:id', (req) => {
     const p = projects.findById(req.params.id);
-    return p ? ok(p) : err('not_found', `Project '${req.params.id}' not found`);
+    if (!p || p.workspaceId !== workspaceId)
+      return err('not_found', `Project '${req.params.id}' not found`);
+    return ok(p);
   });
 }

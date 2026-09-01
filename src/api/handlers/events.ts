@@ -1,11 +1,13 @@
 import type { Router } from '../router.js';
-import type { EventRepository } from '../../storage/repositories.js';
-import { ok } from '../types.js';
+import type { EventRepository, WorkItemRepository, ProjectRepository } from '../../storage/repositories.js';
+import { ok, err } from '../types.js';
 
 export function makeEventHandlers(
   router: Router,
   events: EventRepository,
   workspaceId: string,
+  workItems: WorkItemRepository,
+  projects: ProjectRepository,
 ): void {
   router.add('GET', '/events', (req) => {
     const { after, limit, type } = req.query;
@@ -14,5 +16,12 @@ export function makeEventHandlers(
     return ok(events.listByWorkspace(workspaceId));
   });
 
-  router.add('GET', '/work/:id/events', (req) => ok(events.listByWorkItem(req.params.id)));
+  router.add('GET', '/work/:id/events', (req) => {
+    const wi = workItems.findById(req.params.id);
+    if (!wi) return err('not_found', `WorkItem '${req.params.id}' not found`);
+    const p = projects.findById(wi.projectId);
+    if (!p || p.workspaceId !== workspaceId)
+      return err('not_found', `WorkItem '${req.params.id}' not found`);
+    return ok(events.listByWorkItem(req.params.id));
+  });
 }
