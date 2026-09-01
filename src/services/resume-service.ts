@@ -14,6 +14,8 @@ import type { ExecutorRegistry } from '../execution/registry.js';
 import { resolveRepositories, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from '../scheduler/lease-manager.js';
 import { DEFAULT_SCHEDULER_CONFIG } from '../scheduler/types.js';
+import type { CheckpointResolver } from '../execution/checkpoint-resolver.js';
+import { getCheckpointDecisionOptions } from '../execution/checkpoint-resolver.js';
 
 // ============================================================================
 // ResumeService — resolves a checkpoint Decision and continues the same run.
@@ -56,13 +58,17 @@ export class ResumeService {
   private readonly leaseManager: LeaseManager;
   private readonly leaseExpiryMs: number;
 
+  private readonly checkpointResolver: CheckpointResolver | null;
+
   constructor(
     private readonly db: Database.Database,
     workspaceId: string,
     private readonly registry: ExecutorRegistry,
     config: { leaseExpiryMs?: number } = {},
+    workService?: WorkService,
+    checkpointResolver?: CheckpointResolver,
   ) {
-    this.workService = new WorkService(db, workspaceId);
+    this.workService = workService ?? new WorkService(db, workspaceId);
     this.decisionRepo = new DecisionRepository(db);
     this.runRepo = new WorkflowRunRepository(db);
     this.workItemRepo = new WorkItemRepository(db);
@@ -70,6 +76,7 @@ export class ResumeService {
     this.repoRepo = new RepositoryRepository(db);
     this.leaseManager = new LeaseManager(db);
     this.leaseExpiryMs = config.leaseExpiryMs ?? DEFAULT_SCHEDULER_CONFIG.leaseExpiryMs;
+    this.checkpointResolver = checkpointResolver ?? null;
   }
 
   async resume(
@@ -212,7 +219,7 @@ export class ResumeService {
       );
     }
 
-    // ── (3) Derive the continuation step — the step immediately after the checkpoint. ─
+    // ── (3) Derive the natural continuation step (step after the checkpoint). ─
     const def = getWorkflow(run.workflow_id);
     if (!def) {
       throw new ResumeServiceError(`Unknown workflow '${run.workflow_id}'`, 'UNKNOWN_WORKFLOW');
@@ -224,8 +231,7 @@ export class ResumeService {
         'CHECKPOINT_STEP_NOT_FOUND',
       );
     }
-    const nextStep = def.steps[checkpointIdx + 1] ?? null;
-    const continuationStepId = nextStep?.id ?? null;
+    const naturalNextStepId = def.steps[checkpointIdx + 1]?.id ?? null;
 
     // Load WorkItem for the ExecutionRequest.
     const workItem = this.workItemRepo.findById(workItemId);
@@ -234,21 +240,42 @@ export class ResumeService {
     }
 
     const now = new Date().toISOString();
-    const isReject = resolution.selectedOptionId === 'reject';
 
     // Find the 'waiting' StepExecution(s) for this run so we can close them.
     const waitingExecs = this.stepExecRepo
       .listByWorkflowRun(workflowRunId)
       .filter(se => se.state === 'waiting');
 
-    // ── Reject path (fully atomic — no execution) ─────────────────────────────
-    if (isReject) {
+    // ── (3b) Execute checkpoint side effects via resolver. ────────────────────
+    // Throws on failure → run stays safely halted; no state is committed.
+    // Must happen BEFORE any DB transaction so a partial failure is safe.
+    let checkpointResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
+      remainAtCheckpoint: false,
+      incrementRevision: false,
+      cancel: resolution.selectedOptionId === 'reject',
+    };
+
+    if (this.checkpointResolver) {
+      checkpointResolution = await this.checkpointResolver.resolveCheckpoint(
+        run.awaiting_checkpoint!,
+        resolution.selectedOptionId!,
+        workflowRunId,
+        run.iteration,
+      );
+    }
+
+    // If the resolver says "remain at checkpoint" (e.g. sharding modify),
+    // leave the Decision pending and the run halted — nothing to commit.
+    if (checkpointResolution.remainAtCheckpoint) {
+      return;
+    }
+
+    // ── Cancel path (fully atomic — no execution) ─────────────────────────────
+    if (checkpointResolution.cancel) {
       this.db.transaction(() => {
         for (const se of waitingExecs) {
           this.stepExecRepo.updateState(se.id, 'cancelled', { completedAt: now });
         }
-        // resolveDecision uses its own db.transaction (SAVEPOINT inside the outer one).
-        // 'needs_decision → cancelled' is a permitted transition.
         this.workService.resolveDecision(decisionId, resolution, 'cancelled');
         this.runRepo.update({
           ...run,
@@ -261,7 +288,13 @@ export class ResumeService {
       return;
     }
 
-    // ── Approve path ───────────────────────────────────────────────────────────
+    // ── Continue path ──────────────────────────────────────────────────────────
+    const continuationStepId =
+      checkpointResolution.overrideContinuationStepId !== undefined
+        ? checkpointResolution.overrideContinuationStepId === '__next__'
+          ? naturalNextStepId
+          : checkpointResolution.overrideContinuationStepId
+        : naturalNextStepId;
 
     // (4a) Adapter selection — same logic as Scheduler.tryDispatch.
     const adapter = selectAdapter(this.registry);
@@ -292,9 +325,8 @@ export class ResumeService {
       // (5) Atomic transition:
       //   • close waiting StepExecution(s) → 'succeeded'
       //   • resolve Decision + WorkItem(needs_decision → running)
-      //   • advance WorkflowRun cursor past the checkpoint
-      //   • create new StepExecution(state='dispatched') — inside the transaction
-      //     to close the crash window between state transition and execution record.
+      //   • advance WorkflowRun cursor past the checkpoint (optionally bumping revision)
+      //   • create new StepExecution(state='dispatched')
       const stepExecutionId = randomUUID();
 
       this.db.transaction(() => {
@@ -307,6 +339,7 @@ export class ResumeService {
           status: continuationStepId ? 'active' : 'complete',
           current_step_id: continuationStepId ?? run.awaiting_checkpoint!,
           awaiting_checkpoint: null,
+          revision: checkpointResolution.incrementRevision ? run.revision + 1 : run.revision,
           updated_at: now,
         });
         if (continuationStepId) {
@@ -368,6 +401,9 @@ export class ResumeService {
         this.workService.markInReview({ workItemId });
       } else if (execResult.outcome === 'blocked') {
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt: doneAt });
+        const nextDecisionOptions =
+          execResult.decisionRequests[0]?.options ??
+          getCheckpointDecisionOptions(execResult.checkpointStepId);
         this.workService.needsDecision({
           workItemId,
           decision: {
@@ -379,10 +415,7 @@ export class ResumeService {
             },
             title: 'Workflow reached another checkpoint',
             summary: `Workflow '${run.workflow_id}' paused at step '${execResult.checkpointStepId ?? 'unknown'}'.`,
-            options: [
-              { id: 'approve', label: 'Approve', description: 'Continue past this checkpoint' },
-              { id: 'reject', label: 'Reject', description: 'Cancel the workflow' },
-            ],
+            options: nextDecisionOptions,
             recommendedOptionId: 'approve',
             impact: 'medium',
             reversibility: 'easy',

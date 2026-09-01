@@ -13,6 +13,7 @@ import type { ShardingService } from '../sharding-service.js';
 import type { ScopingService } from '../scoping-service.js';
 import type { AgentStepRunner } from './agent-step-runner.js';
 import { updateArtifactEntries } from '../workflow/artifact-utils.js';
+import type { CheckpointResolution, CheckpointResolver } from './checkpoint-resolver.js';
 
 // All service dependencies for the full-build workflow's step execution.
 // This keeps full-build-specific concerns (CriticAgent, ValidationGateService,
@@ -35,13 +36,13 @@ export interface FullBuildStepRunnerDeps {
 export interface FullBuildCallbacks {
   onCheckpoint: (workflowRunId: string, stepId: string, iteration: number) => Promise<'approve' | 'halt'>;
   onConfirmGate: (workflowRunId: string, iteration: number) => Promise<'approve' | 'revise' | 'halt'>;
-  onShardingGate: (workflowRunId: string, iteration: number) => Promise<'approve' | 'reject' | 'modify'>;
+  onShardingGate: (workflowRunId: string, iteration: number) => Promise<'approve' | 'reject' | 'modify' | 'halt'>;
 }
 
 // StepRunner implementation for the full-build workflow. Implements the three
 // optional kind-override methods so WorkflowEngine has zero knowledge of
 // full-build step IDs, services, or callback contracts.
-export class FullBuildStepRunner implements StepRunner {
+export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
   // Per-run critique retry counts. Keyed by workflowRunId to support concurrent runs.
   private readonly _critiqueRetries = new Map<string, number>();
 
@@ -120,6 +121,88 @@ export class FullBuildStepRunner implements StepRunner {
     }
     await this.markComplete(step.id, workflowRunId, iteration, []);
     return { outcome: 'completed', next_step_id: null };
+  }
+
+  // -- CheckpointResolver seam -----------------------------------------------
+  // Executes the side effects that belong to a specific checkpoint (approve,
+  // revise, reject, modify) and returns a resolution descriptor that tells
+  // ResumeService how to advance — or not advance — the WorkflowRun cursor.
+  // A thrown error leaves the run safely halted; ResumeService must NOT commit
+  // any state transition when this method throws.
+
+  async resolveCheckpoint(
+    stepId: string,
+    selectedOptionId: string,
+    workflowRunId: string,
+    iteration: number,
+  ): Promise<CheckpointResolution> {
+    if (stepId === 'confirm') {
+      if (selectedOptionId === 'revise') {
+        const result = await this.deps.confirmService.revise(workflowRunId, iteration);
+        return {
+          overrideContinuationStepId: this.confirmNodeToStepId(result.next_node),
+          remainAtCheckpoint: false,
+          incrementRevision: true,
+          cancel: false,
+        };
+      }
+      if (selectedOptionId === 'approve') {
+        const result = await this.deps.confirmService.approve(workflowRunId, iteration);
+        return {
+          overrideContinuationStepId: this.confirmNodeToStepId(result.next_node) ?? '__next__',
+          remainAtCheckpoint: false,
+          incrementRevision: false,
+          cancel: false,
+        };
+      }
+      throw new Error(`Unknown option '${selectedOptionId}' for confirm checkpoint`);
+    }
+
+    if (stepId === 'scoping.checkpoint') {
+      if (selectedOptionId !== 'approve') {
+        throw new Error(`Unknown option '${selectedOptionId}' for scoping.checkpoint`);
+      }
+      if (!this.deps.scopingService) {
+        throw new Error('ScopingService is required for scoping.checkpoint approval');
+      }
+      // cycleNumber is iteration; scoping.approve clears awaiting_scoping and validates draft.
+      await this.deps.scopingService.approve(iteration, iteration);
+      return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+    }
+
+    if (stepId === 'sharding_approval') {
+      if (selectedOptionId === 'modify') {
+        return { remainAtCheckpoint: true, incrementRevision: false, cancel: false };
+      }
+      if (selectedOptionId === 'reject') {
+        const proposalPath = `${this.deps.projectRoot}/.sle/sharding-proposal.yaml`;
+        try { await fs.unlink(proposalPath); } catch {}
+        return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+      }
+      if (selectedOptionId === 'approve') {
+        if (!this.deps.shardingService) {
+          throw new Error('ShardingService is required for sharding_approval approval');
+        }
+        const proposalPath = `${this.deps.projectRoot}/.sle/sharding-proposal.yaml`;
+        const proposalContent = await this.safeReadFile(proposalPath);
+        if (!proposalContent) {
+          throw new Error('No sharding proposal found to approve');
+        }
+        const proposal = yaml.load(proposalContent) as any;
+        await this.deps.shardingService.createTasksFromProposal(proposal);
+        return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+      }
+      throw new Error(`Unknown option '${selectedOptionId}' for sharding_approval checkpoint`);
+    }
+
+    // Generic checkpoint
+    if (selectedOptionId === 'reject') {
+      return { remainAtCheckpoint: false, incrementRevision: false, cancel: true };
+    }
+    if (selectedOptionId === 'approve') {
+      return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+    }
+    throw new Error(`Unknown option '${selectedOptionId}' for checkpoint '${stepId}'`);
   }
 
   // -- review helpers -------------------------------------------------------
@@ -329,6 +412,11 @@ export class FullBuildStepRunner implements StepRunner {
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: true } }));
 
     const action = await this.callbacks.onShardingGate(workflowRunId, iteration);
+
+    if (action === 'halt') {
+      await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: false } }));
+      return { outcome: 'checkpoint_set', next_step_id: null };
+    }
 
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: false } }));
 

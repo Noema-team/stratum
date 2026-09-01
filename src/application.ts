@@ -8,7 +8,7 @@
 // That happens after the cutover E2E test passes (Commit C).
 
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 
 import { openDatabase } from './storage/database.js';
 import { WorkService } from './services/work-service.js';
@@ -40,6 +40,8 @@ import { ScopingService } from './scoping-service.js';
 import { TagService } from './tag-service.js';
 import { RunArtifactManager } from './run-artifacts.js';
 import { RuntimeMapManagerImpl } from './runtime-map.js';
+import { ShardingService } from './sharding-service.js';
+import { LinkIndexManager } from './link-index.js';
 
 // ── SchedulerLoop ─────────────────────────────────────────────────────────────
 
@@ -51,7 +53,7 @@ export class SchedulerLoop {
   private readonly intervalMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
-  private ticking = false;
+  private currentTick: Promise<void> | null = null;
 
   constructor(
     private readonly scheduler: Scheduler,
@@ -66,28 +68,31 @@ export class SchedulerLoop {
     this.scheduleNext();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    // Await any in-flight tick so callers can safely close DB/HTTP after stop().
+    if (this.currentTick) {
+      await this.currentTick;
+    }
   }
 
   // Drive a single tick immediately, regardless of the interval timer.
-  // Overlapping ticks are still blocked — returns without doing work when one
+  // Overlapping ticks are blocked — returns without doing work when one
   // is already in flight. Useful for tests and for wake-on-ready semantics.
   async tickNow(): Promise<void> {
-    if (this.ticking) return;
-    this.ticking = true;
-    try {
-      await this.scheduler.tick();
-    } catch (err) {
-      // Surface errors but keep the loop alive.
-      console.error('[SchedulerLoop] tick() threw:', err);
-    } finally {
-      this.ticking = false;
-    }
+    if (this.currentTick) return;
+    this.currentTick = this.scheduler.tick().then(
+      () => { this.currentTick = null; },
+      (err) => {
+        this.currentTick = null;
+        console.error('[SchedulerLoop] tick() threw:', err);
+      },
+    );
+    await this.currentTick;
   }
 
   private scheduleNext(): void {
@@ -127,20 +132,23 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     requireAuth,
   } = opts;
 
+  // ── Ensure runtime directory exists ───────────────────────────────────────
+  mkdirSync(path.join(projectRoot, '.sle'), { recursive: true });
+
   // ── SQLite ─────────────────────────────────────────────────────────────────
   const db = openDatabase(dbPath);
 
   // ── Core domain services ───────────────────────────────────────────────────
-  // All three share the same db + workspaceId so they see the same data.
-  // HTTP server and Scheduler receive the same WorkService instance — no
-  // weaker copy is ever created for the external API.
-  const workService = new WorkService(db, workspaceId);
+  // Single canonical WorkService with the evidence guard wired in.
+  // All consumers (HTTP server, Scheduler, ResumeService) share the same instance
+  // so the evidence policy is applied exactly once and consistently.
   const evidenceService = new EvidenceService(db);
+  const workService = new WorkService(db, workspaceId, {
+    evidenceGuard: evidenceService.asGuard(),
+  });
 
   // ExecutorRegistry is populated below; ResumeService needs it.
   const registry = new ExecutorRegistry();
-
-  const resumeService = new ResumeService(db, workspaceId, registry);
 
   // ── Project-local file services ────────────────────────────────────────────
   const mapPath = path.join(projectRoot, '.sle', 'map.yaml');
@@ -149,7 +157,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   const runArtifacts = new RunArtifactManager({ projectRoot });
 
   // ── LLM provider (reads settings file; falls back gracefully) ─────────────
-  const llmProvider = resolveLLMProvider(projectRoot);
+  const { provider: llmProvider, model: resolvedModel } = resolveLLMProvider(projectRoot);
 
   // ── Agent execution stack ──────────────────────────────────────────────────
   const contextManager = new ContextManager(projectRoot);
@@ -163,16 +171,18 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   const validationGateService = new ValidationGateService(mapManager, runArtifacts);
   const snapshotService = new SnapshotService(mapManager, runArtifacts, projectRoot);
   const summariseService = new SummariseService(mapManager, runArtifacts, projectRoot);
-  const criticAgent = new CriticAgent(llmProvider, 'default');
+  const criticAgent = new CriticAgent(llmProvider, resolvedModel);
+
+  const linkIndexManager = new LinkIndexManager(projectRoot, mapManager);
+  const shardingService = new ShardingService(projectRoot, linkIndexManager);
 
   // Checkpoint callbacks: delegate to ResumeService/WorkService so the HTTP
   // decision path and the inline callback path share the same authority.
-  // The inline callbacks are used when the step runner is driving execution
-  // synchronously without an external HTTP approval in the loop.
+  // Inline callbacks always halt — all real resolutions come via HTTP + resolver.
   const fullBuildCallbacks: FullBuildCallbacks = {
     onCheckpoint: async (_workflowRunId, _stepId, _iteration) => 'halt',
     onConfirmGate: async (_workflowRunId, _iteration) => 'halt',
-    onShardingGate: async (_workflowRunId, _iteration) => 'reject',
+    onShardingGate: async (_workflowRunId, _iteration) => 'halt',
   };
 
   const fullBuildStepRunner = new FullBuildStepRunner(
@@ -187,7 +197,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
       validationGateService,
       snapshotService,
       summariseService,
-      shardingService: undefined,
+      shardingService,
       scopingService,
     },
     fullBuildCallbacks,
@@ -214,8 +224,14 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   registry.register(adapter);
 
   // ── Scheduler + loop ───────────────────────────────────────────────────────
-  const scheduler = new Scheduler(db, workspaceId, registry);
+  // Scheduler and ResumeService both receive the canonical workService instance.
+  const scheduler = new Scheduler(db, workspaceId, registry, {}, workService);
   const schedulerLoop = new SchedulerLoop(scheduler, { intervalMs: schedulerIntervalMs });
+
+  // ResumeService receives the canonical workService + the checkpoint resolver
+  // so HTTP-driven checkpoint approvals execute the same side-effect logic as
+  // the inline FullBuildStepRunner callbacks.
+  const resumeService = new ResumeService(db, workspaceId, registry, {}, workService, fullBuildStepRunner);
 
   // ── ControlPlaneServer ─────────────────────────────────────────────────────
   const controlPlaneServer = new ControlPlaneServer({
@@ -239,7 +255,11 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     },
 
     async stop(): Promise<void> {
-      schedulerLoop.stop();
+      // Required shutdown order:
+      //   1. Stop accepting new ticks + await any in-flight tick
+      //   2. Close HTTP server (drains in-flight requests)
+      //   3. Close SQLite
+      await schedulerLoop.stop();
       await controlPlaneServer.close();
       db.close();
     },
@@ -248,7 +268,12 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function resolveLLMProvider(projectRoot: string): ILLMProvider {
+interface LLMProviderResult {
+  provider: ILLMProvider;
+  model: string;
+}
+
+function resolveLLMProvider(projectRoot: string): LLMProviderResult {
   const settingsPath = path.join(projectRoot, '.sle', 'settings.json');
   let config: AgentLLMConfig = {
     provider: 'openai_compatible',
@@ -277,11 +302,14 @@ function resolveLLMProvider(projectRoot: string): ILLMProvider {
   }
 
   try {
-    return new DynamicLLMProvider(createLLMProvider(config));
+    return { provider: new DynamicLLMProvider(createLLMProvider(config)), model: config.model };
   } catch {
-    return new DynamicLLMProvider({
-      complete: () => Promise.reject(new Error('LLM not configured')),
-    });
+    return {
+      provider: new DynamicLLMProvider({
+        complete: () => Promise.reject(new Error('LLM not configured')),
+      }),
+      model: config.model,
+    };
   }
 }
 

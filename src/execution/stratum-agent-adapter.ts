@@ -3,6 +3,7 @@ import { getWorkflow } from '../workflow/registry.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../workflow/engine.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet, ExecutorCapability } from './types.js';
 import { resolveWorkflowInvocation } from './workflow-invocation.js';
+import { getCheckpointDecisionOptions } from './checkpoint-resolver.js';
 
 const STRATUM_CAPABILITIES: ReadonlySet<ExecutorCapability> = new Set<ExecutorCapability>([
   'repo.read',
@@ -76,7 +77,12 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       evidenceClaims: [],
       checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
       decisionRequests: isCheckpoint
-        ? [{ type: 'checkpoint', title: 'Workflow paused', summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}` }]
+        ? [{
+            type: 'checkpoint',
+            title: 'Workflow paused',
+            summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}`,
+            options: getCheckpointDecisionOptions(result.final_step_id),
+          }]
         : [],
       usage: { durationMs: Date.now() - start },
       failure: result.error

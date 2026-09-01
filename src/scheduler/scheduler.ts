@@ -35,12 +35,13 @@ export class Scheduler {
     workspaceId: string,
     private readonly registry: ExecutorRegistry,
     config: Partial<SchedulerConfig> = {},
+    workService?: WorkService,
   ) {
     this.config = { ...DEFAULT_SCHEDULER_CONFIG, ...config };
     this.workRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
     this.repoRepo = new RepositoryRepository(db);
-    this.workService = new WorkService(db, workspaceId);
+    this.workService = workService ?? new WorkService(db, workspaceId);
     this.leaseManager = new LeaseManager(db);
   }
 
@@ -167,6 +168,10 @@ export class Scheduler {
         // the checkpoint) and create a first-class Decision so operators can track
         // and resolve the pause. WorkItem transitions to 'needs_decision'.
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt });
+        const decisionOptions = execResult.decisionRequests[0]?.options ?? [
+          { id: 'approve', label: 'Approve', description: 'Continue the workflow past this checkpoint' },
+          { id: 'reject', label: 'Reject', description: 'Cancel the workflow run' },
+        ];
         this.workService.needsDecision({
           workItemId,
           decision: {
@@ -178,10 +183,7 @@ export class Scheduler {
             },
             title: 'Workflow reached a checkpoint',
             summary: `Workflow '${workflowId}' paused at step '${execResult.checkpointStepId ?? 'unknown'}' and requires operator approval to continue.`,
-            options: [
-              { id: 'approve', label: 'Approve', description: 'Continue the workflow past this checkpoint' },
-              { id: 'reject', label: 'Reject', description: 'Cancel the workflow run' },
-            ],
+            options: decisionOptions,
             recommendedOptionId: 'approve',
             impact: 'medium',
             reversibility: 'easy',
