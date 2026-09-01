@@ -3,7 +3,6 @@ import type { RunArtifactManager } from '../run-artifacts.js';
 import type { WorkflowRunRepository } from '../storage/repositories.js';
 import type {
   CapHitAction,
-  WorkflowDefinition,
   WorkflowRun,
   WorkflowRunResult,
   WorkflowStep,

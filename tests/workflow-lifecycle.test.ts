@@ -35,8 +35,15 @@ import type {
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
 import { StratumAgentAdapter } from '../src/execution/stratum-agent-adapter.js';
+import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
+import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
+import type { FullBuildCallbacks } from '../src/execution/full-build-step-runner.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult } from '../src/execution/types.js';
 import type { Workspace, Project, WorkItem } from '../src/domain/index.js';
+import type { AgentRunResult } from '../src/agent-runner.js';
+import type { StepRunContext } from '../src/workflow/types.js';
+import type { FailureReport, PlanningDepth } from '../src/types.js';
+import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 
 // ============================================================================
 // Test workflow: produce → checkpoint → produce
@@ -678,4 +685,238 @@ test('testCanonicalPathParameterFreezing', async () => {
     (finalRun.resolvedParameters as any).max_iterations, 2,
     'resolvedParameters.max_iterations must remain 2 — WorkItem mutation must not bleed into resumed run',
   );
+});
+
+// ============================================================================
+// Test 5: Full-build canonical path — FullBuildParams normalization + freezing
+//
+// WorkItem { workflowId: 'full-build', workflowParameters: { planning_depth: 'deep', max_iterations: 2 } }
+// → Scheduler → StratumAgentAdapter → resolveWorkflowInvocation (full-build path)
+// → validateFullBuildParams → WorkflowEngine → WorkflowRunRepository
+//
+// Proves:
+//   1. Scheduler dispatches through StratumAgentAdapter (outcome: 'dispatched')
+//   2. planning_depth='deep' actually reaches the critic (critique step runs)
+//   3. WorkflowRun.resolvedParameters contains normalized defaults:
+//        planning_depth='deep', max_iterations=2, on_cap_hit='halt' (default filled)
+//   4. Mutating WorkItem.workflowParameters post-checkpoint has no effect on resume
+//   5. WorkflowRun.resolvedParameters is identical before and after resume
+// ============================================================================
+
+// Spy helpers local to this test — minimal surface, full-build-compatible shapes.
+class FBSpyAgentRunner {
+  public calls: string[] = [];
+  async run(role: string, _ctx: StepRunContext): Promise<AgentRunResult> {
+    this.calls.push(role);
+    return { success: true, next_node: null as any, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' };
+  }
+  [key: string]: unknown;
+}
+
+class FBSpyCriticAgent {
+  public critiqueCalled = false;
+  async critique(_req: unknown) {
+    this.critiqueCalled = true;
+    return { pass: true, blocking_issues: [], warnings: [], suggestions: [] };
+  }
+  [key: string]: unknown;
+}
+
+class FBSpyRunArtifacts {
+  private reports = new Map<string, FailureReport>();
+  async updateNodeStatus(): Promise<void> {}
+  async createRunDir(): Promise<void> {}
+  async createManifest(): Promise<void> {}
+  async readManifest() {
+    return { cycle_id: 'r', cycle_number: 1, iteration: 1, planning_depth: 'minimal' as PlanningDepth, started_at: '', outcome: 'in_progress' as const, nodes: [] };
+  }
+  async writeFailureReport(runId: string, iter: number, r: FailureReport): Promise<void> {
+    this.reports.set(`${runId}-${iter}`, r);
+  }
+  async readFailureReport(runId: string, iter: number): Promise<FailureReport | null> {
+    return this.reports.get(`${runId}-${iter}`) ?? null;
+  }
+  [key: string]: unknown;
+}
+
+function fbBaseMap(): RuntimeMap {
+  return {
+    meta: { status: 'cycling', cycle: 1, version_id: 'v1', initialized_at: '', updated_at: '',
+      dag: { current_node: null, completed_nodes: [], iteration: 1, revision: 0, started_at: '', nodes: {} } },
+    project: { name: 'test', description: '', type: 'api' },
+    remotes: { code: { type: 'git', url: 'https://github.com/o/r.git', branch: 'main' }, issues: { type: 'git', url: 'https://github.com/o/r.git', branch: 'main' }, docs: { url: 'https://github.com/o/d.git', pending: false } },
+    task_store: { type: 'local' }, agents: {},
+    discovery: { status: 'complete', mode: 'full', completed_at: '', artifacts: [], current_round: 0, total_rounds: 1, current_phase: 0, total_phases: 0, open_questions_count: 0, blocking_questions_count: 0 },
+    cycle: { number: 1, iteration: 1, revision: 0, max_iterations: 10, planning_depth: 'deep', started_at: '', outcome: 'cycling', approval_gate: null, awaiting_scoping: false, awaiting_confirmation: false, awaiting_sharding_approval: false },
+    artifacts: [],
+  } as unknown as RuntimeMap;
+}
+
+class FBMapManager implements RuntimeMapManager {
+  private map: RuntimeMap = fbBaseMap();
+  async read() { return JSON.parse(JSON.stringify(this.map)); }
+  async update(fn: (m: RuntimeMap) => RuntimeMap) { this.map = fn(JSON.parse(JSON.stringify(this.map))); }
+  async write(m: RuntimeMap) { this.map = JSON.parse(JSON.stringify(m)); }
+  [key: string]: unknown;
+}
+
+test('testFullBuildCanonicalPathNormalizationAndFreezing', async () => {
+  const db = openDatabase(':memory:');
+  const projectRoot = mkdtempSync(join(tmpdir(), 'fb-freeze-'));
+
+  try {
+    const wsRepo = new WorkspaceRepository(db);
+    const projRepo = new ProjectRepository(db);
+    const workItemRepo = new WorkItemRepository(db);
+    const runRepo = new WorkflowRunRepository(db);
+    const decisionRepo = new DecisionRepository(db);
+
+    const now = new Date().toISOString();
+    const ws: Workspace = { id: randomUUID(), name: 'fb-freeze-ws', createdAt: now };
+    wsRepo.save(ws);
+    const proj: Project = { id: randomUUID(), workspaceId: ws.id, name: 'fb-freeze-proj', status: 'active', priority: 0, createdAt: now, updatedAt: now };
+    projRepo.save(proj);
+
+    const workItem: WorkItem = {
+      id: randomUUID(), projectId: proj.id,
+      repositoryIds: [],
+      title: 'Full-build param freeze test',
+      goal: 'Prove full-build param normalization and freezing',
+      workflowId: 'full-build',
+      state: 'ready',
+      priority: 0,
+      acceptanceCriteria: [], constraints: [], requiredEvidence: [], dependencies: [],
+      createdAt: now, updatedAt: now,
+      workflowParameters: { planning_depth: 'deep', max_iterations: 2 },
+    };
+    workItemRepo.save(workItem);
+
+    // Shared spy state — persists across adapter instances (simulates process memory).
+    const criticSpy = new FBSpyCriticAgent();
+    const agentSpy = new FBSpyAgentRunner();
+    const runArtifacts = new FBSpyRunArtifacts();
+
+    function makeFullBuildAdapter(d: ReturnType<typeof openDatabase>): StratumAgentAdapter {
+      const agentStepRunner = new AgentStepRunner(agentSpy as any);
+      const mapManager = new FBMapManager();
+
+      const callbacks: FullBuildCallbacks = {
+        // Halt only at scoping.checkpoint; approve all others.
+        onCheckpoint: async (_runId, stepId) => stepId === 'scoping.checkpoint' ? 'halt' : 'approve',
+        onConfirmGate: async () => 'approve',
+        onShardingGate: async () => 'approve',
+      };
+
+      const scopingService = {
+        begin: async (ctx: StepRunContext) => {
+          await agentSpy.run('facilitator', ctx);
+          return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
+        },
+      };
+
+      const stepRunner = new FullBuildStepRunner({
+        agentStepRunner,
+        mapManager,
+        runArtifacts: runArtifacts as any,
+        projectRoot,
+        criticAgent: criticSpy as any,
+        confirmService: { gate: async () => {}, approve: async () => ({ next_node: 'BUILD' }), revise: async () => ({ next_node: 'TEST', revision_count: 1 }) } as any,
+        execService: { run: async () => ({ success: true, passed: true, next_node: 'VALIDATION_GATE' as const, duration_ms: 0 }) } as any,
+        validationGateService: {
+          run: async () => ({ passed: true, next_node: 'EVALUATE', failed_nodes: [] }),
+        } as any,
+        snapshotService: { run: async () => {} } as any,
+        summariseService: { run: async () => ({ success: true, summary_path: 'docs/cycle-summary.md' }) } as any,
+        shardingService: undefined,
+        scopingService: scopingService as any,
+      }, callbacks);
+
+      const engineDeps: WorkflowEngineDeps = {
+        stepRunner,
+        mapManager,
+        runArtifacts: runArtifacts as any,
+        projectRoot,
+        workflowRunRepository: new WorkflowRunRepository(d),
+      };
+
+      const engineOpts: WorkflowEngineOptions = {
+        onCheckpoint: async (_runId, stepId) => stepId === 'scoping.checkpoint' ? 'halt' : 'approve',
+      };
+
+      return new StratumAgentAdapter(engineDeps, engineOpts);
+    }
+
+    // ---- Phase 1: Dispatch via Scheduler ------------------------------------
+
+    const adapter = makeFullBuildAdapter(db);
+    const registry = new ExecutorRegistry();
+    registry.register(adapter);
+    const scheduler = new Scheduler(db, ws.id, registry);
+
+    const results = await scheduler.tick();
+    assert.equal(results.length, 1, 'one item must be dispatched');
+    assert.equal(results[0].outcome, 'dispatched', 'dispatch must succeed');
+
+    const canonicalRunId = results[0].workflowRunId!;
+    assert.ok(canonicalRunId, 'Scheduler must mint a workflowRunId');
+
+    // WorkflowRun must be halted at scoping.checkpoint.
+    const run1 = runRepo.findById(canonicalRunId)!;
+    assert.ok(run1, 'WorkflowRun must be persisted after dispatch');
+    assert.equal(run1.status, 'halted', 'run must halt at scoping.checkpoint');
+    assert.equal(run1.awaiting_checkpoint, 'scoping.checkpoint');
+
+    // Prove FullBuildParams normalization: all three fields present, on_cap_hit default filled.
+    const p = run1.resolvedParameters as any;
+    assert.ok(p != null, 'WorkflowRun.resolvedParameters must not be null');
+    assert.equal(p.planning_depth, 'deep', 'planning_depth must be frozen as deep');
+    assert.equal(p.max_iterations, 2, 'max_iterations must be frozen as 2');
+    assert.equal(p.on_cap_hit, 'halt', 'on_cap_hit default must be normalized by validateFullBuildParams');
+
+    // ---- Phase 2: Mutate WorkItem post-dispatch ----------------------------
+
+    (db as any).prepare('UPDATE work_items SET workflow_parameters_json = ? WHERE id = ?').run(
+      JSON.stringify({ planning_depth: 'minimal', max_iterations: 99 }),
+      workItem.id,
+    );
+    const mutated = workItemRepo.findById(workItem.id)!;
+    assert.equal((mutated.workflowParameters as any).planning_depth, 'minimal',
+      'WorkItem must reflect post-dispatch mutation');
+
+    // ---- Phase 3: Resume — workflow must complete with frozen parameters ----
+
+    const [decision] = decisionRepo.listByWorkItem(workItem.id);
+    assert.ok(decision, 'Decision must exist at scoping.checkpoint');
+
+    const freshAdapter = makeFullBuildAdapter(db);
+    const freshRegistry = new ExecutorRegistry();
+    freshRegistry.register(freshAdapter);
+    const resumeService = new ResumeService(db, ws.id, freshRegistry);
+
+    await resumeService.resume(decision.id, {
+      selectedOptionId: 'approve',
+      rationale: 'LGTM',
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: 'test-operator',
+    });
+
+    // Prove planning_depth=deep reached the critic.
+    assert.ok(criticSpy.critiqueCalled,
+      'criticAgent.critique must be called when planning_depth=deep');
+
+    // WorkflowRun must be complete.
+    const finalRun = runRepo.findById(canonicalRunId)!;
+    assert.equal(finalRun.status, 'complete', 'WorkflowRun must complete after resume');
+
+    // resolvedParameters must be unchanged from initial dispatch.
+    const fp = finalRun.resolvedParameters as any;
+    assert.equal(fp.planning_depth, 'deep',
+      'planning_depth must remain deep after WorkItem mutation and resume');
+    assert.equal(fp.max_iterations, 2,
+      'max_iterations must remain 2 after WorkItem mutation and resume');
+    assert.equal(fp.on_cap_hit, 'halt',
+      'on_cap_hit must remain halt after WorkItem mutation and resume');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });

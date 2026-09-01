@@ -30,11 +30,12 @@ export class StratumAgentAdapter implements ExecutionAdapter {
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
     const start = Date.now();
 
-    // Derive the entry step from the workflow definition instead of hard-coding.
+    // Derive the entry step from the workflow definition.
+    // For unknown workflows the engine's own unknown-workflow path fails closed.
     const def = getWorkflow(request.workflowId);
     const entryStepId = request.stepId !== '__start__'
       ? request.stepId
-      : (def?.steps[0]?.id ?? 'scoping.gather');
+      : def?.steps[0]?.id;
 
     // Load frozen resolved parameters from the persisted WorkflowRun when available.
     const persistedRun = this.engineDeps.workflowRunRepository?.findById(request.workflowRunId);
