@@ -159,6 +159,7 @@ function makeE2EHarness(opts: E2EHarnessOpts) {
     begin: async (_c: number, _i: number, _state: CycleStateContext) => ({
       draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const,
     }),
+    approve: async (_cycleNumber: number, _iteration: number) => {},
   };
 
   const vgsFailTimes = opts.vgsFailTimes ?? 0;

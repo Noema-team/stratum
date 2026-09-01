@@ -15,6 +15,15 @@ import type { AgentStepRunner } from './agent-step-runner.js';
 import { updateArtifactEntries } from '../workflow/artifact-utils.js';
 import type { CheckpointResolution, CheckpointResolver, CheckpointResolverInput } from './checkpoint-resolver.js';
 
+// Durable idempotency record written after all checkpoint side effects succeed.
+interface CheckpointReceipt {
+  decisionId: string;
+  stepId: string;
+  selectedOptionId: string;
+  resolution: CheckpointResolution;
+  recordedAt: string;
+}
+
 // All service dependencies for the full-build workflow's step execution.
 // This keeps full-build-specific concerns (CriticAgent, ValidationGateService,
 // sharding, scoping, etc.) outside of WorkflowEngine.
@@ -129,26 +138,201 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
   // ResumeService how to advance — or not advance — the WorkflowRun cursor.
   // A thrown error leaves the run safely halted; ResumeService must NOT commit
   // any state transition when this method throws.
+  //
+  // Idempotency: a durable receipt is written AFTER all side effects succeed.
+  // On retry the receipt is returned verbatim — effects are never re-applied.
+  // A corrupt/unreadable receipt fails closed (throws).
 
   async resolveCheckpoint(input: CheckpointResolverInput): Promise<CheckpointResolution> {
-    const { workflowId, stepId, selectedOptionId, workflowRunId, iteration } = input;
+    const { workflowId, stepId, decisionId, selectedOptionId, rationale, workflowRunId, iteration } = input;
 
-    // Full-build semantics are only applied when the workflow matches exactly.
-    // An unrelated workflow whose step happens to share an ID must not inherit
-    // full-build behaviour from a step-name collision.
-    if (workflowId === 'full-build') {
-      if (stepId === 'confirm') {
-        return this.resolveConfirm(selectedOptionId, workflowRunId, iteration);
+    // Receipt gate — primary idempotency check.
+    const existing = await this.readReceipt(workflowRunId, iteration, decisionId);
+    if (existing) {
+      if (existing.stepId !== stepId || existing.selectedOptionId !== selectedOptionId) {
+        throw new Error(
+          `Checkpoint receipt mismatch for decisionId '${decisionId}': ` +
+          `stored (${existing.stepId}/${existing.selectedOptionId}) vs ` +
+          `incoming (${stepId}/${selectedOptionId})`,
+        );
       }
-      if (stepId === 'scoping.checkpoint') {
-        return this.resolveScopingCheckpoint(selectedOptionId, iteration);
-      }
-      if (stepId === 'sharding_approval') {
-        return this.resolveShardingApproval(selectedOptionId, workflowRunId, iteration);
-      }
+      return existing.resolution;
     }
 
-    // Generic checkpoint — any workflow, any unknown full-build step.
+    let resolution: CheckpointResolution;
+
+    if (workflowId === 'full-build') {
+      if (stepId === 'confirm') {
+        if (selectedOptionId === 'approve') {
+          resolution = await this.applyConfirmApprove(workflowRunId, iteration);
+        } else if (selectedOptionId === 'revise') {
+          resolution = await this.applyConfirmRevise(workflowRunId, iteration, rationale);
+        } else {
+          throw new Error(`Unknown option '${selectedOptionId}' for confirm checkpoint`);
+        }
+      } else if (stepId === 'scoping.checkpoint') {
+        if (selectedOptionId !== 'approve') {
+          throw new Error(`Unknown option '${selectedOptionId}' for scoping.checkpoint`);
+        }
+        resolution = await this.applyScopingApprove(stepId, workflowRunId, iteration);
+      } else if (stepId === 'sharding_approval') {
+        if (selectedOptionId === 'modify') {
+          // No receipt for modify — decision stays pending, nothing committed.
+          return { remainAtCheckpoint: true, incrementRevision: false, cancel: false };
+        } else if (selectedOptionId === 'reject') {
+          resolution = await this.applyShardingReject(stepId, workflowRunId, iteration);
+        } else if (selectedOptionId === 'approve') {
+          const proposalPath = path.join(this.deps.projectRoot, '.sle', 'sharding-proposal.yaml');
+          const proposalContent = await this.safeReadFile(proposalPath);
+          if (!proposalContent) throw new Error('No sharding proposal found to approve');
+          resolution = await this.applyShardingApprove(stepId, workflowRunId, iteration, proposalContent);
+        } else {
+          throw new Error(`Unknown option '${selectedOptionId}' for sharding_approval checkpoint`);
+        }
+      } else {
+        resolution = this.genericCheckpointResolution(selectedOptionId, stepId);
+      }
+    } else {
+      resolution = this.genericCheckpointResolution(selectedOptionId, stepId);
+    }
+
+    // Write receipt AFTER all side effects complete.
+    await this.writeReceipt(workflowRunId, iteration, {
+      decisionId,
+      stepId,
+      selectedOptionId,
+      resolution,
+      recordedAt: new Date().toISOString(),
+    });
+
+    return resolution;
+  }
+
+  // -- Receipt helpers (durable idempotency) ---------------------------------
+
+  private receiptPath(workflowRunId: string, iteration: number, decisionId: string): string {
+    return path.join(
+      this.deps.runArtifacts.runDir(workflowRunId, iteration),
+      `checkpoint-receipt-${decisionId}.json`,
+    );
+  }
+
+  private async readReceipt(
+    workflowRunId: string,
+    iteration: number,
+    decisionId: string,
+  ): Promise<CheckpointReceipt | null> {
+    const rPath = this.receiptPath(workflowRunId, iteration, decisionId);
+    try {
+      const content = await fs.readFile(rPath, 'utf8');
+      const parsed = JSON.parse(content);
+      if (!parsed || typeof parsed.decisionId !== 'string' || !parsed.resolution) {
+        throw new Error('missing required fields');
+      }
+      return parsed as CheckpointReceipt;
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return null;
+      throw new Error(`Corrupt checkpoint receipt for decisionId '${decisionId}': ${err.message}`);
+    }
+  }
+
+  private async writeReceipt(
+    workflowRunId: string,
+    iteration: number,
+    receipt: CheckpointReceipt,
+  ): Promise<void> {
+    const rPath = this.receiptPath(workflowRunId, iteration, receipt.decisionId);
+    await fs.mkdir(path.dirname(rPath), { recursive: true });
+    await fs.writeFile(rPath, JSON.stringify(receipt, null, 2), 'utf8');
+  }
+
+  // -- Shared checkpoint action primitives -----------------------------------
+  // Called by BOTH the inline checkpoint handlers (executeConfirm, etc.) and
+  // the durable resolveCheckpoint path. Owning ALL side effects here means
+  // first-attempt and retry routing are structurally identical.
+
+  private async applyConfirmApprove(
+    workflowRunId: string,
+    iteration: number,
+  ): Promise<CheckpointResolution> {
+    try {
+      await this.deps.confirmService.approve(workflowRunId, iteration);
+    } catch (err: any) {
+      if (err.code !== 'not_awaiting_confirmation') throw err;
+      // approve() throws only after completing both effects (artifact + RuntimeMap).
+      // So awaiting_confirmation=false means the operation fully succeeded.
+      const map = await this.deps.mapManager.read();
+      if (map.cycle.awaiting_confirmation !== false) {
+        throw new Error('CONFIRM approve recovery: unexpected RuntimeMap state');
+      }
+      return { overrideContinuationStepId: 'build', remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+    }
+    return { overrideContinuationStepId: 'build', remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+  }
+
+  private async applyConfirmRevise(
+    workflowRunId: string,
+    iteration: number,
+    rationale?: string,
+  ): Promise<CheckpointResolution> {
+    try {
+      await this.deps.confirmService.revise(workflowRunId, iteration, rationale);
+    } catch (err: any) {
+      if (err.code !== 'not_awaiting_confirmation') throw err;
+      // revise() throws only after completing both effects (artifact + RuntimeMap).
+      const map = await this.deps.mapManager.read();
+      if (map.cycle.awaiting_confirmation !== false) {
+        throw new Error('CONFIRM revise recovery: unexpected RuntimeMap state');
+      }
+      return { overrideContinuationStepId: 'test', remainAtCheckpoint: false, incrementRevision: true, cancel: false };
+    }
+    return { overrideContinuationStepId: 'test', remainAtCheckpoint: false, incrementRevision: true, cancel: false };
+  }
+
+  private async applyScopingApprove(
+    stepId: string,
+    workflowRunId: string,
+    iteration: number,
+  ): Promise<CheckpointResolution> {
+    if (!this.deps.scopingService) {
+      throw new Error('ScopingService is required for scoping.checkpoint approval');
+    }
+    await this.deps.scopingService.approve(iteration, iteration);
+    await this.markComplete(stepId, workflowRunId, iteration, []);
+    return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+  }
+
+  private async applyShardingApprove(
+    stepId: string,
+    workflowRunId: string,
+    iteration: number,
+    proposalContent: string,
+  ): Promise<CheckpointResolution> {
+    if (!this.deps.shardingService) {
+      throw new Error('ShardingService is required for sharding_approval approval');
+    }
+    const proposal = yaml.load(proposalContent) as any;
+    await this.deps.shardingService.createTasksFromProposal(proposal);
+    await this.markComplete(stepId, workflowRunId, iteration, ['.sle/tasks.yaml']);
+    return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+  }
+
+  private async applyShardingReject(
+    stepId: string,
+    workflowRunId: string,
+    iteration: number,
+  ): Promise<CheckpointResolution> {
+    const proposalPath = path.join(this.deps.projectRoot, '.sle', 'sharding-proposal.yaml');
+    try { await fs.unlink(proposalPath); } catch {}
+    await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, stepId, {
+      status: 'skipped',
+      completed_at: new Date().toISOString(),
+      skip_reason: 'user_rejected_sharding',
+    });
+    return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+  }
+
+  private genericCheckpointResolution(selectedOptionId: string, stepId: string): CheckpointResolution {
     if (selectedOptionId === 'reject') {
       return { remainAtCheckpoint: false, incrementRevision: false, cancel: true };
     }
@@ -156,122 +340,6 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
       return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
     }
     throw new Error(`Unknown option '${selectedOptionId}' for checkpoint '${stepId}'`);
-  }
-
-  // Idempotency helper: reads the manifest node status, returns null on any error.
-  private async getManifestNodeStatus(
-    workflowRunId: string,
-    iteration: number,
-    nodeId: string,
-  ): Promise<string | null> {
-    try {
-      const manifest = await this.deps.runArtifacts.readManifest(workflowRunId, iteration);
-      const node = manifest.nodes.find(n => n.id === nodeId);
-      return node?.status ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async resolveConfirm(
-    selectedOptionId: string,
-    workflowRunId: string,
-    iteration: number,
-  ): Promise<CheckpointResolution> {
-    if (selectedOptionId === 'revise') {
-      // Idempotency gate: if CONFIRM is already skipped (revise was applied), re-derive
-      // the continuation step without calling revise() again (which would throw).
-      const status = await this.getManifestNodeStatus(workflowRunId, iteration, 'CONFIRM');
-      if (status === 'skipped') {
-        // revise already applied; return same routing without mutating state.
-        return {
-          overrideContinuationStepId: 'plan',
-          remainAtCheckpoint: false,
-          incrementRevision: true,
-          cancel: false,
-        };
-      }
-      const result = await this.deps.confirmService.revise(workflowRunId, iteration);
-      return {
-        overrideContinuationStepId: this.confirmNodeToStepId(result.next_node),
-        remainAtCheckpoint: false,
-        incrementRevision: true,
-        cancel: false,
-      };
-    }
-    if (selectedOptionId === 'approve') {
-      // Idempotency gate: if CONFIRM is already complete, approve was applied.
-      const status = await this.getManifestNodeStatus(workflowRunId, iteration, 'CONFIRM');
-      if (status === 'complete') {
-        return {
-          overrideContinuationStepId: '__next__',
-          remainAtCheckpoint: false,
-          incrementRevision: false,
-          cancel: false,
-        };
-      }
-      const result = await this.deps.confirmService.approve(workflowRunId, iteration);
-      return {
-        overrideContinuationStepId: this.confirmNodeToStepId(result.next_node) ?? '__next__',
-        remainAtCheckpoint: false,
-        incrementRevision: false,
-        cancel: false,
-      };
-    }
-    throw new Error(`Unknown option '${selectedOptionId}' for confirm checkpoint`);
-  }
-
-  private async resolveScopingCheckpoint(
-    selectedOptionId: string,
-    iteration: number,
-  ): Promise<CheckpointResolution> {
-    if (selectedOptionId !== 'approve') {
-      throw new Error(`Unknown option '${selectedOptionId}' for scoping.checkpoint`);
-    }
-    if (!this.deps.scopingService) {
-      throw new Error('ScopingService is required for scoping.checkpoint approval');
-    }
-    await this.deps.scopingService.approve(iteration, iteration);
-    return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
-  }
-
-  private async resolveShardingApproval(
-    selectedOptionId: string,
-    workflowRunId: string,
-    iteration: number,
-  ): Promise<CheckpointResolution> {
-    if (selectedOptionId === 'modify') {
-      return { remainAtCheckpoint: true, incrementRevision: false, cancel: false };
-    }
-    if (selectedOptionId === 'reject') {
-      // Idempotency: if already skipped, the proposal was already removed.
-      const status = await this.getManifestNodeStatus(workflowRunId, iteration, 'sharding_approval');
-      if (status === 'skipped') {
-        return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
-      }
-      const proposalPath = path.join(this.deps.projectRoot, '.sle', 'sharding-proposal.yaml');
-      try { await fs.unlink(proposalPath); } catch {}
-      return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
-    }
-    if (selectedOptionId === 'approve') {
-      if (!this.deps.shardingService) {
-        throw new Error('ShardingService is required for sharding_approval approval');
-      }
-      // Idempotency: if already complete, tasks were created — return without re-creating.
-      const status = await this.getManifestNodeStatus(workflowRunId, iteration, 'sharding_approval');
-      if (status === 'complete') {
-        return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
-      }
-      const proposalPath = path.join(this.deps.projectRoot, '.sle', 'sharding-proposal.yaml');
-      const proposalContent = await this.safeReadFile(proposalPath);
-      if (!proposalContent) {
-        throw new Error('No sharding proposal found to approve');
-      }
-      const proposal = yaml.load(proposalContent) as any;
-      await this.deps.shardingService.createTasksFromProposal(proposal);
-      return { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
-    }
-    throw new Error(`Unknown option '${selectedOptionId}' for sharding_approval checkpoint`);
   }
 
   // -- review helpers -------------------------------------------------------
@@ -429,18 +497,18 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
 
     if (action === 'revise') {
-      const reviseResult = await this.deps.confirmService.revise(workflowRunId, iteration);
+      const res = await this.applyConfirmRevise(workflowRunId, iteration, undefined);
       return {
         outcome: 'completed',
-        next_step_id: this.confirmNodeToStepId(reviseResult.next_node),
+        next_step_id: res.overrideContinuationStepId ?? null,
         _increment_revision: true,
       };
     }
 
-    const approveResult = await this.deps.confirmService.approve(workflowRunId, iteration);
+    const res = await this.applyConfirmApprove(workflowRunId, iteration);
     return {
       outcome: 'completed',
-      next_step_id: this.confirmNodeToStepId(approveResult.next_node) ?? '__next__',
+      next_step_id: res.overrideContinuationStepId ?? '__next__',
     };
   }
 
@@ -457,10 +525,13 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
 
     const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, iteration);
 
-    await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: false } }));
+    if (action === 'halt') {
+      await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_scoping: false } }));
+      return { outcome: 'checkpoint_set', next_step_id: null };
+    }
 
-    if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
-    await this.markComplete(step.id, workflowRunId, iteration, []);
+    // applyScopingApprove calls scopingService.approve() which sets awaiting_scoping=false internally.
+    await this.applyScopingApprove(step.id, workflowRunId, iteration);
     return { outcome: 'completed', next_step_id: '__next__' };
   }
 
@@ -490,30 +561,15 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
     await this.deps.mapManager.update(m => ({ ...m, cycle: { ...m.cycle, awaiting_sharding_approval: false } }));
 
     if (action === 'approve') {
-      if (!this.deps.shardingService) {
-        throw new Error('ShardingService is required for sharding_approval approve');
-      }
-      const proposal = yaml.load(proposalContent) as any;
-      await this.deps.shardingService.createTasksFromProposal(proposal);
-      await this.markComplete(step.id, workflowRunId, iteration, ['.sle/tasks.yaml']);
+      await this.applyShardingApprove(step.id, workflowRunId, iteration, proposalContent);
     } else if (action === 'reject') {
-      try { await fs.unlink(proposalPath); } catch {}
-      await this.skipStep(step, workflowRunId, iteration, 'user_rejected_sharding');
+      await this.applyShardingReject(step.id, workflowRunId, iteration);
     } else {
       // modify — loop back to this checkpoint
       return { outcome: 'completed', next_step_id: step.id };
     }
 
     return { outcome: 'completed', next_step_id: '__next__' };
-  }
-
-  // Translate a legacy DAGNodeId from ConfirmService into a step id.
-  private confirmNodeToStepId(nodeId: string | null): string | null {
-    if (!nodeId) return null;
-    const MAP: Record<string, string> = {
-      'TEST': 'test', 'PLAN': 'plan', 'DESIGN': 'design', 'CONFIRM': 'confirm', 'BUILD': 'build',
-    };
-    return MAP[nodeId] ?? nodeId.toLowerCase();
   }
 
   // -- run artifact helpers -------------------------------------------------

@@ -10,9 +10,19 @@ import { WorkService } from '../src/services/work-service.js';
 import { EvidenceService } from '../src/services/evidence-service.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
+import { ResumeService } from '../src/services/resume-service.js';
 import { SchedulerLoop, createStratumApplication } from '../src/application.js';
 import { getCheckpointDecisionOptions } from '../src/execution/checkpoint-resolver.js';
+import {
+  WorkspaceRepository,
+  ProjectRepository,
+  WorkItemRepository,
+  DecisionRepository,
+  WorkflowRunRepository,
+} from '../src/storage/repositories.js';
+import { registerWorkflow } from '../src/workflow/registry.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet } from '../src/execution/types.js';
+import type { Workspace, Project, WorkItem } from '../src/domain/index.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -136,26 +146,151 @@ test('createStratumApplication: creates .sle directory if absent', () => {
 
 // ── Canonical WorkService / evidence guard ────────────────────────────────────
 
-test('WorkService evidence guard: same instance used by Scheduler and HTTP layer', () => {
-  // This test verifies the invariant at the service level by constructing the
-  // shared instance manually and confirming both consumers hold the same reference.
+// ── WorkService injection: observable via TrackedWorkService ──────────────────
+// Subclass WorkService to intercept and record calls — proves the injected
+// instance is invoked for state transitions, not a silently-created second one.
+
+class TrackedWorkService extends WorkService {
+  readonly log: string[] = [];
+
+  startRunning(req: Parameters<WorkService['startRunning']>[0]) {
+    this.log.push('startRunning');
+    return super.startRunning(req);
+  }
+
+  needsDecision(req: Parameters<WorkService['needsDecision']>[0]) {
+    this.log.push('needsDecision');
+    return super.needsDecision(req);
+  }
+
+  resolveDecision(...args: Parameters<WorkService['resolveDecision']>) {
+    this.log.push('resolveDecision');
+    return super.resolveDecision(...args);
+  }
+}
+
+// Register a minimal test workflow with a checkpoint step for ResumeService tests.
+const WS_INJECTION_WF_ID = `ws-injection-test-${randomUUID()}`;
+registerWorkflow({
+  id: WS_INJECTION_WF_ID,
+  label: 'WorkService injection test workflow',
+  steps: [
+    { id: 'step-a', kind: 'produce', label: 'Before checkpoint' },
+    { id: 'step-ck', kind: 'checkpoint', label: 'Checkpoint' },
+    { id: 'step-b', kind: 'produce', label: 'After checkpoint' },
+  ],
+});
+
+test('WorkService injection: Scheduler.startRunning invokes the injected instance', async () => {
   const db = openDatabase(':memory:');
   const wsId = randomUUID();
 
-  const evidenceService = new EvidenceService(db);
-  const workService = new WorkService(db, wsId, {
-    evidenceGuard: evidenceService.asGuard(),
-  });
+  // Set up the minimal DB state: workspace + project + work item in 'ready'.
+  const now = new Date().toISOString();
+  const workspace: Workspace = { id: wsId, name: 'ws', createdAt: now };
+  new WorkspaceRepository(db).save(workspace);
 
+  const project: Project = {
+    id: randomUUID(), workspaceId: wsId, name: 'p',
+    status: 'active', priority: 0, createdAt: now, updatedAt: now,
+  };
+  new ProjectRepository(db).save(project);
+
+  const item: WorkItem = {
+    id: randomUUID(), projectId: project.id, repositoryIds: [],
+    title: 'injection-test', goal: 'test', workflowId: 'full-build',
+    state: 'ready', priority: 0,
+    acceptanceCriteria: [], constraints: [], requiredEvidence: [],
+    dependencies: [], createdAt: now, updatedAt: now,
+  };
+  new WorkItemRepository(db).save(item);
+
+  // Inject the tracked service into Scheduler.
+  // The stub must use id 'stratum-agent' so selectAdapter() finds it.
+  const workService = new TrackedWorkService(db, wsId);
   const registry = new ExecutorRegistry();
+  registry.register({ ...makeStubAdapter({ outcome: 'succeeded' }), id: 'stratum-agent' });
   const scheduler = new Scheduler(db, wsId, registry, {}, workService);
 
-  // scheduler.workService is private; we verify by confirming that the workService
-  // used in the scheduler config path comes from the same injection (no internal new).
-  // The invariant is: if WorkService is injected, no second instance is created.
-  // We verify this by ensuring the db can be closed cleanly (no internal state diverged).
-  assert.ok(workService, 'workService constructed with evidence guard');
-  assert.ok(scheduler, 'scheduler accepts injected workService');
+  await scheduler.tick();
+
+  assert.ok(
+    workService.log.includes('startRunning'),
+    `Scheduler must call injected workService.startRunning — got: ${JSON.stringify(workService.log)}`,
+  );
+  db.close();
+});
+
+test('WorkService injection: ResumeService.resolveDecision invokes the injected instance', async () => {
+  const db = openDatabase(':memory:');
+  const wsId = randomUUID();
+  const now = new Date().toISOString();
+
+  // Set up workspace + project.
+  const workspace: Workspace = { id: wsId, name: 'ws', createdAt: now };
+  new WorkspaceRepository(db).save(workspace);
+  const project: Project = {
+    id: randomUUID(), workspaceId: wsId, name: 'p',
+    status: 'active', priority: 0, createdAt: now, updatedAt: now,
+  };
+  new ProjectRepository(db).save(project);
+
+  // Work item in 'needs_decision' state (direct insert bypasses transition guards).
+  const workItemId = randomUUID();
+  const item: WorkItem = {
+    id: workItemId, projectId: project.id, repositoryIds: [],
+    title: 'resume-injection-test', goal: 'test', workflowId: WS_INJECTION_WF_ID,
+    state: 'needs_decision', priority: 0,
+    acceptanceCriteria: [], constraints: [], requiredEvidence: [],
+    dependencies: [], createdAt: now, updatedAt: now,
+  };
+  new WorkItemRepository(db).save(item);
+
+  // WorkflowRun halted at the checkpoint step.
+  const runId = randomUUID();
+  new WorkflowRunRepository(db).createOrValidate({
+    run_id: runId,
+    workflow_id: WS_INJECTION_WF_ID,
+    work_item_id: workItemId,
+    status: 'halted',
+    current_step_id: 'step-ck',
+    iteration: 1,
+    revision: 0,
+    awaiting_checkpoint: 'step-ck',
+    started_at: now,
+    updated_at: now,
+  });
+
+  // Decision referencing the run.
+  const decisionId = randomUUID();
+  new DecisionRepository(db).save({
+    id: decisionId,
+    projectId: project.id,
+    workItemId,
+    type: 'checkpoint',
+    subjectRef: { workflowRunId: runId, workItemId, stepId: 'step-ck' },
+    title: 'Resume test',
+    summary: 'test',
+    options: [{ id: 'approve', label: 'Approve', description: 'continue' }],
+    impact: 'low',
+    reversibility: 'easy',
+    urgency: 'normal',
+    status: 'pending',
+  });
+
+  // Inject the tracked service into ResumeService.
+  // The stub must use id 'stratum-agent' so selectAdapter() finds it.
+  const workService = new TrackedWorkService(db, wsId);
+  const registry = new ExecutorRegistry();
+  registry.register({ ...makeStubAdapter({ outcome: 'succeeded' }), id: 'stratum-agent' });
+  const resumeService = new ResumeService(db, wsId, registry, {}, workService);
+
+  await resumeService.resume(decisionId, { selectedOptionId: 'approve' });
+
+  assert.ok(
+    workService.log.includes('resolveDecision'),
+    `ResumeService must call injected workService.resolveDecision — got: ${JSON.stringify(workService.log)}`,
+  );
   db.close();
 });
 

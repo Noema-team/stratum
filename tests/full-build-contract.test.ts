@@ -293,6 +293,7 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
       await agentSpy.run('facilitator', ctx);
       return { draft: '', charter_path: 'docs/cycle-charter.md', awaiting_scoping: true as const };
     },
+    approve: async (_cycleNumber: number, _iteration: number) => {},
   };
 
   const stepRunner = new FullBuildStepRunner(
