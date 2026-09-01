@@ -41,7 +41,7 @@ let _port = 19100;
 function nextPort() { return ++_port; }
 
 async function withServer(
-  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace }) => Promise<void>,
+  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService }) => Promise<void>,
 ): Promise<void> {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
@@ -63,7 +63,7 @@ async function withServer(
   await srv.listen();
   const base = `http://localhost:${srv.port}`;
   try {
-    await fn(base, { workItem: wi, project: proj, workspace: ws });
+    await fn(base, { workItem: wi, project: proj, workspace: ws, workService });
   } finally {
     await srv.close();
     db.close();
@@ -171,43 +171,32 @@ test('testWorkReady', async () => {
   });
 });
 
-test('testWorkPause', async () => {
+test('testWorkPause_removedRoute', async () => {
   await withServer(async (base, { workItem }) => {
-    await post(`${base}/work/${workItem.id}/ready`);
-    // pause from ready — valid transition; /run is Scheduler-owned and not a public HTTP route
+    // /pause is not a public HTTP endpoint — pause/cancel/fail/block require
+    // cooperative cancellation semantics that are not yet implemented.
     const r = await post(`${base}/work/${workItem.id}/pause`);
-    assert.equal(r.status, 200);
-    assert.equal((r.body as { data: { state: string } }).data.state, 'paused');
+    assert.equal(r.status, 404, '/pause must not be a public HTTP route');
   });
 });
 
-test('testWorkCancel', async () => {
+test('testWorkCancel_removedRoute', async () => {
   await withServer(async (base, { workItem }) => {
-    await post(`${base}/work/${workItem.id}/ready`);
     const r = await post(`${base}/work/${workItem.id}/cancel`, { reason: 'no longer needed' });
-    assert.equal(r.status, 200);
-    assert.equal((r.body as { data: { state: string } }).data.state, 'cancelled');
+    assert.equal(r.status, 404, '/cancel must not be a public HTTP route');
   });
 });
 
-test('testWorkFailRequiresReason', async () => {
-  await withServer(async (base, { workItem }) => {
-    const r = await post(`${base}/work/${workItem.id}/fail`, {});
-    assert.equal(r.status, 400);
-  });
-});
-
-test('testWorkFailWithReason', async () => {
+test('testWorkFail_removedRoute', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/fail`, { reason: 'something broke' });
-    assert.equal(r.status, 200);
-    assert.equal((r.body as { data: { state: string } }).data.state, 'failed');
+    assert.equal(r.status, 404, '/fail must not be a public HTTP route');
   });
 });
 
 test('testWorkInvalidTransitionReturnsError', async () => {
   await withServer(async (base, { workItem }) => {
-    // draft → complete is not a valid transition
+    // /complete was removed — returns 404 with ok:false.
     const r = await post(`${base}/work/${workItem.id}/complete`);
     assert.equal((r.body as { ok: boolean }).ok, false);
   });
@@ -309,8 +298,9 @@ test('testAttentionEmptyWhenNoIssues', async () => {
 });
 
 test('testAttentionSurfacesFailedWorkItems', async () => {
-  await withServer(async (base, { workItem }) => {
-    await post(`${base}/work/${workItem.id}/fail`, { reason: 'broke' });
+  // /fail is not a public HTTP endpoint; use WorkService directly to put the item in failed state.
+  await withServer(async (base, { workItem, workService }) => {
+    workService.fail({ workItemId: workItem.id, reason: 'broke' });
     const r = await get(`${base}/attention`);
     assert.equal(r.status, 200);
     const data = (r.body as { data: { category: string; workItemId: string }[] }).data;

@@ -172,7 +172,9 @@ export class WorkService {
     }
     if (
       req.workflowParameters !== undefined &&
-      (typeof req.workflowParameters !== 'object' || Array.isArray(req.workflowParameters))
+      (req.workflowParameters === null ||
+        typeof req.workflowParameters !== 'object' ||
+        Array.isArray(req.workflowParameters))
     ) {
       throw new WorkServiceError('workflowParameters must be a plain object', 'INVALID_WORKFLOW_PARAMETERS');
     }

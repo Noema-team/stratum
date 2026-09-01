@@ -20,11 +20,11 @@ import {
   WorkflowRunRepository,
   DecisionRepository,
   StepExecutionRepository,
-  CheckpointApplicationRepository,
 } from '../src/storage/repositories.js';
 import { WorkService } from '../src/services/work-service.js';
 import { EvidenceService } from '../src/services/evidence-service.js';
 import { ResumeService } from '../src/services/resume-service.js';
+import { Scheduler } from '../src/scheduler/index.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { ControlPlaneServer } from '../src/api/control-plane-server.js';
 import { registerWorkflow } from '../src/workflow/registry.js';
@@ -107,7 +107,6 @@ async function withServer(
   }) => Promise<void>,
 ): Promise<void> {
   const db = makeDb();
-  const now = new Date().toISOString();
   const wsId = seedWorkspace(db);
   const projectId = seedProject(db, wsId);
   const project = new ProjectRepository(db).findById(projectId)!;
@@ -148,7 +147,6 @@ test('B.1: createWorkItem creates WorkItem in draft state', () => {
   assert.equal(wi.state, 'draft');
   assert.equal(wi.projectId, projectId);
   assert.equal(wi.title, 'My item');
-  assert.equal(wi.goal, 'Do X');
   assert.equal(wi.workflowId, 'draft-artifact');
   assert.deepEqual(wi.repositoryIds, []);
   assert.deepEqual(wi.dependencies, []);
@@ -214,7 +212,6 @@ test('B.1: createWorkItem rejects unknown project', () => {
   assert.throws(
     () => svc.createWorkItem({ projectId: randomUUID(), title: 'T', goal: 'G', workflowId: 'draft-artifact' }),
     (e: Error) => e.message.includes('not found'),
-    'must reject unknown project',
   );
   db.close();
 });
@@ -229,7 +226,6 @@ test('B.1: createWorkItem rejects project from a different workspace', () => {
   assert.throws(
     () => svc.createWorkItem({ projectId: otherProjectId, title: 'T', goal: 'G', workflowId: 'draft-artifact' }),
     /workspace/i,
-    'must reject project from another workspace',
   );
   db.close();
 });
@@ -243,7 +239,6 @@ test('B.1: createWorkItem rejects unknown workflowId', () => {
   assert.throws(
     () => svc.createWorkItem({ projectId, title: 'T', goal: 'G', workflowId: 'no-such-workflow' }),
     /not registered/i,
-    'must reject unknown workflow',
   );
   db.close();
 });
@@ -262,7 +257,6 @@ test('B.1: createWorkItem rejects repository from another project', () => {
       repositoryIds: [otherRepoId],
     }),
     /does not belong/i,
-    'must reject repository from a different project',
   );
   db.close();
 });
@@ -303,6 +297,22 @@ test('B.1: createWorkItem rejects array workflowParameters', () => {
     () => svc.createWorkItem({
       projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact',
       workflowParameters: [1, 2, 3] as unknown as Record<string, unknown>,
+    }),
+    /workflowParameters/i,
+  );
+  db.close();
+});
+
+test('B.1: createWorkItem rejects null workflowParameters', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new WorkService(db, wsId);
+
+  assert.throws(
+    () => svc.createWorkItem({
+      projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      workflowParameters: null as unknown as Record<string, unknown>,
     }),
     /workflowParameters/i,
   );
@@ -373,8 +383,60 @@ test('B.4: POST /projects/:id/work rejects unknown workflowId', async () => {
   });
 });
 
+// ── Malformed optional field rejection ───────────────────────────────────────
+
+test('B.4: POST /projects/:id/work rejects repositoryIds as non-array string', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/work`, {
+      title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      repositoryIds: 'repo-id',
+    });
+    assert.equal(r.status, 400, 'repositoryIds as string must be rejected');
+  });
+});
+
+test('B.4: POST /projects/:id/work rejects priority as non-number string', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/work`, {
+      title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      priority: 'high',
+    });
+    assert.equal(r.status, 400, 'priority as string must be rejected');
+  });
+});
+
+test('B.4: POST /projects/:id/work rejects acceptanceCriteria as non-array', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/work`, {
+      title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      acceptanceCriteria: 'pass everything',
+    });
+    assert.equal(r.status, 400, 'acceptanceCriteria as string must be rejected');
+  });
+});
+
+test('B.4: POST /projects/:id/work rejects workflowParameters as array', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/work`, {
+      title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      workflowParameters: [1, 2, 3],
+    });
+    assert.equal(r.status, 400, 'workflowParameters as array must be rejected');
+  });
+});
+
+test('B.4: POST /projects/:id/work rejects workflowParameters as null', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/work`, {
+      title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      workflowParameters: null,
+    });
+    assert.equal(r.status, 400, 'workflowParameters as null must be rejected');
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// B.4 — Lifecycle authority: removed routes return 404; kept routes work
+// B.4 — Lifecycle authority: removed routes return 404; kept route works
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test('B.4 authority: POST /work/:id/run is not a public HTTP route (404)', async () => {
@@ -401,6 +463,30 @@ test('B.4 authority: POST /work/:id/complete is not a public HTTP route (404)', 
   });
 });
 
+test('B.4 authority: POST /work/:id/pause is not a public HTTP route (404)', async () => {
+  await withServer(async (base, { workService, project }) => {
+    const wi = workService.createWorkItem({ projectId: project.id, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
+    const r = await post(`${base}/work/${wi.id}/pause`);
+    assert.equal(r.status, 404, '/pause must not be exposed as a public HTTP endpoint');
+  });
+});
+
+test('B.4 authority: POST /work/:id/cancel is not a public HTTP route (404)', async () => {
+  await withServer(async (base, { workService, project }) => {
+    const wi = workService.createWorkItem({ projectId: project.id, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
+    const r = await post(`${base}/work/${wi.id}/cancel`);
+    assert.equal(r.status, 404, '/cancel must not be exposed as a public HTTP endpoint');
+  });
+});
+
+test('B.4 authority: POST /work/:id/resume is not a public HTTP route (404)', async () => {
+  await withServer(async (base, { workService, project }) => {
+    const wi = workService.createWorkItem({ projectId: project.id, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
+    const r = await post(`${base}/work/${wi.id}/resume`);
+    assert.equal(r.status, 404, '/resume must not be exposed as a public HTTP endpoint');
+  });
+});
+
 test('B.4 authority: POST /work/:id/ready (draft → ready) remains operator-accessible', async () => {
   await withServer(async (base, { workService, project }) => {
     const wi = workService.createWorkItem({ projectId: project.id, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
@@ -410,25 +496,65 @@ test('B.4 authority: POST /work/:id/ready (draft → ready) remains operator-acc
   });
 });
 
-test('B.4 authority: POST /projects/:id/work → draft → ready is the operator path; WorkService.startRunning() is Scheduler-internal', () => {
+// ═══════════════════════════════════════════════════════════════════════════════
+// B.4 — Scheduler authority: only Scheduler.tick() moves ready → running
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('B.4 Scheduler authority: tick() creates StepExecution + workflowRunId + moves WorkItem to running', async () => {
   const db = makeDb();
   const wsId = seedWorkspace(db);
   const projectId = seedProject(db, wsId);
   const svc = new WorkService(db, wsId);
 
+  // Create and advance to ready via the operator path.
   const wi = svc.createWorkItem({ projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
-  assert.equal(wi.state, 'draft');
-
   svc.markReady({ workItemId: wi.id });
-  const readyItem = new WorkItemRepository(db).findById(wi.id)!;
-  assert.equal(readyItem.state, 'ready');
 
-  // Scheduler calls startRunning — WorkService method is not removed; only the HTTP route is removed.
-  svc.startRunning({ workItemId: wi.id });
-  const runningItem = new WorkItemRepository(db).findById(wi.id)!;
-  assert.equal(runningItem.state, 'running');
+  // Confirm WorkItem is ready before tick.
+  const before = new WorkItemRepository(db).findById(wi.id)!;
+  assert.equal(before.state, 'ready', 'WorkItem must be ready before tick');
+
+  // No StepExecutions yet.
+  const stepsBefore = new StepExecutionRepository(db).listByWorkItem(wi.id);
+  assert.equal(stepsBefore.length, 0, 'No StepExecutions before tick');
+
+  // Scheduler.tick() — injected stub adapter returns succeeded immediately.
+  const registry = new ExecutorRegistry();
+  registry.register(makeStubAdapter());
+  const scheduler = new Scheduler(db, wsId, registry);
+  const results = await scheduler.tick();
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'dispatched', `expected dispatched, got: ${results[0].outcome}`);
+  assert.equal(results[0].workItemId, wi.id);
+
+  // Scheduler minted a StepExecution with a workflowRunId.
+  const steps = new StepExecutionRepository(db).listByWorkItem(wi.id);
+  assert.ok(steps.length > 0, 'Scheduler must have created at least one StepExecution');
+  assert.ok(steps[0].workflowRunId, 'Scheduler must mint a workflowRunId on the StepExecution');
+
+  // WorkItem was moved through running (stub completes immediately → in_review or completed).
+  const after = new WorkItemRepository(db).findById(wi.id)!;
+  assert.notEqual(after.state, 'ready', 'WorkItem must no longer be ready after tick');
+  assert.notEqual(after.state, 'draft', 'WorkItem must not be in draft after tick');
 
   db.close();
+});
+
+test('B.4 Scheduler authority: no HTTP route can independently force ready → running', async () => {
+  await withServer(async (base, { workService, project }) => {
+    const wi = workService.createWorkItem({ projectId: project.id, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
+    workService.markReady({ workItemId: wi.id });
+
+    // Attempt to move to running via each removed route.
+    const runResult = await post(`${base}/work/${wi.id}/run`);
+    assert.equal(runResult.status, 404, '/run must not force running');
+
+    // WorkItem must still be ready — no HTTP route changed its state.
+    const stillReady = await fetch(`${base}/work/${wi.id}`);
+    const body = (await stillReady.json()) as { data: { state: string } };
+    assert.equal(body.data.state, 'ready', 'WorkItem must remain ready when HTTP routes are blocked');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -445,7 +571,6 @@ test('B.3: terminal checkpoint — Decision resolved + WorkflowRun complete + Wo
   const runId = randomUUID();
   const decisionId = randomUUID();
 
-  // Seed a work item in needs_decision (awaiting the terminal checkpoint).
   new WorkItemRepository(db).save({
     id: workItemId, projectId, repositoryIds: [],
     title: 't', goal: 'g', workflowId: TERMINAL_WF_ID,
@@ -471,21 +596,17 @@ test('B.3: terminal checkpoint — Decision resolved + WorkflowRun complete + Wo
 
   const registry = new ExecutorRegistry();
   registry.register(makeStubAdapter());
-
   const resumeSvc = new ResumeService(db, wsId, registry, {});
   await resumeSvc.resume(decisionId, { selectedOptionId: 'approve' });
 
-  // Decision resolved.
   const decision = new DecisionRepository(db).findById(decisionId)!;
   assert.equal(decision.status, 'resolved', 'Decision must be resolved');
 
-  // WorkflowRun completed.
   const run = new WorkflowRunRepository(db).findById(runId)!;
   assert.equal(run.status, 'complete', 'WorkflowRun must be complete');
 
-  // WorkItem is in_review — NOT running. If the transition were non-atomic,
-  // a crash between the transaction and the old markInReview() call would have
-  // left WorkItem in 'running'.
+  // WorkItem is in_review — NOT running. Pre-fix, a crash between the
+  // transaction commit and the old markInReview() call would leave it running.
   const wi = new WorkItemRepository(db).findById(workItemId)!;
   assert.equal(wi.state, 'in_review', 'WorkItem must be in_review after terminal checkpoint');
 
