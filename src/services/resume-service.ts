@@ -285,12 +285,19 @@ export class ResumeService {
       let continuationStepId: string | null;
       let journaledResolution: { remainAtCheckpoint: boolean; incrementRevision: boolean; cancel: boolean };
 
-      if (resolution.selectedOptionId === 'modify') {
-        // modify: no journal, no finalization — call resolver for optional effects and return.
+      // 'modify' on sharding_approval has no persistent side effects — the
+      // Decision stays pending so the human can come back with approve/reject.
+      // This is the only case that bypasses the journal; all other checkpoint
+      // actions use normal journal semantics.
+      if (
+        run.workflow_id === 'full-build' &&
+        run.awaiting_checkpoint === 'sharding_approval' &&
+        resolution.selectedOptionId === 'modify'
+      ) {
         if (this.checkpointResolver) {
           await this.checkpointResolver.resolveCheckpoint({
             workflowId: run.workflow_id,
-            stepId: run.awaiting_checkpoint!,
+            stepId: run.awaiting_checkpoint,
             decisionId,
             selectedOptionId: 'modify',
             rationale: resolution.rationale ?? undefined,
@@ -398,16 +405,21 @@ export class ResumeService {
 
       // (5) Atomic transition:
       //   • close waiting StepExecution(s) → 'succeeded'
-      //   • resolve Decision + WorkItem(needs_decision → running)
+      //   • resolve Decision + WorkItem state transition (atomic)
       //   • advance WorkflowRun cursor past the checkpoint (optionally bumping revision)
-      //   • create new StepExecution(state='dispatched')
+      //   • create new StepExecution(state='dispatched') when continuing
+      //
+      // Terminal case (continuationStepId === null): WorkItem goes directly to
+      // 'in_review' in the same transaction — Decision resolved + run complete +
+      // WorkItem in_review are one atomic unit.
       const stepExecutionId = randomUUID();
+      const resumeTo: 'running' | 'in_review' = continuationStepId ? 'running' : 'in_review';
 
       this.db.transaction(() => {
         for (const se of waitingExecs) {
           this.stepExecRepo.updateState(se.id, 'succeeded', { completedAt: now });
         }
-        this.workService.resolveDecision(decisionId, resolution, 'running');
+        this.workService.resolveDecision(decisionId, resolution, resumeTo);
         this.runRepo.update({
           ...run,
           status: continuationStepId ? 'active' : 'complete',
@@ -431,8 +443,7 @@ export class ResumeService {
       })();
 
       if (!continuationStepId) {
-        // The checkpoint was the last step — workflow is complete.
-        this.workService.markInReview({ workItemId });
+        // WorkItem is already in 'in_review' — set atomically above.
         return;
       }
 

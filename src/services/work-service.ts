@@ -3,7 +3,8 @@ import type Database from 'better-sqlite3';
 import type { WorkItem, WorkItemState, DomainEvent, Decision } from '../domain/index.js';
 import type { PolicyEvaluation } from '../domain/policy.js';
 import { isWorkItemTerminal } from '../domain/index.js';
-import { WorkItemRepository, DecisionRepository, EventRepository } from '../storage/repositories.js';
+import { WorkItemRepository, DecisionRepository, EventRepository, ProjectRepository, RepositoryRepository } from '../storage/repositories.js';
+import { getWorkflow } from '../workflow/registry.js';
 
 // ============================================================================
 // Transition table — explicit enumeration of every permitted edge.
@@ -122,10 +123,27 @@ export interface WorkServiceOptions {
   evidenceGuard?: (workItem: WorkItem) => PolicyEvaluation;
 }
 
+export interface CreateWorkItemRequest {
+  projectId: string;
+  title: string;
+  goal: string;
+  workflowId: string;
+  repositoryIds?: string[];
+  priority?: number;
+  acceptanceCriteria?: WorkItem['acceptanceCriteria'];
+  constraints?: WorkItem['constraints'];
+  requiredEvidence?: WorkItem['requiredEvidence'];
+  workflowParameters?: Record<string, unknown>;
+  objectiveId?: string;
+  parentId?: string;
+}
+
 export class WorkService {
   private readonly items: WorkItemRepository;
   private readonly decisions: DecisionRepository;
   private readonly events: EventRepository;
+  private readonly projects: ProjectRepository;
+  private readonly repositories: RepositoryRepository;
   private readonly evidenceGuard?: (workItem: WorkItem) => PolicyEvaluation;
 
   constructor(
@@ -136,7 +154,96 @@ export class WorkService {
     this.items = new WorkItemRepository(db);
     this.decisions = new DecisionRepository(db);
     this.events = new EventRepository(db);
+    this.projects = new ProjectRepository(db);
+    this.repositories = new RepositoryRepository(db);
     this.evidenceGuard = opts.evidenceGuard;
+  }
+
+  // --------------------------------------------------------------------------
+  // WorkItem creation
+  // --------------------------------------------------------------------------
+
+  createWorkItem(req: CreateWorkItemRequest): WorkItem {
+    if (!req.title?.trim()) {
+      throw new WorkServiceError('title is required and must be non-empty', 'INVALID_TITLE');
+    }
+    if (!req.goal?.trim()) {
+      throw new WorkServiceError('goal is required and must be non-empty', 'INVALID_GOAL');
+    }
+    if (
+      req.workflowParameters !== undefined &&
+      (typeof req.workflowParameters !== 'object' || Array.isArray(req.workflowParameters))
+    ) {
+      throw new WorkServiceError('workflowParameters must be a plain object', 'INVALID_WORKFLOW_PARAMETERS');
+    }
+
+    const project = this.projects.findById(req.projectId);
+    if (!project) {
+      throw new WorkServiceError(`Project '${req.projectId}' not found`, 'NOT_FOUND');
+    }
+    if (project.workspaceId !== this.workspaceId) {
+      throw new WorkServiceError(
+        `Project '${req.projectId}' does not belong to this workspace`,
+        'WORKSPACE_MISMATCH',
+      );
+    }
+
+    if (!getWorkflow(req.workflowId)) {
+      throw new WorkServiceError(`Workflow '${req.workflowId}' is not registered`, 'UNKNOWN_WORKFLOW');
+    }
+
+    const repoIds = req.repositoryIds ?? [];
+    for (const repoId of repoIds) {
+      const repo = this.repositories.findById(repoId);
+      if (!repo) {
+        throw new WorkServiceError(`Repository '${repoId}' not found`, 'REPO_NOT_FOUND');
+      }
+      if (repo.projectId !== req.projectId) {
+        throw new WorkServiceError(
+          `Repository '${repoId}' does not belong to project '${req.projectId}'`,
+          'REPO_PROJECT_MISMATCH',
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const workItem: WorkItem = {
+      id,
+      projectId: req.projectId,
+      objectiveId: req.objectiveId,
+      parentId: req.parentId,
+      repositoryIds: repoIds,
+      title: req.title.trim(),
+      goal: req.goal.trim(),
+      workflowId: req.workflowId,
+      state: 'draft',
+      priority: req.priority ?? 0,
+      acceptanceCriteria: req.acceptanceCriteria ?? [],
+      constraints: req.constraints ?? [],
+      requiredEvidence: req.requiredEvidence ?? [],
+      dependencies: [],
+      workflowParameters: req.workflowParameters,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.db.transaction(() => {
+      this.items.save(workItem);
+      const event: DomainEvent = {
+        id: randomUUID(),
+        schemaVersion: 1,
+        type: 'work.created',
+        workspaceId: this.workspaceId,
+        projectId: req.projectId,
+        workItemId: id,
+        occurredAt: now,
+        payload: { workflowId: req.workflowId, priority: workItem.priority },
+      };
+      this.events.append(event);
+    })();
+
+    return workItem;
   }
 
   // --------------------------------------------------------------------------

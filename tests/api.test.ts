@@ -174,7 +174,7 @@ test('testWorkReady', async () => {
 test('testWorkPause', async () => {
   await withServer(async (base, { workItem }) => {
     await post(`${base}/work/${workItem.id}/ready`);
-    await post(`${base}/work/${workItem.id}/run`);
+    // pause from ready — valid transition; /run is Scheduler-owned and not a public HTTP route
     const r = await post(`${base}/work/${workItem.id}/pause`);
     assert.equal(r.status, 200);
     assert.equal((r.body as { data: { state: string } }).data.state, 'paused');
