@@ -157,6 +157,13 @@ export class EventsWebSocketAdapter {
   }
 
   close(): Promise<void> {
+    // Terminate all open connections before closing the server; without this,
+    // wss.close() waits for each client's close handshake to complete and hangs
+    // if any client is mid-close or the test process exits before the exchange
+    // finishes.
+    for (const client of this.wss.clients) {
+      client.terminate();
+    }
     return new Promise((resolve, reject) =>
       this.wss.close(err => (err ? reject(err) : resolve())),
     );

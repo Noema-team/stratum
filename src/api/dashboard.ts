@@ -153,7 +153,9 @@ let refreshTimer = null;
 // ── Token auth ────────────────────────────────────────────────────────────
 async function tryRestoreToken() {
   try { token = localStorage.getItem('stratum_token') || ''; } catch {}
-  if (token) await checkToken();
+  // Always probe: if auth is disabled the server returns ok:true with no token,
+  // letting us skip the overlay entirely on first load.
+  await checkToken();
 }
 
 async function checkToken() {
