@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -169,6 +169,76 @@ test('C3.bootstrap: locator pointing to non-existent IDs throws useful error', (
   }
 });
 
+test('C3.bootstrap: existing locator + empty DB throws, no rows minted', () => {
+  const dir = makeTmpDir();
+  try {
+    // Write a valid-shaped locator without any DB rows.
+    const sleDir = join(dir, '.sle');
+    mkdirSync(sleDir, { recursive: true });
+    const locatorPath = join(sleDir, 'workspace.json');
+    const fakeId = randomUUID();
+    const fakeProjId = randomUUID();
+    writeFileSync(locatorPath, JSON.stringify({ workspaceId: fakeId, projectId: fakeProjId }, null, 2), 'utf8');
+
+    // Use an on-disk DB path so bootstrapLocalControlPlane opens it (not :memory:)
+    const dbPath = join(sleDir, 'stratum.db');
+
+    assert.throws(
+      () => bootstrapLocalControlPlane(dir, dbPath),
+      (err: Error) => err.message.includes('missing'),
+      'should throw reporting missing canonical identity',
+    );
+
+    // Locator must be unchanged.
+    const locatorAfter = JSON.parse(readFileSync(locatorPath, 'utf8')) as { workspaceId: string; projectId: string };
+    assert.equal(locatorAfter.workspaceId, fakeId, 'locator workspaceId unchanged');
+    assert.equal(locatorAfter.projectId, fakeProjId, 'locator projectId unchanged');
+
+    // No workspace rows should have been minted.
+    const db2 = openDatabase(dbPath);
+    const rows = new WorkspaceRepository(db2).list();
+    db2.close();
+    assert.equal(rows.length, 0, 'no workspace rows minted');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('C3.bootstrap: 1 workspace + 0 projects + locator references missing project throws', () => {
+  const dir = makeTmpDir();
+  try {
+    // Bootstrap once to create workspace + project + locator.
+    bootstrapLocalControlPlane(dir);
+
+    // Delete the project from the DB but leave the locator intact.
+    const dbPath = join(dir, '.sle', 'stratum.db');
+    const db = openDatabase(dbPath);
+    const prRepo = new ProjectRepository(db);
+    const wsRepo = new WorkspaceRepository(db);
+    const workspaces = wsRepo.list();
+    assert.equal(workspaces.length, 1);
+    const projects = prRepo.listByWorkspace(workspaces[0].id);
+    assert.equal(projects.length, 1);
+    // Remove the project row directly.
+    db.prepare('DELETE FROM projects WHERE id = ?').run(projects[0].id);
+    db.close();
+
+    assert.throws(
+      () => bootstrapLocalControlPlane(dir, dbPath),
+      (err: Error) => err.message.includes('missing'),
+      'should throw reporting missing project identity',
+    );
+
+    // No new project row should have been created.
+    const db2 = openDatabase(dbPath);
+    const remaining = new ProjectRepository(db2).listByWorkspace(workspaces[0].id);
+    db2.close();
+    assert.equal(remaining.length, 0, 'no replacement project minted');
+  } finally {
+    cleanup(dir);
+  }
+});
+
 // ── Composition smoke test ────────────────────────────────────────────────────
 
 test('C3.smoke: start → GET /projects → POST work → POST ready → stop → restart same identity', async () => {
@@ -177,9 +247,17 @@ test('C3.smoke: start → GET /projects → POST work → POST ready → stop �
     // --- First boot ---
     const { workspaceId, projectId } = bootstrapLocalControlPlane(dir);
 
-    const app = createStratumApplication({ projectRoot: dir, workspaceId, port: 0 });
+    // Large schedulerIntervalMs prevents the scheduler from dispatching the
+    // ready work item during the test, making assertions deterministic.
+    const app = createStratumApplication({ projectRoot: dir, workspaceId, port: 0, schedulerIntervalMs: 600_000 });
     await app.start();
     const base = `http://localhost:${app.controlPlaneServer.port}`;
+
+    // GET / — canonical dashboard HTML
+    const rootRes = await fetch(`${base}/`);
+    assert.equal(rootRes.status, 200, 'GET / returns 200');
+    const rootHtml = await rootRes.text();
+    assert.ok(rootHtml.includes('<!doctype html') || rootHtml.includes('<!DOCTYPE html'), 'GET / returns HTML');
 
     // GET /projects — should return the bootstrapped project
     const pr = await fetch(`${base}/projects`);
@@ -215,7 +293,7 @@ test('C3.smoke: start → GET /projects → POST work → POST ready → stop �
     assert.equal(second.workspaceId, workspaceId, 'workspaceId stable after restart');
     assert.equal(second.projectId, projectId, 'projectId stable after restart');
 
-    const app2 = createStratumApplication({ projectRoot: dir, workspaceId: second.workspaceId, port: 0 });
+    const app2 = createStratumApplication({ projectRoot: dir, workspaceId: second.workspaceId, port: 0, schedulerIntervalMs: 600_000 });
     await app2.start();
     const base2 = `http://localhost:${app2.controlPlaneServer.port}`;
 

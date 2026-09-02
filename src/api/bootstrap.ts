@@ -44,9 +44,19 @@ export function bootstrapLocalControlPlane(
     const prRepo = new ProjectRepository(db);
 
     const workspaces = wsRepo.list();
+    const locator = readLocator(locatorPath);
 
     if (workspaces.length === 0) {
-      // Fresh DB — create canonical rows transactionally, then write locator.
+      if (locator) {
+        // Locator references canonical identity that is absent from the DB.
+        // Fail closed — never mint replacement rows when prior identity existed.
+        throw new Error(
+          `Locator at ${locatorPath} references workspace=${locator.workspaceId} ` +
+          `project=${locator.projectId} but the database contains no workspaces. ` +
+          `The canonical SQLite identity is missing; do not auto-recreate it.`,
+        );
+      }
+      // Genuinely fresh DB with no prior identity claim — create canonical rows.
       const workspaceId = randomUUID();
       const projectId = randomUUID();
       const now = new Date().toISOString();
@@ -69,14 +79,21 @@ export function bootstrapLocalControlPlane(
       return { workspaceId, projectId };
     }
 
-    const locator = readLocator(locatorPath);
-
     if (workspaces.length === 1) {
       const workspace = workspaces[0];
       const projects = prRepo.listByWorkspace(workspace.id);
 
       if (projects.length === 0) {
-        // Workspace present but no project — create one.
+        if (locator && locator.projectId) {
+          // Locator claimed a project that is now absent from the DB.
+          // Fail closed — do not silently mint a replacement.
+          throw new Error(
+            `Locator at ${locatorPath} references project=${locator.projectId} ` +
+            `but workspace '${workspace.name}' contains no projects. ` +
+            `The canonical project identity is missing; do not auto-recreate it.`,
+          );
+        }
+        // No prior project claim — create one.
         const projectId = randomUUID();
         const now = new Date().toISOString();
         prRepo.save({
