@@ -1,8 +1,8 @@
 # D.2 — Objectives
 
-**Status:** Complete.
-**Milestone:** D, phase D.2 (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md` §10,
-as amended; follows D.1 — declarative workflow-step contract, closed)
+**Status:** Complete, including the D.2.1 correction (§5). D.2 is closed.
+**Milestone:** D, phase D.2 → D.2.1 (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md`
+§10, as amended; follows D.1 — declarative workflow-step contract, closed)
 
 ## 1. Goal
 
@@ -90,5 +90,78 @@ the D.1 declarative contract, no Objective strategy dashboard.
   `tsc --noEmit` does not type-check `tests/` — see `tsconfig.json`'s
   `exclude` — so this class of break is only caught by actually running
   the tests, not by `npm run type-check` alone).
+
+## 5. D.2.1 — review corrections
+
+D.2's architecture was accepted; review found two correctness gaps and asked
+for a more realistic restart test. Nothing here changes D.2's lifecycle, API
+surface, WorkItem-linkage semantics, or `linkedWorkItemCount` — narrowly
+scoped fixes only.
+
+### 5.1 `ObjectiveSchema` is now actually enforced at the persistence boundary
+
+The HTTP handler only ever checked `Array.isArray(b.constraints)` /
+`Array.isArray(b.successCriteria)` and cast the contents — `constraints:
+[null]` or `constraints: [{ foo: 'bar' }]` would pass that check and reach
+`ObjectiveRepository.save()` unvalidated, even though `ObjectiveSchema`
+already declares `constraints`/`successCriteria` as arrays of structured
+`Constraint`/`Criterion` elements.
+
+Fixed at the one place everything routes through before persistence:
+`ObjectiveService.create()` now runs the fully-constructed candidate object
+through `ObjectiveSchema.safeParse()` — the existing schema, not a new one —
+immediately before `this.objectives.save(...)`. This covers every field
+`ObjectiveSchema` declares (title/description/priority/status/timestamps
+included), not just the two nested-array fields review named explicitly. A
+failure is translated into `ObjectiveServiceError('...', 'BAD_REQUEST')`
+with a short, path-qualified summary of the Zod issues (e.g.
+`constraints.0: Required`) — never the raw `ZodError`. `BAD_REQUEST` was
+chosen deliberately: it's already a registered `HTTP_STATUS` key (400), so
+the API layer needed no changes to map it correctly, unlike several
+pre-existing `WorkServiceError` codes (e.g. `REPO_NOT_FOUND`) that still
+fall through to 500 — a known, separate gap, not touched here.
+
+### 5.2 Backfill migration for pre-D.2.1 NULL Objective timestamps
+
+Migration 9 added `created_at`/`updated_at` as nullable columns ("existing
+rows get NULL" — the standard convention for every `ADD COLUMN` migration in
+this file). Once `ObjectiveSchema` requires `TimestampSchema` (a valid
+ISO-8601 string) for both, a row written before that requirement existed
+would type as `string` at compile time while reading back as runtime `null`.
+
+Migration 10 backfills, once, conservatively: `created_at IS NULL` rows get
+a fixed migration timestamp; `updated_at IS NULL` rows fall back to the
+row's `created_at` (by then always non-null, whether original or
+just-backfilled in the same migration). Existing non-null values are never
+touched. No table recreation — the columns stay nullable at the schema
+level; the guarantee that no NULL survives comes from the one-time backfill
+plus every future write going through `ObjectiveService`, which always
+supplies both fields.
+
+### 5.3 A real file-backed restart test, plus a migration-compatibility fixture
+
+The D.2 "restart" test only constructed a second `ObjectiveService` over the
+same in-memory `Database` handle — it never actually closed and reopened
+anything, so it couldn't have caught a real persistence bug. Kept (as a
+cheap same-handle sanity check) and supplemented with a genuine
+close/reopen test against a temp-directory DB *file*.
+
+Also added: `MIGRATIONS` is now exported (read-only) from
+`storage/database.ts` specifically so a test can construct a DB at exactly
+the migration-9 checkpoint, insert an `Objective` row with `NULL`
+timestamps the way pre-D.2.1 raw SQL would have, and then open it normally
+— proving migration 10 backfills that row into something
+`ObjectiveService`/`ObjectiveSchema` accept as fully valid, and a sibling
+test proving an already-timestamped row is left untouched.
+
+### 5.4 Recorded, not fixed here
+
+Confirmed during D.2 review: `tsconfig.json` excludes `tests/` from
+`tsc --noEmit`, so `npm run type-check` alone cannot catch a test fixture
+that no longer matches a changed domain schema — only actually running the
+suite does. This is real CI debt worth hardening later (e.g. a second
+tsconfig covering `tests/`, or including them under `strict` in some form),
+but per review instruction it is out of scope for D.2.1 and was not
+touched.
 
 Full `npm run verify` (type-check + build + entire suite) is green.

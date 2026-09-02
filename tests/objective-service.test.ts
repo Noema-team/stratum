@@ -1,20 +1,26 @@
 /**
- * D.2 — ObjectiveService.
+ * D.2 / D.2.1 — ObjectiveService.
  *
  * Objective is the durable human-intent container above WorkItems:
  *   Project -> Objective -> WorkItems
- * These tests cover the service directly (create/read/list, guarded
- * lifecycle, workspace isolation, restart persistence). WorkItem linkage
- * validation lives in tests/commit-b.test.ts (WorkService.createWorkItem);
- * the /projects/:id/objectives and /objectives/:id HTTP routes are covered
- * in tests/api.test.ts.
+ * These tests cover the service directly (create/read/list, malformed
+ * nested-data rejection, guarded lifecycle, workspace isolation, real
+ * file-backed restart persistence, migration-compatibility backfill).
+ * WorkItem linkage validation lives in tests/commit-b.test.ts
+ * (WorkService.createWorkItem); the /projects/:id/objectives and
+ * /objectives/:id HTTP routes (including the D.2.1 malformed-payload
+ * case) are covered in tests/api.test.ts.
  */
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 
-import { openDatabase } from '../src/storage/database.js';
+import { openDatabase, MIGRATIONS } from '../src/storage/database.js';
 import { WorkspaceRepository, ProjectRepository, ObjectiveRepository } from '../src/storage/repositories.js';
 import { ObjectiveService, ObjectiveServiceError } from '../src/services/objective-service.js';
 import type { Workspace, Project } from '../src/domain/index.js';
@@ -125,6 +131,101 @@ test('D.2: create() rejects an empty description', () => {
   db.close();
 });
 
+// ============================================================================
+// D.2.1 — nested-element validation via ObjectiveSchema (not hand-rolled)
+// ============================================================================
+
+test('D.2.1: create() rejects constraints containing null', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  assert.throws(
+    () => svc.create({ projectId, title: 'T', description: 'D', constraints: [null as any] }),
+    ObjectiveServiceError,
+  );
+  assert.equal(new ObjectiveRepository(db).listByProject(projectId).length, 0, 'nothing must be persisted');
+  db.close();
+});
+
+test('D.2.1: create() rejects a constraint object missing the required description field', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  assert.throws(
+    () => svc.create({ projectId, title: 'T', description: 'D', constraints: [{ foo: 'bar' } as any] }),
+    ObjectiveServiceError,
+  );
+  db.close();
+});
+
+test('D.2.1: create() rejects a successCriteria object missing the required description field', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  assert.throws(
+    () => svc.create({ projectId, title: 'T', description: 'D', successCriteria: [{ met: true } as any] }),
+    ObjectiveServiceError,
+  );
+  db.close();
+});
+
+test('D.2.1: create() rejects a constraint with an invalid type enum value', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  assert.throws(
+    () => svc.create({
+      projectId, title: 'T', description: 'D',
+      constraints: [{ description: 'x', type: 'not-a-real-type' } as any],
+    }),
+    ObjectiveServiceError,
+  );
+  db.close();
+});
+
+test('D.2.1: a rejected create() surfaces an ObjectiveServiceError, not a raw ZodError', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  try {
+    svc.create({ projectId, title: 'T', description: 'D', constraints: [null as any] });
+    assert.fail('expected create() to throw');
+  } catch (e) {
+    assert.ok(e instanceof ObjectiveServiceError, `expected ObjectiveServiceError, got ${(e as Error)?.constructor?.name}`);
+    assert.equal((e as ObjectiveServiceError).code, 'BAD_REQUEST');
+    // Must not leak Zod's internal error shape (e.g. an `issues` array) to the caller.
+    assert.equal((e as any).issues, undefined);
+  }
+  db.close();
+});
+
+test('D.2.1: valid constraint/successCriteria elements are still accepted', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new ObjectiveService(db, wsId);
+
+  const objective = svc.create({
+    projectId, title: 'T', description: 'D',
+    constraints: [{ description: 'must not break X', type: 'must_not' }],
+    successCriteria: [{ description: 'Y is achieved', met: false }],
+  });
+
+  assert.equal(objective.constraints[0].type, 'must_not');
+  assert.equal(objective.successCriteria[0].met, false);
+  db.close();
+});
+
 test('D.2: create() rejects an unknown project', () => {
   const db = makeDb();
   const wsId = seedWorkspace(db);
@@ -138,20 +239,147 @@ test('D.2: create() rejects an unknown project', () => {
 });
 
 // ============================================================================
-// Persistence — survives a fresh service instance against the same DB file
+// Persistence
 // ============================================================================
 
-test('D.2: an Objective persists across a fresh ObjectiveService instance (restart)', () => {
+test('D.2: an Objective persists across a fresh ObjectiveService instance (same handle)', () => {
   const db = makeDb();
   const wsId = seedWorkspace(db);
   const projectId = seedProject(db, wsId);
   const created = new ObjectiveService(db, wsId).create({ projectId, title: 'T', description: 'D' });
 
-  // Simulate a restart: a brand-new service instance over the same db handle.
+  // A brand-new service instance over the same db handle — cheap sanity
+  // check that the repository doesn't rely on in-process caching. Does not
+  // by itself prove real restart persistence — see the file-backed test below.
   const reloaded = new ObjectiveService(db, wsId).findById(created.id);
 
   assert.deepEqual(reloaded, created);
   db.close();
+});
+
+test('D.2.1: an Objective persists across a real close/reopen of a file-backed DB (restart)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'objective-restart-'));
+  const dbPath = path.join(dir, 'stratum.db');
+  try {
+    const db1 = openDatabase(dbPath);
+    const wsId = seedWorkspace(db1);
+    const projectId = seedProject(db1, wsId);
+    const created = new ObjectiveService(db1, wsId).create({
+      projectId, title: 'T', description: 'D', priority: 4,
+      constraints: [{ description: 'must not break X' }],
+      successCriteria: [{ description: 'Y is achieved' }],
+    });
+    db1.close();
+
+    // Reopen — a genuinely new process would do exactly this.
+    const db2 = openDatabase(dbPath);
+    const reloaded = new ObjectiveService(db2, wsId).findById(created.id);
+
+    assert.deepEqual(reloaded, created, 'payload and timestamps must survive close/reopen unchanged');
+    db2.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// D.2.1 — migration-compatibility: backfilling pre-D.2.1 NULL timestamps
+// ============================================================================
+
+test('D.2.1: opening a DB with a pre-existing NULL-timestamp Objective row backfills it into a valid Objective', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'objective-migration-'));
+  const dbPath = path.join(dir, 'stratum.db');
+  try {
+    // Construct the DB at exactly the migration-9 checkpoint (created_at/
+    // updated_at exist and are nullable, but nothing backfills them yet —
+    // the state every DB that predates migration 10 was left in), then
+    // insert an Objective row the way raw SQL would have before
+    // ObjectiveService/migration 10 existed: NULL timestamps.
+    const raw = new Database(dbPath);
+    raw.exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    const recordMigration = raw.prepare('INSERT INTO _migrations (id, applied_at) VALUES (?, ?)');
+    for (let i = 0; i < 9; i++) {
+      raw.exec(MIGRATIONS[i]);
+      recordMigration.run(i + 1, new Date().toISOString());
+    }
+
+    const now = new Date().toISOString();
+    const wsId = randomUUID();
+    raw.prepare('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)').run(wsId, 'ws', now);
+    const projectId = randomUUID();
+    raw.prepare(`
+      INSERT INTO projects (id, workspace_id, name, status, priority, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(projectId, wsId, 'proj', 'active', 0, now, now);
+    const objectiveId = randomUUID();
+    raw.prepare(`
+      INSERT INTO objectives
+        (id, project_id, title, description, priority, status, constraints_json, success_criteria_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    `).run(objectiveId, projectId, 'Pre-D.2.1 objective', 'desc', 0, 'draft', '[]', '[]');
+    raw.close();
+
+    // Now open it the normal way — this must run migration 10 and backfill.
+    const db = openDatabase(dbPath);
+    const found = new ObjectiveRepository(db).findById(objectiveId);
+
+    assert.ok(found, 'the pre-existing row must still be readable');
+    assert.ok(found!.createdAt, 'created_at must be backfilled, not null');
+    assert.ok(found!.updatedAt, 'updated_at must be backfilled, not null');
+    assert.equal(
+      found!.updatedAt, found!.createdAt,
+      'updated_at backfill policy: fall back to created_at when both were missing',
+    );
+    // The resulting row must satisfy the same contract a freshly-created
+    // Objective does — a fresh ObjectiveService instance can read it back
+    // as a normal, fully-valid Objective.
+    const viaService = new ObjectiveService(db, wsId).findById(objectiveId);
+    assert.deepEqual(viaService, found);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('D.2.1: an existing non-null Objective timestamp is left untouched by the backfill migration', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'objective-migration-preserve-'));
+  const dbPath = path.join(dir, 'stratum.db');
+  try {
+    const raw = new Database(dbPath);
+    raw.exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    const recordMigration = raw.prepare('INSERT INTO _migrations (id, applied_at) VALUES (?, ?)');
+    for (let i = 0; i < 9; i++) {
+      raw.exec(MIGRATIONS[i]);
+      recordMigration.run(i + 1, new Date().toISOString());
+    }
+
+    const originalCreatedAt = '2026-01-01T00:00:00.000Z';
+    const originalUpdatedAt = '2026-01-02T00:00:00.000Z';
+    const now = new Date().toISOString();
+    const wsId = randomUUID();
+    raw.prepare('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)').run(wsId, 'ws', now);
+    const projectId = randomUUID();
+    raw.prepare(`
+      INSERT INTO projects (id, workspace_id, name, status, priority, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(projectId, wsId, 'proj', 'active', 0, now, now);
+    const objectiveId = randomUUID();
+    raw.prepare(`
+      INSERT INTO objectives
+        (id, project_id, title, description, priority, status, constraints_json, success_criteria_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(objectiveId, projectId, 'Already timestamped', 'desc', 0, 'draft', '[]', '[]', originalCreatedAt, originalUpdatedAt);
+    raw.close();
+
+    const db = openDatabase(dbPath);
+    const found = new ObjectiveRepository(db).findById(objectiveId)!;
+
+    assert.equal(found.createdAt, originalCreatedAt, 'a non-null created_at must be preserved exactly');
+    assert.equal(found.updatedAt, originalUpdatedAt, 'a non-null updated_at must be preserved exactly');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ============================================================================

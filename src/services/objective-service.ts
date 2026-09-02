@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
+import type { ZodError } from 'zod';
 import type { Objective, ObjectiveStatus, DomainEvent } from '../domain/index.js';
+import { ObjectiveSchema } from '../domain/index.js';
 import { ObjectiveRepository, ProjectRepository, EventRepository } from '../storage/repositories.js';
 
 // ============================================================================
@@ -83,7 +85,7 @@ export class ObjectiveService {
     }
 
     const now = new Date().toISOString();
-    const objective: Objective = {
+    const candidate: Objective = {
       id: randomUUID(),
       projectId: req.projectId,
       title: req.title.trim(),
@@ -95,6 +97,22 @@ export class ObjectiveService {
       createdAt: now,
       updatedAt: now,
     };
+
+    // D.2.1 — the HTTP handler only checks that constraints/successCriteria
+    // are arrays; it does not (and should not duplicate logic to) validate
+    // their element shape. This is the single choke point everything routes
+    // through before ObjectiveRepository.save(), so it is where the full
+    // domain invariant — "anything persisted must satisfy ObjectiveSchema" —
+    // is actually enforced, reusing the existing schema rather than a second
+    // hand-written one.
+    const parsed = ObjectiveSchema.safeParse(candidate);
+    if (!parsed.success) {
+      throw new ObjectiveServiceError(
+        `Objective failed validation: ${summarizeZodError(parsed.error)}`,
+        'BAD_REQUEST',
+      );
+    }
+    const objective = parsed.data;
 
     this.db.transaction(() => {
       this.objectives.save(objective);
@@ -188,4 +206,14 @@ export class ObjectiveService {
     };
     this.events.append(event);
   }
+}
+
+// A short, client-safe summary of a ZodError — never expose the raw error
+// object (internal path structure, Zod's own message wording for schema
+// internals) to a caller. One line per issue, e.g.:
+//   "constraints.0: Required; successCriteria.1.description: Required"
+function summarizeZodError(error: ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`)
+    .join('; ');
 }

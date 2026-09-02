@@ -346,6 +346,37 @@ test('testObjectivesCreateRequiresFields', async () => {
   });
 });
 
+// D.2.1 — the array-shape check (`Array.isArray`) alone does not validate
+// element structure; ObjectiveService's ObjectiveSchema.safeParse() check is
+// what actually rejects these, surfaced here as an ordinary 400.
+test('testObjectivesCreateRejectsMalformedConstraintElements', async () => {
+  await withServer(async (base, { project }) => {
+    const r1 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [null],
+    });
+    assert.equal(r1.status, 400, `expected 400 for constraints: [null], got ${r1.status}: ${JSON.stringify(r1.body)}`);
+
+    const r2 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [{ foo: 'bar' }],
+    });
+    assert.equal(r2.status, 400, `expected 400 for a constraint missing 'description', got ${r2.status}`);
+
+    const r3 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', successCriteria: [{ met: true }],
+    });
+    assert.equal(r3.status, 400, `expected 400 for successCriteria missing 'description', got ${r3.status}`);
+
+    const r4 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [{ description: 'x', type: 'not-a-real-type' }],
+    });
+    assert.equal(r4.status, 400, `expected 400 for an invalid constraint type, got ${r4.status}`);
+
+    // None of the rejected requests should have persisted anything.
+    const list = await get(`${base}/projects/${project.id}/objectives`);
+    assert.deepEqual((list.body as { data: unknown[] }).data, []);
+  });
+});
+
 test('testObjectivesListByProject', async () => {
   await withServer(async (base, { project }) => {
     await post(`${base}/projects/${project.id}/objectives`, { title: 'A', description: 'D' });

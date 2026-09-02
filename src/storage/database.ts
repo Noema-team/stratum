@@ -4,7 +4,11 @@ import Database from 'better-sqlite3';
 // Migrations — append-only; never modify an existing entry
 // ============================================================================
 
-const MIGRATIONS: string[] = [
+// Exported read-only for tests that need to construct a DB at a specific
+// pre-migration checkpoint (e.g. a migration-compatibility fixture). Not
+// part of the runtime public API otherwise — application code should only
+// ever call openDatabase().
+export const MIGRATIONS: string[] = [
   // Migration 1: initial control-plane schema (DDR-032 §15, §28 Phase 2)
   // Migration 2: scheduler leases table (DDR-032 §28 Phase 5)
   `
@@ -337,6 +341,23 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE objectives ADD COLUMN created_at TEXT;
   ALTER TABLE objectives ADD COLUMN updated_at TEXT;
+  `,
+
+  // Migration 10: backfill NULL Objective timestamps (D.2.1 — docs/
+  // developmentPlan/d2-objectives.md). Migration 9 left created_at/
+  // updated_at nullable, but ObjectiveSchema requires valid TimestampSchema
+  // values — a pre-D.2.1 row would type as `string` while reading back as
+  // runtime `null`. Policy, applied once, existing non-null values
+  // untouched: missing created_at -> this migration's timestamp; missing
+  // updated_at -> the row's (possibly just-backfilled) created_at.
+  // No table recreation: nullable columns stay nullable at the schema
+  // level — this migration is the one-time guarantee that no NULL survives
+  // it, not a NOT NULL constraint (SQLite can't add one without a full
+  // recreation, and every future row is written through ObjectiveService,
+  // which always supplies both fields).
+  `
+  UPDATE objectives SET created_at = '2026-09-02T00:00:00.000Z' WHERE created_at IS NULL;
+  UPDATE objectives SET updated_at = created_at WHERE updated_at IS NULL;
   `,
 ];
 
