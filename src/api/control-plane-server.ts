@@ -176,16 +176,16 @@ export class ControlPlaneServer {
 
     // Workspace-level aggregate summary: active, failed, blocked, decision-pending counts.
     router.add('GET', '/observability/summary', _req => {
-      const active = workItems.countAllByState('running');
-      const ready = workItems.countAllByState('ready');
-      const failed = workItems.countAllByState('failed');
-      const blocked = workItems.countAllByState('blocked');
-      const needsDecision = workItems.countAllByState('needs_decision');
-      const completed = workItems.countAllByState('completed');
-      const cancelled = workItems.countAllByState('cancelled');
-      const inReview = workItems.countAllByState('in_review');
-      const paused = workItems.countAllByState('paused');
-      const draft = workItems.countAllByState('draft');
+      const active = workItems.countByStateInWorkspace(opts.workspaceId, 'running');
+      const ready = workItems.countByStateInWorkspace(opts.workspaceId, 'ready');
+      const failed = workItems.countByStateInWorkspace(opts.workspaceId, 'failed');
+      const blocked = workItems.countByStateInWorkspace(opts.workspaceId, 'blocked');
+      const needsDecision = workItems.countByStateInWorkspace(opts.workspaceId, 'needs_decision');
+      const completed = workItems.countByStateInWorkspace(opts.workspaceId, 'completed');
+      const cancelled = workItems.countByStateInWorkspace(opts.workspaceId, 'cancelled');
+      const inReview = workItems.countByStateInWorkspace(opts.workspaceId, 'in_review');
+      const paused = workItems.countByStateInWorkspace(opts.workspaceId, 'paused');
+      const draft = workItems.countByStateInWorkspace(opts.workspaceId, 'draft');
       return ok({
         workspaceId: opts.workspaceId,
         counts: {
@@ -288,7 +288,12 @@ export class ControlPlaneServer {
   }
 
   listen(): Promise<void> {
-    return new Promise(resolve => this.server.listen(this.port, resolve as () => void));
+    return new Promise(resolve => this.server.listen(this.port, () => {
+      // When port 0 is requested the OS assigns one — update this.port so callers can read it.
+      const addr = this.server.address();
+      if (addr && typeof addr === 'object') (this as { port: number }).port = addr.port;
+      (resolve as () => void)();
+    }));
   }
 
   close(): Promise<void> {

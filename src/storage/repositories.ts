@@ -235,6 +235,7 @@ export class WorkItemRepository {
   private readonly allByState: Database.Statement;
   private readonly countForProject: Database.Statement;
   private readonly countAll: Database.Statement;
+  private readonly countForWorkspace: Database.Statement;
   private readonly unmetDepsCount: Database.Statement;
   private readonly stateStmt: Database.Statement;
   private readonly addDep: Database.Statement;
@@ -255,6 +256,9 @@ export class WorkItemRepository {
     this.allByState = db.prepare('SELECT * FROM work_items WHERE state = ? ORDER BY priority DESC, created_at');
     this.countForProject = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE project_id = ? AND state = ?');
     this.countAll = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE state = ?');
+    this.countForWorkspace = db.prepare(
+      'SELECT COUNT(*) as count FROM work_items wi JOIN projects p ON wi.project_id = p.id WHERE p.workspace_id = ? AND wi.state = ?',
+    );
     this.unmetDepsCount = db.prepare(`
       SELECT COUNT(*) as count FROM work_dependencies wd
       JOIN work_items wi ON wi.id = wd.depends_on_id
@@ -317,6 +321,10 @@ export class WorkItemRepository {
 
   countAllByState(state: WorkItemState): number {
     return ((this.countAll.get(state) as { count: number }).count);
+  }
+
+  countByStateInWorkspace(workspaceId: string, state: WorkItemState): number {
+    return ((this.countForWorkspace.get(workspaceId, state) as { count: number }).count);
   }
 
   // True if all blocking dependencies are in the 'completed' state.

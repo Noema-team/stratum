@@ -28,11 +28,14 @@ export class AttentionService {
     const items: AttentionItem[] = [];
 
     for (const projectId of projectIds) {
-      // Pending decisions requiring human input
+      // Pending decisions requiring human input.
+      // Checkpoint Decisions always surface — the workflow cannot proceed without them.
+      // Advisory decisions surface only when urgent or high-impact.
       for (const d of this.decisions.listPending(projectId)) {
+        const isCheckpoint = d.type === 'checkpoint';
         const isUrgent = d.urgency === 'blocking' || d.urgency === 'urgent';
         const isHighImpact = d.impact === 'critical' || d.impact === 'high';
-        if (isUrgent || isHighImpact) {
+        if (isCheckpoint || isUrgent || isHighImpact) {
           items.push({
             category: 'decision_required',
             urgency: d.urgency as AttentionUrgency,

@@ -326,9 +326,6 @@ async function renderAttention(el) {
       html += '<button class="btn btn-sm btn-ghost" onclick="viewDecision(' + JSON.stringify(esc(item.decisionId)) + ')">Inspect</button>';
     } else if (item.workItemId) {
       html += '<button class="btn btn-sm btn-ghost" onclick="viewWork(' + JSON.stringify(esc(item.workItemId)) + ')">Inspect</button>';
-      if (item.category === 'work_failed') {
-        html += '<button class="btn btn-sm" onclick="retryWork(' + JSON.stringify(esc(item.workItemId)) + ')">Retry</button>';
-      }
     }
     html += '</div></div>';
   }
@@ -533,7 +530,9 @@ async function openDecision(id) {
 }
 
 async function resolveDecision(id, optionId) {
-  const r = await api('POST', '/decisions/' + id + '/resolve', { optionId, resolution: optionId });
+  const r = await api('POST', '/decisions/' + id + '/resolve', {
+    resolution: { selectedOptionId: optionId, resolvedAt: new Date().toISOString() },
+  });
   if (r.ok) {
     toast('Decision resolved');
     closeDrawer();
@@ -556,10 +555,6 @@ async function doWorkAction(id, action) {
   }
 }
 
-async function retryWork(id) {
-  // Transition: failed → ready (via 'ready' endpoint)
-  await doWorkAction(id, 'ready');
-}
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 tryRestoreToken();

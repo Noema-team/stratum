@@ -53,8 +53,6 @@ function makeWorkItem(projectId: string): WorkItem {
   };
 }
 
-let _port = 19500;
-function nextPort() { return ++_port; }
 
 interface ServerCtx {
   workItem: WorkItem;
@@ -84,7 +82,7 @@ async function withServer(
   const evidenceService = new EvidenceService(db);
 
   const srv = new ControlPlaneServer({
-    db, workspaceId: ws.id, workService, evidenceService, port: nextPort(),
+    db, workspaceId: ws.id, workService, evidenceService, port: 0,
   });
   await srv.listen();
   const base = `http://localhost:${srv.port}`;
@@ -122,10 +120,10 @@ async function withWsAdapter(
 
   const workService = new WorkService(db, ws.id);
 
-  const port = nextPort();
   const server = createHttpServer();
   const adapter = new EventsWebSocketAdapter(server, db, ws.id, resumePort);
-  await new Promise<void>(r => server.listen(port, r));
+  await new Promise<void>(r => server.listen(0, r));
+  const port = (server.address() as { port: number }).port;
 
   try {
     await fn({ db, workspaceId: ws.id, workService, wsUrl: `ws://localhost:${port}/events`, adapter });
