@@ -14,7 +14,7 @@ import { openDatabase } from './storage/database.js';
 import { WorkService } from './services/work-service.js';
 import { EvidenceService } from './services/evidence-service.js';
 import { ResumeService } from './services/resume-service.js';
-import { WorkflowRunRepository } from './storage/repositories.js';
+import { WorkflowRunRepository, ArtifactRepository } from './storage/repositories.js';
 
 import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
@@ -156,12 +156,19 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
   const runArtifacts = new RunArtifactManager({ projectRoot });
 
+  // D.1b — declarative-artifact provenance (see docs/developmentPlan/
+  // d1a-declarative-contract-spike.md). Zero callers before D.1b.
+  const artifactRepository = new ArtifactRepository(db);
+
   // ── LLM provider (reads settings file; falls back gracefully) ─────────────
   const { provider: llmProvider, model: resolvedModel } = resolveLLMProvider(projectRoot);
 
   // ── Agent execution stack ──────────────────────────────────────────────────
   const contextManager = new ContextManager(projectRoot);
-  const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
+  const agentRunner = new AgentRunner(
+    contextManager, llmProvider, projectRoot, runArtifacts,
+    undefined, undefined, artifactRepository,
+  );
   const agentStepRunner = new AgentStepRunner(agentRunner);
 
   const tagService = new TagService(mapManager);
@@ -220,7 +227,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   };
 
   // ── Adapter + registry ─────────────────────────────────────────────────────
-  const adapter = new StratumAgentAdapter(engineDeps, engineOpts);
+  const adapter = new StratumAgentAdapter(engineDeps, engineOpts, artifactRepository);
   registry.register(adapter);
 
   // ── Scheduler + loop ───────────────────────────────────────────────────────

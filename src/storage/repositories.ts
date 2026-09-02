@@ -16,7 +16,7 @@ import type {
 } from '../domain/index.js';
 import type { WorkflowRun } from '../workflow/types.js';
 
-// Artifact metadata record (cross-run provenance stored in DB; content stays in .sle/)
+// Artifact metadata record (cross-run provenance stored in DB; content stays on disk)
 export interface ArtifactRecord {
   id: string;
   workItemId?: string;
@@ -24,7 +24,10 @@ export interface ArtifactRecord {
   stepExecutionId?: string;
   type: string;
   ref?: string;   // DDR-031 ArtifactRef string, e.g. "node:auth:architecture"
-  path?: string;  // relative to .sle/
+  // Project-root-relative (the same convention AgentRunner/agent-runner.ts
+  // uses for every write path — never relative to .sle/ specifically, even
+  // for artifacts that happen to live under it).
+  path?: string;
   hash?: string;
   createdAt: string;
 }
@@ -637,6 +640,7 @@ export class ArtifactRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly byWorkflowRun: Database.Statement;
+  private readonly byWorkflowRunAndRef: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -646,6 +650,9 @@ export class ArtifactRepository {
     this.byId = db.prepare('SELECT * FROM artifacts WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM artifacts WHERE work_item_id = ? ORDER BY created_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM artifacts WHERE workflow_run_id = ? ORDER BY created_at');
+    this.byWorkflowRunAndRef = db.prepare(
+      'SELECT * FROM artifacts WHERE workflow_run_id = ? AND ref = ? ORDER BY created_at LIMIT 1'
+    );
   }
 
   save(a: ArtifactRecord): void {
@@ -658,6 +665,14 @@ export class ArtifactRepository {
 
   findById(id: string): ArtifactRecord | undefined {
     const r = this.byId.get(id) as Record<string, unknown> | undefined;
+    return r ? rowToArtifact(r) : undefined;
+  }
+
+  // Idempotency lookup for declarative provenance (D.1b): a retried step
+  // recording the same (workflowRunId, ref) must not create a duplicate row.
+  // There is no unique DB constraint backing this — callers must check-then-save.
+  findByWorkflowRunAndRef(workflowRunId: string, ref: string): ArtifactRecord | undefined {
+    const r = this.byWorkflowRunAndRef.get(workflowRunId, ref) as Record<string, unknown> | undefined;
     return r ? rowToArtifact(r) : undefined;
   }
 

@@ -1,7 +1,8 @@
 import { WorkflowEngine } from '../workflow/engine.js';
 import { getWorkflow } from '../workflow/registry.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../workflow/engine.js';
-import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet, ExecutorCapability } from './types.js';
+import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, ArtifactReference, CapabilitySet, ExecutorCapability } from './types.js';
+import type { ArtifactRepository } from '../storage/repositories.js';
 import { resolveWorkflowInvocation } from './workflow-invocation.js';
 import { getCheckpointDecisionOptions } from './checkpoint-resolver.js';
 
@@ -22,6 +23,12 @@ export class StratumAgentAdapter implements ExecutionAdapter {
   constructor(
     private readonly engineDeps: WorkflowEngineDeps,
     private readonly engineOpts: WorkflowEngineOptions,
+    // D.1b — optional so existing construction sites/tests are unaffected.
+    // When present, populates ExecutionResult.artifacts from declaratively-
+    // recorded provenance after the run completes (see WorkflowRunResult,
+    // which stays unchanged — this queries ArtifactRepository directly
+    // rather than threading artifacts through the engine's return type).
+    private readonly artifactRepository?: ArtifactRepository,
   ) {}
 
   getCapabilities(): CapabilitySet {
@@ -69,11 +76,19 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       : result.error ? 'failed'
       : 'blocked';
 
+    const artifacts: ArtifactReference[] = this.artifactRepository
+      ? this.artifactRepository.listByWorkflowRun(request.workflowRunId).map((a) => ({
+          ref: a.ref ?? a.id,
+          path: a.path,
+          type: a.type,
+        }))
+      : [];
+
     return {
       schemaVersion: 1,
       stepExecutionId: request.stepExecutionId,
       outcome,
-      artifacts: [],
+      artifacts,
       evidenceClaims: [],
       checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
       decisionRequests: isCheckpoint

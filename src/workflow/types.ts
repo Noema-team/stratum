@@ -10,6 +10,18 @@ export type StepKind = 'gather' | 'produce' | 'review' | 'checkpoint' | 'execute
 // WorkflowStep — one node in a workflow's step graph
 // ============================================================================
 
+// A step's exact, narrow output contract (D.1b). Declaring this NARROWS the
+// role's broad write-path ceiling (ROLE_OUTPUT_PATHS in agent-runner.ts) —
+// it never bypasses it. See docs/developmentPlan/d1a-declarative-contract-spike.md §5.
+export interface DeclaredOutputArtifact {
+  type: string;
+  ref: string;
+  // Project-root-relative path. Must be exactly the path the step's single
+  // output section is written to; validated as safe (no traversal) and
+  // against the role's ceiling before any filesystem write.
+  path: string;
+}
+
 export interface WorkflowStep {
   id: string;
   kind: StepKind;
@@ -17,7 +29,22 @@ export interface WorkflowStep {
 
   // produce — LLM-driven generation
   agentRole?: AgentRole;
+  // templateId is declared by every builtin step but has no resolution
+  // semantics yet (D.1a finding) — deliberately left inert in D.1b so
+  // full-build/draft-artifact prompts cannot change by accident. Use
+  // `instruction` below for the new declarative channel.
   templateId?: string;
+  // D.1b — the step's own instruction, consulted by ContextManager before
+  // the legacy NODE_TASK_DESCRIPTIONS map.
+  instruction?: string;
+  // D.1b — this step's exact declared output. When set, AgentRunner requires
+  // the produced output to be exactly one section at this path (cardinality
+  // + exact-match), still subject to the role's write-path ceiling.
+  outputArtifact?: DeclaredOutputArtifact;
+  // D.1b — explicit artifact refs this step's context is built from. When
+  // set, ContextManager loads exactly these refs instead of the role's
+  // default slice set (getRoleSlices()).
+  inputArtifactRefs?: string[];
 
   // review — pass/fail evaluation; explicit routing on pass/fail
   on_pass?: { target_step_id: string };  // explicit target on pass (default: __next__)
@@ -167,6 +194,15 @@ export interface StepRunContext {
   revision: number;
   goal: string;
   projectRoot: string;
+  // D.1b — the control-plane WorkItem this run is dispatched for, when known.
+  // Populated by WorkflowEngine from the workItemId given to run(). Used to
+  // link declaratively-recorded Artifact provenance back to the WorkItem.
+  workItemId?: string;
+  // D.1b — copied from WorkflowStep by WorkflowEngine.makeStepRunContext, the
+  // same way `role` is already copied from step.agentRole. See DeclaredOutputArtifact.
+  instruction?: string;
+  outputArtifact?: DeclaredOutputArtifact;
+  inputArtifactRefs?: string[];
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
   workflowParameters?: Record<string, unknown>;
   // Populated by debug step from durable failure report on disk.

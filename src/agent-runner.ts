@@ -1,11 +1,13 @@
 import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
+import { createHash, randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
 import type { AgentRole, AssembledContext } from './types.js';
 import type { ContextManager } from './context-manager.js';
 import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
+import type { ArtifactRepository } from './storage/repositories.js';
 import { AgentLoop } from './agent-loop.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -44,6 +46,13 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   critic:      ['docs/critique.md', 'docs/cycle-critique.md', 'docs/critique-report.md'],
   // Debugger can write source code (fixing implementation bugs)
   debugger:    ['src/', 'tests/', 'scripts/', '.sle/runs/'],
+  // D.1b — conservative ceiling for declarative-artifact steps (see
+  // define-work in Milestone D). No full-build/draft-artifact step uses the
+  // explorer role today, so this closes a fail-open gap (an absent table
+  // entry previously meant unrestricted writes) without touching any
+  // legacy role's behavior. A declared outputArtifact.path must still fall
+  // within this ceiling — it narrows further, it never grants more.
+  explorer:    ['.sle/work/'],
 };
 
 // Builder can write anywhere except system dirs and docs (which belong to agent roles).
@@ -56,6 +65,16 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
   const allowed = ROLE_OUTPUT_PATHS[role];
   if (!allowed) return true;
   return allowed.some((p) => (p.endsWith('/') ? filePath.startsWith(p) : filePath === p));
+}
+
+// D.1b — path-traversal guard, checked before any filesystem mutation for
+// every write (legacy and declared). Rejects absolute paths and any `..`
+// segment that would escape projectRoot, regardless of separator style.
+export function isSafeRelativePath(projectRoot: string, relPath: string): boolean {
+  if (!relPath || path.isAbsolute(relPath)) return false;
+  const rootResolved = path.resolve(projectRoot);
+  const resolved = path.resolve(rootResolved, relPath);
+  return resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
 }
 
 // Paths where new content is appended after existing content (not overwritten).
@@ -192,7 +211,11 @@ export class AgentRunner {
     private projectRoot: string,
     private runArtifacts: RunArtifactManager,
     private runnerConfig: AgentRunnerConfig = { model: 'default' },
-    fsModule?: typeof import('fs').promises
+    fsModule?: typeof import('fs').promises,
+    // D.1b — optional so existing construction sites/tests are unaffected.
+    // When present, a step with a declared outputArtifact gets its provenance
+    // recorded here (idempotently) after a successful write.
+    private artifactRepository?: ArtifactRepository,
   ) {
     this.fs = fsModule ?? nodeFsPromises;
   }
@@ -297,8 +320,60 @@ export class AgentRunner {
       }
     }
 
-    // 6. Validate write paths (DDR-019)
+    // 6a. D.1b — a declared output narrows what may be written: exactly one
+    // section, at exactly the declared path. Checked before any path-safety/
+    // role/filesystem work below, and before any filesystem mutation.
+    if (ctx.outputArtifact) {
+      const declaredPath = ctx.outputArtifact.path;
+      if (!isSafeRelativePath(this.projectRoot, declaredPath)) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Declared output path '${declaredPath}' is not a safe project-root-relative path`,
+        };
+      }
+      if (parsed.sections.length !== 1) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Step declares exactly one output artifact ('${declaredPath}') but produced ${parsed.sections.length} section(s)`,
+        };
+      }
+      const normalizedDeclared = path.posix.normalize(declaredPath);
+      const normalizedActual = path.posix.normalize(parsed.sections[0].path);
+      if (normalizedActual !== normalizedDeclared) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Step declared output '${declaredPath}' but produced '${parsed.sections[0].path}'`,
+        };
+      }
+    }
+
+    // 6b. Validate write paths: path-traversal safety, then the role's
+    // broad ceiling (DDR-019). A declared output only NARROWS §6a above —
+    // it never bypasses this check, so the declared path must also fall
+    // within the role's ROLE_OUTPUT_PATHS ceiling.
     for (const section of parsed.sections) {
+      if (!isSafeRelativePath(this.projectRoot, section.path)) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `Unsafe output path '${section.path}'`,
+        };
+      }
       if (!validateOutputPath(section.path, role)) {
         return {
           success: false,
@@ -322,6 +397,30 @@ export class AgentRunner {
         await this.fs.writeFile(filePath, section.content, 'utf-8');
       }
       artifactsWritten.push(section.path);
+    }
+
+    // 8. D.1b — record provenance for a declared output, exactly once.
+    // stepExecutionId is deliberately left unset: the Scheduler creates one
+    // outer StepExecution per adapter invocation, not one per WorkflowStep,
+    // so there is no naturally-available per-step id here yet (see
+    // docs/developmentPlan/d1a-declarative-contract-spike.md §4).
+    if (ctx.outputArtifact && this.artifactRepository) {
+      const already = this.artifactRepository.findByWorkflowRunAndRef(
+        ctx.workflowRunId,
+        ctx.outputArtifact.ref
+      );
+      if (!already) {
+        this.artifactRepository.save({
+          id: randomUUID(),
+          workItemId: ctx.workItemId,
+          workflowRunId: ctx.workflowRunId,
+          type: ctx.outputArtifact.type,
+          ref: ctx.outputArtifact.ref,
+          path: artifactsWritten[0],
+          hash: createHash('sha256').update(parsed.sections[0].content).digest('hex'),
+          createdAt: new Date().toISOString(),
+        });
+      }
     }
 
     return {

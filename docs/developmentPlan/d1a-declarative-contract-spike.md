@@ -1,21 +1,27 @@
 # D.1a — Declarative workflow contract spike
 
-**Status:** Investigation complete. No production code changed by this
-document; see `tests/d1a-declarative-contract-spike.test.ts` for the
-executable proof of each claim below.
-**Milestone:** D, phase D.1a (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md` §9,
-as amended)
+**Status:** D.1a spike accepted with five corrections (§5 revised below);
+D.1b (the production implementation) is complete. The original spike test
+file (`tests/d1a-declarative-contract-spike.test.ts`) was observational and
+has been deleted; its claims are now proven by the permanent suite
+`tests/declarative-workflow-contract.test.ts`, which exercises the real
+(now-modified) `ContextManager`, `agent-runner.ts`, `WorkflowEngine`, and
+`FullBuildStepRunner` code and is part of the ordinary regression suite
+going forward.
+**Milestone:** D, phase D.1a → D.1b (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md`
+§9, as amended)
 **Question:** Can a genuinely new workflow define its own instructions and
 output Artifact without adding its step IDs to `WorkflowEngine`,
 `FullBuildStepRunner`, `ContextManager`'s task maps, or `AgentRunner`'s
 role/path special cases?
 
-**Answer: not yet, for the produce/review path.** `WorkflowEngine` and the
-checkpoint/execute/commit fallbacks are already clean. The block is
-entirely inside the shared produce/review path: `AgentStepRunner` →
-`ContextManager` → `AgentRunner`. Every claim below is backed by a passing
-test in `tests/d1a-declarative-contract-spike.test.ts`, run against the
-real (unmodified) `ContextManager` and `agent-runner.ts` code.
+**Original spike answer: not yet, for the produce/review path.**
+`WorkflowEngine`'s dispatch was already clean; the block was entirely
+inside the shared produce/review path: `AgentStepRunner` → `ContextManager`
+→ `AgentRunner`. §1–§4 below are the original spike's trace and findings,
+preserved for the record with one correction (§2, the execute-kind claim
+was too strong). §5 is the contract as actually implemented in D.1b, after
+review.
 
 ---
 
@@ -58,24 +64,35 @@ role + timestamp), which is workflow-blind and not control-plane-queryable.
   all — its only `next_step_id === null` check is structural, not
   methodology. It is exactly as generic as DDR-031/032 claim.
 - **`FullBuildStepRunner`**'s `step.id === '...'` branches
-  (`full-build-step-runner.ts:57-73, 97`) are legitimately full-build-scoped
-  and hit the `StepRunner` interface's *optional* kind-override hooks
-  (`handleCheckpoint`/`handleExecute`/`handleCommit`). For any step ID they
-  don't recognize, `handleCommit`'s fallback is genuinely generic
-  (`markRunning` → `markComplete` → done, `full-build-step-runner.ts:94-124`)
-  and `run()`'s fallback for produce/review is `agentStepRunner.run(step,
-  ctx)` (`full-build-step-runner.ts:64`). **A new workflow does not need to
-  add branches here** as long as its step IDs don't collide with full-build's
-  reserved ones (`critique`, `validation_gate`, `scoping.produce`,
-  `summarise`, `debug`, `confirm`, `sharding_approval`,
+  (original: `full-build-step-runner.ts:57-73, 97`) are legitimately
+  full-build-scoped and hit the `StepRunner` interface's *optional*
+  kind-override hooks (`handleCheckpoint`/`handleExecute`/`handleCommit`).
+  For an unrecognized step ID, `run()`'s produce/review fallback
+  (`agentStepRunner.run(step, ctx)`) and `handleCommit`'s fallback
+  (`markRunning` → `markComplete` → done) were already genuinely generic.
+- **Correction (per review): `handleExecute` was overstated as generic in
+  the original spike text.** It unconditionally called
+  `this.deps.execService.run(workflowRunId, iteration)` — full-build's own
+  `ExecService` — for *any* workflow's `execute`-kind step, regardless of
+  `workflowId`. A non-full-build workflow reusing that kind would have
+  silently run full-build's test-execution service against an unrelated
+  run. This was a real gap, not a clean fallback; §5 below fixes it by
+  guarding on `ctx.workflowId === 'full-build'` and failing closed
+  otherwise, since 'execute' has no generic implementation yet.
+- **A new workflow still does not need to add branches to `run()`,
+  `handleCheckpoint`, or `handleCommit`** as long as its step IDs don't
+  collide with full-build's reserved ones (`critique`, `validation_gate`,
+  `scoping.produce`, `summarise`, `debug`, `confirm`, `sharding_approval`,
   `scoping.checkpoint`, `snapshot`) — picking namespaced IDs
-  (`define-work.synthesize-definition`) avoids this trivially.
+  (`define-work.synthesize-definition`) avoids this trivially. D.1b also
+  now guards every one of those branches on `ctx.workflowId === 'full-build'`
+  explicitly (belt-and-braces against an accidental id collision), rather
+  than relying on namespacing discipline alone.
 - One real wrinkle worth naming even though it isn't blocking: `WorkflowEngine`
   is constructed with exactly one shared `StepRunner` for the whole running
-  application (`application.ts:188-210`), not one per workflow. Today that
-  works only because `FullBuildStepRunner`'s fallback for unrecognized step
-  IDs happens to be generic. This is incidental, not designed — worth a
-  one-line note in the eventual contract, not a redesign.
+  application (`application.ts:188-210`), not one per workflow. This is
+  incidental, not designed, and D.1b does not redesign it — the workflowId
+  guards above are the containment for it, not a fix to the sharing itself.
 
 ## 3. What blocks declarative behavior (produce/review path)
 
@@ -153,48 +170,123 @@ step-level declarations (`templateId`, and no `output_artifact`/
 validation. That collapse is the actual contract gap — not `WorkflowEngine`,
 not `FullBuildStepRunner`.
 
-## 5. Smallest proposed contract change (for D.1b to implement)
+## 5. The contract as implemented (D.1b, post-review)
 
-Deliberately minimal — no context-query language, no per-step permission
-DSL:
+The original §5 proposal was revised in five places before implementation;
+this section describes what was actually built, in `src/`.
 
-1. Add `WorkflowStep.instruction?: string` (inline) alongside the existing
-   `templateId?: string` (file reference) as the step's own task
-   description, consulted by `ContextManager` **before** the
-   `NODE_TASK_DESCRIPTIONS` legacy map (which stays, for `full-build`
-   compatibility, as the final fallback rather than the first hit).
-2. Add `WorkflowStep.outputArtifact?: { type: string; ref: string; path:
-   string }`. Thread it from `AgentStepRunner` into `StepRunContext` (a new
-   optional field, e.g. `ctx.declaredOutput`) so `AgentRunner` can validate
-   the LLM's actual write path against `step.outputArtifact.path` when
-   present, falling back to today's `ROLE_OUTPUT_PATHS` table only when a
-   step declares nothing (preserves `full-build` behavior exactly, per DDR-
-   031/032 non-negotiables).
-3. Add a minimal `WorkflowStep.inputContext?: ContextRef[]` (a short list —
-   `'objective' | 'repository' | 'prior_artifacts' | { artifactRef: string
-   }`, per the original plan's §6.5) consulted by `ContextManager` before
-   falling into `getRoleSlices()`'s role switch. `getRoleSlices()` remains
-   exactly as-is for steps that declare nothing.
-4. After a successful produce step with a declared `outputArtifact`, call
-   `ArtifactRepository` (already implemented, currently unused) to record
-   provenance (WorkItem/WorkflowRun/StepExecution/type/ref/path/hash),
-   instead of only appending to `.sle/map.yaml`.
-5. Do **not** touch `AgentRole` or `getRoleSlices()`'s switch in D.1b. New
-   workflows introduced during D.3 (`define-work`) should reuse an existing
-   role (`explorer` fits synthesis/investigation) and rely on the new
-   per-step `instruction`/`inputContext`/`outputArtifact` fields to make
-   that role's actual behavior step-specific. Whether a role ever needs to
-   stop being a closed union is a question for a later milestone with two
-   real non-full-build workflows to compare, not this one.
+### 5.1 Declared output narrows role authority; it never replaces it
 
-This preserves `full-build`/`draft-artifact` behavior exactly (nothing
-declares the new fields yet, so every legacy fallback path is unchanged —
-confirmed by the full test suite passing unmodified in this spike) while
-giving a new workflow step everywhere it currently has no channel at all.
+`WorkflowStep.outputArtifact?: { type: string; ref: string; path: string }`
+(`workflow/types.ts`) is copied onto `StepRunContext.outputArtifact` by
+`WorkflowEngine.makeStepRunContext` — the same way `role` is already copied
+from `step.agentRole`. `AgentRunner.run()` (`agent-runner.ts`) then enforces,
+in this order, **before any filesystem write**:
 
-## 6. Explicitly not attempted in this spike
+1. the declared path itself is a safe, project-root-relative path
+   (`isSafeRelativePath()` — rejects absolute paths and any `..` traversal
+   via path resolution/containment, not string matching);
+2. cardinality — the produced output must be exactly one section; zero or
+   more than one fails the step;
+3. the single produced section's path exactly matches the declared path
+   (normalized comparison);
+4. **only then**, every produced path (declared or legacy) still passes
+   through the existing `validateOutputPath()` role ceiling
+   (`ROLE_OUTPUT_PATHS`) — a declared output can only narrow within that
+   ceiling, never escalate past it.
 
-- No production code was modified.
-- No new `StepKind`, domain entity, or `AgentRole` value was added.
-- The single-shared-`StepRunner` wrinkle (§2) is noted, not redesigned —
-  D.1b does not need to solve it to satisfy D.1a's question.
+`ROLE_OUTPUT_PATHS` previously had no `explorer` entry, which meant
+*unrestricted* writes for that role (the fail-open bug the original spike
+found). It now has a conservative entry, `explorer: ['.sle/work/']` — no
+`full-build`/`draft-artifact` step uses the `explorer` role, so this closes
+the gap without touching any legacy role's behavior or requiring a broader
+audit of other roles in this change.
+
+### 5.2 `templateId` stays inert; `instruction` is the new channel
+
+`templateId` is unchanged — still declared, still unread. `ContextManager.
+buildTaskDescription()` now checks `ctx.instruction` **first**, falling back
+to the existing `NODE_TASK_DESCRIPTIONS` lookup only when a step declares
+no instruction. `full-build`/`draft-artifact` steps set neither `instruction`
+nor `outputArtifact`, so their prompts are byte-for-byte unchanged.
+
+### 5.3 Input context: declared artifact refs only, no control-plane query
+
+`WorkflowStep.inputArtifactRefs?: string[]` — plain artifact refs in the
+same string format `SliceDef.ref` already uses (`doc:...`, `.sle/...`, a
+bare project-relative path). `ContextManager.resolveSliceDefs()` uses these
+**instead of** `getRoleSlices()`'s role switch when present, not in addition
+to it — a step that declares refs is fully described by its own
+declaration. No `objective | repository | prior_artifacts` resolution and
+no ContextManager→control-plane-DB query were added; that remains out of
+scope until `ObjectiveService` exists (D.2). Ephemeral context
+(`ctx.ephemeral`) is unaffected — it is still checked first per-ref inside
+`loadSliceContent()`.
+
+### 5.4 Artifact provenance: correct WorkItem/WorkflowRun linkage, no invented StepExecution
+
+The Scheduler creates one outer `StepExecution` per adapter invocation, not
+one per `WorkflowStep` — so D.1b does not manufacture or guess a
+`stepExecutionId` for a declaratively-recorded artifact. It records
+`workItemId` (new: `StepRunContext.workItemId`, populated by
+`WorkflowEngine` from the `workItemId` already passed into `run()`),
+`workflowRunId`, `type`, `ref`, a project-root-relative `path` (the
+`ArtifactRecord.path` doc-comment was corrected — it previously said
+"relative to `.sle/`", which was never true of how `AgentRunner` writes),
+`hash` (sha256 of the written content), and `createdAt`. `stepExecutionId`
+is left unset.
+
+Idempotency: `ArtifactRepository.findByWorkflowRunAndRef(workflowRunId,
+ref)` is checked before every `save()` — a retried step recording the same
+`(workflowRunId, ref)` is a no-op on the second attempt. This is an
+application-level check, not a DB unique constraint (there wasn't one
+before D.1b and none was added), so it is race-prone under true concurrent
+retries of the *same* step — acceptable for now since nothing dispatches
+concurrent retries of one step yet; worth a real constraint if that changes.
+
+`StratumAgentAdapter.execute()` now populates `ExecutionResult.artifacts`
+by querying `ArtifactRepository.listByWorkflowRun(request.workflowRunId)`
+after the engine run returns, rather than threading artifacts through
+`WorkflowRunResult` (which stays exactly as it was).
+
+### 5.5 `FullBuildStepRunner` guarded by workflow identity
+
+Every step-id branch in `run()` and `handleCheckpoint()` is now also gated
+on `ctx.workflowId === 'full-build'`. `handleCheckpoint`'s and
+`handleCommit`'s fallbacks for anything that doesn't match remain the
+existing generic behavior. `handleExecute` now fails closed
+(`outcome: 'failed'`) for any workflow other than `full-build`, instead of
+running full-build's `ExecService` against it (§2 correction above) —
+`define-work` does not need `execute`, so this is not a blocker for D.3.
+
+### 5.6 What was deliberately not touched
+
+- `AgentRole` and `getRoleSlices()`'s switch are unchanged. `define-work`
+  (D.3) reuses the existing `explorer` role and drives its actual per-step
+  behavior through `instruction`/`inputArtifactRefs`/`outputArtifact`.
+- `WorkflowEngine`'s control flow/step-kind dispatch is unchanged — the only
+  addition there is `makeStepRunContext` copying four more step-declared
+  fields onto `ctx`, the same pattern it already used for `role`.
+- The single-shared-`StepRunner` wrinkle (§2) is contained by the workflowId
+  guards in §5.5, not redesigned.
+- No new `StepKind`, domain entity, or DB schema/migration was added.
+
+## 6. Test coverage
+
+`tests/declarative-workflow-contract.test.ts` proves, against the real
+implementation:
+
+- a step's `instruction` reaches the assembled task text;
+- declared `inputArtifactRefs` fully control loaded context (not additive
+  to role defaults);
+- an exact declared output is accepted and its provenance recorded;
+- undeclared/extra output sections are rejected (cardinality);
+- a declared output path outside the role's ceiling is rejected (role
+  authority cannot be escalated by declaration);
+- unsafe paths (`..` traversal) fail before any write;
+- repeating the same step does not duplicate a provenance row (idempotency);
+- the recorded row's `workItemId`/`workflowRunId` match the run;
+- `full-build`'s reserved step ids still route through `FullBuildStepRunner`'s
+  special-cased methods when `workflowId === 'full-build'`;
+- the same step ids on a different `workflowId` do **not** trigger those
+  full-build-specific branches.

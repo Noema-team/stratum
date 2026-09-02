@@ -291,7 +291,7 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const ctx = this.makeStepRunContext(step, workflowRunId, iteration, revision, goal, workflowId, resolvedParameters);
+      const ctx = this.makeStepRunContext(step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters);
       const result = await this.executeStep(step, workflowRunId, iteration, ctx);
 
       // Generic revision increment — produced by confirm-revise (and any future step
@@ -666,6 +666,7 @@ export class WorkflowEngine {
     revision: number,
     goal: string,
     workflowId: string,
+    workItemId: string | undefined,
     resolvedParameters?: Record<string, unknown>,
   ): StepRunContext {
     return {
@@ -677,6 +678,12 @@ export class WorkflowEngine {
       revision,
       goal,
       projectRoot: this.deps.projectRoot ?? process.cwd(),
+      workItemId,
+      // D.1b — copy the step's own declarative contract onto the context,
+      // exactly as `role` is already copied from step.agentRole above.
+      instruction: step.instruction,
+      outputArtifact: step.outputArtifact,
+      inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
     };
   }

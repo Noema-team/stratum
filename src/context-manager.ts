@@ -462,6 +462,12 @@ export class ContextManager {
   // ─── Component 4: Task description ────────────────────────────────────────
 
   private buildTaskDescription(role: AgentRole, ctx: StepRunContext): string {
+    // D.1b — a step's own declared instruction takes priority over the
+    // legacy step-id/role lookup below. full-build/draft-artifact steps
+    // declare no `instruction` yet, so their behavior is unchanged.
+    if (ctx.instruction) {
+      return `${ctx.instruction}\n\nCycle intent: "${ctx.goal}"`;
+    }
     const stepId = ctx.stepId;
     // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
     const base = stepId
@@ -621,6 +627,18 @@ export class ContextManager {
     ctx: StepRunContext,
     _runDir: string | undefined
   ): SliceDef[] {
+    // D.1b — a step's declared inputArtifactRefs fully control context: they
+    // replace the role's default slice set rather than adding to it, so a
+    // step can be reasoned about from its own declaration alone. full-build/
+    // draft-artifact steps declare no inputArtifactRefs, so getRoleSlices()
+    // remains their unchanged path.
+    if (ctx.inputArtifactRefs && ctx.inputArtifactRefs.length > 0) {
+      return ctx.inputArtifactRefs.map((ref): SliceDef => ({
+        ref,
+        mode: 'full',
+        source_weight: 'user_defined',
+      }));
+    }
     return getRoleSlices(role, ctx);
   }
 

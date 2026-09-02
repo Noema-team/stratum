@@ -53,14 +53,21 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
 
   // -- run (produce + review kinds) -----------------------------------------
 
+  // D.1b — every branch below that dispatches on a bare step.id is
+  // full-build-specific and must only fire for full-build itself; a
+  // non-full-build workflow that happens to reuse one of these step ids
+  // (e.g. 'debug', 'confirm') must not accidentally trigger full-build's
+  // service calls. See docs/developmentPlan/d1a-declarative-contract-spike.md §5.
   async run(step: WorkflowStep, ctx: StepRunContext): Promise<StepRunOutcome> {
-    if (step.kind === 'review') {
-      if (step.id === 'critique') return this.executeCritique(step, ctx);
-      if (step.id === 'validation_gate') return this.executeValidationGate(ctx);
+    if (ctx.workflowId === 'full-build') {
+      if (step.kind === 'review') {
+        if (step.id === 'critique') return this.executeCritique(step, ctx);
+        if (step.id === 'validation_gate') return this.executeValidationGate(ctx);
+      }
+      if (step.id === 'scoping.produce') return this.executeScopingProduce(ctx);
+      if (step.id === 'summarise') return this.executeSummarise(ctx);
+      if (step.id === 'debug') return this.executeDebug(step, ctx);
     }
-    if (step.id === 'scoping.produce') return this.executeScopingProduce(ctx);
-    if (step.id === 'summarise') return this.executeSummarise(ctx);
-    if (step.id === 'debug') return this.executeDebug(step, ctx);
     return this.deps.agentStepRunner.run(step, ctx);
   }
 
@@ -68,10 +75,13 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
 
   async handleCheckpoint(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
     const { workflowRunId, iteration } = ctx;
-    if (step.id === 'confirm') return this.executeConfirm(workflowRunId, iteration);
-    if (step.id === 'sharding_approval') return this.executeShardingApproval(step, workflowRunId, iteration);
-    if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, workflowRunId, iteration);
-    // Generic checkpoint fallback.
+    if (ctx.workflowId === 'full-build') {
+      if (step.id === 'confirm') return this.executeConfirm(workflowRunId, iteration);
+      if (step.id === 'sharding_approval') return this.executeShardingApproval(step, workflowRunId, iteration);
+      if (step.id === 'scoping.checkpoint') return this.executeScopingCheckpoint(step, workflowRunId, iteration);
+    }
+    // Generic checkpoint fallback — used by full-build steps it doesn't
+    // special-case, and by every step of every other workflow.
     await this.markRunning(step.id, workflowRunId, iteration);
     const action = await this.callbacks.onCheckpoint(workflowRunId, step.id, iteration);
     if (action === 'halt') return { outcome: 'checkpoint_set', next_step_id: null };
@@ -80,9 +90,24 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
   }
 
   // -- handleExecute (execute kind) -----------------------------------------
+  // full-build-only for now: 'execute' has no generic implementation yet, so
+  // a non-full-build workflow using this kind fails closed rather than
+  // silently running full-build's ExecService against an unrelated workflow.
 
   async handleExecute(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
     const { workflowRunId, iteration } = ctx;
+    if (ctx.workflowId !== 'full-build') {
+      await this.markRunning(step.id, workflowRunId, iteration);
+      await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+      });
+      return {
+        outcome: 'failed',
+        next_step_id: null,
+        error: `'execute' step kind has no generic implementation yet — workflow '${ctx.workflowId}' must provide its own StepRunner.handleExecute`,
+      };
+    }
     await this.markRunning(step.id, workflowRunId, iteration);
     await this.deps.execService.run(workflowRunId, iteration);
     await this.markComplete(step.id, workflowRunId, iteration, []);
@@ -94,7 +119,7 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
   async handleCommit(step: WorkflowStep, ctx: StepRunContext): Promise<StepResult> {
     const { workflowRunId, iteration } = ctx;
     await this.markRunning(step.id, workflowRunId, iteration);
-    if (step.id === 'snapshot') {
+    if (ctx.workflowId === 'full-build' && step.id === 'snapshot') {
       await this.deps.snapshotService.run(workflowRunId, iteration);
       if (step.logs_decision) {
         // Fold former HISTORY step: append decision record to docs/decisions.md.
