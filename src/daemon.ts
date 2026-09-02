@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { load as parseYAML } from 'js-yaml';
 import { z } from 'zod';
@@ -166,9 +166,9 @@ export class DaemonServer {
         const map = await this.deps.cycleService.getCurrent();
         if (data.gate === 'CONFIRM') {
           if (data.decision === 'approve') {
-            await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+            await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
           } else if (data.decision === 'revise') {
-            await this.deps.confirmService.revise(map.cycle_number, map.iteration, data.message);
+            await this.deps.confirmService.revise(map.cycle_id ?? '', map.iteration, data.message);
           } else {
             await this.deps.cycleService.halt();
           }
@@ -614,12 +614,16 @@ export class DaemonServer {
       try {
         const result = await this.deps.cycleService.start(parsed.data as any);
         try {
-          await this.deps.scopingService.begin(result.cycle_number, 1, {
-            cycle_number: result.cycle_number,
+          await this.deps.scopingService.begin({
+            workflowRunId: result.cycle_id,
+            workflowId: 'full-build',
+            stepId: 'scoping.produce',
+            role: 'facilitator' as const,
             iteration: 1,
-            planning_depth: result.planning_depth,
-            intent: result.intent,
-            current_node: 'SCOPING',
+            revision: 0,
+            workflowParameters: { planning_depth: result.planning_depth },
+            goal: result.intent,
+            projectRoot: this.config.projectRoot ?? process.cwd(),
           });
         } catch {
           // scoping draft generation failure doesn't abort the start response
@@ -732,19 +736,20 @@ export class DaemonServer {
       const params = body as { text?: string };
       try {
         const cycle = await this.deps.cycleService.getCurrent();
-        const cycleState = {
-          cycle_number: cycle.cycle_number,
-          iteration: cycle.iteration,
-          planning_depth: cycle.planning_depth,
-          intent: cycle.intent ?? '',
-          current_node: 'SCOPING',
-          facilitator_mode: 'scoping' as const,
-        };
         await this.deps.scopingService.submitResponse(
           params.text ?? '',
-          cycle.cycle_number,
-          cycle.iteration,
-          cycleState
+          {
+            workflowRunId: cycle.cycle_id ?? '',
+            workflowId: 'full-build',
+            stepId: 'scoping.produce',
+            role: 'facilitator' as const,
+            iteration: cycle.iteration,
+            revision: 0,
+            workflowParameters: { planning_depth: cycle.planning_depth },
+            goal: cycle.intent ?? '',
+            projectRoot: this.config.projectRoot ?? process.cwd(),
+            facilitatorMode: 'scoping' as const,
+          },
         );
         this.sendResponse(res, {
           ok: true,
@@ -780,7 +785,7 @@ export class DaemonServer {
     if (pathName === '/api/v2/cycles/current/approve' && method === 'POST') {
       try {
         const map = await this.deps.cycleService.getCurrent();
-        const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+        const result = await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
         this.sendResponse(res, {
           ok: true,
           data: result,
@@ -798,7 +803,7 @@ export class DaemonServer {
         const body = (await this.parseBody(req)) as { note?: string };
         const map = await this.deps.cycleService.getCurrent();
         const result = await this.deps.confirmService.revise(
-          map.cycle_number,
+          map.cycle_id ?? '',
           map.iteration,
           body.note
         );
@@ -831,7 +836,7 @@ export class DaemonServer {
         const action = parsed.data.action;
         const map = await this.deps.cycleService.getCurrent();
         if (action === 'approve') {
-          const result = await this.deps.confirmService.approve(map.cycle_number, map.iteration);
+          const result = await this.deps.confirmService.approve(map.cycle_id ?? '', map.iteration);
           this.sendResponse(res, {
             ok: true,
             data: result,
@@ -839,7 +844,7 @@ export class DaemonServer {
           });
         } else if (action === 'revise') {
           const result = await this.deps.confirmService.revise(
-            map.cycle_number,
+            map.cycle_id ?? '',
             map.iteration,
             parsed.data.note
           );
@@ -1440,8 +1445,12 @@ export class DaemonServer {
 
     // ─── Static Asset Serving Fallback ───
     if (method === 'GET' && !pathName.startsWith('/api/')) {
-      const packageRoot = path.dirname(new URL(import.meta.url).pathname);
-      const publicRoot = path.join(packageRoot, 'public');
+      // Compiled: daemon.js lives in dist/, public/ is at dist/public/.
+      // TSX dev context: daemon.ts lives in src/, no src/public/ exists;
+      // fall back to cwd-relative public/ so tests can serve the source assets.
+      const moduleDir = path.dirname(new URL(import.meta.url).pathname);
+      const adjacent = path.join(moduleDir, 'public');
+      const publicRoot = existsSync(adjacent) ? adjacent : path.join(process.cwd(), 'public');
       
       let relativePath = pathName === '/' ? 'index.html' : pathName.slice(1);
       relativePath = path.normalize(relativePath).replace(/^(\.\.(\/|\\))+/, '');

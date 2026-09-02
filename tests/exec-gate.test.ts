@@ -5,19 +5,18 @@ import {
   ValidationGateService,
   VALIDATION_REQUIRED_NODES,
 } from '../src/exec-gate.js';
-import { nextNode } from '../src/dag-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { RunManifest, ManifestNodeEntry } from '../src/run-artifacts.js';
 import type { FailureReport } from '../src/types.js';
 import { ExecServiceReal } from '../src/exec-service.js';
 
 // Mock ExecServiceReal.prototype.run to be a fast synchronous stub for wrapper tests
-ExecServiceReal.prototype.run = async function(cycleNumber: number, iteration: number) {
-  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+ExecServiceReal.prototype.run = async function(workflowRunId: string, iteration: number) {
+  await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
     status: 'running',
     started_at: new Date().toISOString(),
   } as any);
-  await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+  await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
     status: 'complete',
     exit_code: 0,
     timed_out: false,
@@ -142,7 +141,7 @@ class MockRunArtifacts {
   }
 
   async updateNodeStatus(
-    _cn: number, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>
+    _cn: string, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>
   ): Promise<void> {
     this.updates.push({ node: nodeId, update });
     const existing = this.manifest.nodes.find((n) => n.id === nodeId);
@@ -151,31 +150,21 @@ class MockRunArtifacts {
     }
   }
 
-  async readManifest(_cn: number, _it: number): Promise<RunManifest> {
+  async readManifest(_cn: string, _it: number): Promise<RunManifest> {
     return JSON.parse(JSON.stringify(this.manifest));
   }
 
-  async writeFailureReport(_cn: number, _it: number, report: FailureReport): Promise<void> {
+  async writeFailureReport(_cn: string, _it: number, report: FailureReport): Promise<void> {
     this.failureReports.push(report);
   }
 
-  runDir(_cn: number, _it: number): string {
+  runDir(_cn: string, _it: number): string {
     return `.sle/runs/${_cn}-${_it}`;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
-
-// ─── nextNode sequence ────────────────────────────────────────────────────────
-
-test('nextNode: EXEC → VALIDATION_GATE', () => {
-  assert.strictEqual(nextNode('EXEC'), 'VALIDATION_GATE');
-});
-
-test('nextNode: VALIDATION_GATE → DEBUG', () => {
-  assert.strictEqual(nextNode('VALIDATION_GATE'), 'DEBUG');
-});
 
 // ─── VALIDATION_REQUIRED_NODES ────────────────────────────────────────────────
 
@@ -191,7 +180,7 @@ test('ExecService: always returns success=true', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ExecService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.strictEqual(result.success, true);
 });
@@ -201,7 +190,7 @@ test('ExecService: next_node is VALIDATION_GATE', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ExecService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1);
+  const result = await svc.run('test-run-1', 1);
 
   assert.strictEqual(result.next_node, 'VALIDATION_GATE');
 });
@@ -211,7 +200,7 @@ test('ExecService: marks EXEC running then complete in manifest', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ExecService(mgr, artifacts as never);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const runningUpdate = artifacts.updates.find((u) => u.update.status === 'running' && u.node === 'EXEC');
   const completeUpdate = artifacts.updates.find((u) => u.update.status === 'complete' && u.node === 'EXEC');
@@ -224,7 +213,7 @@ test('ExecService: advances dag current_node to VALIDATION_GATE', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ExecService(mgr, artifacts as never);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag;
@@ -236,7 +225,7 @@ test('ExecService: adds EXEC to completed_nodes in dag', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ExecService(mgr, artifacts as never);
 
-  await svc.run(1, 1);
+  await svc.run('test-run-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { completed_nodes: string[] } }).dag;
@@ -250,7 +239,7 @@ test('ValidationGate: passes when all active categories are cached as passed', a
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(result.passed, true);
   assert.strictEqual(result.next_node, 'EVALUATE');
@@ -262,7 +251,7 @@ test('ValidationGate: no FailureReport written on pass', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(artifacts.failureReports.length, 0);
 });
@@ -272,7 +261,7 @@ test('ValidationGate: advances dag to EVALUATE on pass', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string } }).dag;
@@ -284,7 +273,7 @@ test('ValidationGate: marks VALIDATION_GATE complete in manifest on pass', async
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const completeUpdate = artifacts.updates.find(
     (u) => u.node === 'VALIDATION_GATE' && u.update.status === 'complete'
@@ -303,7 +292,7 @@ test('ValidationGate: fails when static analysis fails (exit_code !== 0)', async
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(result.passed, false);
   assert.strictEqual(result.next_node, null);
@@ -323,7 +312,7 @@ test('ValidationGate: fails when a category is failed', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(result.passed, false);
   assert.ok(result.failed_nodes.includes('correctness'));
@@ -343,12 +332,12 @@ test('ValidationGate: writes FailureReport on failure', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(artifacts.failureReports.length, 1);
   assert.ok(result.failure_report, 'result should include failure_report');
   assert.ok(result.failure_report!.failed_categories.some((c) => c.name === 'correctness'));
-  assert.strictEqual(result.failure_report!.cycle, 1);
+  assert.strictEqual(result.failure_report!.cycle, 0);
   assert.strictEqual(result.failure_report!.iteration, 1);
 });
 
@@ -366,7 +355,7 @@ test('ValidationGate: FailureReport has correct passed_categories', async () => 
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'cycle-abc');
+  const result = await svc.run('cycle-abc', 1);
 
   assert.ok(result.failure_report!.passed_categories.includes('performance'));
   assert.ok(!result.failure_report!.passed_categories.includes('correctness'));
@@ -386,7 +375,7 @@ test('ValidationGate: marks VALIDATION_GATE failed in manifest on failure', asyn
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const failedUpdate = artifacts.updates.find(
     (u) => u.node === 'VALIDATION_GATE' && u.update.status === 'failed'
@@ -408,7 +397,7 @@ test('ValidationGate: sets dag current_node to null on failure', async () => {
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const map = await mgr.read();
   const dag = (map.meta as Record<string, unknown> & { dag?: { current_node: string | null } }).dag;
@@ -429,7 +418,7 @@ test('ValidationGate: FailureReport quick_summary mentions failed categories', a
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.ok(result.failure_report!.quick_summary.includes('categories failed'));
 });
@@ -448,7 +437,7 @@ test('ValidationGate: failed_categories are FailureCategory objects', async () =
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  const result = await svc.run(1, 1, 'test-cycle-1');
+  const result = await svc.run('test-cycle-1', 1);
 
   assert.strictEqual(result.failure_report!.failed_categories[0].name, 'correctness');
   assert.strictEqual(result.failure_report!.failed_categories[0].method, 'executable');
@@ -460,7 +449,7 @@ test('ValidationGate: sets validation.gate.last_outcome=passed on pass', async (
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const map = await mgr.read();
   assert.strictEqual((map as never as { validation: { gate: { last_outcome: string } } }).validation.gate.last_outcome, 'passed');
@@ -480,7 +469,7 @@ test('ValidationGate: sets validation.gate.last_outcome=failed on failure', asyn
   const artifacts = new MockRunArtifacts();
   const svc = new ValidationGateService(mgr, artifacts as never);
 
-  await svc.run(1, 1, 'test-cycle-1');
+  await svc.run('test-cycle-1', 1);
 
   const map = await mgr.read();
   assert.strictEqual((map as never as { validation: { gate: { last_outcome: string } } }).validation.gate.last_outcome, 'failed');

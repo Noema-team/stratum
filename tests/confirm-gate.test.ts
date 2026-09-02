@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { ConfirmService, ConfirmServiceError } from '../src/confirm-service.js';
 import { validateOutputPath } from '../src/agent-runner.js';
-import { buildCycleStateContext } from '../src/dag-runner.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { ManifestNodeEntry } from '../src/run-artifacts.js';
 
@@ -300,29 +299,6 @@ test('revise: throws not_awaiting_confirmation when flag is false', async () => 
       return true;
     }
   );
-});
-
-// ─── revision context flows into CycleStateContext ───────────────────────────
-
-test('buildCycleStateContext: includes revision_count from map', () => {
-  const base = makeBaseMap();
-  (base.cycle as Record<string, unknown>).revision = 2;
-  const ctx = buildCycleStateContext(base, 'PLAN');
-  assert.strictEqual(ctx.revision_count, 2);
-});
-
-test('buildCycleStateContext: includes revision_note from map', () => {
-  const base = makeBaseMap();
-  (base.cycle as Record<string, unknown>).revision = 1;
-  (base.cycle as Record<string, unknown>).revision_note = 'Add auth flows to plan';
-  const ctx = buildCycleStateContext(base, 'PLAN');
-  assert.strictEqual(ctx.revision_note, 'Add auth flows to plan');
-});
-
-test('buildCycleStateContext: revision_note absent when not set', () => {
-  const base = makeBaseMap();
-  const ctx = buildCycleStateContext(base, 'PLAN');
-  assert.strictEqual(ctx.revision_note, undefined);
 });
 
 // ─── Full CONFIRM lifecycle ───────────────────────────────────────────────────

@@ -4,9 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import { AgentRunner, APPEND_ONLY_PATHS, validateOutputPath } from '../src/agent-runner.js';
-import { DAGRunner, nextNode } from '../src/dag-runner.js';
-import type { AgentRunResult, DAGNodeId } from '../src/agent-runner.js';
-import type { CycleStateContext } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
 import type { AssembledContext } from '../src/types.js';
 import type { ILLMProvider, LLMCompletionResult } from '../src/llm-provider.js';
@@ -21,13 +19,17 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'sle-build-history-'));
 }
 
-function makeCycleState(overrides: Partial<CycleStateContext> = {}): CycleStateContext {
+function makeStepRunCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    cycle_number: 1,
+    workflowRunId: 'test-run-1',
+    workflowId: 'full-build',
+    stepId: 'BUILD',
+    cycleNumber: 1,
     iteration: 1,
-    planning_depth: 'standard',
-    intent: 'Build a widget system',
-    current_node: 'BUILD',
+    revision: 0,
+    planningDepth: 'standard',
+    goal: 'Build a widget system',
+    projectRoot: '/test',
     ...overrides,
   };
 }
@@ -96,18 +98,6 @@ class MockRunArtifacts {
   public updates: Array<{ node: string; update: Partial<ManifestNodeEntry> }> = [];
   async updateNodeStatus(_cn: number, _it: number, nodeId: string, update: Partial<ManifestNodeEntry>): Promise<void> {
     this.updates.push({ node: nodeId, update });
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-}
-
-class MockAgentRunner {
-  public calls: Array<{ node: string; state: CycleStateContext }> = [];
-  constructor(private result: AgentRunResult | Error) {}
-  async run(node: string, state: CycleStateContext): Promise<AgentRunResult> {
-    this.calls.push({ node, state });
-    if (this.result instanceof Error) throw this.result;
-    return this.result;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
@@ -219,119 +209,6 @@ test('historian: blocks docs/plan.md', () => {
   assert.strictEqual(validateOutputPath('docs/plan.md', 'historian'), false);
 });
 
-// ─── nextNode sequence: BUILD → HISTORY → EXEC ───────────────────────────────
-
-test('nextNode: BUILD → HISTORY', () => {
-  assert.strictEqual(nextNode('BUILD'), 'HISTORY');
-});
-
-test('nextNode: HISTORY → EXEC', () => {
-  assert.strictEqual(nextNode('HISTORY'), 'EXEC');
-});
-
-// ─── DAGRunner: BUILD node ────────────────────────────────────────────────────
-
-test('DAGRunner BUILD: advances DAG to HISTORY', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts', 'src/lib/util.ts'],
-    tokens_used: 500,
-    duration_ms: 1200,
-    raw_output_path: '.sle/runs/1-1/node-outputs/build.md',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'HISTORY');
-});
-
-test('DAGRunner BUILD: artifact entries have generator=builder', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts'],
-    tokens_used: 400,
-    duration_ms: 900,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'src/index.ts');
-  assert.ok(entry, 'artifact entry should exist for src/index.ts');
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'builder');
-});
-
-test('DAGRunner BUILD: multiple src files written', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'BUILD', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['src/index.ts', 'src/lib/db.ts', 'src/routes/api.ts'],
-    tokens_used: 800,
-    duration_ms: 2000,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('BUILD', makeCycleState({ current_node: 'BUILD' }));
-
-  assert.deepStrictEqual(result.artifacts_written, ['src/index.ts', 'src/lib/db.ts', 'src/routes/api.ts']);
-  assert.strictEqual(result.node, 'BUILD');
-});
-
-// ─── DAGRunner: HISTORY node ──────────────────────────────────────────────────
-
-test('DAGRunner HISTORY: advances DAG to EXEC', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'HISTORY', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/decisions.md', 'docs/cycle-summary.md'],
-    tokens_used: 200,
-    duration_ms: 400,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  const result = await dag.runNode('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
-
-  assert.strictEqual(result.success, true);
-  assert.strictEqual(result.next_node, 'EXEC');
-});
-
-test('DAGRunner HISTORY: artifact entries have generator=historian', async () => {
-  const mgr = new InMemoryMapManager();
-  (mgr.map.meta as Record<string, unknown>).dag = { current_node: 'HISTORY', completed_nodes: [] };
-  const artifacts = new MockRunArtifacts();
-  const runner = new MockAgentRunner({
-    success: true,
-    artifacts_written: ['docs/decisions.md'],
-    tokens_used: 150,
-    duration_ms: 300,
-    raw_output_path: '',
-  });
-  const dag = new DAGRunner(runner as never, mgr, artifacts as never);
-
-  await dag.runNode('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
-
-  const map = await mgr.read();
-  const entry = map.artifacts.find((a: { path: string }) => a.path === 'docs/decisions.md');
-  assert.ok(entry, 'artifact entry for decisions.md should exist');
-  assert.strictEqual((entry as Record<string, unknown>).generator, 'historian');
-});
-
 // ─── AgentRunner: append-only behavior for decisions.md ──────────────────────
 
 const HISTORIAN_OUTPUT_1 = `<!-- SLE-OUTPUT
@@ -370,7 +247,7 @@ test('AgentRunner HISTORY: appends to decisions.md on first write', async () => 
   const llm = new MockLLMProvider(HISTORIAN_OUTPUT_1, 80);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  const result = await runner.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  const result = await runner.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   assert.ok(result.success, result.error);
   const decisionsKey = join(root, 'docs/decisions.md');
@@ -388,12 +265,12 @@ test('AgentRunner HISTORY: second run appends (does not overwrite) decisions.md'
   // First HISTORY run
   const llm1 = new MockLLMProvider(HISTORIAN_OUTPUT_1, 80);
   const runner1 = new AgentRunner(cm as never, llm1, root, ram as never, { model: 'test' }, mock);
-  await runner1.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner1.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   // Second HISTORY run
   const llm2 = new MockLLMProvider(HISTORIAN_OUTPUT_2, 80);
   const runner2 = new AgentRunner(cm as never, llm2, root, ram as never, { model: 'test' }, mock);
-  await runner2.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner2.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   // Both runs should have appended (2 total appends)
   assert.strictEqual(appended[decisionsKey]?.length, 2, 'expected 2 append operations');
@@ -425,7 +302,7 @@ Completed successfully.`;
   const llm = new MockLLMProvider(summaryOutput, 60);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  await runner.run('HISTORY', makeCycleState({ current_node: 'HISTORY' }));
+  await runner.run('historian', makeStepRunCtx({ stepId: 'HISTORY' }));
 
   const summaryKey = join(root, 'docs/cycle-summary.md');
   assert.ok(written[summaryKey]?.includes('Cycle 1 Summary'), 'cycle-summary.md should be written');
@@ -460,7 +337,7 @@ export const helper = () => 42;
   const llm = new MockLLMProvider(builderOutput, 200);
   const runner = new AgentRunner(cm as never, llm, root, ram as never, { model: 'test' }, mock);
 
-  const result = await runner.run('BUILD', makeCycleState({ current_node: 'BUILD' }));
+  const result = await runner.run('builder', makeStepRunCtx({ stepId: 'BUILD' }));
 
   assert.ok(result.success, result.error);
   assert.deepStrictEqual(result.artifacts_written, ['src/index.ts', 'src/lib/util.ts']);

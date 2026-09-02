@@ -54,7 +54,7 @@ export interface AgentLoopOptions {
   max_tokens?: number;
   projectRoot: string;
   role: AgentRole;
-  cycleNumber: number;
+  workflowRunId: string;
   iteration: number;
   nodeId: string;
   runArtifacts: RunArtifactManager;
@@ -211,9 +211,9 @@ export class AgentLoop {
     tool_calls: Array<{ tool: string; path: string; turn: number }>
   ): Promise<void> {
     try {
-      const { cycleNumber, iteration, nodeId, runArtifacts } = this.opts;
+      const { workflowRunId, iteration, nodeId, runArtifacts } = this.opts;
       const metaDir = path.join(
-        '.sle', 'runs', `${cycleNumber}-${iteration}`, 'node-outputs'
+        '.sle', 'runs', workflowRunId, String(iteration), 'node-outputs'
       );
       const metaPath = path.join(metaDir, `${nodeId.toLowerCase()}-loop.json`);
       const absMetaPath = path.join(this.opts.projectRoot, metaPath);
@@ -223,7 +223,7 @@ export class AgentLoop {
         JSON.stringify({ node_id: nodeId, turns_taken, tool_calls }, null, 2),
         'utf-8'
       );
-      await runArtifacts.updateNodeStatus(cycleNumber, iteration, nodeId, {
+      await runArtifacts.updateNodeStatus(workflowRunId, iteration, nodeId, {
         status: 'running',
         turns_taken,
         tool_calls: tool_calls.length,

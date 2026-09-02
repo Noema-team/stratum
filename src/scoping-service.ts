@@ -2,9 +2,9 @@ import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import type { AgentRunner } from './agent-runner.js';
-import type { CycleStateContext } from './context-manager.js';
 import type { RuntimeMapManager } from './runtime-map.js';
 import type { TagService } from './tag-service.js';
+import type { StepRunContext } from './workflow/types.js';
 
 export interface ScopingBeginResult {
   draft: string;
@@ -35,9 +35,7 @@ export class ScopingService {
   }
 
   async begin(
-    _cycleNumber: number,
-    _iteration: number,
-    cycleState: CycleStateContext
+    ctx: StepRunContext,
   ): Promise<ScopingBeginResult> {
     this.pendingResponse = null;
     this.roundCount = 0;
@@ -46,15 +44,16 @@ export class ScopingService {
       ? (await this.tagService.getTagged('next-cycle')).map((t) => t.target_ref)
       : [];
 
-    const scopingState: CycleStateContext = {
-      ...cycleState,
-      current_node: 'SCOPING',
-      facilitator_mode: 'scoping',
+    const scopingCtx: StepRunContext = {
+      ...ctx,
+      stepId: 'scoping.produce',
+      role: 'facilitator',
+      facilitatorMode: 'scoping',
       ...(taggedRefs.length > 0
-        ? { ephemeral: { ...cycleState.ephemeral, next_cycle_tagged_refs: taggedRefs.join(', ') } }
+        ? { ephemeral: { ...ctx.ephemeral, next_cycle_tagged_refs: taggedRefs.join(', ') } }
         : {}),
     };
-    const result = await this.agentRunner.run('SCOPING', scopingState);
+    const result = await this.agentRunner.run('facilitator', scopingCtx);
 
     if (!result.success) {
       throw Object.assign(
@@ -88,17 +87,15 @@ export class ScopingService {
   /** Records the raw response, then runs the facilitator to refine the charter draft. */
   async submitResponse(
     response: string,
-    _cycleNumber?: number,
-    _iteration?: number,
-    cycleState?: CycleStateContext
+    ctx?: StepRunContext,
   ): Promise<void> {
     this.pendingResponse = response;
-    if (cycleState) {
-      await this.processResponse(response, cycleState);
+    if (ctx) {
+      await this.processResponse(response, ctx);
     }
   }
 
-  async processResponse(response: string, cycleState: CycleStateContext): Promise<void> {
+  async processResponse(response: string, ctx: StepRunContext): Promise<void> {
     const maxRounds = await this.readMaxRounds();
     this.roundCount++;
     if (this.roundCount > maxRounds) {
@@ -108,14 +105,15 @@ export class ScopingService {
       );
     }
 
-    const refinementState: CycleStateContext = {
-      ...cycleState,
-      current_node: 'SCOPING',
-      facilitator_mode: 'scoping',
-      ephemeral: { ...cycleState.ephemeral, scoping_response: response },
+    const refinementCtx: StepRunContext = {
+      ...ctx,
+      stepId: 'scoping.produce',
+      role: 'facilitator',
+      facilitatorMode: 'scoping',
+      ephemeral: { ...ctx.ephemeral, scoping_response: response },
     };
 
-    const result = await this.agentRunner.run('SCOPING', refinementState);
+    const result = await this.agentRunner.run('facilitator', refinementCtx);
     if (!result.success) {
       throw Object.assign(
         new Error(`SCOPING refinement failed: ${result.error}`),

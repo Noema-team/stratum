@@ -2,14 +2,13 @@ import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import type { AgentRole, AssembledContext } from './types.js';
-import type { ContextManager, CycleStateContext } from './context-manager.js';
+import type { ContextManager } from './context-manager.js';
 import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
 import type { RunArtifactManager } from './run-artifacts.js';
+import type { StepRunContext } from './workflow/types.js';
 import { AgentLoop } from './agent-loop.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export type DAGNodeId = string;
 
 export interface AgentRunResult {
   success: boolean;
@@ -30,8 +29,6 @@ export interface ParsedOutput {
   preamble: SLEOutputPreamble;
   sections: Array<{ path: string; content: string }>;
 }
-
-// ─── Node → Role mapping ─────────────────────────────────────────────────────
 
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
 
@@ -64,23 +61,6 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
 // Paths where new content is appended after existing content (not overwritten).
 // decisions.md accumulates entries across cycles; all other artifacts are overwritten.
 export const APPEND_ONLY_PATHS = new Set(['docs/decisions.md']);
-
-const NODE_TO_ROLE: Record<string, AgentRole> = {
-  SCOPING:   'facilitator',
-  DESIGN:    'designer',
-  CRITIQUE:  'critic',
-  PLAN:      'planner',
-  TEST:      'tester',
-  BUILD:     'builder',
-  HISTORY:   'historian',
-  EVALUATE:  'evaluator',
-  DEBUG:     'debugger',
-  // SUMMARISE is daemon-generated (no LLM call) — handled by SummariseService
-};
-
-export function roleForNode(node: DAGNodeId): AgentRole | undefined {
-  return NODE_TO_ROLE[node];
-}
 
 // ─── Context → LLM message ────────────────────────────────────────────────────
 
@@ -217,27 +197,17 @@ export class AgentRunner {
     this.fs = fsModule ?? nodeFsPromises;
   }
 
-  async run(node: DAGNodeId, cycleState: CycleStateContext): Promise<AgentRunResult> {
+  async run(role: AgentRole, ctx: StepRunContext): Promise<AgentRunResult> {
     const start = Date.now();
-    const role = roleForNode(node);
-
-    if (!role) {
-      return {
-        success: false,
-        artifacts_written: [],
-        tokens_used: 0,
-        duration_ms: 0,
-        raw_output_path: '',
-        error: `No agent role mapped for node: ${node}`,
-      };
-    }
 
     // 1. Assemble context
-    const context = await this.contextManager.assemble(role, cycleState);
+    const context = await this.contextManager.assemble(role, ctx);
 
     let parsed: { sections: Array<{ path: string; content: string }> };
     let tokensUsed = 0;
     let rawPath = '';
+
+    const nodeId = ctx.stepId ?? role.toUpperCase();
 
     // Check if the provider supports native multi-turn execution (DDR-030 integration)
     const isMultiTurn = typeof (this.llmProvider as any).completeMultiTurn === 'function';
@@ -250,9 +220,9 @@ export class AgentRunner {
           max_tokens: this.runnerConfig.max_tokens,
           projectRoot: this.projectRoot,
           role,
-          cycleNumber: cycleState.cycle_number,
-          iteration: cycleState.iteration,
-          nodeId: node,
+          workflowRunId: ctx.workflowRunId,
+          iteration: ctx.iteration,
+          nodeId,
           runArtifacts: this.runArtifacts,
           fsModule: this.fs,
         }
@@ -265,7 +235,7 @@ export class AgentRunner {
       tokensUsed = loopResult.tokens_used;
 
       if (!loopResult.success) {
-        rawPath = await this.writeRaw(cycleState, node, '');
+        rawPath = await this.writeRaw(ctx, nodeId, '');
         return {
           success: false,
           artifacts_written: [],
@@ -278,7 +248,7 @@ export class AgentRunner {
 
       parsed = loopResult.parsedOutput!;
       // Write the final text as raw output (always, even on multi-turn success)
-      rawPath = await this.writeRaw(cycleState, node, loopResult.rawText || '');
+      rawPath = await this.writeRaw(ctx, nodeId, loopResult.rawText || '');
 
     } else {
       // Single-turn fallback (original logic)
@@ -299,7 +269,7 @@ export class AgentRunner {
       try {
         llmResult = await this.llmProvider.complete(params);
       } catch (err) {
-        rawPath = await this.writeRaw(cycleState, node, '');
+        rawPath = await this.writeRaw(ctx, nodeId, '');
         return {
           success: false,
           artifacts_written: [],
@@ -311,7 +281,7 @@ export class AgentRunner {
       }
 
       tokensUsed = llmResult.tokens_used;
-      rawPath = await this.writeRaw(cycleState, node, llmResult.content);
+      rawPath = await this.writeRaw(ctx, nodeId, llmResult.content);
 
       try {
         parsed = parseAgentOutput(llmResult.content, role);
@@ -364,20 +334,21 @@ export class AgentRunner {
   }
 
   private async writeRaw(
-    cycleState: CycleStateContext,
-    node: DAGNodeId,
+    ctx: StepRunContext,
+    nodeId: string,
     content: string
   ): Promise<string> {
-    const { cycle_number, iteration } = cycleState;
+    const { workflowRunId, iteration } = ctx;
     try {
-      await this.runArtifacts.writeNodeOutput(cycle_number, iteration, node, content);
+      await this.runArtifacts.writeNodeOutput(workflowRunId, iteration, nodeId, content);
       return path.join(
         this.projectRoot,
         '.sle',
         'runs',
-        `${cycle_number}-${iteration}`,
+        workflowRunId,
+        String(iteration),
         'node-outputs',
-        `${node.toLowerCase()}.md`
+        `${nodeId.toLowerCase()}.md`
       );
     } catch {
       return '';

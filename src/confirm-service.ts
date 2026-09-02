@@ -30,8 +30,8 @@ export class ConfirmService {
     private runArtifacts: RunArtifactManager
   ) {}
 
-  async gate(cycleNumber: number, iteration: number): Promise<void> {
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'CONFIRM', {
+  async gate(workflowRunId: string, iteration: number): Promise<void> {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'CONFIRM', {
       status: 'running',
       started_at: new Date().toISOString(),
     });
@@ -45,13 +45,13 @@ export class ConfirmService {
     }));
   }
 
-  async approve(cycleNumber: number, iteration: number): Promise<ConfirmApproveResult> {
+  async approve(workflowRunId: string, iteration: number): Promise<ConfirmApproveResult> {
     const map = await this.mapManager.read();
     if (!map.cycle.awaiting_confirmation) {
       throw new ConfirmServiceError('not_awaiting_confirmation', 'No confirmation is pending');
     }
     const completedAt = new Date().toISOString();
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'CONFIRM', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'CONFIRM', {
       status: 'complete',
       completed_at: completedAt,
     });
@@ -73,7 +73,7 @@ export class ConfirmService {
   }
 
   async revise(
-    cycleNumber: number,
+    workflowRunId: string,
     iteration: number,
     note?: string
   ): Promise<ConfirmReviseResult> {
@@ -82,7 +82,7 @@ export class ConfirmService {
       throw new ConfirmServiceError('not_awaiting_confirmation', 'No confirmation is pending');
     }
     const newRevision = (map.cycle.revision ?? 0) + 1;
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'CONFIRM', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'CONFIRM', {
       status: 'skipped',
       skip_reason: 'revision_requested',
     });

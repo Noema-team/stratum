@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   RULE_FILE_NAMES,
@@ -36,7 +37,7 @@ const CATEGORY_COUNT_MAP: Record<ProjectType, number> = {
   custom: 1,
 };
 
-async function testConstantsRuleFileNames() {
+test('testConstantsRuleFileNames', async () => {
   assert.strictEqual(RULE_FILE_NAMES.length, 7);
   assert.ok(RULE_FILE_NAMES.includes('planning'));
   assert.ok(RULE_FILE_NAMES.includes('validation'));
@@ -45,9 +46,9 @@ async function testConstantsRuleFileNames() {
   assert.ok(RULE_FILE_NAMES.includes('user_validation'));
   assert.ok(RULE_FILE_NAMES.includes('summary'));
   assert.ok(RULE_FILE_NAMES.includes('agents'));
-}
+});
 
-async function testConstantsLoadingOrder() {
+test('testConstantsLoadingOrder', async () => {
   assert.strictEqual(LOADING_ORDER[0], 'planning');
   assert.strictEqual(LOADING_ORDER[1], 'agents');
   assert.strictEqual(LOADING_ORDER[2], 'artifacts');
@@ -56,39 +57,39 @@ async function testConstantsLoadingOrder() {
   assert.strictEqual(LOADING_ORDER[5], 'user_validation');
   assert.strictEqual(LOADING_ORDER[6], 'summary');
   assert.strictEqual(LOADING_ORDER.length, 7);
-}
+});
 
-async function testGenerateDefaultsAllTypesValid() {
+test('testGenerateDefaultsAllTypesValid', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     const result = RuntimeConfigSchema.safeParse(config);
     assert.ok(result.success, `generateDefaults('${pt}') fails schema: ${result.success === false ? JSON.stringify(result.error.issues) : ''}`);
   }
-}
+});
 
-async function testGenerateDefaultsPlanningDepth() {
+test('testGenerateDefaultsPlanningDepth', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     assert.strictEqual(config.planning.depth, PLANNING_DEPTH_MAP[pt], `depth mismatch for ${pt}`);
   }
-}
+});
 
-async function testGenerateDefaultsPlanningResearchOverrides() {
+test('testGenerateDefaultsPlanningResearchOverrides', async () => {
   const research = generateDefaults('research');
   assert.strictEqual(research.planning.depth, 'research');
   assert.strictEqual(research.planning.max_iterations, 10);
   assert.strictEqual(research.planning.artifact_slice_size, 4000);
   assert.strictEqual(research.planning.critic_enabled, true);
-}
+});
 
-async function testGenerateDefaultsPlanningCustomOverrides() {
+test('testGenerateDefaultsPlanningCustomOverrides', async () => {
   const custom = generateDefaults('custom');
   assert.strictEqual(custom.planning.depth, 'minimal');
   assert.strictEqual(custom.planning.max_iterations, 5);
   assert.strictEqual(custom.planning.critic_enabled, null);
-}
+});
 
-async function testGenerateDefaultsPlanningReasoningPasses() {
+test('testGenerateDefaultsPlanningReasoningPasses', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     assert.strictEqual(config.planning.reasoning_passes.minimal, 1);
@@ -96,9 +97,9 @@ async function testGenerateDefaultsPlanningReasoningPasses() {
     assert.strictEqual(config.planning.reasoning_passes.deep, 3);
     assert.strictEqual(config.planning.reasoning_passes.research, 4);
   }
-}
+});
 
-async function testGenerateDefaultsCategoryCounts() {
+test('testGenerateDefaultsCategoryCounts', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     assert.strictEqual(
@@ -107,47 +108,47 @@ async function testGenerateDefaultsCategoryCounts() {
       `category count mismatch for ${pt}`
     );
   }
-}
+});
 
-async function testGenerateDefaultsCorrectnessFirstCategory() {
+test('testGenerateDefaultsCorrectnessFirstCategory', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     assert.strictEqual(config.validation.categories[0].name, 'correctness');
     assert.strictEqual(config.validation.categories[0].method, 'both');
   }
-}
+});
 
-async function testGenerateDefaultsApiCategories() {
+test('testGenerateDefaultsApiCategories', async () => {
   const config = generateDefaults('api');
   const names = config.validation.categories.map(c => c.name);
   assert.deepStrictEqual(names, ['correctness', 'performance', 'security']);
-}
+});
 
-async function testGenerateDefaultsUiCategories() {
+test('testGenerateDefaultsUiCategories', async () => {
   const config = generateDefaults('ui');
   const names = config.validation.categories.map(c => c.name);
   assert.deepStrictEqual(names, ['correctness', 'usability', 'performance']);
-}
+});
 
-async function testGenerateDefaultsLibraryCategories() {
+test('testGenerateDefaultsLibraryCategories', async () => {
   const config = generateDefaults('library');
   const names = config.validation.categories.map(c => c.name);
   assert.deepStrictEqual(names, ['correctness', 'compatibility', 'maintainability']);
-}
+});
 
-async function testGenerateDefaultsResearchCategories() {
+test('testGenerateDefaultsResearchCategories', async () => {
   const config = generateDefaults('research');
   const names = config.validation.categories.map(c => c.name);
   assert.deepStrictEqual(names, ['correctness', 'reproducibility']);
-}
+});
 
-async function testGenerateDefaultsCustomCategories() {
+test('testGenerateDefaultsCustomCategories', async () => {
   const config = generateDefaults('custom');
   const names = config.validation.categories.map(c => c.name);
   assert.deepStrictEqual(names, ['correctness']);
-}
+});
 
-async function testGenerateDefaultsArtifacts() {
+test('testGenerateDefaultsArtifacts', async () => {
   const config = generateDefaults('api');
   const ids = config.artifacts.artifacts.map(a => a.id);
   assert.ok(ids.includes('requirements'));
@@ -157,9 +158,9 @@ async function testGenerateDefaultsArtifacts() {
   assert.ok(ids.includes('decisions'));
   assert.ok(ids.includes('evaluation'));
   assert.ok(ids.includes('build-plan'));
-}
+});
 
-async function testGenerateDefaultsPlanArtifact() {
+test('testGenerateDefaultsPlanArtifact', async () => {
   const config = generateDefaults('api');
   const plan = config.artifacts.artifacts.find(a => a.id === 'plan');
   assert.ok(plan, 'plan artifact missing');
@@ -167,43 +168,43 @@ async function testGenerateDefaultsPlanArtifact() {
   assert.strictEqual(plan.generator, 'planner');
   assert.strictEqual(plan.required, true);
   assert.strictEqual(plan.append_only, false);
-}
+});
 
-async function testGenerateDefaultsDecisionsAppendOnly() {
+test('testGenerateDefaultsDecisionsAppendOnly', async () => {
   const config = generateDefaults('api');
   const decisions = config.artifacts.artifacts.find(a => a.id === 'decisions');
   assert.ok(decisions);
   assert.strictEqual(decisions.append_only, true);
   assert.strictEqual(decisions.generator, 'historian');
-}
+});
 
-async function testGenerateDefaultsGeneratedOutputs() {
+test('testGenerateDefaultsGeneratedOutputs', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.artifacts.generated_outputs.length, 3);
   assert.strictEqual(config.artifacts.generated_outputs[0].id, 'test_runner');
   assert.strictEqual(config.artifacts.generated_outputs[1].id, 'validation_report');
   assert.strictEqual(config.artifacts.generated_outputs[2].id, 'changelog');
-}
+});
 
-async function testGenerateDefaultsExitConfig() {
+test('testGenerateDefaultsExitConfig', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.exit.conditions.all_categories_pass, true);
   assert.strictEqual(config.exit.conditions.requirements_met, true);
   assert.strictEqual(config.exit.on_cap_hit, 'halt_with_report');
   assert.strictEqual(config.exit.on_error.behavior, 'halt');
   assert.strictEqual(config.exit.halt_behavior.preserve_decisions, true);
-}
+});
 
-async function testGenerateDefaultsUserValidation() {
+test('testGenerateDefaultsUserValidation', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.user_validation.approval_required, true);
   assert.deepStrictEqual(config.user_validation.review_at, ['after_planning', 'after_gate_pass']);
   assert.strictEqual(config.user_validation.timeout_minutes, 60);
   assert.strictEqual(config.user_validation.on_timeout, 'auto_approve');
   assert.strictEqual(config.user_validation.auto_approve_on_rerun, false);
-}
+});
 
-async function testGenerateDefaultsSummary() {
+test('testGenerateDefaultsSummary', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.summary.format, 'markdown');
   assert.strictEqual(config.summary.test_command_format, 'shell');
@@ -213,130 +214,130 @@ async function testGenerateDefaultsSummary() {
   assert.deepStrictEqual(config.summary.sections, [
     'what_was_built', 'what_changed', 'category_results', 'how_to_test', 'next_steps',
   ]);
-}
+});
 
-async function testGenerateDefaultsAgentsTenRoles() {
+test('testGenerateDefaultsAgentsTenRoles', async () => {
   const config = generateDefaults('api');
   const agentKeys = Object.keys(config.agents.agents);
   assert.strictEqual(agentKeys.length, 10);
   for (const role of ['designer', 'explorer', 'planner', 'tester', 'builder', 'debugger', 'evaluator', 'critic', 'historian', 'facilitator']) {
     assert.ok(agentKeys.includes(role), `missing agent role: ${role}`);
   }
-}
+});
 
-async function testGenerateDefaultsExplorerDisabled() {
+test('testGenerateDefaultsExplorerDisabled', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.agents.agents.explorer.active, false);
   assert.strictEqual(config.agents.agents.explorer.conditional, true);
   assert.strictEqual(config.agents.agents.explorer.condition, 'user_initiated');
-}
+});
 
-async function testGenerateDefaultsBuilderMaxTokens() {
+test('testGenerateDefaultsBuilderMaxTokens', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.agents.agents.builder.max_tokens, 16000);
-}
+});
 
-async function testGenerateDefaultsCriticConditional() {
+test('testGenerateDefaultsCriticConditional', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.agents.agents.critic.conditional, true);
   assert.strictEqual(config.agents.agents.critic.condition, 'depth_deep_or_research');
   assert.strictEqual(config.agents.agents.critic.trigger_node, 'design');
-}
+});
 
-async function testGenerateDefaultsFacilitatorNullNode() {
+test('testGenerateDefaultsFacilitatorNullNode', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.agents.agents.facilitator.node, null);
   assert.deepStrictEqual(config.agents.agents.facilitator.session_types, ['discovery', 'chat']);
-}
+});
 
-async function testGenerateDefaultsHistorianAppendOnly() {
+test('testGenerateDefaultsHistorianAppendOnly', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.agents.agents.historian.append_only, true);
-}
+});
 
-async function testGenerateDefaultsTesterConstraints() {
+test('testGenerateDefaultsTesterConstraints', async () => {
   const config = generateDefaults('api');
   assert.deepStrictEqual(config.agents.agents.tester.constraints, ['never_sees_builder_output']);
-}
+});
 
-async function testGenerateDefaultsProviders() {
+test('testGenerateDefaultsProviders', async () => {
   const config = generateDefaults('api');
   assert.ok(config.agents.providers.openai);
   assert.ok(config.agents.providers.openrouter);
   assert.ok(config.agents.providers.glm);
   assert.ok(config.agents.providers.zai);
   assert.ok(config.agents.providers.anthropic);
-}
+});
 
-async function testGenerateDefaultsStaticAnalysis() {
+test('testGenerateDefaultsStaticAnalysis', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.validation.static_analysis.lint.enabled, true);
   assert.strictEqual(config.validation.static_analysis.typecheck.enabled, true);
   assert.strictEqual(config.validation.static_analysis.complexity.enabled, true);
   assert.strictEqual(config.validation.static_analysis.lint.pass_criteria.max_errors, 0);
   assert.strictEqual(config.validation.static_analysis.complexity.pass_criteria.max_complexity, 15);
-}
+});
 
-async function testGenerateDefaultsContainer() {
+test('testGenerateDefaultsContainer', async () => {
   const config = generateDefaults('api');
   assert.strictEqual(config.validation.container.base_image, 'node:20-slim');
   assert.strictEqual(config.validation.container.install_command, 'npm install');
   assert.strictEqual(config.validation.container.timeout_ms, 120000);
-}
+});
 
-async function testDeepMergeFlat() {
+test('testDeepMergeFlat', async () => {
   const base = { a: 1, b: 2, c: 3 };
   const result = deepMerge(base, { b: 20 });
   assert.deepStrictEqual(result, { a: 1, b: 20, c: 3 });
-}
+});
 
-async function testDeepMergeNested() {
+test('testDeepMergeNested', async () => {
   const base = { a: { x: 1, y: 2 }, b: 3 };
   const result = deepMerge(base, { a: { y: 20 } });
   assert.deepStrictEqual(result, { a: { x: 1, y: 20 }, b: 3 });
-}
+});
 
-async function testDeepMergeArrayReplaceWholesale() {
+test('testDeepMergeArrayReplaceWholesale', async () => {
   const base = { items: [1, 2, 3] };
   const result = deepMerge(base, { items: [10, 20] });
   assert.deepStrictEqual(result, { items: [10, 20] });
-}
+});
 
-async function testDeepMergeUndefinedSkipped() {
+test('testDeepMergeUndefinedSkipped', async () => {
   const base = { a: 1, b: 2, c: 3 };
   const result = deepMerge(base, { b: undefined, c: 30 });
   assert.deepStrictEqual(result, { a: 1, b: 2, c: 30 });
-}
+});
 
-async function testDeepMergeDeeplyNested() {
+test('testDeepMergeDeeplyNested', async () => {
   const base = { a: { b: { c: { d: 1 } } } };
   const result = deepMerge(base, { a: { b: { c: { d: 99 } } } });
   assert.deepStrictEqual(result, { a: { b: { c: { d: 99 } } } });
-}
+});
 
-async function testDeepMergeNullOverride() {
+test('testDeepMergeNullOverride', async () => {
   const base = { a: { x: 1 }, b: 2 };
   const result = deepMerge(base, { a: null });
   assert.deepStrictEqual(result, { a: null, b: 2 });
-}
+});
 
-async function testMergeRuleLayersNoOverrides() {
+test('testMergeRuleLayersNoOverrides', async () => {
   const defaults = generateDefaults('api');
   const result = mergeRuleLayers(defaults, {});
   assert.strictEqual(result.planning.depth, 'standard');
   assert.strictEqual(result.planning.max_iterations, 5);
-}
+});
 
-async function testMergeRuleLayersWithRules() {
+test('testMergeRuleLayersWithRules', async () => {
   const defaults = generateDefaults('api');
   const result = mergeRuleLayers(defaults, {
     planning: { max_iterations: 3 } as any,
   });
   assert.strictEqual(result.planning.max_iterations, 3);
   assert.strictEqual(result.planning.depth, 'standard');
-}
+});
 
-async function testMergeRuleLayersWithOverrides() {
+test('testMergeRuleLayersWithOverrides', async () => {
   const defaults = generateDefaults('api');
   const result = mergeRuleLayers(
     defaults,
@@ -344,70 +345,70 @@ async function testMergeRuleLayersWithOverrides() {
     { planning: { max_iterations: 7 } as any }
   );
   assert.strictEqual(result.planning.max_iterations, 7);
-}
+});
 
-async function testMergeRuleLayersInvalidThrows() {
+test('testMergeRuleLayersInvalidThrows', async () => {
   const defaults = generateDefaults('api');
   assert.throws(() => {
     mergeRuleLayers(defaults, { planning: { depth: 'invalid' } as any });
   }, RuleFileError);
-}
+});
 
-async function testValidateRuleFileValidPlanning() {
+test('testValidateRuleFileValidPlanning', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('planning', config.planning);
   assert.strictEqual(result.success, true);
   assert.strictEqual(result.errors.length, 0);
-}
+});
 
-async function testValidateRuleFileInvalidPlanning() {
+test('testValidateRuleFileInvalidPlanning', async () => {
   const result = validateRuleFile('planning', { depth: 'bad', max_iterations: -1 });
   assert.strictEqual(result.success, false);
   assert.ok(result.errors.length > 0);
-}
+});
 
-async function testValidateRuleFileValidAgents() {
+test('testValidateRuleFileValidAgents', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('agents', config.agents);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileInvalidAgents() {
+test('testValidateRuleFileInvalidAgents', async () => {
   const result = validateRuleFile('agents', { defaults: {} });
   assert.strictEqual(result.success, false);
-}
+});
 
-async function testValidateRuleFileValidArtifacts() {
+test('testValidateRuleFileValidArtifacts', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('artifacts', config.artifacts);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileValidValidation() {
+test('testValidateRuleFileValidValidation', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('validation', config.validation);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileValidExit() {
+test('testValidateRuleFileValidExit', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('exit', config.exit);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileValidUserValidation() {
+test('testValidateRuleFileValidUserValidation', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('user_validation', config.user_validation);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileValidSummary() {
+test('testValidateRuleFileValidSummary', async () => {
   const config = generateDefaults('api');
   const result = validateRuleFile('summary', config.summary);
   assert.strictEqual(result.success, true);
-}
+});
 
-async function testValidateRuleFileAllTypes() {
+test('testValidateRuleFileAllTypes', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     for (const fileName of RULE_FILE_NAMES) {
@@ -416,17 +417,17 @@ async function testValidateRuleFileAllTypes() {
       assert.strictEqual(result.success, true, `validateRuleFile('${fileName}', '${pt}') failed`);
     }
   }
-}
+});
 
-async function testValidateCrossFileConsistencyClean() {
+test('testValidateCrossFileConsistencyClean', async () => {
   for (const pt of PROJECT_TYPES) {
     const config = generateDefaults(pt);
     const warnings = validateCrossFileConsistency(config);
     assert.strictEqual(warnings.length, 0, `unexpected warnings for ${pt}: ${JSON.stringify(warnings)}`);
   }
-}
+});
 
-async function testValidateCrossFileConsistencyUnknownGenerator() {
+test('testValidateCrossFileConsistencyUnknownGenerator', async () => {
   const config = generateDefaults('api');
   config.artifacts.artifacts.push({
     id: 'bogus',
@@ -439,43 +440,43 @@ async function testValidateCrossFileConsistencyUnknownGenerator() {
   const warnings = validateCrossFileConsistency(config);
   const found = warnings.filter(w => w.type === 'unknown_generator');
   assert.strictEqual(found.length, 1);
-}
+});
 
-async function testValidateCrossFileConsistencyDuplicateArtifact() {
+test('testValidateCrossFileConsistencyDuplicateArtifact', async () => {
   const config = generateDefaults('api');
   config.artifacts.artifacts.push({ ...config.artifacts.artifacts[0] });
   const warnings = validateCrossFileConsistency(config);
   const found = warnings.filter(w => w.type === 'duplicate_artifact');
   assert.strictEqual(found.length, 1);
-}
+});
 
-async function testValidateCrossFileConsistencyDuplicateCategory() {
+test('testValidateCrossFileConsistencyDuplicateCategory', async () => {
   const config = generateDefaults('api');
   config.validation.categories.push({ ...config.validation.categories[0] });
   const warnings = validateCrossFileConsistency(config);
   const found = warnings.filter(w => w.type === 'duplicate_category');
   assert.strictEqual(found.length, 1);
-}
+});
 
-async function testValidateCrossFileConsistencyDepthCriticMismatch() {
+test('testValidateCrossFileConsistencyDepthCriticMismatch', async () => {
   const config = generateDefaults('api');
   config.planning.critic_enabled = true;
   config.agents.agents.critic.active = false;
   const warnings = validateCrossFileConsistency(config);
   const mismatch = warnings.find(w => w.type === 'depth_critic_mismatch');
   assert.ok(mismatch, 'expected depth_critic_mismatch warning');
-}
+});
 
-async function testRuleFileErrorClass() {
+test('testRuleFileErrorClass', async () => {
   const err = new RuleFileError('test_code', 'test message', [{ path: 'a.b', message: 'bad' }]);
   assert.strictEqual(err.name, 'RuleFileError');
   assert.strictEqual(err.code, 'test_code');
   assert.strictEqual(err.message, 'test message');
   assert.strictEqual(err.errors.length, 1);
   assert.ok(err instanceof Error);
-}
+});
 
-async function testMergeArrayReplaceWholesale() {
+test('testMergeArrayReplaceWholesale', async () => {
   const defaults = generateDefaults('api');
   const customCategories: ValidationRuleCategory[] = [
     {
@@ -495,103 +496,13 @@ async function testMergeArrayReplaceWholesale() {
   });
   assert.strictEqual(result.validation.categories.length, 1);
   assert.strictEqual(result.validation.categories[0].name, 'custom_cat');
-}
+});
 
-async function testMergeDoesNotMutateDefaults() {
+test('testMergeDoesNotMutateDefaults', async () => {
   const original = generateDefaults('api');
   const origIterations = original.planning.max_iterations;
   const origDepth = original.planning.depth;
   mergeRuleLayers(original, { planning: { max_iterations: 10 } as any });
   assert.strictEqual(original.planning.max_iterations, origIterations);
   assert.strictEqual(original.planning.depth, origDepth);
-}
-
-async function runAllTests() {
-  console.log('Running Phase D (Rule Files) tests...');
-
-  const tests = [
-    { name: 'Constants: rule file names', fn: testConstantsRuleFileNames },
-    { name: 'Constants: loading order', fn: testConstantsLoadingOrder },
-
-    { name: 'Generate defaults: all types valid', fn: testGenerateDefaultsAllTypesValid },
-    { name: 'Generate defaults: planning depth per type', fn: testGenerateDefaultsPlanningDepth },
-    { name: 'Generate defaults: research planning overrides', fn: testGenerateDefaultsPlanningResearchOverrides },
-    { name: 'Generate defaults: custom planning overrides', fn: testGenerateDefaultsPlanningCustomOverrides },
-    { name: 'Generate defaults: reasoning passes', fn: testGenerateDefaultsPlanningReasoningPasses },
-    { name: 'Generate defaults: category counts', fn: testGenerateDefaultsCategoryCounts },
-    { name: 'Generate defaults: correctness first category', fn: testGenerateDefaultsCorrectnessFirstCategory },
-    { name: 'Generate defaults: api categories', fn: testGenerateDefaultsApiCategories },
-    { name: 'Generate defaults: ui categories', fn: testGenerateDefaultsUiCategories },
-    { name: 'Generate defaults: library categories', fn: testGenerateDefaultsLibraryCategories },
-    { name: 'Generate defaults: research categories', fn: testGenerateDefaultsResearchCategories },
-    { name: 'Generate defaults: custom categories', fn: testGenerateDefaultsCustomCategories },
-
-    { name: 'Generate defaults: artifact ids', fn: testGenerateDefaultsArtifacts },
-    { name: 'Generate defaults: plan artifact', fn: testGenerateDefaultsPlanArtifact },
-    { name: 'Generate defaults: decisions append-only', fn: testGenerateDefaultsDecisionsAppendOnly },
-    { name: 'Generate defaults: generated outputs', fn: testGenerateDefaultsGeneratedOutputs },
-
-    { name: 'Generate defaults: exit config', fn: testGenerateDefaultsExitConfig },
-    { name: 'Generate defaults: user validation', fn: testGenerateDefaultsUserValidation },
-    { name: 'Generate defaults: summary config', fn: testGenerateDefaultsSummary },
-
-    { name: 'Generate defaults: 10 agent roles', fn: testGenerateDefaultsAgentsTenRoles },
-    { name: 'Generate defaults: explorer disabled', fn: testGenerateDefaultsExplorerDisabled },
-    { name: 'Generate defaults: builder max tokens', fn: testGenerateDefaultsBuilderMaxTokens },
-    { name: 'Generate defaults: critic conditional', fn: testGenerateDefaultsCriticConditional },
-    { name: 'Generate defaults: facilitator null node', fn: testGenerateDefaultsFacilitatorNullNode },
-    { name: 'Generate defaults: historian append-only', fn: testGenerateDefaultsHistorianAppendOnly },
-    { name: 'Generate defaults: tester constraints', fn: testGenerateDefaultsTesterConstraints },
-    { name: 'Generate defaults: providers', fn: testGenerateDefaultsProviders },
-
-    { name: 'Generate defaults: static analysis', fn: testGenerateDefaultsStaticAnalysis },
-    { name: 'Generate defaults: container', fn: testGenerateDefaultsContainer },
-
-    { name: 'Deep merge: flat', fn: testDeepMergeFlat },
-    { name: 'Deep merge: nested', fn: testDeepMergeNested },
-    { name: 'Deep merge: array wholesale', fn: testDeepMergeArrayReplaceWholesale },
-    { name: 'Deep merge: undefined skipped', fn: testDeepMergeUndefinedSkipped },
-    { name: 'Deep merge: deeply nested', fn: testDeepMergeDeeplyNested },
-    { name: 'Deep merge: null override', fn: testDeepMergeNullOverride },
-
-    { name: 'Merge rule layers: no overrides', fn: testMergeRuleLayersNoOverrides },
-    { name: 'Merge rule layers: with rules', fn: testMergeRuleLayersWithRules },
-    { name: 'Merge rule layers: with overrides', fn: testMergeRuleLayersWithOverrides },
-    { name: 'Merge rule layers: invalid throws', fn: testMergeRuleLayersInvalidThrows },
-    { name: 'Merge: array replace wholesale', fn: testMergeArrayReplaceWholesale },
-    { name: 'Merge: does not mutate defaults', fn: testMergeDoesNotMutateDefaults },
-
-    { name: 'Validate rule file: valid planning', fn: testValidateRuleFileValidPlanning },
-    { name: 'Validate rule file: invalid planning', fn: testValidateRuleFileInvalidPlanning },
-    { name: 'Validate rule file: valid agents', fn: testValidateRuleFileValidAgents },
-    { name: 'Validate rule file: invalid agents', fn: testValidateRuleFileInvalidAgents },
-    { name: 'Validate rule file: valid artifacts', fn: testValidateRuleFileValidArtifacts },
-    { name: 'Validate rule file: valid validation', fn: testValidateRuleFileValidValidation },
-    { name: 'Validate rule file: valid exit', fn: testValidateRuleFileValidExit },
-    { name: 'Validate rule file: valid user validation', fn: testValidateRuleFileValidUserValidation },
-    { name: 'Validate rule file: valid summary', fn: testValidateRuleFileValidSummary },
-    { name: 'Validate rule file: all files all types', fn: testValidateRuleFileAllTypes },
-
-    { name: 'Cross-file: clean config', fn: testValidateCrossFileConsistencyClean },
-    { name: 'Cross-file: unknown generator', fn: testValidateCrossFileConsistencyUnknownGenerator },
-    { name: 'Cross-file: duplicate artifact', fn: testValidateCrossFileConsistencyDuplicateArtifact },
-    { name: 'Cross-file: duplicate category', fn: testValidateCrossFileConsistencyDuplicateCategory },
-    { name: 'Cross-file: depth critic mismatch', fn: testValidateCrossFileConsistencyDepthCriticMismatch },
-
-    { name: 'RuleFileError class', fn: testRuleFileErrorClass },
-  ];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      throw error;
-    }
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase D tests passed!`);
-}
-
-runAllTests();
+});

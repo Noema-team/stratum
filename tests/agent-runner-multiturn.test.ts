@@ -92,7 +92,7 @@ function makeLoop(
     model: 'claude-sonnet-4-6',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -131,7 +131,7 @@ test('Multi-turn: two turns — agent calls read_file, gets result, returns SLE-
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -193,7 +193,7 @@ test('Multi-turn: tool call with path outside read allowlist → tool returns er
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -223,7 +223,7 @@ test('Multi-turn: list_directory returns file list correctly', async () => {
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -258,7 +258,7 @@ test('Multi-turn: read_file returns file contents correctly', async () => {
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -308,7 +308,7 @@ test('Multi-turn: turn count written to run artifacts', async () => {
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -318,7 +318,7 @@ test('Multi-turn: turn count written to run artifacts', async () => {
 
   assert.strictEqual(result.turns_taken, 2);
   // Metadata file should have been written
-  const metaPath = join(root, '.sle', 'runs', '1-1', 'node-outputs', 'design-loop.json');
+  const metaPath = join(root, '.sle', 'runs', 'test-run-1', '1', 'node-outputs', 'design-loop.json');
   const meta = JSON.parse(await fs.readFile(metaPath, 'utf-8'));
   assert.strictEqual(meta.turns_taken, 2);
 
@@ -338,7 +338,7 @@ test('Multi-turn: tool call log written to run artifacts', async () => {
     model: 'test',
     projectRoot: root,
     role: 'designer',
-    cycleNumber: 1,
+    workflowRunId: 'test-run-1',
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
@@ -346,7 +346,7 @@ test('Multi-turn: tool call log written to run artifacts', async () => {
 
   await loop.run('System', 'With tool call.');
 
-  const metaPath = join(root, '.sle', 'runs', '1-1', 'node-outputs', 'design-loop.json');
+  const metaPath = join(root, '.sle', 'runs', 'test-run-1', '1', 'node-outputs', 'design-loop.json');
   const meta = JSON.parse(await fs.readFile(metaPath, 'utf-8'));
   assert.strictEqual(meta.tool_calls.length, 1);
   assert.strictEqual(meta.tool_calls[0].tool, 'read_file');

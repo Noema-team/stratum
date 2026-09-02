@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { CycleService } from '../src/cycle-service.js';
 import { StateMachine } from '../src/state-machine.js';
@@ -12,15 +13,15 @@ class InMemoryRunArtifactManager implements RunArtifactManager {
   private manifests = new Map<string, RunManifest>();
   private packs = new Map<string, ContextPack>();
 
-  private key(c: number, i: number): string { return `${c}-${i}`; }
+  private key(c: string, i: number): string { return `${c}-${i}`; }
 
-  runDir(c: number, i: number): string { return `.sle/runs/${this.key(c, i)}`; }
-  async createRunDir(c: number, i: number): Promise<string> {
+  runDir(c: string, i: number): string { return `.sle/runs/${this.key(c, i)}`; }
+  async createRunDir(c: string, i: number): Promise<string> {
     this.dirs.add(this.key(c, i));
     return this.runDir(c, i);
   }
   async createManifest(params: { cycleId: string; cycleNumber: number; iteration: number; planningDepth: import('../src/types.js').PlanningDepth }): Promise<void> {
-    this.manifests.set(this.key(params.cycleNumber, params.iteration), {
+    this.manifests.set(this.key(params.cycleId, params.iteration), {
       cycle_id: params.cycleId,
       cycle_number: params.cycleNumber,
       iteration: params.iteration,
@@ -30,36 +31,38 @@ class InMemoryRunArtifactManager implements RunArtifactManager {
       nodes: [],
     });
   }
-  async readManifest(c: number, i: number): Promise<RunManifest> {
+  async readManifest(c: string, i: number): Promise<RunManifest> {
     const m = this.manifests.get(this.key(c, i));
     if (!m) throw new Error(`No manifest for ${c}-${i}`);
     return JSON.parse(JSON.stringify(m)) as RunManifest;
   }
-  async updateManifest(c: number, i: number, updater: (m: RunManifest) => RunManifest): Promise<void> {
+  async updateManifest(c: string, i: number, updater: (m: RunManifest) => RunManifest): Promise<void> {
     const m = await this.readManifest(c, i);
     this.manifests.set(this.key(c, i), updater(m));
   }
-  async updateNodeStatus(c: number, i: number, nodeId: string, update: Record<string, unknown>): Promise<void> {
+  async updateNodeStatus(c: string, i: number, nodeId: string, update: Record<string, unknown>): Promise<void> {
     await this.updateManifest(c, i, (m) => ({
       ...m,
       nodes: m.nodes.map((n) => n.id === nodeId ? { ...n, ...update } : n),
     }));
   }
-  async finalizeManifest(c: number, i: number, outcome: 'complete' | 'halted'): Promise<void> {
+  async finalizeManifest(c: string, i: number, outcome: 'complete' | 'halted'): Promise<void> {
     await this.updateManifest(c, i, (m) => ({ ...m, outcome, completed_at: new Date().toISOString() }));
   }
-  async writeContextPack(c: number, i: number, pack: ContextPack): Promise<void> {
+  async writeContextPack(c: string, i: number, pack: ContextPack): Promise<void> {
     this.packs.set(this.key(c, i), pack);
   }
-  async readContextPack(c: number, i: number): Promise<ContextPack> {
+  async readContextPack(c: string, i: number): Promise<ContextPack> {
     return this.packs.get(this.key(c, i)) ?? {};
   }
-  async writeNodeOutput(_c: number, _i: number, _nodeId: string, _content: string): Promise<void> {}
-  async dirExists(c: number, i: number): Promise<boolean> {
+  async writeNodeOutput(_c: string, _i: number, _nodeId: string, _content: string): Promise<void> {}
+  async dirExists(c: string, i: number): Promise<boolean> {
     return this.dirs.has(this.key(c, i));
   }
+  async writeFailureReport(_c: string, _i: number, _report: unknown): Promise<void> {}
+  async readFailureReport(_c: string, _i: number): Promise<null> { return null; }
   getDirs(): Set<string> { return this.dirs; }
-  getManifest(c: number, i: number): RunManifest | undefined { return this.manifests.get(this.key(c, i)); }
+  getManifest(c: string, i: number): RunManifest | undefined { return this.manifests.get(this.key(c, i)); }
 }
 
 // ─── In-memory map manager ───────────────────────────────────────────────────
@@ -175,7 +178,7 @@ function createService(map: RuntimeMap): {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-async function testStartCycleWithDiscoveryComplete() {
+test('testStartCycleWithDiscoveryComplete', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, mgr, ram } = createService(map);
 
@@ -198,8 +201,8 @@ async function testStartCycleWithDiscoveryComplete() {
   assert.strictEqual(after.cycle.intent, 'Add user authentication to the API');
 
   // Phase B: run dir created and manifest written
-  assert.ok(ram.getDirs().has('1-1'));
-  const manifest = ram.getManifest(1, 1);
+  assert.ok(ram.getDirs().has(`${result.cycle_id}-1`));
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.cycle_id, result.cycle_id);
   assert.strictEqual(manifest!.outcome, 'in_progress');
@@ -214,9 +217,9 @@ async function testStartCycleWithDiscoveryComplete() {
   assert.ok(dag!.nodes['SCOPING'] !== undefined);
   assert.strictEqual(dag!.nodes['SCOPING'].status, 'pending');
   assert.ok(dag!.nodes['SNAPSHOT'] !== undefined);
-}
+});
 
-async function testStartCycleCustomDepth() {
+test('testStartCycleCustomDepth', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, mgr, ram } = createService(map);
 
@@ -228,9 +231,9 @@ async function testStartCycleCustomDepth() {
   assert.strictEqual(result.planning_depth, 'deep');
   const after = mgr.getMap();
   assert.strictEqual(after.cycle.planning_depth, 'deep');
-}
+});
 
-async function testStartCycleWithForceBypassesDiscovery() {
+test('testStartCycleWithForceBypassesDiscovery', async () => {
   const map = makeBaseMap({ discoveryComplete: false });
   const { svc, mgr, ram } = createService(map);
 
@@ -242,9 +245,9 @@ async function testStartCycleWithForceBypassesDiscovery() {
   assert.strictEqual(result.cycle_number, 1);
   const after = mgr.getMap();
   assert.strictEqual(after.meta.status, 'cycling');
-}
+});
 
-async function testStartCycleRequiresDiscovery() {
+test('testStartCycleRequiresDiscovery', async () => {
   const map = makeBaseMap({ discoveryComplete: false });
   const { svc } = createService(map);
 
@@ -255,9 +258,9 @@ async function testStartCycleRequiresDiscovery() {
     const error = err as Error & { code?: string };
     assert.strictEqual(error.code, 'discovery_required');
   }
-}
+});
 
-async function testStartCycleAlreadyActive() {
+test('testStartCycleAlreadyActive', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   map.meta.status = 'cycling';
   map.meta.cycle = 1;
@@ -273,9 +276,9 @@ async function testStartCycleAlreadyActive() {
     const error = err as Error & { code?: string };
     assert.strictEqual(error.code, 'cycle_already_active');
   }
-}
+});
 
-async function testStartCycleIntentTooShort() {
+test('testStartCycleIntentTooShort', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc } = createService(map);
 
@@ -286,9 +289,9 @@ async function testStartCycleIntentTooShort() {
     const error = err as Error & { code?: string };
     assert.strictEqual(error.code, 'invalid_intent');
   }
-}
+});
 
-async function testGetCurrent() {
+test('testGetCurrent', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   map.meta.status = 'cycling';
   map.meta.cycle = 1;
@@ -309,9 +312,9 @@ async function testGetCurrent() {
   assert.strictEqual(record.planning_depth, 'deep');
   assert.strictEqual(record.intent, 'Add user authentication to the API');
   assert.strictEqual(record.outcome, 'cycling');
-}
+});
 
-async function testHaltCycle() {
+test('testHaltCycle', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   map.meta.status = 'cycling';
   map.meta.cycle = 1;
@@ -325,9 +328,9 @@ async function testHaltCycle() {
   const after = mgr.getMap();
   assert.strictEqual(after.meta.status, 'halted');
   assert.strictEqual(after.cycle.outcome, 'halted');
-}
+});
 
-async function testHaltWhenNotCycling() {
+test('testHaltWhenNotCycling', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc } = createService(map);
 
@@ -338,9 +341,9 @@ async function testHaltWhenNotCycling() {
     const error = err as Error & { code?: string };
     assert.ok(error.code !== undefined);
   }
-}
+});
 
-async function testAcknowledgeHalt() {
+test('testAcknowledgeHalt', async () => {
   const map = makeHaltedMap();
   const { svc, mgr, ram } = createService(map);
 
@@ -349,9 +352,9 @@ async function testAcknowledgeHalt() {
   const after = mgr.getMap();
   assert.strictEqual(after.meta.status, 'idle');
   assert.strictEqual(after.meta.active_cycle_id ?? null, null);
-}
+});
 
-async function testAcknowledgeHaltWhenNotHalted() {
+test('testAcknowledgeHaltWhenNotHalted', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc } = createService(map);
 
@@ -362,9 +365,9 @@ async function testAcknowledgeHaltWhenNotHalted() {
     const error = err as Error & { code?: string };
     assert.ok(error.code !== undefined);
   }
-}
+});
 
-async function testResumeCycle() {
+test('testResumeCycle', async () => {
   const map = makeHaltedMap();
   const { svc, mgr, ram } = createService(map);
 
@@ -374,9 +377,9 @@ async function testResumeCycle() {
   assert.strictEqual(after.meta.status, 'cycling');
   assert.strictEqual(after.cycle.outcome, 'cycling');
   assert.strictEqual(after.cycle.iteration, 2);
-}
+});
 
-async function testResumeWhenNotHalted() {
+test('testResumeWhenNotHalted', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc } = createService(map);
 
@@ -387,9 +390,9 @@ async function testResumeWhenNotHalted() {
     const error = err as Error & { code?: string };
     assert.ok(error.code !== undefined);
   }
-}
+});
 
-async function testFullCycleLifecycle() {
+test('testFullCycleLifecycle', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, mgr, ram } = createService(map);
 
@@ -410,9 +413,9 @@ async function testFullCycleLifecycle() {
   await svc.acknowledgeHalt();
   assert.strictEqual(mgr.getMap().meta.status, 'idle');
   assert.strictEqual(mgr.getMap().meta.active_cycle_id ?? null, null);
-}
+});
 
-async function testSecondCycleGetsNewId() {
+test('testSecondCycleGetsNewId', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, mgr, ram } = createService(map);
 
@@ -425,11 +428,11 @@ async function testSecondCycleGetsNewId() {
   assert.notStrictEqual(first.cycle_id, second.cycle_id);
   assert.strictEqual(second.cycle_number, 2);
   assert.strictEqual(mgr.getMap().meta.active_cycle_id, second.cycle_id);
-}
+});
 
 // ─── Phase B tests ───────────────────────────────────────────────────────────
 
-async function testDAGStateInitializedOnStart() {
+test('testDAGStateInitializedOnStart', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, mgr } = createService(map);
 
@@ -451,9 +454,9 @@ async function testDAGStateInitializedOnStart() {
   for (const node of Object.values(dagState!.nodes)) {
     assert.strictEqual(node.status, 'pending');
   }
-}
+});
 
-async function testDAGStateClearedOnAcknowledge() {
+test('testDAGStateClearedOnAcknowledge', async () => {
   const map = makeHaltedMap();
   const { svc, mgr } = createService(map);
 
@@ -462,16 +465,16 @@ async function testDAGStateClearedOnAcknowledge() {
   const dagState = await svc.getDAGState();
   assert.strictEqual(dagState, null);
   assert.strictEqual(mgr.getMap().meta.dag, undefined);
-}
+});
 
-async function testGetCurrentRunReturnsNullWhenNotCycling() {
+test('testGetCurrentRunReturnsNullWhenNotCycling', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc } = createService(map);
   const run = await svc.getCurrentRun();
   assert.strictEqual(run, null);
-}
+});
 
-async function testGetCurrentRunReturnsManifestWhenCycling() {
+test('testGetCurrentRunReturnsManifestWhenCycling', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, ram } = createService(map);
 
@@ -483,84 +486,31 @@ async function testGetCurrentRunReturnsManifestWhenCycling() {
   assert.strictEqual(run!.cycle_number, 1);
   assert.strictEqual(run!.iteration, 1);
   assert.strictEqual(run!.outcome, 'in_progress');
-}
+});
 
-async function testRunDirCreatedOnStart() {
+test('testRunDirCreatedOnStart', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, ram } = createService(map);
 
-  await svc.start({ intent: 'Add user authentication to the API' });
+  const result = await svc.start({ intent: 'Add user authentication to the API' });
 
-  assert.ok(ram.getDirs().has('1-1'), 'Run dir 1-1 should be created');
-  const manifest = ram.getManifest(1, 1);
+  assert.ok(ram.getDirs().has(`${result.cycle_id}-1`), 'Run dir should be created');
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.planning_depth, 'standard');
-}
+});
 
-async function testHaltFinalizesManifest() {
+test('testHaltFinalizesManifest', async () => {
   const map = makeBaseMap({ discoveryComplete: true });
   const { svc, ram } = createService(map);
 
-  await svc.start({ intent: 'Add user authentication to the API' });
+  const result = await svc.start({ intent: 'Add user authentication to the API' });
   await svc.halt();
 
-  const manifest = ram.getManifest(1, 1);
+  const manifest = ram.getManifest(result.cycle_id, 1);
   assert.ok(manifest !== undefined);
   assert.strictEqual(manifest!.outcome, 'halted');
   assert.ok(manifest!.completed_at !== undefined);
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  console.log('Running Phase A+B (Cycle Service + Run Artifacts) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'start: discovery complete → cycling state', fn: testStartCycleWithDiscoveryComplete },
-    { name: 'start: custom planning depth', fn: testStartCycleCustomDepth },
-    { name: 'start: force bypasses discovery check', fn: testStartCycleWithForceBypassesDiscovery },
-    { name: 'start: error discovery_required', fn: testStartCycleRequiresDiscovery },
-    { name: 'start: error cycle_already_active', fn: testStartCycleAlreadyActive },
-    { name: 'start: error invalid_intent (too short)', fn: testStartCycleIntentTooShort },
-    { name: 'getCurrent: returns cycle record', fn: testGetCurrent },
-    { name: 'halt: cycling → halted', fn: testHaltCycle },
-    { name: 'halt: error when not cycling', fn: testHaltWhenNotCycling },
-    { name: 'acknowledgeHalt: halted → idle, clears cycle_id', fn: testAcknowledgeHalt },
-    { name: 'acknowledgeHalt: error when not halted', fn: testAcknowledgeHaltWhenNotHalted },
-    { name: 'resume: halted → cycling, iteration preserved', fn: testResumeCycle },
-    { name: 'resume: error when not halted', fn: testResumeWhenNotHalted },
-    { name: 'full lifecycle: start → halt → resume → halt → acknowledge', fn: testFullCycleLifecycle },
-    { name: 'second cycle gets new UUID and incremented number', fn: testSecondCycleGetsNewId },
-    { name: 'DAG state initialized on cycle start', fn: testDAGStateInitializedOnStart },
-    { name: 'DAG state cleared on acknowledge-halt', fn: testDAGStateClearedOnAcknowledge },
-    { name: 'getCurrentRun: null when not cycling', fn: testGetCurrentRunReturnsNullWhenNotCycling },
-    { name: 'getCurrentRun: manifest when cycling', fn: testGetCurrentRunReturnsManifestWhenCycling },
-    { name: 'run dir created on cycle start', fn: testRunDirCreatedOnStart },
-    { name: 'halt finalizes manifest with halted outcome', fn: testHaltFinalizesManifest },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase A tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-      console.error(`    ${f.error instanceof Error ? f.error.message : String(f.error)}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase A tests passed!`);
-}
-
-runAllTests();

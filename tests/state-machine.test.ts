@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   validateTransition,
@@ -178,7 +179,7 @@ function createSM(map: RuntimeMap): { sm: StateMachine; mgr: InMemoryMapManager 
   return { sm, mgr };
 }
 
-async function testT1Valid() {
+test('testT1Valid', async () => {
   const map = makeIdleMap();
   const { sm, mgr } = createSM(map);
 
@@ -193,9 +194,9 @@ async function testT1Valid() {
   assert.strictEqual(after.meta.status, 'discovering');
   assert.strictEqual(after.discovery.status, 'in_progress');
   assert.strictEqual(after.discovery.current_round, 1);
-}
+});
 
-async function testT1InvalidState() {
+test('testT1InvalidState', async () => {
   const map = makeCyclingMap();
   const { sm } = createSM(map);
   const result = await sm.startDiscovery();
@@ -203,16 +204,16 @@ async function testT1InvalidState() {
   assert.strictEqual(result.success, false);
   assert.strictEqual(result.error!.code, 'invalid_transition');
   assert.strictEqual(result.from, 'cycling');
-}
+});
 
-async function testT1FailsDiscoveryComplete() {
+test('testT1FailsDiscoveryComplete', async () => {
   const map = makeIdleDiscoveryCompleteMap();
   const validation = validateTransition('T1', map);
   assert.strictEqual(validation.valid, false);
   assert.strictEqual(validation.errorCode, 'invalid_transition');
-}
+});
 
-async function testT2Valid() {
+test('testT2Valid', async () => {
   const map = makeDiscoveringMap();
   const { sm, mgr } = createSM(map);
 
@@ -228,24 +229,24 @@ async function testT2Valid() {
   assert.strictEqual(after.discovery.status, 'complete');
   assert.ok(typeof after.discovery.completed_at === 'string');
   assert.ok(after.discovery.completed_at!.length > 0);
-}
+});
 
-async function testT2InvalidState() {
+test('testT2InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T2', map);
   assert.strictEqual(validation.valid, false);
   assert.strictEqual(validation.errorCode, 'invalid_transition');
-}
+});
 
-async function testT2PreconditionNotTerminalRound() {
+test('testT2PreconditionNotTerminalRound', async () => {
   const map = makeDiscoveringMap();
   map.discovery.total_rounds = 4;
   map.discovery.current_round = 1;
   const validation = validateTransition('T2', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT3Valid() {
+test('testT3Valid', async () => {
   const map = makeIdleDiscoveryCompleteMap();
   const originalCycle = map.meta.cycle;
   const { sm, mgr } = createSM(map);
@@ -271,23 +272,23 @@ async function testT3Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT3InvalidState() {
+test('testT3InvalidState', async () => {
   const map = makeCyclingMap();
   const validation = validateTransition('T3', map);
   assert.strictEqual(validation.valid, false);
   assert.strictEqual(validation.errorCode, 'invalid_transition');
-}
+});
 
-async function testT3DiscoveryGuard() {
+test('testT3DiscoveryGuard', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T3', map);
   assert.strictEqual(validation.valid, false);
   assert.strictEqual(validation.errorCode, 'discovery_required');
-}
+});
 
-async function testT4Valid() {
+test('testT4Valid', async () => {
   const map = makeCyclingMap({ iteration: 1 });
   const { sm, mgr } = createSM(map);
 
@@ -304,22 +305,22 @@ async function testT4Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT4InvalidState() {
+test('testT4InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T4', map);
   assert.strictEqual(validation.valid, false);
   assert.strictEqual(validation.errorCode, 'invalid_transition');
-}
+});
 
-async function testT4IterationCapReached() {
+test('testT4IterationCapReached', async () => {
   const map = makeCyclingMap({ iteration: 5, maxIterations: 5 });
   const validation = validateTransition('T4', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT5Valid() {
+test('testT5Valid', async () => {
   const map = makeCyclingMap({ flags: { scoping: true, confirmation: false, sharding: false } });
   const { sm, mgr } = createSM(map);
 
@@ -338,15 +339,15 @@ async function testT5Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT5InvalidState() {
+test('testT5InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T5', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT6Valid() {
+test('testT6Valid', async () => {
   const map = makeCyclingMap({ iteration: 5, maxIterations: 5 });
   const { sm, mgr } = createSM(map);
 
@@ -364,21 +365,21 @@ async function testT6Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT6InvalidState() {
+test('testT6InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T6', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT6PreconditionBelowCap() {
+test('testT6PreconditionBelowCap', async () => {
   const map = makeCyclingMap({ iteration: 3, maxIterations: 5 });
   const validation = validateTransition('T6', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT7Valid() {
+test('testT7Valid', async () => {
   const map = makeCyclingMap({ flags: { confirmation: true } });
   const { sm, mgr } = createSM(map);
 
@@ -396,24 +397,24 @@ async function testT7Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT7InvalidState() {
+test('testT7InvalidState', async () => {
   const map = makeHaltedMap();
   const validation = validateTransition('T7', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT5T6T7DistinctTransitionIds() {
+test('testT5T6T7DistinctTransitionIds', async () => {
   const r5 = validateTransition('T5', makeCyclingMap());
   const r6 = validateTransition('T6', makeCyclingMap({ iteration: 5, maxIterations: 5 }));
   const r7 = validateTransition('T7', makeCyclingMap());
   assert.strictEqual(r5.valid, true);
   assert.strictEqual(r6.valid, true);
   assert.strictEqual(r7.valid, true);
-}
+});
 
-async function testT8Valid() {
+test('testT8Valid', async () => {
   const map = makeCyclingMap({ validationOutcome: 'passed', flags: { sharding: true } });
   const { sm, mgr } = createSM(map);
 
@@ -431,21 +432,21 @@ async function testT8Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT8InvalidState() {
+test('testT8InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T8', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT8ValidationNotPassed() {
+test('testT8ValidationNotPassed', async () => {
   const map = makeCyclingMap({ validationOutcome: 'failed' });
   const validation = validateTransition('T8', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT9Valid() {
+test('testT9Valid', async () => {
   const map = makeCompleteMap();
   map.cycle.awaiting_scoping = true;
   const { sm, mgr } = createSM(map);
@@ -462,15 +463,15 @@ async function testT9Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT9InvalidState() {
+test('testT9InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T9', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT10Valid() {
+test('testT10Valid', async () => {
   const map = makeHaltedMap();
   map.cycle.awaiting_confirmation = true;
   const { sm, mgr } = createSM(map);
@@ -487,15 +488,15 @@ async function testT10Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT10InvalidState() {
+test('testT10InvalidState', async () => {
   const map = makeCyclingMap();
   const validation = validateTransition('T10', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT11Valid() {
+test('testT11Valid', async () => {
   const map = makeIdleMap();
   assert.strictEqual(map.discovery.status, 'not_started');
   const originalCycle = map.meta.cycle;
@@ -521,15 +522,15 @@ async function testT11Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT11InvalidState() {
+test('testT11InvalidState', async () => {
   const map = makeDiscoveringMap();
   const validation = validateTransition('T11', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testT11BypassesDiscoveryGuard() {
+test('testT11BypassesDiscoveryGuard', async () => {
   const map = makeIdleMap();
   assert.strictEqual(map.discovery.status, 'not_started');
   const t3Result = validateTransition('T3', map);
@@ -537,9 +538,9 @@ async function testT11BypassesDiscoveryGuard() {
   assert.strictEqual(t3Result.errorCode, 'discovery_required');
   const t11Result = validateTransition('T11', map);
   assert.strictEqual(t11Result.valid, true);
-}
+});
 
-async function testT12Valid() {
+test('testT12Valid', async () => {
   const map = makeHaltedMap();
   const preservedIteration = map.cycle.iteration;
   const { sm, mgr } = createSM(map);
@@ -559,24 +560,24 @@ async function testT12Valid() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testT12InvalidState() {
+test('testT12InvalidState', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T12', map);
   assert.strictEqual(validation.valid, false);
-}
+});
 
-async function testDiscoveryGuardT3BlockedT11Bypasses() {
+test('testDiscoveryGuardT3BlockedT11Bypasses', async () => {
   const map = makeIdleMap();
   const t3 = validateTransition('T3', map);
   assert.strictEqual(t3.valid, false);
   assert.strictEqual(t3.errorCode, 'discovery_required');
   const t11 = validateTransition('T11', map);
   assert.strictEqual(t11.valid, true);
-}
+});
 
-async function testIterationCapBoundary() {
+test('testIterationCapBoundary', async () => {
   const atCap = makeCyclingMap({ iteration: 5, maxIterations: 5 });
   const t4AtCap = validateTransition('T4', atCap);
   assert.strictEqual(t4AtCap.valid, false);
@@ -588,17 +589,17 @@ async function testIterationCapBoundary() {
   assert.strictEqual(t4Below.valid, true);
   const t6Below = validateTransition('T6', belowCap);
   assert.strictEqual(t6Below.valid, false);
-}
+});
 
-async function testDefaultIterationCapZero() {
+test('testDefaultIterationCapZero', async () => {
   const map = makeCyclingMap({ iteration: 1, maxIterations: 0 });
   const t4 = validateTransition('T4', map);
   assert.strictEqual(t4.valid, false);
   const t6 = validateTransition('T6', map);
   assert.strictEqual(t6.valid, true);
-}
+});
 
-async function testFlagExclusivity() {
+test('testFlagExclusivity', async () => {
   const map = makeCyclingMap();
   const { sm, mgr } = createSM(map);
 
@@ -619,9 +620,9 @@ async function testFlagExclusivity() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, true);
-}
+});
 
-async function testFlagClearSingle() {
+test('testFlagClearSingle', async () => {
   const map = makeCyclingMap({ flags: { scoping: true } });
   const { sm, mgr } = createSM(map);
 
@@ -630,9 +631,9 @@ async function testFlagClearSingle() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testFlagResetOnHaltT5() {
+test('testFlagResetOnHaltT5', async () => {
   const map = makeCyclingMap({ flags: { confirmation: true } });
   const { sm, mgr } = createSM(map);
   await sm.halt('user');
@@ -640,9 +641,9 @@ async function testFlagResetOnHaltT5() {
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testFlagResetOnHaltT6() {
+test('testFlagResetOnHaltT6', async () => {
   const map = makeCyclingMap({ iteration: 5, maxIterations: 5, flags: { scoping: true } });
   const { sm, mgr } = createSM(map);
   await sm.halt('cap_exceeded');
@@ -650,9 +651,9 @@ async function testFlagResetOnHaltT6() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testFlagResetOnHaltT7() {
+test('testFlagResetOnHaltT7', async () => {
   const map = makeCyclingMap({ flags: { sharding: true } });
   const { sm, mgr } = createSM(map);
   await sm.halt('error');
@@ -660,9 +661,9 @@ async function testFlagResetOnHaltT7() {
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
-}
+});
 
-async function testFlagResetOnCompleteT8() {
+test('testFlagResetOnCompleteT8', async () => {
   const map = makeCyclingMap({ validationOutcome: 'passed', flags: { confirmation: true } });
   const { sm, mgr } = createSM(map);
   await sm.completeCycle();
@@ -670,9 +671,9 @@ async function testFlagResetOnCompleteT8() {
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testFlagResetOnAcknowledgeCompleteT9() {
+test('testFlagResetOnAcknowledgeCompleteT9', async () => {
   const map = makeCompleteMap();
   map.cycle.awaiting_scoping = true;
   map.cycle.awaiting_confirmation = true;
@@ -682,9 +683,9 @@ async function testFlagResetOnAcknowledgeCompleteT9() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testFlagResetOnAcknowledgeHaltT10() {
+test('testFlagResetOnAcknowledgeHaltT10', async () => {
   const map = makeHaltedMap();
   map.cycle.awaiting_sharding_approval = true;
   const { sm, mgr } = createSM(map);
@@ -693,9 +694,9 @@ async function testFlagResetOnAcknowledgeHaltT10() {
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
-}
+});
 
-async function testFlagResetOnRetryT4() {
+test('testFlagResetOnRetryT4', async () => {
   const map = makeCyclingMap({ iteration: 1, flags: { scoping: true } });
   const { sm, mgr } = createSM(map);
   await sm.retryIteration();
@@ -703,9 +704,9 @@ async function testFlagResetOnRetryT4() {
   assert.strictEqual(after.cycle.awaiting_scoping, false);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
   assert.strictEqual(after.cycle.awaiting_sharding_approval, false);
-}
+});
 
-async function testConfirmModifyIncrementsRevision() {
+test('testConfirmModifyIncrementsRevision', async () => {
   const map = makeCyclingMap({ revision: 0 });
   map.cycle.awaiting_confirmation = true;
   const { sm, mgr } = createSM(map);
@@ -714,9 +715,9 @@ async function testConfirmModifyIncrementsRevision() {
   const after = mgr.getMap();
   assert.strictEqual(after.cycle.revision, 1);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
-}
+});
 
-async function testConfirmApproveNoRevisionIncrement() {
+test('testConfirmApproveNoRevisionIncrement', async () => {
   const map = makeCyclingMap({ revision: 0 });
   map.cycle.awaiting_confirmation = true;
   const { sm, mgr } = createSM(map);
@@ -725,9 +726,9 @@ async function testConfirmApproveNoRevisionIncrement() {
   const after = mgr.getMap();
   assert.strictEqual(after.cycle.revision, 0);
   assert.strictEqual(after.cycle.awaiting_confirmation, false);
-}
+});
 
-async function testConfirmHaltTriggersT5() {
+test('testConfirmHaltTriggersT5', async () => {
   const map = makeCyclingMap();
   map.cycle.awaiting_confirmation = true;
   const { sm, mgr } = createSM(map);
@@ -742,9 +743,9 @@ async function testConfirmHaltTriggersT5() {
   const after = mgr.getMap();
   assert.strictEqual(after.meta.status, 'halted');
   assert.strictEqual(after.cycle.outcome, 'halted');
-}
+});
 
-async function testTransitionRejectionClass() {
+test('testTransitionRejectionClass', async () => {
   const err = new TransitionRejection({
     error: 'invalid_transition',
     from: 'idle',
@@ -761,9 +762,9 @@ async function testTransitionRejectionClass() {
   assert.strictEqual(err.to, 'cycling');
   assert.strictEqual(err.reason, 'test reason');
   assert.deepStrictEqual(err.allowedTargets, ['discovering', 'cycling']);
-}
+});
 
-async function testErrorResultProperties() {
+test('testErrorResultProperties', async () => {
   const map = makeIdleMap();
   const { sm } = createSM(map);
 
@@ -777,21 +778,21 @@ async function testErrorResultProperties() {
   assert.ok(result.error!.reason.length > 0);
   assert.ok(Array.isArray(result.error!.allowedTargets));
   assert.ok(result.error!.allowedTargets.includes('cycling'));
-}
+});
 
-async function testErrorCodeDiscoveryRequired() {
+test('testErrorCodeDiscoveryRequired', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T3', map);
   assert.strictEqual(validation.errorCode, 'discovery_required');
-}
+});
 
-async function testErrorCodeInvalidTransition() {
+test('testErrorCodeInvalidTransition', async () => {
   const map = makeIdleMap();
   const validation = validateTransition('T5', map);
   assert.strictEqual(validation.errorCode, 'invalid_transition');
-}
+});
 
-async function testStateContextIdle() {
+test('testStateContextIdle', async () => {
   const map = makeIdleMap();
   const ctx = computeStateContext(map);
   assert.strictEqual(ctx.state, 'idle');
@@ -800,58 +801,58 @@ async function testStateContextIdle() {
   assert.strictEqual(ctx.revision, 0);
   assert.strictEqual(ctx.active_session_id, null);
   assert.strictEqual(ctx.active_cycle_id, null);
-}
+});
 
-async function testStateContextDiscovering() {
+test('testStateContextDiscovering', async () => {
   const map = makeDiscoveringMap();
   const ctx = computeStateContext(map);
   assert.strictEqual(ctx.state, 'discovering');
   assert.strictEqual(ctx.discovery_status, 'in_progress');
-}
+});
 
-async function testStateContextCycling() {
+test('testStateContextCycling', async () => {
   const map = makeCyclingMap({ iteration: 3, revision: 2 });
   const ctx = computeStateContext(map);
   assert.strictEqual(ctx.state, 'cycling');
   assert.strictEqual(ctx.discovery_status, 'complete');
   assert.strictEqual(ctx.iteration, 3);
   assert.strictEqual(ctx.revision, 2);
-}
+});
 
-async function testStateContextHalted() {
+test('testStateContextHalted', async () => {
   const map = makeHaltedMap();
   const ctx = computeStateContext(map);
   assert.strictEqual(ctx.state, 'halted');
   assert.strictEqual(ctx.discovery_status, 'complete');
   assert.strictEqual(ctx.iteration, 3);
   assert.strictEqual(ctx.revision, 1);
-}
+});
 
-async function testStateContextComplete() {
+test('testStateContextComplete', async () => {
   const map = makeCompleteMap();
   const ctx = computeStateContext(map);
   assert.strictEqual(ctx.state, 'complete');
   assert.strictEqual(ctx.discovery_status, 'complete');
   assert.strictEqual(ctx.iteration, 2);
   assert.strictEqual(ctx.revision, 0);
-}
+});
 
-async function testGetAllowedTransitionsIdle() {
+test('testGetAllowedTransitionsIdle', async () => {
   const { sm } = createSM(makeIdleMap());
   const transitions = await sm.getAllowedTransitions();
   assert.ok(transitions.includes('T1'));
   assert.ok(transitions.includes('T3'));
   assert.ok(transitions.includes('T11'));
   assert.strictEqual(transitions.length, 3);
-}
+});
 
-async function testGetAllowedTransitionsDiscovering() {
+test('testGetAllowedTransitionsDiscovering', async () => {
   const { sm } = createSM(makeDiscoveringMap());
   const transitions = await sm.getAllowedTransitions();
   assert.deepStrictEqual(transitions, ['T2']);
-}
+});
 
-async function testGetAllowedTransitionsCycling() {
+test('testGetAllowedTransitionsCycling', async () => {
   const { sm } = createSM(makeCyclingMap());
   const transitions = await sm.getAllowedTransitions();
   assert.ok(transitions.includes('T4'));
@@ -860,23 +861,23 @@ async function testGetAllowedTransitionsCycling() {
   assert.ok(transitions.includes('T7'));
   assert.ok(transitions.includes('T8'));
   assert.strictEqual(transitions.length, 5);
-}
+});
 
-async function testGetAllowedTransitionsHalted() {
+test('testGetAllowedTransitionsHalted', async () => {
   const { sm } = createSM(makeHaltedMap());
   const transitions = await sm.getAllowedTransitions();
   assert.ok(transitions.includes('T10'));
   assert.ok(transitions.includes('T12'));
   assert.strictEqual(transitions.length, 2);
-}
+});
 
-async function testGetAllowedTransitionsComplete() {
+test('testGetAllowedTransitionsComplete', async () => {
   const { sm } = createSM(makeCompleteMap());
   const transitions = await sm.getAllowedTransitions();
   assert.deepStrictEqual(transitions, ['T9']);
-}
+});
 
-async function testValidateTransitionTrueCases() {
+test('testValidateTransitionTrueCases', async () => {
   assert.strictEqual(validateTransition('T1', makeIdleMap()).valid, true);
   assert.strictEqual(validateTransition('T2', makeDiscoveringMap()).valid, true);
   assert.strictEqual(validateTransition('T3', makeIdleDiscoveryCompleteMap()).valid, true);
@@ -888,9 +889,9 @@ async function testValidateTransitionTrueCases() {
   assert.strictEqual(validateTransition('T10', makeHaltedMap()).valid, true);
   assert.strictEqual(validateTransition('T11', makeIdleMap()).valid, true);
   assert.strictEqual(validateTransition('T12', makeHaltedMap()).valid, true);
-}
+});
 
-async function testValidateTransitionFalseCases() {
+test('testValidateTransitionFalseCases', async () => {
   assert.strictEqual(validateTransition('T1', makeCyclingMap()).valid, false);
   assert.strictEqual(validateTransition('T2', makeIdleMap()).valid, false);
   assert.strictEqual(validateTransition('T3', makeIdleMap()).valid, false);
@@ -900,9 +901,9 @@ async function testValidateTransitionFalseCases() {
   assert.strictEqual(validateTransition('T9', makeIdleMap()).valid, false);
   assert.strictEqual(validateTransition('T10', makeIdleMap()).valid, false);
   assert.strictEqual(validateTransition('T12', makeIdleMap()).valid, false);
-}
+});
 
-async function testImmutability() {
+test('testImmutability', async () => {
   const map = makeIdleDiscoveryCompleteMap();
   const original = JSON.parse(JSON.stringify(map));
   const { sm } = createSM(map);
@@ -912,9 +913,9 @@ async function testImmutability() {
 
   validateTransition('T1', map);
   assert.deepStrictEqual(map, original);
-}
+});
 
-async function testImmutabilitySequence() {
+test('testImmutabilitySequence', async () => {
   const map = makeBaseMap();
   const original = JSON.parse(JSON.stringify(map));
   const { sm } = createSM(map);
@@ -930,9 +931,9 @@ async function testImmutabilitySequence() {
 
   await sm.halt('user');
   assert.deepStrictEqual(map, original);
-}
+});
 
-async function testFullLifecycle() {
+test('testFullLifecycle', async () => {
   const map = makeBaseMap();
   map.discovery.total_rounds = 1;
   map.validation.gate.last_outcome = 'passed';
@@ -975,101 +976,4 @@ async function testFullLifecycle() {
   assert.strictEqual(final.cycle.awaiting_sharding_approval, false);
   assert.ok(typeof final.cycle.started_at === 'string');
   assert.ok(final.cycle.started_at!.length > 0);
-}
-
-async function runAllTests() {
-  console.log('Running Phase C (State Machine) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'T1 valid', fn: testT1Valid },
-    { name: 'T1 invalid state', fn: testT1InvalidState },
-    { name: 'T1 fails discovery complete', fn: testT1FailsDiscoveryComplete },
-    { name: 'T2 valid', fn: testT2Valid },
-    { name: 'T2 invalid state', fn: testT2InvalidState },
-    { name: 'T2 precondition not terminal round', fn: testT2PreconditionNotTerminalRound },
-    { name: 'T3 valid', fn: testT3Valid },
-    { name: 'T3 invalid state', fn: testT3InvalidState },
-    { name: 'T3 discovery guard', fn: testT3DiscoveryGuard },
-    { name: 'T4 valid', fn: testT4Valid },
-    { name: 'T4 invalid state', fn: testT4InvalidState },
-    { name: 'T4 iteration cap reached', fn: testT4IterationCapReached },
-    { name: 'T5 valid', fn: testT5Valid },
-    { name: 'T5 invalid state', fn: testT5InvalidState },
-    { name: 'T6 valid', fn: testT6Valid },
-    { name: 'T6 invalid state', fn: testT6InvalidState },
-    { name: 'T6 precondition below cap', fn: testT6PreconditionBelowCap },
-    { name: 'T7 valid', fn: testT7Valid },
-    { name: 'T7 invalid state', fn: testT7InvalidState },
-    { name: 'T5/T6/T7 distinct transition IDs', fn: testT5T6T7DistinctTransitionIds },
-    { name: 'T8 valid', fn: testT8Valid },
-    { name: 'T8 invalid state', fn: testT8InvalidState },
-    { name: 'T8 validation not passed', fn: testT8ValidationNotPassed },
-    { name: 'T9 valid', fn: testT9Valid },
-    { name: 'T9 invalid state', fn: testT9InvalidState },
-    { name: 'T10 valid', fn: testT10Valid },
-    { name: 'T10 invalid state', fn: testT10InvalidState },
-    { name: 'T11 valid (no discovery)', fn: testT11Valid },
-    { name: 'T11 invalid state', fn: testT11InvalidState },
-    { name: 'T11 bypasses discovery guard', fn: testT11BypassesDiscoveryGuard },
-    { name: 'T12 valid (iteration preserved)', fn: testT12Valid },
-    { name: 'T12 invalid state', fn: testT12InvalidState },
-    { name: 'Discovery guard T3 blocked T11 bypasses', fn: testDiscoveryGuardT3BlockedT11Bypasses },
-    { name: 'Iteration cap boundary', fn: testIterationCapBoundary },
-    { name: 'Default iteration cap zero', fn: testDefaultIterationCapZero },
-    { name: 'Flag exclusivity', fn: testFlagExclusivity },
-    { name: 'Flag clear single', fn: testFlagClearSingle },
-    { name: 'Flag reset on halt T5', fn: testFlagResetOnHaltT5 },
-    { name: 'Flag reset on halt T6', fn: testFlagResetOnHaltT6 },
-    { name: 'Flag reset on halt T7', fn: testFlagResetOnHaltT7 },
-    { name: 'Flag reset on complete T8', fn: testFlagResetOnCompleteT8 },
-    { name: 'Flag reset on acknowledge complete T9', fn: testFlagResetOnAcknowledgeCompleteT9 },
-    { name: 'Flag reset on acknowledge halt T10', fn: testFlagResetOnAcknowledgeHaltT10 },
-    { name: 'Flag reset on retry T4', fn: testFlagResetOnRetryT4 },
-    { name: 'Confirm modify increments revision', fn: testConfirmModifyIncrementsRevision },
-    { name: 'Confirm approve no revision increment', fn: testConfirmApproveNoRevisionIncrement },
-    { name: 'Confirm halt triggers T5', fn: testConfirmHaltTriggersT5 },
-    { name: 'TransitionRejection class', fn: testTransitionRejectionClass },
-    { name: 'Error result properties', fn: testErrorResultProperties },
-    { name: 'Error code discovery_required', fn: testErrorCodeDiscoveryRequired },
-    { name: 'Error code invalid_transition', fn: testErrorCodeInvalidTransition },
-    { name: 'StateContext idle', fn: testStateContextIdle },
-    { name: 'StateContext discovering', fn: testStateContextDiscovering },
-    { name: 'StateContext cycling', fn: testStateContextCycling },
-    { name: 'StateContext halted', fn: testStateContextHalted },
-    { name: 'StateContext complete', fn: testStateContextComplete },
-    { name: 'GetAllowedTransitions idle', fn: testGetAllowedTransitionsIdle },
-    { name: 'GetAllowedTransitions discovering', fn: testGetAllowedTransitionsDiscovering },
-    { name: 'GetAllowedTransitions cycling', fn: testGetAllowedTransitionsCycling },
-    { name: 'GetAllowedTransitions halted', fn: testGetAllowedTransitionsHalted },
-    { name: 'GetAllowedTransitions complete', fn: testGetAllowedTransitionsComplete },
-    { name: 'ValidateTransition true cases', fn: testValidateTransitionTrueCases },
-    { name: 'ValidateTransition false cases', fn: testValidateTransitionFalseCases },
-    { name: 'Immutability', fn: testImmutability },
-    { name: 'Immutability sequence', fn: testImmutabilitySequence },
-    { name: 'Full lifecycle', fn: testFullLifecycle },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase C tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase C tests passed!`);
-}
-
-runAllTests();
+});

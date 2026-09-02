@@ -825,7 +825,7 @@ export class ExecServiceReal {
     private spawnFn: SpawnFn = nodeSpawn
   ) {}
 
-  async run(cycleNumber: number, iteration: number): Promise<ExecResult> {
+  async run(workflowRunId: string, iteration: number): Promise<ExecResult> {
     const map = await this.mapManager.read();
     const execConfig = (map as unknown as Record<string, unknown>).exec as { command?: string; timeout_ms?: number } | undefined;
     const command = execConfig?.command
@@ -833,7 +833,7 @@ export class ExecServiceReal {
 
     // No command configured → no-op success
     if (!command) {
-      await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+      await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
         status: 'complete',
         exit_code: 0,
         timed_out: false,
@@ -863,19 +863,19 @@ export class ExecServiceReal {
 
 
 
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
       status: 'running',
       started_at: new Date().toISOString(),
     } as never);
 
     const queue = new JobQueue();
-    const runId = `${cycleNumber}-${iteration}`;
+    const runId = workflowRunId;
 
     // Enqueue static check
     const staticJob = queue.enqueue({
       type: 'static-check',
       priority: 0,
-      cycle_id: String(cycleNumber),
+      cycle_id: workflowRunId,
       iteration,
       run_id: runId,
       category: null,
@@ -902,7 +902,7 @@ export class ExecServiceReal {
         const execJob = queue.enqueue({
           type: 'exec-check',
           priority: 1,
-          cycle_id: String(cycleNumber),
+          cycle_id: workflowRunId,
           iteration,
           run_id: runId,
           category: cat,
@@ -911,7 +911,7 @@ export class ExecServiceReal {
         const llmJob = queue.enqueue({
           type: 'llm-check',
           priority: 2,
-          cycle_id: String(cycleNumber),
+          cycle_id: workflowRunId,
           iteration,
           run_id: runId,
           category: cat,
@@ -958,7 +958,7 @@ export class ExecServiceReal {
       categories: categoriesMap,
     };
 
-    const runDir = path.join(this.projectRoot, '.sle', 'runs', runId);
+    const runDir = path.join(this.projectRoot, '.sle', 'runs', runId, String(iteration));
     await fs.mkdir(path.join(runDir, 'tests'), { recursive: true });
     await fs.writeFile(
       path.join(runDir, 'tests', 'summary.json'),
@@ -1020,23 +1020,23 @@ export class ExecServiceReal {
         });
       }
 
-      await this.runArtifacts.writeFailureReport(cycleNumber, iteration, {
-        cycle: cycleNumber,
+      await this.runArtifacts.writeFailureReport(workflowRunId, iteration, {
+        cycle: 0,
         iteration,
-        run_dir: `.sle/runs/${cycleNumber}-${iteration}`,
+        run_dir: `.sle/runs/${workflowRunId}/${iteration}`,
         run_id: runId,
         quick_summary: staticJob.status !== 'completed' ? 'Static check failed' : `${failedCategories.length} validation categories failed`,
         failed_categories: failedCats,
         passed_categories: passedCategories,
       } as any);
 
-      await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+      await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
         status: 'failed',
         exit_code: 1,
         timed_out: staticJob.status === 'timed_out',
       } as never);
     } else {
-      await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'EXEC', {
+      await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'EXEC', {
         status: 'complete',
         exit_code: 0,
         timed_out: false,

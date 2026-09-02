@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { promises as fs } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
@@ -91,7 +92,7 @@ class MockStateAPI {
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
-async function testStartTransitionsToDiscovering() {
+test('testStartTransitionsToDiscovering', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -106,9 +107,9 @@ async function testStartTransitionsToDiscovering() {
   assert.strictEqual(map.discovery.status, 'in_progress');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testStartReturnsSessionData() {
+test('testStartReturnsSessionData', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -121,9 +122,9 @@ async function testStartReturnsSessionData() {
   assert.strictEqual(session.round_status, 'collecting');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testSubmitResponseCreatesDraft() {
+test('testSubmitResponseCreatesDraft', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -136,9 +137,9 @@ async function testSubmitResponseCreatesDraft() {
   assert.strictEqual(result.status, 'drafting');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testApproveCompletesRound() {
+test('testApproveCompletesRound', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -152,9 +153,9 @@ async function testApproveCompletesRound() {
   assert.strictEqual(map.discovery.status, 'complete');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testStartWhenCompleteReturnsError() {
+test('testStartWhenCompleteReturnsError', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -172,9 +173,9 @@ async function testStartWhenCompleteReturnsError() {
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testSoloModeReturns1TotalRound() {
+test('testSoloModeReturns1TotalRound', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -184,9 +185,9 @@ async function testSoloModeReturns1TotalRound() {
   assert.strictEqual(session.total_rounds, 1);
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testFullModeReturns4TotalRounds() {
+test('testFullModeReturns4TotalRounds', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -196,9 +197,9 @@ async function testFullModeReturns4TotalRounds() {
   assert.strictEqual(session.total_rounds, 4);
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testGetStatusAfterStart() {
+test('testGetStatusAfterStart', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sle-disc-test-'));
   const mapManager = new MockRuntimeMapManager();
   const stateAPI = new MockStateAPI() as never;
@@ -212,43 +213,6 @@ async function testGetStatusAfterStart() {
   assert.strictEqual(status.current_round, 1);
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  const tests = [
-    { name: 'Start transitions to discovering state', fn: testStartTransitionsToDiscovering },
-    { name: 'Start returns session data (session_id, round)', fn: testStartReturnsSessionData },
-    { name: 'Submit response creates draft', fn: testSubmitResponseCreatesDraft },
-    { name: 'Approve completes the round', fn: testApproveCompletesRound },
-    { name: 'Start when discovery is complete returns error', fn: testStartWhenCompleteReturnsError },
-    { name: 'Solo mode returns 1 total round', fn: testSoloModeReturns1TotalRound },
-    { name: 'Full mode returns 4 total rounds', fn: testFullModeReturns4TotalRounds },
-    { name: 'Get status returns in_progress after start', fn: testGetStatusAfterStart },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase E discovery-service tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase E discovery-service tests passed!`);
-}
-
-runAllTests();

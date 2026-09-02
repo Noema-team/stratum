@@ -38,15 +38,15 @@ export class SnapshotService {
     this.fs = fsModule ?? nodeFsPromises;
   }
 
-  snapshotDir(cycleNumber: number, iteration: number): string {
-    return path.join(this.projectRoot, '.sle', 'snapshots', `v${cycleNumber}.${iteration}`);
+  snapshotDir(workflowRunId: string, iteration: number): string {
+    return path.join(this.projectRoot, '.sle', 'snapshots', workflowRunId, String(iteration));
   }
 
-  async run(cycleNumber: number, iteration: number): Promise<SnapshotResult> {
+  async run(workflowRunId: string, iteration: number): Promise<SnapshotResult> {
     const startedAt = new Date().toISOString();
     const snapshotId = randomUUID();
 
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SNAPSHOT', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'SNAPSHOT', {
       status: 'running',
       started_at: startedAt,
     });
@@ -58,13 +58,13 @@ export class SnapshotService {
       },
     }));
 
-    // Read cycle_id from manifest and artifact paths from map
-    let cycleId = String(cycleNumber);
+    // Read cycle metadata from manifest and artifact paths from map
+    let cycleNumber = 0;
     try {
-      const manifest = await this.runArtifacts.readManifest(cycleNumber, iteration);
-      cycleId = manifest.cycle_id;
+      const manifest = await this.runArtifacts.readManifest(workflowRunId, iteration);
+      cycleNumber = manifest.cycle_number;
     } catch {
-      // Fallback to cycle number string
+      // Fallback: cycle_number unknown, use 0 for display
     }
 
     const map = await this.mapManager.read();
@@ -73,7 +73,7 @@ export class SnapshotService {
     );
 
     // Create snapshot directory
-    const snapDir = this.snapshotDir(cycleNumber, iteration);
+    const snapDir = this.snapshotDir(workflowRunId, iteration);
     await this.fs.mkdir(snapDir, { recursive: true });
 
     // Copy each artifact; skip files that don't exist yet
@@ -94,7 +94,7 @@ export class SnapshotService {
     // Write snapshot metadata
     const metadata: SnapshotMetadata = {
       snapshot_id: snapshotId,
-      cycle_id: cycleId,
+      cycle_id: workflowRunId,
       cycle: cycleNumber,
       iteration,
       created_at: startedAt,
@@ -113,15 +113,15 @@ export class SnapshotService {
 
     const completedAt = new Date().toISOString();
     const snapshotJsonPath = path.join(
-      '.sle', 'snapshots', `v${cycleNumber}.${iteration}`, 'snapshot.json'
+      '.sle', 'snapshots', workflowRunId, String(iteration), 'snapshot.json'
     );
 
-    await this.runArtifacts.updateNodeStatus(cycleNumber, iteration, 'SNAPSHOT', {
+    await this.runArtifacts.updateNodeStatus(workflowRunId, iteration, 'SNAPSHOT', {
       status: 'complete',
       completed_at: completedAt,
       artifacts_written: [snapshotJsonPath],
     });
-    await this.runArtifacts.finalizeManifest(cycleNumber, iteration, 'complete');
+    await this.runArtifacts.finalizeManifest(workflowRunId, iteration, 'complete');
 
     await this.mapManager.update((m) => {
       const completedNodes = [...(m.meta.dag?.completed_nodes ?? [])];

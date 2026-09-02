@@ -8,13 +8,9 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { roleForNode, validateOutputPath } from '../src/agent-runner.js';
+import { validateOutputPath } from '../src/agent-runner.js';
 
 console.log('# Running Phase A (DEBUG agent) tests...');
-
-test('Phase A: roleForNode(DEBUG) resolves to debugger role', () => {
-  assert.strictEqual(roleForNode('DEBUG'), 'debugger');
-});
 
 test('Phase A: debugger role may write to src/', () => {
   assert.strictEqual(validateOutputPath('src/index.ts', 'debugger'), true);

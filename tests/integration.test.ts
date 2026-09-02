@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 /**
  * Phase L: Integration Test
  *
@@ -129,7 +130,7 @@ function makeRequest(
 
 // ─── Test 1: Init creates valid project structure ─────────────────────────
 
-async function testInitCreatesValidProjectStructure() {
+test('testInitCreatesValidProjectStructure', async () => {
   const tmpDir = await setupProjectDir();
   try {
     await runInit(tmpDir);
@@ -172,11 +173,11 @@ async function testInitCreatesValidProjectStructure() {
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
-}
+});
 
 // ─── Test 2: Daemon starts and health check passes ─────────────────────────
 
-async function testDaemonStartsAfterInit() {
+test('testDaemonStartsAfterInit', async () => {
   const tmpDir = await setupProjectDir();
   let daemon: DaemonServer | null = null;
   try {
@@ -192,11 +193,11 @@ async function testDaemonStartsAfterInit() {
     if (daemon) await daemon.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
-}
+});
 
 // ─── Test 3: System starts in correct initial state ────────────────────────
 
-async function testInitialSystemState() {
+test('testInitialSystemState', async () => {
   const tmpDir = await setupProjectDir();
   let daemon: DaemonServer | null = null;
   try {
@@ -212,11 +213,11 @@ async function testInitialSystemState() {
     if (daemon) await daemon.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
-}
+});
 
 // ─── Test 4: Discovery lifecycle — start, respond, approve, complete ────────
 
-async function testDiscoveryLifecycle() {
+test('testDiscoveryLifecycle', async () => {
   const tmpDir = await setupProjectDir();
   let daemon: DaemonServer | null = null;
   try {
@@ -280,11 +281,11 @@ async function testDiscoveryLifecycle() {
     if (daemon) await daemon.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
-}
+});
 
 // ─── Test 5: Discovery cannot be started twice ─────────────────────────────
 
-async function testDiscoveryIdempotency() {
+test('testDiscoveryIdempotency', async () => {
   const tmpDir = await setupProjectDir();
   let daemon: DaemonServer | null = null;
   try {
@@ -314,41 +315,6 @@ async function testDiscoveryIdempotency() {
     if (daemon) await daemon.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
-}
+});
 
 // ─── Runner ───────────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  const tests = [
-    { name: 'Init creates valid project structure (agent.md, map.yaml, rules, prompts, tasks)', fn: testInitCreatesValidProjectStructure },
-    { name: 'Daemon starts with real services after init and health check passes', fn: testDaemonStartsAfterInit },
-    { name: 'System starts in idle state with discovery not_started', fn: testInitialSystemState },
-    { name: 'Discovery lifecycle: start → respond → approve → idle + complete (solo mode)', fn: testDiscoveryLifecycle },
-    { name: 'Discovery cannot be started after it is already complete (409)', fn: testDiscoveryIdempotency },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase L integration tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}:`);
-      console.error(`    ${f.error}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase L integration tests passed!`);
-}
-
-runAllTests();

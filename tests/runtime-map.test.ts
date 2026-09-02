@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import {
   RuntimeMap,
@@ -152,12 +153,12 @@ function makeInitialMapOptions() {
 // RuntimeMapSchema Tests
 // ============================================================================
 
-async function testRuntimeMapSchemaValid() {
+test('testRuntimeMapSchemaValid', async () => {
   const result = RuntimeMapSchema.safeParse(makeValidMap());
   assert(result.success, `Valid RuntimeMap should pass validation: ${result.success ? '' : JSON.stringify((result as any).error?.issues)}`);
-}
+});
 
-async function testRuntimeMapSchemaMissingField() {
+test('testRuntimeMapSchemaMissingField', async () => {
   const invalidMap = {
     meta: {
       status: 'idle',
@@ -170,9 +171,9 @@ async function testRuntimeMapSchemaMissingField() {
   const result = RuntimeMapSchema.safeParse(invalidMap);
   assert(!result.success, 'RuntimeMap with missing required field should fail');
   assert(result.error?.issues.length! > 0);
-}
+});
 
-async function testRuntimeMapSchemaInvalidStatus() {
+test('testRuntimeMapSchemaInvalidStatus', async () => {
   const invalidMap = {
     meta: {
       status: 'invalid_status',
@@ -185,29 +186,29 @@ async function testRuntimeMapSchemaInvalidStatus() {
 
   const result = RuntimeMapSchema.safeParse(invalidMap);
   assert(!result.success, 'RuntimeMap with invalid status should fail');
-}
+});
 
-async function testRuntimeMapSchemaCorruptedYaml() {
+test('testRuntimeMapSchemaCorruptedYaml', async () => {
   const result = RuntimeMapSchema.safeParse({ garbage: true });
   assert(!result.success, 'Corrupted data should fail validation');
   const path = result.error?.issues[0]?.path?.join('.') ?? '';
   assert(path.length > 0, 'Error should include field path');
-}
+});
 
 // ============================================================================
 // createInitialMap Tests
 // ============================================================================
 
-async function testCreateInitialMap() {
+test('testCreateInitialMap', async () => {
   const map = createInitialMap(makeInitialMapOptions());
 
   assert.strictEqual(map.project.name, 'test-project');
   assert.strictEqual(map.meta.status, 'idle');
   assert.strictEqual(map.discovery.status, 'not_started');
   assert(map.meta.version_id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i));
-}
+});
 
-async function testCreateInitialMapWithDoltRemote() {
+test('testCreateInitialMapWithDoltRemote', async () => {
   const map = createInitialMap({
     ...makeInitialMapOptions(),
     issuesRemote: {
@@ -221,19 +222,19 @@ async function testCreateInitialMapWithDoltRemote() {
 
   assert.strictEqual(map.remotes.issues.type, 'dolt');
   assert.strictEqual(map.task_store.type, 'beads');
-}
+});
 
-async function testCreateInitialMapPassesSchema() {
+test('testCreateInitialMapPassesSchema', async () => {
   const map = createInitialMap(makeInitialMapOptions());
   const result = RuntimeMapSchema.safeParse(map);
   assert(result.success, `createInitialMap() output should pass schema validation: ${result.success ? '' : JSON.stringify((result as any).error?.issues)}`);
-}
+});
 
 // ============================================================================
 // RuntimeMapManager Tests
 // ============================================================================
 
-async function testRuntimeMapManagerWriteAndReadRoundTrip() {
+test('testRuntimeMapManagerWriteAndReadRoundTrip', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -250,9 +251,9 @@ async function testRuntimeMapManagerWriteAndReadRoundTrip() {
   const readBack = await manager.read();
   assert.strictEqual(readBack.project.name, 'test-project');
   assert.strictEqual(readBack.meta.status, 'idle');
-}
+});
 
-async function testRuntimeMapManagerAtomicWrite() {
+test('testRuntimeMapManagerAtomicWrite', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -267,9 +268,9 @@ async function testRuntimeMapManagerAtomicWrite() {
   const [oldPath, newPath] = renames[0];
   assert(oldPath.endsWith('.tmp'), 'Should write to temp file first');
   assert.strictEqual(newPath, '.sle/map.yaml', 'Should rename to actual path');
-}
+});
 
-async function testRuntimeMapManagerWriteDoesNotMutateInput() {
+test('testRuntimeMapManagerWriteDoesNotMutateInput', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -281,9 +282,9 @@ async function testRuntimeMapManagerWriteDoesNotMutateInput() {
   await manager.write(map);
 
   assert.strictEqual(map.meta.updated_at, originalUpdatedAt, 'write() should not mutate the input object');
-}
+});
 
-async function testRuntimeMapManagerValidationFails() {
+test('testRuntimeMapManagerValidationFails', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -301,9 +302,9 @@ async function testRuntimeMapManagerValidationFails() {
 
   assert(!mockFs.getFileContent('.sle/map.yaml'), 'No file should be written on validation failure');
   assert(!mockFs.getFileContent('.sle/map.yaml.tmp'), 'No temp file should remain on validation failure');
-}
+});
 
-async function testRuntimeMapManagerUpdate() {
+test('testRuntimeMapManagerUpdate', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -322,9 +323,9 @@ async function testRuntimeMapManagerUpdate() {
   const readBack = await manager.read();
   assert.strictEqual(readBack.meta.cycle, 5);
   assert.strictEqual(readBack.meta.status, 'discovering');
-}
+});
 
-async function testRuntimeMapManagerConcurrentWrites() {
+test('testRuntimeMapManagerConcurrentWrites', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -346,9 +347,9 @@ async function testRuntimeMapManagerConcurrentWrites() {
   assert.strictEqual(executed.length, 3, 'All 3 updates must execute');
   const readBack = await manager.read();
   assert([1, 2, 3].includes(readBack.meta.cycle), 'Concurrent updates should be serialized (one of the values)');
-}
+});
 
-async function testRuntimeMapManagerGetVersion() {
+test('testRuntimeMapManagerGetVersion', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -361,13 +362,13 @@ async function testRuntimeMapManagerGetVersion() {
   await manager.write(map);
 
   assert.strictEqual(manager.getVersion(), map.meta.version_id, 'Version should match after write');
-}
+});
 
 // ============================================================================
 // Cleanup Tests
 // ============================================================================
 
-async function testCleanupOrphanedTempFiles() {
+test('testCleanupOrphanedTempFiles', async () => {
   const mockFs = new MockFs();
 
   await mockFs.writeFile('.sle/map.yaml.tmp', 'orphaned content');
@@ -375,9 +376,9 @@ async function testCleanupOrphanedTempFiles() {
 
   await cleanupOrphanedTempFiles('.sle/map.yaml', mockFs as any);
   assert(!mockFs.getFileContent('.sle/map.yaml.tmp'), 'Orphaned temp file should be deleted');
-}
+});
 
-async function testCleanupNoTempFile() {
+test('testCleanupNoTempFile', async () => {
   const mockFs = new MockFs();
   let threw = false;
   try {
@@ -386,9 +387,9 @@ async function testCleanupNoTempFile() {
     threw = true;
   }
   assert(!threw, 'Should handle missing temp file without throwing');
-}
+});
 
-async function testManagerReadNonexistentFile() {
+test('testManagerReadNonexistentFile', async () => {
   const mockFs = new MockFs();
   const manager = new RuntimeMapManagerImpl({
     mapPath: '.sle/map.yaml',
@@ -403,9 +404,9 @@ async function testManagerReadNonexistentFile() {
       return true;
     }
   );
-}
+});
 
-async function testManagerReadCorruptedYaml() {
+test('testManagerReadCorruptedYaml', async () => {
   const mockFs = new MockFs();
   await mockFs.writeFile('.sle/map.yaml', 'meta:\n  status: not_a_real_status\n  garbage: true\n');
 
@@ -422,47 +423,8 @@ async function testManagerReadCorruptedYaml() {
       return true;
     }
   );
-}
+});
 
 // ============================================================================
 // Run All Tests
 // ============================================================================
-
-async function runAllTests() {
-  console.log('Running Phase B (Runtime Map) tests...\n');
-
-  const tests: Array<{ name: string; fn: () => Promise<void> }> = [
-    { name: 'RuntimeMapSchema valid', fn: testRuntimeMapSchemaValid },
-    { name: 'RuntimeMapSchema missing field', fn: testRuntimeMapSchemaMissingField },
-    { name: 'RuntimeMapSchema invalid status', fn: testRuntimeMapSchemaInvalidStatus },
-    { name: 'RuntimeMapSchema corrupted data', fn: testRuntimeMapSchemaCorruptedYaml },
-    { name: 'createInitialMap', fn: testCreateInitialMap },
-    { name: 'createInitialMap with Dolt remote', fn: testCreateInitialMapWithDoltRemote },
-    { name: 'createInitialMap passes schema', fn: testCreateInitialMapPassesSchema },
-    { name: 'Manager write + read round-trip', fn: testRuntimeMapManagerWriteAndReadRoundTrip },
-    { name: 'Manager atomic write', fn: testRuntimeMapManagerAtomicWrite },
-    { name: 'Manager write does not mutate input', fn: testRuntimeMapManagerWriteDoesNotMutateInput },
-    { name: 'Manager validation fails', fn: testRuntimeMapManagerValidationFails },
-    { name: 'Manager update', fn: testRuntimeMapManagerUpdate },
-    { name: 'Manager concurrent writes', fn: testRuntimeMapManagerConcurrentWrites },
-    { name: 'Manager getVersion', fn: testRuntimeMapManagerGetVersion },
-    { name: 'Manager read nonexistent file', fn: testManagerReadNonexistentFile },
-    { name: 'Manager read corrupted YAML', fn: testManagerReadCorruptedYaml },
-    { name: 'Cleanup orphaned temp files', fn: testCleanupOrphanedTempFiles },
-    { name: 'Cleanup no temp file', fn: testCleanupNoTempFile },
-  ];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      throw error;
-    }
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase B tests passed!`);
-}
-
-runAllTests();

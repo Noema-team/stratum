@@ -1,3 +1,4 @@
+import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { promises as fs } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
@@ -26,7 +27,7 @@ function makeDefaultRequest(projectRoot: string): InitRequest {
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
-async function testInitCreatesMapYaml() {
+test('testInitCreatesMapYaml', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -44,9 +45,9 @@ async function testInitCreatesMapYaml() {
 
   // Cleanup
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitCreatesRuleFiles() {
+test('testInitCreatesRuleFiles', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -74,9 +75,9 @@ async function testInitCreatesRuleFiles() {
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitCreatesInitStateDuringProgress() {
+test('testInitCreatesInitStateDuringProgress', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -92,9 +93,9 @@ async function testInitCreatesInitStateDuringProgress() {
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitDeletesInitStateOnCompletion() {
+test('testInitDeletesInitStateOnCompletion', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -110,9 +111,9 @@ async function testInitDeletesInitStateOnCompletion() {
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitDetectsExistingSle() {
+test('testInitDetectsExistingSle', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -136,9 +137,9 @@ async function testInitDetectsExistingSle() {
   assert.strictEqual((result as { ok: boolean }).ok, false);
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitResumeSkipsCompletedSteps() {
+test('testInitResumeSkipsCompletedSteps', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -151,9 +152,9 @@ async function testInitResumeSkipsCompletedSteps() {
   assert.strictEqual((resumeResult as APIError).error.code, 'no_init_state');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitGeneratesAgentMd() {
+test('testInitGeneratesAgentMd', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -172,9 +173,9 @@ async function testInitGeneratesAgentMd() {
   assert.ok(content.includes('map: .sle/map.yaml'), 'agent.md should reference map.yaml');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitInstallsPromptTemplates() {
+test('testInitInstallsPromptTemplates', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -203,9 +204,9 @@ async function testInitInstallsPromptTemplates() {
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitGeneratesValidRulesAndPrompts() {
+test('testInitGeneratesValidRulesAndPrompts', async () => {
   const tmpDir = makeTempDir();
   const service = new InitService({ projectRoot: tmpDir });
 
@@ -228,9 +229,9 @@ async function testInitGeneratesValidRulesAndPrompts() {
   assert.match(designerPrompt, /## Role identity/, 'designer.md should contain role identity header');
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitRejectsNoOriginRemote() {
+test('testInitRejectsNoOriginRemote', async () => {
   // Simulate an existing repo (git_init: false) with no origin remote
   const { execSync } = await import('node:child_process');
   const tmpDir = makeTempDir();
@@ -253,9 +254,9 @@ async function testInitRejectsNoOriginRemote() {
   );
 
   await fs.rm(tmpDir, { recursive: true, force: true });
-}
+});
 
-async function testInitBranchIsDetectedFromGit() {
+test('testInitBranchIsDetectedFromGit', async () => {
   const { execSync } = await import('node:child_process');
 
   // Create a bare "remote" repo to satisfy the origin check in step 0
@@ -292,48 +293,8 @@ async function testInitBranchIsDetectedFromGit() {
 
   await fs.rm(tmpDir, { recursive: true, force: true });
   await fs.rm(remoteDir, { recursive: true, force: true });
-}
+});
 
 
 
 // ─── Runner ──────────────────────────────────────────────────────────
-
-async function runAllTests() {
-  const tests = [
-    { name: 'Init creates .sle/map.yaml', fn: testInitCreatesMapYaml },
-    { name: 'Init creates .sle/rules/ with 7 files', fn: testInitCreatesRuleFiles },
-    { name: 'Init creates and cleans init-state.json during progress', fn: testInitCreatesInitStateDuringProgress },
-    { name: 'Init deletes init-state.json on completion', fn: testInitDeletesInitStateOnCompletion },
-    { name: 'Init detects existing .sle/ and fails (no overwrite)', fn: testInitDetectsExistingSle },
-    { name: 'Resume skips completed steps', fn: testInitResumeSkipsCompletedSteps },
-    { name: 'Init generates agent.md with map reference', fn: testInitGeneratesAgentMd },
-    { name: 'Init installs facilitator prompt templates', fn: testInitInstallsPromptTemplates },
-    { name: 'Init generates valid populated YAML rules and agent prompts', fn: testInitGeneratesValidRulesAndPrompts },
-    { name: 'Init rejects existing repo with no origin remote', fn: testInitRejectsNoOriginRemote },
-    { name: 'Init detects actual branch from git (not hardcoded main)', fn: testInitBranchIsDetectedFromGit },
-  ];
-
-  const failures: Array<{ name: string; error: unknown }> = [];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`  ✓ ${test.name}`);
-    } catch (error) {
-      console.error(`  ✗ ${test.name}`);
-      failures.push({ name: test.name, error });
-    }
-  }
-
-  if (failures.length > 0) {
-    console.error(`\n❌ ${failures.length}/${tests.length} Phase E init-service tests FAILED:`);
-    for (const f of failures) {
-      console.error(`  - ${f.name}`);
-    }
-    throw failures[0].error;
-  }
-
-  console.log(`\n✅ All ${tests.length} Phase E init-service tests passed!`);
-}
-
-runAllTests();

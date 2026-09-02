@@ -13,17 +13,20 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:watch": "node --import tsx --watch --test tests/*.test.ts",
     "type-check": "tsc --noEmit",
+    "verify": "npm run type-check && npm run build && npm test",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "better-sqlite3": "^13.0.3",
     "js-yaml": "^4.1.0",
     "ws": "^8.21.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/js-yaml": "^4.0.5",
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0"
@@ -34,6 +37,6 @@
     "development-automation"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }
