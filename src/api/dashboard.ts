@@ -54,8 +54,11 @@ a{color:var(--accent);text-decoration:none}
 .tag-urgent{background:#3a2a0a;color:var(--yellow)}
 .tag-normal{background:#1e2030;color:var(--muted)}
 .tag-state{background:#1e2030;color:var(--muted)}
+.tag-draft{background:#1e2030;color:var(--muted)}
 .tag-ready{background:#0a2a1a;color:var(--green)}
 .tag-running{background:#0a1e3a;color:var(--blue)}
+.tag-needs-decision{background:#3a1a1a;color:var(--red)}
+.tag-in-review{background:#3a2a0a;color:var(--yellow)}
 .tag-failed{background:#3a1a1a;color:var(--red)}
 .tag-blocked{background:#3a2a0a;color:var(--yellow)}
 .tag-completed{background:#0a2a1a;color:var(--green)}
@@ -96,6 +99,14 @@ a{color:var(--accent);text-decoration:none}
 #toast{position:fixed;bottom:20px;right:20px;background:#23253a;border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;display:none;z-index:200}
 #toast.err{border-color:var(--red);color:var(--red)}
 #toast.ok{border-color:var(--green);color:var(--green)}
+
+/* Form inputs */
+.form-row{margin-bottom:10px}
+.form-row label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+.form-input{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font:13px/1.4 system-ui}
+.form-input:focus{outline:none;border-color:var(--accent)}
+select.form-input{cursor:pointer}
+textarea.form-input{resize:vertical;min-height:60px}
 
 /* Work detail drawer */
 #drawer{position:fixed;right:0;top:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);transform:translateX(100%);transition:transform .2s;z-index:50;overflow-y:auto;padding:20px}
@@ -290,8 +301,13 @@ function relTime(iso) {
 }
 
 function stateTag(state) {
-  const map = {ready:'tag-ready',running:'tag-running',failed:'tag-failed',blocked:'tag-blocked',completed:'tag-completed',cancelled:'tag-cancelled'};
-  return '<span class="tag ' + (map[state]||'tag-state') + '">' + esc(state) + '</span>';
+  const map = {
+    draft:'tag-draft',ready:'tag-ready',running:'tag-running',
+    needs_decision:'tag-needs-decision',in_review:'tag-in-review',
+    blocked:'tag-blocked',failed:'tag-failed',
+    completed:'tag-completed',cancelled:'tag-cancelled',
+  };
+  return '<span class="tag ' + (map[state]||'tag-state') + '">' + esc(state.replace(/_/g,' ')) + '</span>';
 }
 
 function urgencyTag(u) {
@@ -356,7 +372,7 @@ async function renderWork(el) {
   }
   html += '</div>';
 
-  const stateOptions = ['','pending','ready','running','paused','blocked','completed','failed','cancelled'];
+  const stateOptions = ['','draft','ready','running','needs_decision','in_review','blocked','failed','completed','cancelled'];
   html += '<div class="row" style="margin-bottom:16px;gap:6px"><span style="color:var(--muted);font-size:12px">State:</span>';
   for (const s of stateOptions) {
     const label = s || 'all';
@@ -364,6 +380,23 @@ async function renderWork(el) {
     html += '<button class="btn btn-sm ' + (active ? '' : 'btn-ghost') + '" onclick="filterWork(' + JSON.stringify(s) + ')">' + label + '</button>';
   }
   html += '</div>';
+
+  // New Work form (collapsed by default)
+  html += '<details style="margin-bottom:16px"><summary style="cursor:pointer;color:var(--accent);font-size:13px;font-weight:600;list-style:none">+ New Work</summary>';
+  html += '<div class="card" style="margin-top:8px" id="new-work-form">';
+  const wfr = await api('GET', '/workflows');
+  const workflows = wfr.ok ? wfr.data : [];
+  html += '<div class="form-row"><label>Title</label><input class="form-input" id="nw-title" placeholder="Short title for this work item"></div>';
+  html += '<div class="form-row"><label>Goal</label><textarea class="form-input" id="nw-goal" placeholder="What should be accomplished?"></textarea></div>';
+  html += '<div class="form-row"><label>Workflow</label><select class="form-input" id="nw-workflow">';
+  for (const wf of workflows) {
+    html += '<option value="' + esc(wf.id) + '">' + esc(wf.label) + '</option>';
+  }
+  if (!workflows.length) html += '<option value="">No workflows available</option>';
+  html += '</select></div>';
+  html += '<div id="nw-error" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>';
+  html += '<button class="btn btn-sm btn-success" onclick="submitNewWork(' + JSON.stringify(esc(selectedProjectId)) + ')">Create Work Item</button>';
+  html += '</div></details>';
 
   const path = '/projects/' + selectedProjectId + '/work' + (workStateFilter ? '?state=' + workStateFilter : '');
   const wr = await api('GET', path);
@@ -387,6 +420,24 @@ async function renderWork(el) {
 function selectProject(id) { selectedProjectId = id; render(); }
 function filterWork(s) { workStateFilter = s; render(); }
 
+async function submitNewWork(projectId) {
+  const title = (document.getElementById('nw-title')?.value || '').trim();
+  const goal = (document.getElementById('nw-goal')?.value || '').trim();
+  const workflowId = document.getElementById('nw-workflow')?.value || '';
+  const errEl = document.getElementById('nw-error');
+  if (!title) { errEl.textContent = 'Title is required'; errEl.style.display = ''; return; }
+  if (!goal) { errEl.textContent = 'Goal is required'; errEl.style.display = ''; return; }
+  if (!workflowId) { errEl.textContent = 'Select a workflow'; errEl.style.display = ''; return; }
+  errEl.style.display = 'none';
+  const r = await api('POST', '/projects/' + projectId + '/work', { title, goal, workflowId });
+  if (r.ok) {
+    toast('Work item created');
+    render();
+  } else {
+    if (errEl) { errEl.textContent = r.error?.message || 'Failed to create'; errEl.style.display = ''; }
+  }
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────
 async function renderProjects(el) {
   const r = await api('GET', '/projects');
@@ -399,7 +450,7 @@ async function renderProjects(el) {
     // Load work summary
     const wr = await api('GET', '/projects/' + p.id + '/work');
     const work = wr.ok ? wr.data : [];
-    const active = work.filter(w => ['ready','running','paused'].includes(w.state)).length;
+    const active = work.filter(w => ['ready','running','needs_decision','in_review'].includes(w.state)).length;
     const failed = work.filter(w => w.state === 'failed').length;
     const blocked = work.filter(w => w.state === 'blocked').length;
     const healthy = !failed && !blocked;
@@ -449,18 +500,11 @@ async function viewWork(id) {
   html += '<div class="row" style="margin-bottom:12px">' + stateTag(w.state) + '<span style="color:var(--muted);font-size:12px">' + relTime(w.updatedAt) + '</span></div>';
   if (w.description) html += '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">' + esc(w.description) + '</p>';
 
-  // Actions
+  // Actions — only draft→ready is exposed; all other lifecycle transitions
+  // require execution semantics that are not yet implemented in this build.
   html += '<div class="actions" style="margin-bottom:16px">';
-  const transitions = {
-    pending: [{a:'ready',l:'Mark Ready',cls:''}],
-    ready: [{a:'pause',l:'Pause',cls:'btn-ghost'}],
-    running: [{a:'pause',l:'Pause',cls:'btn-ghost'},{a:'fail',l:'Fail',cls:'btn-danger'}],
-    paused: [{a:'resume',l:'Resume',cls:''}],
-    blocked: [{a:'ready',l:'Unblock',cls:''}],
-  };
-  const actions = transitions[w.state] || [];
-  for (const t of actions) {
-    html += '<button class="btn btn-sm ' + (t.cls||'') + '" onclick="doWorkAction(' + JSON.stringify(esc(id)) + ',' + JSON.stringify(t.a) + ')">' + t.l + '</button>';
+  if (w.state === 'draft') {
+    html += '<button class="btn btn-sm btn-success" onclick="doWorkAction(' + JSON.stringify(esc(id)) + ',\'ready\')">Mark Ready</button>';
   }
   html += '</div>';
 

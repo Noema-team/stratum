@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import { exec } from 'node:child_process';
 
 import { InitService, type InitRequest } from './init-service.js';
@@ -13,6 +11,7 @@ import { RuntimeMapManagerImpl } from './runtime-map.js';
 import { StateAPI } from './state-api.js';
 import { ProjectTypeEnum } from './types.js';
 import { createStratumApplication } from './application.js';
+import { bootstrapLocalControlPlane } from './api/bootstrap.js';
 
 const projectRoot = process.cwd();
 
@@ -135,20 +134,6 @@ async function handleInit(cmd: InitCommand): Promise<void> {
   }
 }
 
-function loadOrCreateWorkspaceId(root: string): string {
-  const wsFile = path.join(root, '.sle', 'workspace.json');
-  if (fs.existsSync(wsFile)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(wsFile, 'utf8')) as Record<string, unknown>;
-      if (typeof data.workspaceId === 'string' && data.workspaceId) return data.workspaceId;
-    } catch { /* fall through */ }
-  }
-  const workspaceId = randomUUID();
-  fs.mkdirSync(path.join(root, '.sle'), { recursive: true });
-  fs.writeFileSync(wsFile, JSON.stringify({ workspaceId }, null, 2) + '\n', 'utf8');
-  return workspaceId;
-}
-
 async function handleStart(cmd: StartCommand): Promise<void> {
   const port = cmd.port ?? 7700;
   const pidPath = path.join(projectRoot, '.sle', 'daemon.pid');
@@ -165,7 +150,8 @@ async function handleStart(cmd: StartCommand): Promise<void> {
     await removePidFile(pidPath);
   }
 
-  const workspaceId = loadOrCreateWorkspaceId(projectRoot);
+  const dbPath = path.join(projectRoot, '.sle', 'stratum.db');
+  const { workspaceId } = bootstrapLocalControlPlane(projectRoot, dbPath);
 
   const app = createStratumApplication({ projectRoot, workspaceId, port });
   await app.start();
@@ -177,12 +163,17 @@ async function handleStart(cmd: StartCommand): Promise<void> {
     openBrowser(`http://localhost:${port}`);
   }
 
-  process.once('SIGTERM', () => {
+  let shutdownCalled = false;
+  function shutdown(): void {
+    if (shutdownCalled) return;
+    shutdownCalled = true;
     app.stop()
       .then(() => removePidFile(pidPath))
       .then(() => process.exit(0))
       .catch(() => process.exit(1));
-  });
+  }
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 async function handleStop(): Promise<void> {
@@ -200,8 +191,8 @@ async function handleStop(): Promise<void> {
   }
 
   process.kill(pid, 'SIGTERM');
-  await removePidFile(`${projectRoot}/.sle/daemon.pid`);
-  console.log(`Daemon stopped (PID: ${pid})`);
+  // The running process removes its own PID file via its SIGTERM handler.
+  console.log(`Sent SIGTERM to daemon (PID: ${pid})`);
 }
 
 async function handleStatus(): Promise<void> {

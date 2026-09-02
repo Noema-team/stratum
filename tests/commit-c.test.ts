@@ -257,77 +257,27 @@ test('C.scope: cross-workspace events read is rejected', async () => {
 });
 
 // ============================================================================
-// 3. Compatibility routes (/api/v2/*)
-// Routes migrated for live_client consumers.
+// 3. Retired compat routes (/api/v2/*) — all now return 404
 // ============================================================================
 
-test('C.compat: GET /api/v2/info returns workspace runtime info', async () => {
+test('C.compat: GET /api/v2/info is not exposed (retired)', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/api/v2/info`);
-    assert.equal(r.status, 200);
-    const data = (r.body as { data: Record<string, unknown> }).data;
-    assert.equal(typeof data.pid, 'number');
-    assert.equal(typeof data.port, 'number');
-    assert.equal(typeof data.project_root, 'string');
-    assert.equal(typeof data.uptime_ms, 'number');
+    assert.equal(r.status, 404);
   });
 });
 
-test('C.compat: GET /api/v2/system/state returns idle when no active items', async () => {
+test('C.compat: GET /api/v2/system/state is not exposed (retired)', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/api/v2/system/state`);
-    assert.equal(r.status, 200);
-    const data = (r.body as { data: { state: string } }).data;
-    assert.equal(data.state, 'idle');
+    assert.equal(r.status, 404);
   });
 });
 
-test('C.compat: GET /api/v2/system/state returns cycling when WorkItem is running', async () => {
-  await withServer(async (base, { workItem, workService }) => {
-    workService.markReady({ workItemId: workItem.id });
-    workService.startRunning({ workItemId: workItem.id, workflowRunId: randomUUID() });
-
-    const r = await get(`${base}/api/v2/system/state`);
-    assert.equal(r.status, 200);
-    const data = (r.body as { data: { state: string } }).data;
-    assert.equal(data.state, 'cycling');
-  });
-});
-
-test('C.compat: GET /api/v2/system/state returns halted when WorkItem needs decision', async () => {
-  await withServer(async (base, { workItem, workService }) => {
-    // draft → ready → running → needs_decision
-    workService.markReady({ workItemId: workItem.id });
-    workService.startRunning({ workItemId: workItem.id, workflowRunId: randomUUID() });
-    workService.needsDecision({
-      workItemId: workItem.id,
-      decision: {
-        type: 'checkpoint',
-        subjectRef: { workItemId: workItem.id },
-        title: 'test checkpoint',
-        summary: 'test',
-        options: [{ id: 'a', label: 'approve' }],
-        impact: 'low',
-        reversibility: 'easy',
-        urgency: 'normal',
-      },
-    });
-
-    const r = await get(`${base}/api/v2/system/state`);
-    assert.equal(r.status, 200);
-    const data = (r.body as { data: { state: string } }).data;
-    assert.equal(data.state, 'halted');
-  });
-});
-
-test('C.compat: GET /api/v2/settings returns defaults when settings file absent', async () => {
+test('C.compat: GET /api/v2/settings is not exposed (retired)', async () => {
   await withServer(async (base) => {
     const r = await get(`${base}/api/v2/settings`);
-    assert.equal(r.status, 200);
-    const data = (r.body as { data: Record<string, unknown> }).data;
-    assert.ok('provider' in data);
-    assert.ok('model' in data);
-    assert.ok('api_key' in data);
+    assert.equal(r.status, 404);
   });
 });
 
