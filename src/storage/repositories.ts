@@ -640,7 +640,9 @@ export class ArtifactRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly byWorkflowRun: Database.Statement;
-  private readonly byWorkflowRunAndRef: Database.Statement;
+  private readonly byWorkflowRunRefAndHash: Database.Statement;
+  private readonly latestByWorkflowRun: Database.Statement;
+  private readonly latestByWorkItem: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -650,9 +652,24 @@ export class ArtifactRepository {
     this.byId = db.prepare('SELECT * FROM artifacts WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM artifacts WHERE work_item_id = ? ORDER BY created_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM artifacts WHERE workflow_run_id = ? ORDER BY created_at');
-    this.byWorkflowRunAndRef = db.prepare(
-      'SELECT * FROM artifacts WHERE workflow_run_id = ? AND ref = ? ORDER BY created_at LIMIT 1'
+    this.byWorkflowRunRefAndHash = db.prepare(
+      'SELECT * FROM artifacts WHERE workflow_run_id = ? AND ref = ? AND hash = ? ORDER BY created_at LIMIT 1'
     );
+    // D.1c — "latest" = most recently inserted row per distinct ref (by
+    // rowid, not created_at: createdAt has only millisecond resolution and
+    // two versions of the same ref could in principle share a timestamp).
+    this.latestByWorkflowRun = db.prepare(`
+      SELECT * FROM artifacts
+      WHERE workflow_run_id = ?
+        AND rowid IN (SELECT MAX(rowid) FROM artifacts WHERE workflow_run_id = ? GROUP BY ref)
+      ORDER BY created_at
+    `);
+    this.latestByWorkItem = db.prepare(`
+      SELECT * FROM artifacts
+      WHERE work_item_id = ?
+        AND rowid IN (SELECT MAX(rowid) FROM artifacts WHERE work_item_id = ? GROUP BY ref)
+      ORDER BY created_at
+    `);
   }
 
   save(a: ArtifactRecord): void {
@@ -668,20 +685,36 @@ export class ArtifactRepository {
     return r ? rowToArtifact(r) : undefined;
   }
 
-  // Idempotency lookup for declarative provenance (D.1b): a retried step
-  // recording the same (workflowRunId, ref) must not create a duplicate row.
-  // There is no unique DB constraint backing this — callers must check-then-save.
-  findByWorkflowRunAndRef(workflowRunId: string, ref: string): ArtifactRecord | undefined {
-    const r = this.byWorkflowRunAndRef.get(workflowRunId, ref) as Record<string, unknown> | undefined;
+  // Idempotency lookup for declarative provenance (D.1c): dedupe by
+  // (workflowRunId, ref, hash) rather than just (workflowRunId, ref) — a
+  // retry that reproduces identical content is a no-op, but a step that
+  // refines its own output under the same ref (e.g. Definition v1 → v2, same
+  // workflowRunId + ref, different hash) records a new version instead of
+  // leaving a stale row. There is no unique DB constraint backing this —
+  // callers must check-then-save.
+  findByWorkflowRunRefAndHash(workflowRunId: string, ref: string, hash: string): ArtifactRecord | undefined {
+    const r = this.byWorkflowRunRefAndHash.get(workflowRunId, ref, hash) as Record<string, unknown> | undefined;
     return r ? rowToArtifact(r) : undefined;
   }
 
+  // Full version history, oldest first.
   listByWorkItem(workItemId: string): ArtifactRecord[] {
     return (this.byWorkItem.all(workItemId) as Record<string, unknown>[]).map(rowToArtifact);
   }
 
   listByWorkflowRun(workflowRunId: string): ArtifactRecord[] {
     return (this.byWorkflowRun.all(workflowRunId) as Record<string, unknown>[]).map(rowToArtifact);
+  }
+
+  // D.1c — one row per distinct ref: the most recently recorded version.
+  // Use this (not listByWorkflowRun) wherever a caller wants "the current
+  // artifacts", not the full refinement history.
+  listLatestByWorkflowRun(workflowRunId: string): ArtifactRecord[] {
+    return (this.latestByWorkflowRun.all(workflowRunId, workflowRunId) as Record<string, unknown>[]).map(rowToArtifact);
+  }
+
+  listLatestByWorkItem(workItemId: string): ArtifactRecord[] {
+    return (this.latestByWorkItem.all(workItemId, workItemId) as Record<string, unknown>[]).map(rowToArtifact);
   }
 }
 

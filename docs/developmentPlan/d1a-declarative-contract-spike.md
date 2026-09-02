@@ -1,15 +1,17 @@
 # D.1a — Declarative workflow contract spike
 
-**Status:** D.1a spike accepted with five corrections (§5 revised below);
-D.1b (the production implementation) is complete. The original spike test
-file (`tests/d1a-declarative-contract-spike.test.ts`) was observational and
-has been deleted; its claims are now proven by the permanent suite
-`tests/declarative-workflow-contract.test.ts`, which exercises the real
-(now-modified) `ContextManager`, `agent-runner.ts`, `WorkflowEngine`, and
-`FullBuildStepRunner` code and is part of the ordinary regression suite
-going forward.
-**Milestone:** D, phase D.1a → D.1b (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md`
-§9, as amended)
+**Status:** D.1a spike accepted with five corrections (§5); D.1b (the
+production implementation) landed, was reviewed, and D.1c (five further
+corrections — §7) is complete. D.1 as a whole is closed. The original spike
+test file (`tests/d1a-declarative-contract-spike.test.ts`) was observational
+and has been deleted; its claims and every D.1c correction are now proven by
+the permanent suite `tests/declarative-workflow-contract.test.ts` plus the
+`/work/:id/artifacts` endpoint tests in `tests/api.test.ts`, both exercising
+the real (now-modified) `ContextManager`, `agent-runner.ts`,
+`StratumAgentAdapter`, and `FullBuildStepRunner` code, part of the ordinary
+regression suite going forward.
+**Milestone:** D, phase D.1a → D.1b → D.1c (see
+`CURRENT_FOCUS_INTENT_TO_READY_WORK.md` §9, as amended)
 **Question:** Can a genuinely new workflow define its own instructions and
 output Artifact without adding its step IDs to `WorkflowEngine`,
 `FullBuildStepRunner`, `ContextManager`'s task maps, or `AgentRunner`'s
@@ -290,3 +292,96 @@ implementation:
   special-cased methods when `workflowId === 'full-build'`;
 - the same step ids on a different `workflowId` do **not** trigger those
   full-build-specific branches.
+
+## 7. D.1c — review corrections
+
+D.1b was architecturally accepted but review found three concrete contract
+bugs and two closure gaps. All five are fixed; D.1 is closed as of this
+section.
+
+### 7.1 Internal traversal could escape a role's ceiling
+
+`isSafeRelativePath()` (D.1b) proved only that the *resolved* path stayed
+inside `projectRoot` — it said nothing about whether the path still meant
+what its raw string claimed once resolved. A declared path like
+`.sle/work/../../src/evil.ts`:
+
+- resolves inside `projectRoot` (passes a naive containment check);
+- literally starts with the string `.sle/work/` (passes a naive
+  string-prefix ceiling check on the *raw* input);
+- but `path.join()` at the actual write resolves it to `src/evil.ts` —
+  outside the `explorer` role's ceiling entirely.
+
+Fixed by introducing `src/path-safety.ts` (`safeRelativeSegments` /
+`toSafeRelativePath`), shared by `agent-runner.ts` and `context-manager.ts`.
+It rejects any `..` segment outright — conservative rejection rather than
+resolve-then-hope — and returns one canonical value. `AgentRunner.run()` now
+canonicalizes every produced section exactly once (§6a in the code) and
+uses that single canonical value for cardinality/exact-match, the role
+ceiling, the filesystem write, and `ArtifactRecord.path` — the four things
+this bug could previously see different, divergent versions of the same
+path. Regression test: `tests/declarative-workflow-contract.test.ts` — "D.1c:
+internal traversal that stays inside projectRoot but escapes the declared
+.sle/work/ ceiling is rejected before any write".
+
+### 7.2 `inputArtifactRefs` had no traversal confinement, and `[]` was ambiguous
+
+Two separate issues in `ContextManager`:
+
+- `resolveArtifactPath()`/`resolveSummaryPath()` joined a ref's key straight
+  into `.sle/project-docs`, `.sle/project-graph/layers`, `runDir`, or
+  `projectRoot` without validating it — a declared `inputArtifactRefs` entry
+  (unlike the hardcoded `SliceDef` constants) is not a trusted literal, and
+  nothing stopped e.g. `doc:../../../../etc/passwd` from resolving outside
+  `.sle/project-docs`. Fixed: every ref-kind branch now runs its key(s)
+  through `safeRelativeSegments()` and returns `null` (already handled
+  gracefully by `loadSliceContent` as "slice not loaded") on any unsafe
+  segment.
+- `ctx.inputArtifactRefs?.length > 0` meant `inputArtifactRefs: []` silently
+  fell back to `getRoleSlices()` — indistinguishable from not declaring the
+  field at all. Fixed: the check is now `!== undefined`, so an explicit `[]`
+  means "no artifact slices" and only an actually-undeclared field falls
+  back to role defaults.
+
+### 7.3 Provenance idempotency went stale under iterative refinement
+
+Deduping by `(workflowRunId, ref)` meant a second, *different* version of
+the same ref within the same run (e.g. a Definition refined from v1 to v2)
+was silently dropped — the DB kept recording v1's hash while the file on
+disk was v2. Fixed: `ArtifactRepository.findByWorkflowRunRefAndHash(
+workflowRunId, ref, hash)` replaces the old ref-only lookup — identical
+content is still a no-op retry, but changed content under the same ref
+records a new row. `ArtifactRepository` keeps the full version history
+(`listByWorkItem`/`listByWorkflowRun`, unchanged); two new methods,
+`listLatestByWorkflowRun`/`listLatestByWorkItem`, project one row per
+distinct `ref` (most recently inserted, by `rowid` rather than `created_at`
+— millisecond timestamps can collide). `StratumAgentAdapter.execute()` now
+calls the "latest" variant for `ExecutionResult.artifacts`, so a caller
+consuming that result sees current artifacts, not every historical version.
+
+### 7.4 `GET /work/:id/artifacts`
+
+Added, following the exact pattern of the existing `/work/:id/evidence`
+handler (`src/api/handlers/evidence.ts`): workspace-scoped through the same
+`inWorkspace(workItems, projects, workspaceId, id)` check, returns
+`ArtifactRepository.listLatestByWorkItem(id)` — metadata only (id, type,
+ref, path, hash, timestamps, `workItemId`/`workflowRunId` linkage), never
+file contents, and only the current version per ref (consistent with §7.3's
+adapter projection). The full version history is not exposed by any route
+yet — nothing outside tests consumes it, so no endpoint was added
+speculatively for it.
+
+### 7.5 Cleanup
+
+`ROLE_OUTPUT_PATHS`'s header comment ("Roles with no entry (builder,
+explorer, debugger) may write to any path") was already stale before D.1b —
+`debugger` has had an explicit entry since before this milestone — and
+became doubly wrong once D.1b gave `explorer` one too. Corrected to name
+`builder` as the only role with no entry.
+
+### 7.6 What D.1c did not touch
+
+Per review instruction: `WorkflowEngine` control flow, `templateId`
+activation, Objective context, `StepKind`s, `AgentRole` values, the
+`Artifact`/`StepExecution` domain shape, and the shared `StepRunner`
+composition are all unchanged from D.1b.

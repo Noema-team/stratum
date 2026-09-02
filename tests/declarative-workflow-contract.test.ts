@@ -1,12 +1,14 @@
-// D.1b — permanent regression suite for the declarative workflow-step
+// D.1b/D.1c — permanent regression suite for the declarative workflow-step
 // contract. Supersedes the deleted observational spike
 // (tests/d1a-declarative-contract-spike.test.ts); see
 // docs/developmentPlan/d1a-declarative-contract-spike.md for the full
-// design rationale.
+// design rationale, including the D.1c review corrections (internal path
+// traversal, inputArtifactRefs scoping, provenance versioning, the
+// /work/:id/artifacts endpoint — tested separately in tests/api.test.ts).
 //
 // Exercises the real, unmodified-by-mocks: ContextManager, AgentRunner
-// (agent-runner.ts), and FullBuildStepRunner code paths added/changed by
-// D.1b. Uses synthetic, unfamiliar step ids and a workflow id
+// (agent-runner.ts), StratumAgentAdapter, and FullBuildStepRunner code
+// paths. Uses synthetic, unfamiliar step ids and a workflow id
 // ('define-work') that does not exist in the registry, matching the
 // original spike's approach.
 
@@ -15,6 +17,7 @@ import { strict as assert } from 'node:assert';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 import { AgentRunner } from '../src/agent-runner.js';
 import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
+import { StratumAgentAdapter } from '../src/execution/stratum-agent-adapter.js';
 import { openDatabase } from '../src/storage/database.js';
 import { ArtifactRepository, WorkspaceRepository, ProjectRepository, WorkItemRepository } from '../src/storage/repositories.js';
 import type { StepRunContext, WorkflowStep } from '../src/workflow/types.js';
@@ -100,6 +103,50 @@ test('D.1b: without declared inputArtifactRefs, role-default slice selection is 
   const result = await cm.assemble('explorer', ctxFor('investigate-domain'));
 
   assert.ok('system-description' in result.artifact_slices);
+});
+
+test('D.1c: an explicit empty inputArtifactRefs means zero slices, not a fall-back to role defaults', async () => {
+  const files = { [docPath('system-description')]: 'role-default content' };
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, makeFsMock(files));
+
+  const result = await cm.assemble('explorer', ctxFor('investigate-domain', { inputArtifactRefs: [] }));
+
+  assert.deepStrictEqual(result.artifact_slices, {}, 'declaring [] opts out of role defaults entirely');
+});
+
+test('D.1c: a bare-ref traversal is not read', async () => {
+  // The "secret" file is registered at a path outside projectRoot; if the
+  // traversal were followed, it would resolve there.
+  const files = { '/etc/secret': 'top secret' };
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, makeFsMock(files));
+
+  const result = await cm.assemble('explorer', ctxFor('investigate-domain', {
+    inputArtifactRefs: ['../../../../etc/secret'],
+  }));
+
+  assert.deepStrictEqual(result.artifact_slices, {});
+});
+
+test('D.1c: a structured doc: ref traversal is not read', async () => {
+  const files = { '/etc/secret': 'top secret' };
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, makeFsMock(files));
+
+  const result = await cm.assemble('explorer', ctxFor('investigate-domain', {
+    inputArtifactRefs: ['doc:../../../../etc/secret'],
+  }));
+
+  assert.deepStrictEqual(result.artifact_slices, {});
+});
+
+test('D.1c: a structured node: ref traversal is not read', async () => {
+  const files = { '/etc/secret': 'top secret' };
+  const cm = new ContextManager(ROOT, DEFAULT_CONFIG, makeFsMock(files));
+
+  const result = await cm.assemble('explorer', ctxFor('investigate-domain', {
+    inputArtifactRefs: ['node:../../../../etc:secret'],
+  }));
+
+  assert.deepStrictEqual(result.artifact_slices, {});
 });
 
 // ============================================================================
@@ -272,7 +319,7 @@ test('D.1b: a declared output path outside the role\'s ceiling is rejected — d
   assert.equal(artifacts.listByWorkflowRun('run-3').length, 0);
 });
 
-test('D.1b: an unsafe declared path (traversal) fails before any write', async () => {
+test('D.1b: an unsafe traversal path (leaves projectRoot) fails before any write', async () => {
   const { artifacts } = testDb();
   const output = sleOutput(
     [{ id: 'x', path: '../../etc/passwd' }],
@@ -288,8 +335,60 @@ test('D.1b: an unsafe declared path (traversal) fails before any write', async (
   const result = await runner.run('explorer', ctx);
 
   assert.equal(result.success, false);
-  assert.match(result.error ?? '', /safe project-root-relative path/);
+  assert.match(result.error ?? '', /Unsafe output path/);
   assert.deepStrictEqual(Object.keys(written), []);
+});
+
+test('D.1b: a declared path that is unsafe on its own (even when the produced section is safe and unrelated) is rejected', async () => {
+  const { artifacts } = testDb();
+  // The produced section itself is safe and would pass §6a's canonicalization,
+  // isolating the declared-path check specifically.
+  const output = sleOutput(
+    [{ id: 'x', path: '.sle/work/fine.md' }],
+    [{ path: '.sle/work/fine.md', content: 'fine' }],
+  );
+  const { mock, written } = mockFs();
+  const runner = makeAgentRunner({ fsMock: mock, llmResponse: output, artifactRepository: artifacts });
+
+  const ctx = ctxFor('investigate-domain', {
+    workflowRunId: 'run-4b',
+    outputArtifact: { type: 'research', ref: 'x:x', path: '../evil.md' },
+  });
+  const result = await runner.run('explorer', ctx);
+
+  assert.equal(result.success, false);
+  assert.match(result.error ?? '', /not a safe project-root-relative path/);
+  assert.deepStrictEqual(Object.keys(written), []);
+});
+
+test('D.1c: internal traversal that stays inside projectRoot but escapes the declared .sle/work/ ceiling is rejected before any write', async () => {
+  // '.sle/work/../../src/evil.ts' resolves to 'src/evil.ts', which:
+  //  - is still inside projectRoot (a naive resolve+contain check would pass it);
+  //  - literally starts with the string '.sle/work/' (a naive prefix-ceiling
+  //    check on the raw string would also pass it);
+  //  - but is NOT actually under '.sle/work/' once resolved, and 'explorer'
+  //    is not permitted to write to src/.
+  // This must be rejected outright (conservative '..'-segment rejection),
+  // not resolved-then-checked, per docs/developmentPlan/d1a-declarative-contract-spike.md.
+  const { artifacts } = testDb();
+  const trickyPath = '.sle/work/../../src/evil.ts';
+  const output = sleOutput(
+    [{ id: 'x', path: trickyPath }],
+    [{ path: trickyPath, content: 'malicious' }],
+  );
+  const { mock, written } = mockFs();
+  const runner = makeAgentRunner({ fsMock: mock, llmResponse: output, artifactRepository: artifacts });
+
+  const ctx = ctxFor('investigate-domain', {
+    workflowRunId: 'run-4c',
+    outputArtifact: { type: 'code', ref: 'evil:code', path: trickyPath },
+  });
+  const result = await runner.run('explorer', ctx);
+
+  assert.equal(result.success, false);
+  assert.match(result.error ?? '', /Unsafe output path/);
+  assert.deepStrictEqual(Object.keys(written), [], 'no file should be written — the traversal must never resolve to src/evil.ts');
+  assert.equal(artifacts.listByWorkflowRun('run-4c').length, 0);
 });
 
 test('D.1b: an unsafe path also fails for undeclared (legacy) output, not just declared output', async () => {
@@ -337,6 +436,81 @@ test('D.1b: retrying the same step does not duplicate the provenance row (idempo
 
   const rows = artifacts.listByWorkflowRun('run-6');
   assert.equal(rows.length, 1, 'retrying the same (workflowRunId, ref) must not create a duplicate row');
+});
+
+test('D.1c: refining the same ref within the same workflowRun (changed content) records a new version, not a duplicate', async () => {
+  const { artifacts, workItemId } = testDb();
+  const ctx = ctxFor('synthesize-definition', {
+    workItemId,
+    workflowRunId: 'run-refine',
+    outputArtifact: { type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md' },
+  });
+
+  const v1 = sleOutput(
+    [{ id: 'definition', path: '.sle/work/definition.md' }],
+    [{ path: '.sle/work/definition.md', content: 'Definition v1.' }],
+  );
+  const { mock: mock1 } = mockFs();
+  const r1 = await makeAgentRunner({ fsMock: mock1, llmResponse: v1, artifactRepository: artifacts }).run('explorer', ctx);
+  assert.ok(r1.success, `v1 should succeed, got: ${r1.error}`);
+
+  // A retry of v1 (identical content) must still not duplicate.
+  const { mock: mock1retry } = mockFs();
+  await makeAgentRunner({ fsMock: mock1retry, llmResponse: v1, artifactRepository: artifacts }).run('explorer', ctx);
+  assert.equal(artifacts.listByWorkflowRun('run-refine').length, 1, 'identical retry of v1 must not duplicate');
+
+  const v2 = sleOutput(
+    [{ id: 'definition', path: '.sle/work/definition.md' }],
+    [{ path: '.sle/work/definition.md', content: 'Definition v2 — refined after readiness review.' }],
+  );
+  const { mock: mock2 } = mockFs();
+  const r2 = await makeAgentRunner({ fsMock: mock2, llmResponse: v2, artifactRepository: artifacts }).run('explorer', ctx);
+  assert.ok(r2.success, `v2 should succeed, got: ${r2.error}`);
+
+  const history = artifacts.listByWorkflowRun('run-refine');
+  assert.equal(history.length, 2, 'v1 and v2 are both retained as separate provenance rows');
+  assert.notEqual(history[0].hash, history[1].hash);
+
+  const latest = artifacts.listLatestByWorkflowRun('run-refine');
+  assert.equal(latest.length, 1, 'exactly one current version is projected for this ref');
+  assert.equal(latest[0].hash, history[1].hash, 'the current version reflects v2, not v1');
+});
+
+test('D.1c: StratumAgentAdapter projects exactly one current ArtifactReference per logical ref, even with multiple recorded versions', async () => {
+  const { artifacts, workItemId } = testDb();
+  const runId = 'run-adapter-projection';
+  const now = new Date().toISOString();
+  artifacts.save({ id: 'a1', workItemId, workflowRunId: runId, type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md', hash: 'hashA', createdAt: now });
+  artifacts.save({ id: 'a2', workItemId, workflowRunId: runId, type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md', hash: 'hashB', createdAt: now });
+  artifacts.save({ id: 'a3', workItemId, workflowRunId: runId, type: 'proposal', ref: 'proposal:proposal', path: '.sle/work/proposal.md', hash: 'hashC', createdAt: now });
+
+  // engine.run() is exercised against an unregistered workflowId so it fails
+  // closed immediately (Unknown workflow) without needing a real StepRunner —
+  // the artifact projection below happens unconditionally after engine.run()
+  // returns, independent of the run's own outcome.
+  const dummyStepRunner = { run: async () => ({ success: true, artifacts_written: [], tokens_used: 0, duration_ms: 0 }) };
+  const engineDeps = { stepRunner: dummyStepRunner as any, mapManager: {} as any, runArtifacts: {} as any, projectRoot: '/nonexistent-d1c-adapter-test' };
+  const engineOpts = { onCheckpoint: async () => 'halt' as const };
+  const adapter = new StratumAgentAdapter(engineDeps, engineOpts, artifacts);
+
+  const result = await adapter.execute({
+    stepExecutionId: 'se-1',
+    workItemId,
+    workflowRunId: runId,
+    stepId: '__start__',
+    workflowId: 'nonexistent-workflow',
+    repositories: [],
+    goal: 'test',
+    acceptanceCriteria: [],
+    constraints: [],
+    permissions: { pushBranch: false, createPr: false, merge: false },
+    budget: {},
+  });
+
+  const refs = result.artifacts.map((a) => a.ref).sort();
+  assert.deepStrictEqual(refs, ['definition:definition', 'proposal:proposal'], 'exactly one entry per logical ref, not one per version');
+  const definitionRef = result.artifacts.find((a) => a.ref === 'definition:definition');
+  assert.equal(definitionRef?.type, 'definition');
 });
 
 function mockFs(files: Record<string, string> = {}): { mock: typeof import('fs').promises; written: Record<string, string> } {

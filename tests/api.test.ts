@@ -6,6 +6,7 @@ import {
   WorkspaceRepository,
   ProjectRepository,
   WorkItemRepository,
+  ArtifactRepository,
 } from '../src/storage/repositories.js';
 import { WorkService } from '../src/services/work-service.js';
 import { EvidenceService } from '../src/services/evidence-service.js';
@@ -41,7 +42,7 @@ let _port = 19100;
 function nextPort() { return ++_port; }
 
 async function withServer(
-  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService }) => Promise<void>,
+  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService; db: ReturnType<typeof openTestDb> }) => Promise<void>,
 ): Promise<void> {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
@@ -63,7 +64,7 @@ async function withServer(
   await srv.listen();
   const base = `http://localhost:${srv.port}`;
   try {
-    await fn(base, { workItem: wi, project: proj, workspace: ws, workService });
+    await fn(base, { workItem: wi, project: proj, workspace: ws, workService, db });
   } finally {
     await srv.close();
     db.close();
@@ -233,6 +234,74 @@ test('testEvidenceRequiresFields', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/evidence`, { type: 'github.ci' });
     assert.equal(r.status, 400);
+  });
+});
+
+// ============================================================================
+// Artifacts (D.1c — docs/developmentPlan/d1a-declarative-contract-spike.md §4)
+// ============================================================================
+
+test('testArtifactsEmptyInitially', async () => {
+  await withServer(async (base, { workItem }) => {
+    const r = await get(`${base}/work/${workItem.id}/artifacts`);
+    assert.equal(r.status, 200);
+    assert.deepEqual((r.body as { data: unknown[] }).data, []);
+  });
+});
+
+test('testArtifactsReturnsLatestPerRef', async () => {
+  await withServer(async (base, { workItem, db }) => {
+    const artifacts = new ArtifactRepository(db);
+    const now = new Date().toISOString();
+    artifacts.save({
+      id: 'a1', workItemId: workItem.id, workflowRunId: 'run-1',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashA', createdAt: now,
+    });
+    // A second, later version of the same ref — only the latest should be returned.
+    artifacts.save({
+      id: 'a2', workItemId: workItem.id, workflowRunId: 'run-1',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashB', createdAt: now,
+    });
+
+    const r = await get(`${base}/work/${workItem.id}/artifacts`);
+    assert.equal(r.status, 200);
+    const data = (r.body as { data: Array<{ ref: string; hash: string; path: string }> }).data;
+    assert.equal(data.length, 1, 'only the current version of the ref should be returned, not full history');
+    assert.equal(data[0].ref, 'definition:definition');
+    assert.equal(data[0].hash, 'hashB');
+    // Metadata only — no field carries file content, only its recorded path.
+    assert.equal(data[0].path, '.sle/work/definition.md');
+  });
+});
+
+test('testArtifactsNotFoundForUnknownWorkItem', async () => {
+  await withServer(async (base) => {
+    const r = await get(`${base}/work/does-not-exist/artifacts`);
+    assert.equal(r.status, 404);
+  });
+});
+
+test('testArtifactsWorkspaceIsolation', async () => {
+  await withServer(async (base, { db }) => {
+    // A WorkItem in a completely different workspace, with an artifact
+    // recorded against it, must not be reachable through this server
+    // (configured for the first workspace) even though the id is valid.
+    const wsB: Workspace = { id: randomUUID(), name: 'ws-b', createdAt: new Date().toISOString() };
+    new WorkspaceRepository(db).save(wsB);
+    const projB = makeProject(wsB.id);
+    new ProjectRepository(db).save(projB);
+    const wiB = makeWorkItem(projB.id);
+    new WorkItemRepository(db).save(wiB);
+    new ArtifactRepository(db).save({
+      id: 'a-b1', workItemId: wiB.id, workflowRunId: 'run-b',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashB', createdAt: new Date().toISOString(),
+    });
+
+    const r = await get(`${base}/work/${wiB.id}/artifacts`);
+    assert.equal(r.status, 404, 'a WorkItem belonging to another workspace must not be visible through this endpoint');
   });
 });
 

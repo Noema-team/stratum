@@ -8,6 +8,7 @@ import type {
   PlanningDepth,
 } from './types.js';
 import type { StepRunContext } from './workflow/types.js';
+import { safeRelativeSegments } from './path-safety.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -276,33 +277,52 @@ function resolveArtifactPath(
   projectRoot: string,
   runDir?: string
 ): string | null {
+  // D.1c — every branch below validates its ref-derived path segment(s)
+  // through safeRelativeSegments before joining, and rejects (returns null,
+  // which loadSliceContent already treats as "slice not loaded") on any
+  // '..' segment. This matters most for `inputArtifactRefs` (D.1b): those
+  // ref strings come from a WorkflowStep declaration rather than the
+  // hardcoded SliceDef constants above, so they need the same scoping
+  // discipline agent-runner.ts applies to declared output paths — a ref must
+  // not be able to read outside its ref kind's designated root
+  // (.sle/project-docs for doc:, .sle/project-graph/layers for node:, the
+  // supplied runDir for run:, projectRoot for everything else).
   if (ref.startsWith('doc:')) {
-    const key = ref.slice(4);
-    return path.join(projectRoot, '.sle', 'project-docs', `${key}.md`);
+    const key = safeRelativeSegments(ref.slice(4));
+    if (key === null) return null;
+    return path.join(projectRoot, '.sle', 'project-docs', `${key.join('/')}.md`);
   }
   if (ref.startsWith('node:')) {
     const rest = ref.slice(5);
     const colonIdx = rest.indexOf(':');
     if (colonIdx === -1) return null;
-    const group = rest.slice(0, colonIdx);
-    const key = rest.slice(colonIdx + 1);
-    return path.join(projectRoot, '.sle', 'project-graph', 'layers', group, `${key}.md`);
+    const group = safeRelativeSegments(rest.slice(0, colonIdx));
+    const key = safeRelativeSegments(rest.slice(colonIdx + 1));
+    if (group === null || key === null) return null;
+    return path.join(projectRoot, '.sle', 'project-graph', 'layers', group.join('/'), `${key.join('/')}.md`);
   }
   if (ref.startsWith('run:')) {
     if (!runDir) return null;
-    return path.join(runDir, ref.slice(4));
+    const rel = safeRelativeSegments(ref.slice(4));
+    if (rel === null) return null;
+    return path.join(runDir, rel.join('/'));
   }
   if (ref.startsWith('.sle/')) {
-    return path.join(projectRoot, ref);
+    const rel = safeRelativeSegments(ref);
+    if (rel === null) return null;
+    return path.join(projectRoot, rel.join('/'));
   }
   // Bare path — treat as relative to project root
-  return path.join(projectRoot, ref);
+  const rel = safeRelativeSegments(ref);
+  if (rel === null) return null;
+  return path.join(projectRoot, rel.join('/'));
 }
 
 function resolveSummaryPath(projectRoot: string, ref: string): string | null {
   if (!ref.startsWith('doc:')) return null;
-  const key = ref.slice(4);
-  return path.join(projectRoot, '.sle', 'project-docs', `${key}.summary.md`);
+  const key = safeRelativeSegments(ref.slice(4));
+  if (key === null) return null;
+  return path.join(projectRoot, '.sle', 'project-docs', `${key.join('/')}.summary.md`);
 }
 
 function refToSliceKey(ref: string): string {
@@ -627,12 +647,15 @@ export class ContextManager {
     ctx: StepRunContext,
     _runDir: string | undefined
   ): SliceDef[] {
-    // D.1b — a step's declared inputArtifactRefs fully control context: they
-    // replace the role's default slice set rather than adding to it, so a
-    // step can be reasoned about from its own declaration alone. full-build/
-    // draft-artifact steps declare no inputArtifactRefs, so getRoleSlices()
-    // remains their unchanged path.
-    if (ctx.inputArtifactRefs && ctx.inputArtifactRefs.length > 0) {
+    // D.1b/D.1c — a step's declared inputArtifactRefs fully control context:
+    // they replace the role's default slice set rather than adding to it, so
+    // a step can be reasoned about from its own declaration alone. Declaring
+    // the field at all opts out of role defaults — an explicit empty array
+    // means "no artifact slices", not "fall back to the role's defaults".
+    // Only an undeclared (undefined) field falls back to getRoleSlices().
+    // full-build/draft-artifact steps never declare inputArtifactRefs, so
+    // getRoleSlices() remains their unchanged path.
+    if (ctx.inputArtifactRefs !== undefined) {
       return ctx.inputArtifactRefs.map((ref): SliceDef => ({
         ref,
         mode: 'full',

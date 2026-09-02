@@ -8,6 +8,7 @@ import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
+import { toSafeRelativePath } from './path-safety.js';
 import { AgentLoop } from './agent-loop.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -34,8 +35,16 @@ export interface ParsedOutput {
 
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
 
-// Roles with no entry (builder, explorer, debugger) may write to any path.
-// Entries ending with '/' are prefix matches (any path under that directory).
+// 'builder' is the only role with no entry here — it may write to any path
+// except BUILDER_DENY_PREFIXES below (see the role === 'builder' branch in
+// validateOutputPath). Every other role, including 'explorer' (D.1b), has an
+// explicit allowlist; an absent entry for any of THOSE roles would mean
+// unrestricted writes (see the `if (!allowed) return true` fallback below) —
+// that fallback exists only for roles genuinely not yet assigned a ceiling,
+// not as a documented behavior to rely on.
+// Entries ending with '/' are prefix matches (any path under that directory),
+// matched against the canonical path from path-safety.ts, never the raw
+// LLM-produced string — see toSafeRelativePath's doc comment for why.
 const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
   facilitator: ['docs/cycle-charter.md'],
   designer:    ['docs/requirements.md', 'docs/architecture.md'],
@@ -58,6 +67,8 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
 // Builder can write anywhere except system dirs and docs (which belong to agent roles).
 const BUILDER_DENY_PREFIXES = ['.sle/', 'docs/'];
 
+// filePath must already be the canonical value from toSafeRelativePath() —
+// callers must canonicalize (and reject on null) before reaching here.
 export function validateOutputPath(filePath: string, role: AgentRole): boolean {
   if (role === 'builder') {
     return !BUILDER_DENY_PREFIXES.some((prefix) => filePath.startsWith(prefix));
@@ -65,16 +76,6 @@ export function validateOutputPath(filePath: string, role: AgentRole): boolean {
   const allowed = ROLE_OUTPUT_PATHS[role];
   if (!allowed) return true;
   return allowed.some((p) => (p.endsWith('/') ? filePath.startsWith(p) : filePath === p));
-}
-
-// D.1b — path-traversal guard, checked before any filesystem mutation for
-// every write (legacy and declared). Rejects absolute paths and any `..`
-// segment that would escape projectRoot, regardless of separator style.
-export function isSafeRelativePath(projectRoot: string, relPath: string): boolean {
-  if (!relPath || path.isAbsolute(relPath)) return false;
-  const rootResolved = path.resolve(projectRoot);
-  const resolved = path.resolve(rootResolved, relPath);
-  return resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
 }
 
 // Paths where new content is appended after existing content (not overwritten).
@@ -320,75 +321,59 @@ export class AgentRunner {
       }
     }
 
-    // 6a. D.1b — a declared output narrows what may be written: exactly one
-    // section, at exactly the declared path. Checked before any path-safety/
-    // role/filesystem work below, and before any filesystem mutation.
+    const fail = (error: string): AgentRunResult => ({
+      success: false,
+      artifacts_written: [],
+      tokens_used: tokensUsed,
+      duration_ms: Date.now() - start,
+      raw_output_path: rawPath,
+      error,
+    });
+
+    // 6a. D.1c — canonicalize every produced path exactly once, before any
+    // other check. This is THE single value used from here on for exact
+    // matching, the role ceiling, the filesystem write, and (for a declared
+    // output) ArtifactRecord.path — validation and the write can never
+    // diverge, because there is only one path.safety.ts pass and everything
+    // downstream reads its output rather than the raw LLM string again.
+    const canonicalSections: Array<{ path: string; content: string }> = [];
+    for (const section of parsed.sections) {
+      const safe = toSafeRelativePath(section.path);
+      if (safe === null) {
+        return fail(`Unsafe output path '${section.path}'`);
+      }
+      canonicalSections.push({ path: safe, content: section.content });
+    }
+
+    // 6b. A declared output narrows what may be written: exactly one
+    // section, at exactly the declared (canonical) path. Compared against
+    // canonicalSections, never the raw parsed.sections.
     if (ctx.outputArtifact) {
-      const declaredPath = ctx.outputArtifact.path;
-      if (!isSafeRelativePath(this.projectRoot, declaredPath)) {
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: tokensUsed,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `Declared output path '${declaredPath}' is not a safe project-root-relative path`,
-        };
+      const declaredSafe = toSafeRelativePath(ctx.outputArtifact.path);
+      if (declaredSafe === null) {
+        return fail(`Declared output path '${ctx.outputArtifact.path}' is not a safe project-root-relative path`);
       }
-      if (parsed.sections.length !== 1) {
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: tokensUsed,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `Step declares exactly one output artifact ('${declaredPath}') but produced ${parsed.sections.length} section(s)`,
-        };
+      if (canonicalSections.length !== 1) {
+        return fail(`Step declares exactly one output artifact ('${declaredSafe}') but produced ${canonicalSections.length} section(s)`);
       }
-      const normalizedDeclared = path.posix.normalize(declaredPath);
-      const normalizedActual = path.posix.normalize(parsed.sections[0].path);
-      if (normalizedActual !== normalizedDeclared) {
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: tokensUsed,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `Step declared output '${declaredPath}' but produced '${parsed.sections[0].path}'`,
-        };
+      if (canonicalSections[0].path !== declaredSafe) {
+        return fail(`Step declared output '${declaredSafe}' but produced '${canonicalSections[0].path}'`);
       }
     }
 
-    // 6b. Validate write paths: path-traversal safety, then the role's
-    // broad ceiling (DDR-019). A declared output only NARROWS §6a above —
-    // it never bypasses this check, so the declared path must also fall
-    // within the role's ROLE_OUTPUT_PATHS ceiling.
-    for (const section of parsed.sections) {
-      if (!isSafeRelativePath(this.projectRoot, section.path)) {
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: tokensUsed,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `Unsafe output path '${section.path}'`,
-        };
-      }
+    // 6c. The role's broad ceiling (DDR-019), checked against the same
+    // canonical path used everywhere else. A declared output only narrows
+    // §6b above — it never bypasses this: the declared path must also fall
+    // within ROLE_OUTPUT_PATHS.
+    for (const section of canonicalSections) {
       if (!validateOutputPath(section.path, role)) {
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: tokensUsed,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `Role '${role}' is not permitted to write '${section.path}'`,
-        };
+        return fail(`Role '${role}' is not permitted to write '${section.path}'`);
       }
     }
 
-    // 7. Write artifacts
+    // 7. Write artifacts — canonical paths only.
     const artifactsWritten: string[] = [];
-    for (const section of parsed.sections) {
+    for (const section of canonicalSections) {
       const filePath = path.join(this.projectRoot, section.path);
       await this.fs.mkdir(path.dirname(filePath), { recursive: true });
       if (APPEND_ONLY_PATHS.has(section.path)) {
@@ -399,15 +384,23 @@ export class AgentRunner {
       artifactsWritten.push(section.path);
     }
 
-    // 8. D.1b — record provenance for a declared output, exactly once.
+    // 8. D.1b/D.1c — record provenance for a declared output. Deduped by
+    // (workflowRunId, ref, hash) rather than just (workflowRunId, ref): a
+    // retry that reproduces the same content is a no-op, but iterative
+    // refinement (same ref, changed content — e.g. Definition v1 → v2)
+    // records a new version rather than going stale under an unchanged row.
+    // ArtifactRepository keeps the full version history; StratumAgentAdapter
+    // projects the latest row per ref for ExecutionResult.artifacts.
     // stepExecutionId is deliberately left unset: the Scheduler creates one
     // outer StepExecution per adapter invocation, not one per WorkflowStep,
     // so there is no naturally-available per-step id here yet (see
     // docs/developmentPlan/d1a-declarative-contract-spike.md §4).
     if (ctx.outputArtifact && this.artifactRepository) {
-      const already = this.artifactRepository.findByWorkflowRunAndRef(
+      const hash = createHash('sha256').update(canonicalSections[0].content).digest('hex');
+      const already = this.artifactRepository.findByWorkflowRunRefAndHash(
         ctx.workflowRunId,
-        ctx.outputArtifact.ref
+        ctx.outputArtifact.ref,
+        hash,
       );
       if (!already) {
         this.artifactRepository.save({
@@ -417,7 +410,7 @@ export class AgentRunner {
           type: ctx.outputArtifact.type,
           ref: ctx.outputArtifact.ref,
           path: artifactsWritten[0],
-          hash: createHash('sha256').update(parsed.sections[0].content).digest('hex'),
+          hash,
           createdAt: new Date().toISOString(),
         });
       }

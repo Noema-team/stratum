@@ -77,7 +77,7 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       : 'blocked';
 
     const artifacts: ArtifactReference[] = this.artifactRepository
-      ? this.artifactRepository.listByWorkflowRun(request.workflowRunId).map((a) => ({
+      ? this.artifactRepository.listLatestByWorkflowRun(request.workflowRunId).map((a) => ({
           ref: a.ref ?? a.id,
           path: a.path,
           type: a.type,
