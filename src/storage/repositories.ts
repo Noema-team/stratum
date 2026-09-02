@@ -186,17 +186,17 @@ export class ObjectiveRepository {
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
-      INSERT INTO objectives (id, project_id, title, description, priority, status, constraints_json, success_criteria_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO objectives (id, project_id, title, description, priority, status, constraints_json, success_criteria_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM objectives WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM objectives WHERE project_id = ? ORDER BY priority DESC, title');
-    this.statusStmt = db.prepare('UPDATE objectives SET status = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE objectives SET status = ?, updated_at = ? WHERE id = ?');
   }
 
   save(o: Objective): void {
     this.insert.run(o.id, o.projectId, o.title, o.description, o.priority, o.status,
-      JSON.stringify(o.constraints), JSON.stringify(o.successCriteria));
+      JSON.stringify(o.constraints), JSON.stringify(o.successCriteria), o.createdAt, o.updatedAt);
   }
 
   findById(id: string): Objective | undefined {
@@ -208,8 +208,8 @@ export class ObjectiveRepository {
     return (this.byProject.all(projectId) as Record<string, unknown>[]).map(rowToObjective);
   }
 
-  updateStatus(id: string, status: Objective['status']): void {
-    this.statusStmt.run(status, id);
+  updateStatus(id: string, status: Objective['status'], updatedAt: string): void {
+    this.statusStmt.run(status, updatedAt, id);
   }
 }
 
@@ -223,6 +223,8 @@ function rowToObjective(r: Record<string, unknown>): Objective {
     status: r.status as Objective['status'],
     constraints: JSON.parse(r.constraints_json as string),
     successCriteria: JSON.parse(r.success_criteria_json as string),
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
   };
 }
 
@@ -239,6 +241,7 @@ export class WorkItemRepository {
   private readonly countForProject: Database.Statement;
   private readonly countAll: Database.Statement;
   private readonly countForWorkspace: Database.Statement;
+  private readonly countForObjective: Database.Statement;
   private readonly unmetDepsCount: Database.Statement;
   private readonly stateStmt: Database.Statement;
   private readonly addDep: Database.Statement;
@@ -262,6 +265,7 @@ export class WorkItemRepository {
     this.countForWorkspace = db.prepare(
       'SELECT COUNT(*) as count FROM work_items wi JOIN projects p ON wi.project_id = p.id WHERE p.workspace_id = ? AND wi.state = ?',
     );
+    this.countForObjective = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE objective_id = ?');
     this.unmetDepsCount = db.prepare(`
       SELECT COUNT(*) as count FROM work_dependencies wd
       JOIN work_items wi ON wi.id = wd.depends_on_id
@@ -328,6 +332,12 @@ export class WorkItemRepository {
 
   countByStateInWorkspace(workspaceId: string, state: WorkItemState): number {
     return ((this.countForWorkspace.get(workspaceId, state) as { count: number }).count);
+  }
+
+  // D.2 — trivial from the existing table; used for the Objective read model's
+  // optional linked-WorkItem count. Counts every state, not just active ones.
+  countByObjective(objectiveId: string): number {
+    return ((this.countForObjective.get(objectiveId) as { count: number }).count);
   }
 
   // True if all blocking dependencies are in the 'completed' state.

@@ -328,6 +328,16 @@ const MIGRATIONS: string[] = [
 
   CREATE INDEX idx_checkpoint_applications_run ON checkpoint_applications(workflow_run_id);
   `,
+
+  // Migration 9: activate Objective (D.2 — docs/developmentPlan/d2-objectives.md).
+  // Every other durable entity (Workspace/Project/WorkItem/...) carries
+  // created_at/updated_at; Objective was the one exception. Nullable/
+  // append-only per convention (existing rows get NULL) — in practice there
+  // are none yet, since nothing wrote to this table before ObjectiveService.
+  `
+  ALTER TABLE objectives ADD COLUMN created_at TEXT;
+  ALTER TABLE objectives ADD COLUMN updated_at TEXT;
+  `,
 ];
 
 // ============================================================================

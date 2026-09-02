@@ -13,6 +13,7 @@ import {
   StepExecutionRepository,
   ArtifactRepository,
 } from '../storage/repositories.js';
+import { ObjectiveService } from '../services/objective-service.js';
 import { makeAttentionHandlers } from './handlers/attention.js';
 import { makeProjectHandlers } from './handlers/projects.js';
 import { makeWorkHandlers } from './handlers/work.js';
@@ -21,6 +22,7 @@ import { makeEvidenceHandlers } from './handlers/evidence.js';
 import { makeEventHandlers } from './handlers/events.js';
 import { makeWorkflowHandlers } from './handlers/workflows.js';
 import { makeArtifactHandlers } from './handlers/artifacts.js';
+import { makeObjectiveHandlers } from './handlers/objectives.js';
 import type { WorkService } from '../services/work-service.js';
 import type { EvidenceService } from '../services/evidence-service.js';
 import type { ResumeService } from '../services/resume-service.js';
@@ -67,6 +69,7 @@ export class ControlPlaneServer {
     const events = new EventRepository(opts.db);
     const stepExecutions = new StepExecutionRepository(opts.db);
     const artifacts = new ArtifactRepository(opts.db);
+    const objectiveService = new ObjectiveService(opts.db, opts.workspaceId);
 
     if (opts.requireAuth) {
       router.setAuth(raw => tokens.validate(raw));
@@ -79,6 +82,7 @@ export class ControlPlaneServer {
     makeEvidenceHandlers(router, evidence, opts.evidenceService, workItems, projects, opts.workspaceId);
     makeEventHandlers(router, events, opts.workspaceId, workItems, projects);
     makeArtifactHandlers(router, artifacts, workItems, projects, opts.workspaceId);
+    makeObjectiveHandlers(router, objectiveService, workItems, projects, opts.workspaceId);
     makeWorkflowHandlers(router);
 
     // Token management

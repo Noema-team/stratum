@@ -97,6 +97,13 @@ export function makeWorkHandlers(
     ) {
       return err('bad_request', 'workflowParameters must be a plain object');
     }
+    // D.2 — objectiveId is the only Objective-linkage field exposed here.
+    // parentId (WorkItem decomposition) stays internal-only until a later
+    // milestone actually needs it. WorkService.createWorkItem does the real
+    // objective-exists / same-project validation; this is just a type guard.
+    if ('objectiveId' in b && typeof b.objectiveId !== 'string') {
+      return err('bad_request', 'objectiveId must be a string');
+    }
 
     try {
       const workItem = workService.createWorkItem({
@@ -121,6 +128,7 @@ export function makeWorkHandlers(
           !Array.isArray(b.workflowParameters))
           ? (b.workflowParameters as Record<string, unknown>)
           : undefined,
+        objectiveId: typeof b.objectiveId === 'string' ? b.objectiveId : undefined,
       });
       return ok(workItem);
     } catch (e) { return svcErr(e); }

@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { WorkItem, WorkItemState, DomainEvent, Decision } from '../domain/index.js';
 import type { PolicyEvaluation } from '../domain/policy.js';
 import { isWorkItemTerminal } from '../domain/index.js';
-import { WorkItemRepository, DecisionRepository, EventRepository, ProjectRepository, RepositoryRepository } from '../storage/repositories.js';
+import { WorkItemRepository, DecisionRepository, EventRepository, ProjectRepository, RepositoryRepository, ObjectiveRepository } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
 
 // ============================================================================
@@ -144,6 +144,7 @@ export class WorkService {
   private readonly events: EventRepository;
   private readonly projects: ProjectRepository;
   private readonly repositories: RepositoryRepository;
+  private readonly objectives: ObjectiveRepository;
   private readonly evidenceGuard?: (workItem: WorkItem) => PolicyEvaluation;
 
   constructor(
@@ -156,6 +157,7 @@ export class WorkService {
     this.events = new EventRepository(db);
     this.projects = new ProjectRepository(db);
     this.repositories = new RepositoryRepository(db);
+    this.objectives = new ObjectiveRepository(db);
     this.evidenceGuard = opts.evidenceGuard;
   }
 
@@ -204,6 +206,24 @@ export class WorkService {
         throw new WorkServiceError(
           `Repository '${repoId}' does not belong to project '${req.projectId}'`,
           'REPO_PROJECT_MISMATCH',
+        );
+      }
+    }
+
+    // D.2 — Objective linkage: objective.projectId === workItem.projectId is
+    // the whole check. Since req.projectId is already proven to belong to
+    // this.workspaceId above, an Objective from a different project — same
+    // workspace or another one entirely — is rejected by this single
+    // comparison; no separate cross-workspace check is needed.
+    if (req.objectiveId !== undefined) {
+      const objective = this.objectives.findById(req.objectiveId);
+      if (!objective) {
+        throw new WorkServiceError(`Objective '${req.objectiveId}' not found`, 'OBJECTIVE_NOT_FOUND');
+      }
+      if (objective.projectId !== req.projectId) {
+        throw new WorkServiceError(
+          `Objective '${req.objectiveId}' does not belong to project '${req.projectId}'`,
+          'OBJECTIVE_PROJECT_MISMATCH',
         );
       }
     }
