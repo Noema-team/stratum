@@ -3,6 +3,7 @@ import { createServer as createHttpsServer } from 'https';
 import { readFileSync } from 'fs';
 import type Database from 'better-sqlite3';
 import { Router } from './router.js';
+import { EventsWebSocketAdapter } from './events-ws.js';
 import { AttentionService } from './attention-service.js';
 import {
   ProjectRepository,
@@ -59,6 +60,7 @@ export type ControlPlaneProtocol = 'http' | 'https';
 
 export class ControlPlaneServer {
   private readonly server: Server;
+  private readonly wsAdapter: EventsWebSocketAdapter;
   readonly port: number;
   readonly protocol: ControlPlaneProtocol;
 
@@ -92,15 +94,23 @@ export class ControlPlaneServer {
     makeEvidenceHandlers(router, evidence, opts.evidenceService, workItems, projects, opts.workspaceId);
     makeEventHandlers(router, events, opts.workspaceId, workItems, projects);
     makeWorkflowHandlers(router);
+    // WS adapter must be created before compat handlers so the broadcast ref is live.
+    // The HTTP server exists by the time listen() is called; upgrade events fire after that.
+    let wsAdapter!: EventsWebSocketAdapter;
+    const broadcast = (event: Parameters<EventsWebSocketAdapter['broadcast']>[0]) =>
+      wsAdapter?.broadcast(event);
+
     makeCompatHandlers(router, {
+      db: opts.db,
+      workspaceId: opts.workspaceId,
       projectRoot,
       port: this.port,
       startedAt,
-      workItems,
       llmProvider: opts.llmProvider,
       initService: opts.initService,
       intakeService: opts.intakeService,
       chatService: opts.chatService,
+      broadcast,
     });
 
     // Token management
@@ -264,6 +274,17 @@ export class ControlPlaneServer {
     } else {
       this.server = createHttpServer(handler);
     }
+
+    // WS adapter attaches to the HTTP server's upgrade event.
+    // The broadcast ref above is used by compat handlers — it resolves lazily
+    // so the closure is valid even though wsAdapter is assigned here.
+    wsAdapter = new EventsWebSocketAdapter(
+      this.server,
+      opts.db,
+      opts.workspaceId,
+      opts.resumeService,
+    );
+    this.wsAdapter = wsAdapter;
   }
 
   listen(): Promise<void> {
@@ -271,8 +292,11 @@ export class ControlPlaneServer {
   }
 
   close(): Promise<void> {
-    return new Promise((resolve, reject) =>
-      this.server.close(e => (e ? reject(e) : resolve())),
-    );
+    return Promise.all([
+      new Promise<void>((resolve, reject) =>
+        this.server.close(e => (e ? reject(e) : resolve())),
+      ),
+      this.wsAdapter.close(),
+    ]).then(() => undefined);
   }
 }

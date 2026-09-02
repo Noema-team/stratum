@@ -13,13 +13,15 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { load as yamlLoad } from 'js-yaml';
 import { z } from 'zod';
+import type Database from 'better-sqlite3';
 import type { Router } from '../router.js';
-import type { WorkItemRepository } from '../../storage/repositories.js';
 import type { InitService } from '../../init-service.js';
 import type { IntakeService } from '../../intake-service.js';
 import type { ChatService } from '../../chat-service.js';
 import type { DynamicLLMProvider } from '../../llm-provider.js';
 import { ok, err } from '../types.js';
+import { getCompatSystemState } from '../compat-state.js';
+import type { WsEvent } from '../events-ws.js';
 
 const SettingsPayloadSchema = z.object({
   provider: z.enum(['openai_compatible', 'anthropic', 'glm', 'openrouter']),
@@ -29,18 +31,22 @@ const SettingsPayloadSchema = z.object({
 });
 
 export interface CompatHandlerOptions {
+  db: Database.Database;
+  workspaceId: string;
   projectRoot: string;
   port: number;
   startedAt: Date;
-  workItems: WorkItemRepository;
   llmProvider?: DynamicLLMProvider;
   initService?: InitService;
   intakeService?: IntakeService;
   chatService?: ChatService;
+  // Called after chat message handling to deliver the facilitator response
+  // to connected WS clients.
+  broadcast?: (event: WsEvent) => void;
 }
 
 export function makeCompatHandlers(router: Router, opts: CompatHandlerOptions): void {
-  const { projectRoot, port, startedAt, workItems } = opts;
+  const { db, workspaceId, projectRoot, port, startedAt } = opts;
 
   // ── GET /api/v2/info ───────────────────────────────────────────────────────
   router.add('GET', '/api/v2/info', (_req) => ok({
@@ -54,18 +60,11 @@ export function makeCompatHandlers(router: Router, opts: CompatHandlerOptions): 
   }));
 
   // ── GET /api/v2/system/state ───────────────────────────────────────────────
-  // Derives canonical system state from WorkItem counts; no StateMachine.
+  // Derives canonical system state from workspace-scoped WorkItem counts.
+  // Pending checkpoint Decisions project awaiting_confirmation/sharding_approval flags.
   router.add('GET', '/api/v2/system/state', (_req) => {
-    const running = workItems.countAllByState('running');
-    const inReview = workItems.countAllByState('in_review');
-    const needsDecision = workItems.countAllByState('needs_decision');
-    const failed = workItems.countAllByState('failed');
-
-    let state: string;
-    if (running > 0 || inReview > 0) state = 'cycling';
-    else if (needsDecision > 0 || failed > 0) state = 'halted';
-    else state = 'idle';
-
+    const { state, awaitingConfirmation, awaitingShardingApproval } =
+      getCompatSystemState(db, workspaceId);
     return ok({
       state,
       active_session_id: null,
@@ -74,8 +73,8 @@ export function makeCompatHandlers(router: Router, opts: CompatHandlerOptions): 
       iteration: 0,
       revision: 0,
       awaiting_scoping: false,
-      awaiting_confirmation: false,
-      awaiting_sharding_approval: false,
+      awaiting_confirmation: awaitingConfirmation,
+      awaiting_sharding_approval: awaitingShardingApproval,
       chat: { session_open: false },
     });
   });
@@ -221,11 +220,22 @@ export function makeCompatHandlers(router: Router, opts: CompatHandlerOptions): 
     if (!content || typeof content !== 'string')
       return err('bad_request', 'content is required');
     try {
-      const result = await opts.chatService.handleMessage(content, 'idle', {
+      const { state, awaitingConfirmation, awaitingShardingApproval } =
+        getCompatSystemState(db, workspaceId);
+      const result = await opts.chatService.handleMessage(content, state, {
         awaiting_scoping: false,
-        awaiting_confirmation: false,
-        awaiting_sharding_approval: false,
+        awaiting_confirmation: awaitingConfirmation,
+        awaiting_sharding_approval: awaitingShardingApproval,
       });
+      if (opts.broadcast) {
+        opts.broadcast({
+          type: 'chat.message',
+          payload: {
+            role: result.facilitatorMessage.role,
+            content: result.facilitatorMessage.content,
+          },
+        });
+      }
       return ok({ role: result.userMessage.role, timestamp: result.userMessage.ts });
     } catch (e) {
       const msg = (e as Error).message;
