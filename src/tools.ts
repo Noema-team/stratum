@@ -114,6 +114,53 @@ function trackedChildrenOf(dirPrefix: string, trackedFiles: ReadonlySet<string>)
   return [...children].sort();
 }
 
+// ─── D.3b1.1 — symlink-safe read resolution ───────────────────────────────────
+//
+// The lexical tracked-set check above (isPermittedReadPath) only proves that
+// the *requested path string* names a tracked entry. It says nothing about
+// what that path actually resolves to on disk: a Git-tracked symlink (or a
+// tracked path whose parent directory has since been replaced by a symlink
+// on disk, while the index still lists a path through it) can point outside
+// the project root, or at untracked content such as a local .env — and a
+// plain fs.readFile would silently follow it.
+//
+// read_file therefore additionally requires that the REAL (symlink-resolved)
+// target: (a) stays inside the real, resolved project root, and (b) is
+// itself — at its resolved, project-relative path — present in the tracked
+// set. This allows a tracked symlink to another tracked file (both
+// conditions hold) while denying escapes and tracked-symlink-to-untracked
+// content. Fails closed on any resolution error.
+//
+// Mocks used by hermetic (non-real-filesystem) tests generally have no
+// symlink concept and may not implement `realpath` at all; such mocks fall
+// back to trusting the lexical check already performed by the caller.
+async function resolveTrackedRealPath(
+  fsModule: typeof fs,
+  projectRoot: string,
+  normalized: string,
+  trackedFiles: ReadonlySet<string>,
+): Promise<string | null> {
+  const realpathFn = (fsModule as Partial<typeof fs>).realpath;
+  if (typeof realpathFn !== 'function') {
+    return path.join(projectRoot, normalized);
+  }
+  try {
+    const realRoot = await realpathFn(projectRoot);
+    const realTarget = await realpathFn(path.join(projectRoot, normalized));
+    const rel = path.relative(realRoot, realTarget);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      return null; // resolves outside the project root
+    }
+    const relPosix = rel.split(path.sep).join('/');
+    if (!trackedFiles.has(relPosix)) {
+      return null; // real target is not itself git-tracked content
+    }
+    return realTarget;
+  } catch {
+    return null; // fail closed on any realpath error (dangling symlink, etc.)
+  }
+}
+
 // ─── Tool input validation ────────────────────────────────────────────────────
 
 export interface ToolInput {
@@ -147,8 +194,12 @@ export async function handleToolCall(
     if (normalized === null || normalized === '' || !isPermittedReadPath(normalized, trackedFiles, false)) {
       return { content: JSON.stringify({ error: 'path not permitted' }) };
     }
+    const realTargetPath = await resolveTrackedRealPath(fsModule, projectRoot, normalized, trackedFiles);
+    if (realTargetPath === null) {
+      return { content: JSON.stringify({ error: 'path not permitted' }) };
+    }
     try {
-      const text = await fsModule.readFile(path.join(projectRoot, normalized), 'utf-8');
+      const text = await fsModule.readFile(realTargetPath, 'utf-8');
       return { content: text };
     } catch {
       return { content: JSON.stringify({ error: 'file not found' }) };

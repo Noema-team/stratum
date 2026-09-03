@@ -69,6 +69,7 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       request.objectiveId,
       request.constraints,
       request.acceptanceCriteria,
+      request.objectiveContext,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —

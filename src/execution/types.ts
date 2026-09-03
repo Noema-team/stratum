@@ -1,4 +1,5 @@
 import type { UUID } from '../domain/primitives.js';
+import type { ObjectiveContext } from '../workflow/types.js';
 
 export type ExecutorCapability =
   | 'repo.read'
@@ -75,6 +76,14 @@ export interface ExecutionRequest {
   // materialization (see workflow/artifact-refs.ts) — never queried by
   // WorkflowEngine, ContextManager, or AgentRunner.
   objectiveId?: string;
+  // D.3b1.1 — the Objective's own human intent (title/description/
+  // constraints/successCriteria), resolved once by Scheduler/ResumeService
+  // via ObjectiveRepository and threaded through unchanged. Absent when the
+  // WorkItem has no objectiveId, or (fail-closed) when objectiveId could not
+  // be resolved to an Objective owned by the WorkItem's project — in that
+  // case dispatch/resume itself fails before execution, so this field is
+  // never silently missing while objectiveId is present.
+  objectiveContext?: ObjectiveContext;
   acceptanceCriteria: Array<{ description: string; met?: boolean }>;
   constraints: Array<{ description: string; type?: string }>;
   permissions: ExecutionPermissions;

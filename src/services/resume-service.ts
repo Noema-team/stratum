@@ -8,11 +8,12 @@ import {
   WorkItemRepository,
   StepExecutionRepository,
   RepositoryRepository,
+  ObjectiveRepository,
   CheckpointApplicationRepository,
 } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
 import type { ExecutorRegistry } from '../execution/registry.js';
-import { resolveRepositories, selectAdapter } from '../execution/dispatch-primitive.js';
+import { resolveRepositories, resolveObjectiveContext, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from '../scheduler/lease-manager.js';
 import { DEFAULT_SCHEDULER_CONFIG } from '../scheduler/types.js';
 import type { CheckpointResolver } from '../execution/checkpoint-resolver.js';
@@ -55,6 +56,7 @@ export class ResumeService {
   private readonly workItemRepo: WorkItemRepository;
   private readonly stepExecRepo: StepExecutionRepository;
   private readonly repoRepo: RepositoryRepository;
+  private readonly objectiveRepo: ObjectiveRepository;
   private readonly leaseManager: LeaseManager;
   private readonly leaseExpiryMs: number;
 
@@ -75,6 +77,7 @@ export class ResumeService {
     this.workItemRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
     this.repoRepo = new RepositoryRepository(db);
+    this.objectiveRepo = new ObjectiveRepository(db);
     this.leaseManager = new LeaseManager(db);
     this.leaseExpiryMs = config.leaseExpiryMs ?? DEFAULT_SCHEDULER_CONFIG.leaseExpiryMs;
     this.checkpointResolver = checkpointResolver ?? null;
@@ -261,6 +264,15 @@ export class ResumeService {
 
     // (4b) Repository resolution — fail closed; missing repository is a kernel error.
     const repositories = resolveRepositories(workItem.repositoryIds, this.repoRepo);
+
+    // (4b-2) Objective context resolution — fail closed, same invariant as
+    // repository resolution: an unresolvable Objective is a kernel error,
+    // not a soft degradation to "resume without objective context."
+    const objectiveContext = resolveObjectiveContext(
+      workItem.objectiveId,
+      workItem.projectId,
+      this.objectiveRepo,
+    );
 
     // (4c) Acquire repository write leases BEFORE resolver — same invariant as Scheduler.
     const toLease = workItem.repositoryIds.length > 0 ? workItem.repositoryIds : [null as string | null];
@@ -460,6 +472,7 @@ export class ResumeService {
           repositories,
           goal: workItem.goal,
           objectiveId: workItem.objectiveId,
+          objectiveContext,
           acceptanceCriteria: workItem.acceptanceCriteria,
           constraints: workItem.constraints,
           permissions: { pushBranch: false, createPr: false, merge: false },

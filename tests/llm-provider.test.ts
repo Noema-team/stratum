@@ -9,6 +9,7 @@ import {
   DynamicLLMProvider,
   type ILLMProvider,
 } from '../src/llm-provider.js';
+import { AnthropicSDKProvider } from '../src/anthropic-provider.js';
 import type { AgentLLMConfig } from '../src/types.js';
 
 const TEST_CONFIG: AgentLLMConfig = {
@@ -313,7 +314,7 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
   assert.ok(openai instanceof OpenAICompatibleProvider);
 
   const anthropic = createLLMProvider(ANTHROPIC_CONFIG);
-  assert.ok(anthropic instanceof AnthropicProvider);
+  assert.ok(anthropic instanceof AnthropicSDKProvider);
 
   const glm = createLLMProvider({
     provider: 'glm',
@@ -332,6 +333,29 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
   assert.ok(openrouter instanceof OpenAICompatibleProvider);
 
   delete process.env.TEST_LLM_API_KEY;
+});
+
+test('D.3b1.1: createLLMProvider anthropic config is a reachable production multi-turn configuration', async () => {
+  // Not a synthetic test provider: this is the exact factory call
+  // resolveLLMProvider() makes from the real application boot path,
+  // proving AgentLoop's multi-turn path is actually reachable in
+  // production, not merely possible in principle via DynamicLLMProvider.
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  try {
+    const anthropic = createLLMProvider(ANTHROPIC_CONFIG);
+    assert.ok(anthropic instanceof AnthropicSDKProvider);
+    assert.equal(
+      typeof (anthropic as unknown as { completeMultiTurn?: unknown }).completeMultiTurn,
+      'function'
+    );
+
+    // DynamicLLMProvider must preserve — not merely permit — the capability
+    // when wrapping this exact production configuration.
+    const dynamic = new DynamicLLMProvider(anthropic);
+    assert.equal(typeof dynamic.completeMultiTurn, 'function');
+  } finally {
+    delete process.env.TEST_LLM_API_KEY;
+  }
 });
 
 test('testDynamicLLMProviderDelegatesAndSwaps', async () => {

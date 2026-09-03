@@ -82,6 +82,34 @@ export interface WorkflowStep {
   // ctx.goal regardless of this flag; full-build/draft-artifact steps
   // never set it, so their prompts are unaffected.
   includeWorkItemContext?: boolean;
+
+  // D.3b1.1 — opt-in: render the Objective's own human intent (title,
+  // description, constraints, successCriteria) into this step's assembled
+  // context, under a header visibly separate from the WorkItem section
+  // above (see ContextManager.buildTaskDescription). Threaded in the same
+  // way as includeWorkItemContext — from Scheduler/ResumeService via
+  // ExecutionRequest.objectiveContext, never queried by ContextManager.
+  includeObjectiveContext?: boolean;
+}
+
+// ============================================================================
+// ObjectiveContext — an immutable snapshot of an Objective's human intent,
+// resolved once at dispatch/resume time by the control plane
+// (Scheduler/ResumeService, via ObjectiveRepository) and threaded down
+// through ExecutionRequest -> WorkflowEngine.run() -> StepRunContext. This
+// is the ONLY way Objective content reaches execution-layer components —
+// WorkflowEngine, ContextManager, AgentRunner, and AgentLoop never query
+// ObjectiveRepository themselves. A subset of Objective's own fields
+// (excludes projectId/priority/status/timestamps, which are control-plane
+// bookkeeping, not intent).
+// ============================================================================
+
+export interface ObjectiveContext {
+  id: string;
+  title: string;
+  description: string;
+  constraints: Array<{ description: string; type?: string }>;
+  successCriteria: Array<{ description: string; met?: boolean }>;
 }
 
 // ============================================================================
@@ -254,4 +282,11 @@ export interface StepRunContext {
   // instruction/outputArtifact/inputArtifactRefs above.
   includeWorkItemContext?: boolean;
   requiresReviewVerdict?: boolean;
+
+  // D.3b1.1 — the Objective's own human intent snapshot, threaded in from
+  // Scheduler/ResumeService via ExecutionRequest.objectiveContext, resolved
+  // once at dispatch/resume time by the control plane (never queried here).
+  // See ObjectiveContext and includeObjectiveContext above.
+  objectiveContext?: ObjectiveContext;
+  includeObjectiveContext?: boolean;
 }

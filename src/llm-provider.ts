@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import Anthropic from '@anthropic-ai/sdk';
 import type { AgentLLMConfig } from './types.js';
 import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult } from './agent-loop.js';
+import { AnthropicSDKProvider } from './anthropic-provider.js';
 
 export interface LLMCompletionParams {
   model: string;
@@ -229,12 +231,30 @@ export class DynamicLLMProvider implements ILLMProvider {
   }
 }
 
+// D.3b1.1 — the anthropic case is the one production configuration that
+// must return a genuinely multi-turn-capable provider: AnthropicSDKProvider
+// implements IMultiTurnProvider against the real Anthropic SDK, so a run
+// wired through this factory (as resolveLLMProvider() does) can actually
+// take AgentLoop's multi-turn path — DynamicLLMProvider only ever preserves
+// a capability that's genuinely present on what it wraps. The REST-based
+// AnthropicProvider above stays exported (and covered by its own tests) but
+// is no longer reachable from this factory, since it has no multi-turn
+// implementation. openai_compatible/glm/openrouter intentionally remain
+// single-turn-only — they are not faked into multi-turn capability.
 export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
   switch (config.provider) {
     case 'openai_compatible':
       return new OpenAICompatibleProvider(config);
-    case 'anthropic':
-      return new AnthropicProvider(config);
+    case 'anthropic': {
+      const apiKey = process.env[config.api_key_env] || process.env.SLE_LLM_API_KEY || '';
+      if (!apiKey) {
+        throw new Error(
+          `API key not found. Set ${config.api_key_env} or SLE_LLM_API_KEY environment variable.`
+        );
+      }
+      const client = config.base_url ? new Anthropic({ apiKey, baseURL: config.base_url }) : undefined;
+      return new AnthropicSDKProvider(apiKey, { defaultModel: config.model, client });
+    }
     case 'glm': {
       const glmConfig: AgentLLMConfig = {
         ...config,

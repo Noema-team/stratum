@@ -10,6 +10,7 @@ import type {
   StepResult,
   StepRunner,
   StepRunContext,
+  ObjectiveContext,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
@@ -98,6 +99,11 @@ export class WorkflowEngine {
     objectiveId?: string,
     workItemConstraints?: Array<{ description: string; type?: string }>,
     workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
+    // D.3b1.1 — the Objective's own human intent snapshot, threaded in the
+    // same way (StratumAgentAdapter, from ExecutionRequest.objectiveContext
+    // — itself resolved once by Scheduler/ResumeService via
+    // ObjectiveRepository). Never queried here.
+    objectiveContext?: ObjectiveContext,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -301,7 +307,7 @@ export class WorkflowEngine {
       // Execute the step.
       const rawCtx = this.makeStepRunContext(
         step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters,
-        objectiveId, workItemConstraints, workItemAcceptanceCriteria,
+        objectiveId, workItemConstraints, workItemAcceptanceCriteria, objectiveContext,
       );
 
       // D.3b0 — materialize any {workItemId}/{objectiveId} placeholders in a
@@ -746,6 +752,7 @@ export class WorkflowEngine {
     objectiveId?: string,
     workItemConstraints?: Array<{ description: string; type?: string }>,
     workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
+    objectiveContext?: ObjectiveContext,
   ): StepRunContext {
     return {
       workflowRunId,
@@ -772,6 +779,11 @@ export class WorkflowEngine {
       workItemAcceptanceCriteria,
       includeWorkItemContext: step.includeWorkItemContext,
       requiresReviewVerdict: step.requiresReviewVerdict,
+      // D.3b1.1 — Objective human-intent snapshot, passed straight through
+      // from run()'s own params (never queried here). Rendering is gated by
+      // includeObjectiveContext — see ContextManager.buildTaskDescription.
+      objectiveContext,
+      includeObjectiveContext: step.includeObjectiveContext,
     };
   }
 

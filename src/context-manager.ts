@@ -505,27 +505,56 @@ export class ContextManager {
     // unchanged. objectiveId is deliberately not rendered here — it is
     // execution/provenance context (see artifact-refs.ts), not something a
     // step shows the model unless it explicitly asks via its own instruction.
+    //
+    // D.3b1.1 — the Objective's own human intent (when opted in) is rendered
+    // under a header VISIBLY SEPARATE from the WorkItem section below, so a
+    // reader (human or model) never has to guess which content came from the
+    // human-authored Objective versus the bounded, possibly LLM-authored
+    // WorkItem. Objective renders first — it is the broader intent the
+    // WorkItem is bounded within.
+    if (ctx.includeObjectiveContext) {
+      text += this.formatObjectiveContext(ctx);
+    }
     if (ctx.includeWorkItemContext) {
       text += this.formatWorkItemContext(ctx);
     }
     return text;
   }
 
+  private formatObjectiveContext(ctx: StepRunContext): string {
+    const objective = ctx.objectiveContext;
+    if (!objective) return '';
+    const lines: string[] = ['', '## Objective — human intent', '', `**${objective.title}**`, '', objective.description];
+    if (objective.constraints.length > 0) {
+      lines.push('', '### Objective Constraints');
+      for (const c of objective.constraints) {
+        lines.push(`- ${c.type ? `[${c.type}] ` : ''}${c.description}`);
+      }
+    }
+    if (objective.successCriteria.length > 0) {
+      lines.push('', '### Objective Success Criteria');
+      for (const s of objective.successCriteria) {
+        lines.push(`- ${s.description}`);
+      }
+    }
+    return `\n${lines.join('\n')}`;
+  }
+
   private formatWorkItemContext(ctx: StepRunContext): string {
-    const lines: string[] = [];
+    const lines: string[] = ['', '## Current bounded WorkItem'];
     if (ctx.workItemConstraints && ctx.workItemConstraints.length > 0) {
-      lines.push('', '## WorkItem Constraints');
+      lines.push('', '### WorkItem Constraints');
       for (const c of ctx.workItemConstraints) {
         lines.push(`- ${c.type ? `[${c.type}] ` : ''}${c.description}`);
       }
     }
     if (ctx.workItemAcceptanceCriteria && ctx.workItemAcceptanceCriteria.length > 0) {
-      lines.push('', '## WorkItem Acceptance Criteria');
+      lines.push('', '### WorkItem Acceptance Criteria');
       for (const a of ctx.workItemAcceptanceCriteria) {
         lines.push(`- ${a.description}`);
       }
     }
-    return lines.length > 0 ? `\n${lines.join('\n')}` : '';
+    return lines.length > 2 ? `\n${lines.join('\n')}` : '';
   }
 
   // ─── Component 5: Failure context ─────────────────────────────────────────

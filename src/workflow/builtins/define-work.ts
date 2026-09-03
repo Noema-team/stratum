@@ -1,11 +1,16 @@
 import type { WorkflowDefinition } from '../types.js';
+import { DEFINITION_CONTRACT, READINESS_RUBRIC, GAP_CLASSIFICATION } from '../methodology/definition-readiness.js';
 
-// define-work (D.3b1): produces and iteratively refines a Definition
-// Artifact against the readiness rubric in
-// docs/developmentPlan/d3a-definition-readiness-methodology.md, then commits.
-// D.3b1 implements only CAN_RESOLVE resolution (see
-// docs/developmentPlan/d3b1-define-work.md) — HUMAN_DECISION/DEFER/
-// EXPLORE_AS_WORK gaps are preserved as unresolved blockers, not routed.
+// define-work (D.3b1, closure-fixed in D.3b1.1): produces and iteratively
+// refines a Definition Artifact against the D.3a readiness rubric — composed
+// below as Stratum-owned runtime constants (see
+// ../methodology/definition-readiness.ts), not read from a Stratum-repo
+// doc path, since these steps run with projectRoot set to the TARGET
+// repository being worked on, where that path would not exist — then
+// commits. This phase implements only CAN_RESOLVE resolution (see
+// docs/developmentPlan/d3a-definition-readiness-methodology.md, the
+// human-readable design record) — HUMAN_DECISION/DEFER/EXPLORE_AS_WORK gaps
+// are preserved as unresolved blockers, not routed.
 //
 // No context.gather step: WorkflowEngine's generic 'gather' kind is a
 // no-op (mark running -> mark complete -> next step) — a gather step here
@@ -30,17 +35,13 @@ export const DEFINE_WORK: WorkflowDefinition = {
       label: 'Synthesize Definition v1',
       agentRole: 'explorer',
       includeWorkItemContext: true,
+      includeObjectiveContext: true,
       instruction:
         'Draft Definition v1 for this Objective: a goal, constraints, requirements, ' +
-        'non-goals, design notes, risks, an acceptance model, and a fact ledger ' +
-        '(see docs/developmentPlan/d3a-definition-readiness-methodology.md §1). ' +
-        'Every fact carries a status (KNOWN, ASSUMED, UNKNOWN, DECIDED, or DEFERRED) ' +
-        'and a source (human, repository, artifact, investigation, or decision) — ' +
-        'status lives only in the fact ledger, never duplicated elsewhere. If a ' +
-        'repository-inspection tool is available, use it to verify factual claims ' +
-        'about this repository directly: mark a fact KNOWN with source: repository ' +
-        'only after actually inspecting the relevant file(s), never because it seems ' +
-        'probably true.',
+        'non-goals, design notes, risks, an acceptance model, and a fact ledger.\n\n' +
+        `${DEFINITION_CONTRACT}\n\n` +
+        'If a repository-inspection tool is available, use it to verify factual claims ' +
+        'about this repository directly before marking any fact KNOWN with source: repository.',
       outputArtifact: {
         type: 'definition',
         ref: 'definition:{objectiveId}',
@@ -54,17 +55,11 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       skip_if: (ctx) => ctx.iteration === 1,
       includeWorkItemContext: true,
+      includeObjectiveContext: true,
       instruction:
         'Revise the Definition using the prior readiness review\'s findings (the ' +
-        'readiness artifact). This phase resolves CAN_RESOLVE gaps only: facts ' +
-        'answerable directly by reasoning or by inspecting this repository with the ' +
-        'available tools — mark those KNOWN (source: repository or human, as ' +
-        'appropriate) and update the relevant Definition section. Do not resolve or ' +
-        'guess at a gap that requires a human decision, a deliberate deferral, or ' +
-        'investigative work beyond reading this repository — leave those explicitly ' +
-        'as unresolved blockers in the fact ledger (ASSUMED/UNKNOWN, not force-resolved) ' +
-        'rather than fabricating an answer. Never promote a repository assertion to ' +
-        'KNOWN merely because it seems likely — only an actual inspection does that.',
+        'readiness artifact).\n\n' +
+        `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -82,16 +77,13 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       requiresReviewVerdict: true,
       includeWorkItemContext: true,
+      includeObjectiveContext: true,
       instruction:
-        'Evaluate the current Definition against the seven-dimension readiness rubric ' +
-        '(outcome, boundary, critical constraints, consistency, risky assumptions, ' +
-        'acceptance, remaining unknowns — ' +
-        'docs/developmentPlan/d3a-definition-readiness-methodology.md §2) for the ' +
-        'candidate bounded scope it defines. Name exactly which dimensions pass or ' +
-        'fail and why, and name every remaining blocker (by gap classification, where ' +
-        'applicable). Declare your verdict in the SLE-OUTPUT preamble as ' +
-        '`verdict: pass` only if all seven dimensions pass, otherwise `verdict: fail` ' +
-        '— never omit the verdict line.',
+        'Evaluate the current Definition against the readiness rubric for the candidate ' +
+        'bounded scope it defines.\n\n' +
+        `${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
+        'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
+        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.',
       // The physical materialized path, not the semantic ref: ContextManager
       // resolves inputArtifactRefs against the filesystem, it does not query
       // ArtifactRepository for the semantic 'definition:{objectiveId}' ref.

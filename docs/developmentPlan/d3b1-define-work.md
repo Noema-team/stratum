@@ -251,3 +251,83 @@ at 4, and the final Definition/readiness artifacts (both on disk and in
 in §4; all pre-existing tests there (and everywhere else) are otherwise
 byte-for-byte unchanged in behavior. Full `npm run verify` (type-check,
 build, 1207 tests) is green.
+
+## 10. D.3b1.1 — closure pass
+
+Review of the D.3b1 head found the architecture sound but identified four
+concrete closure blockers, all fixed here without touching `WorkflowEngine`,
+the six `StepKind`s, `AgentRole`, `ArtifactRepository`, the semantic
+pass/fail contract, placeholder materialization, the iteration model,
+Definition/readiness-as-Artifact, role write ceilings, `max_iterations: 4`,
+or WorkProposal/Decision routing.
+
+1. **Symlink-safe read authority.** §5's tracked-file check compared only
+   the *lexical* requested path against `git ls-files`, then read it
+   directly — a tracked symlink (or a tracked path whose parent directory
+   was later replaced by a symlink on disk) could point outside the project
+   root or at untracked content. `src/tools.ts`'s `read_file` now also
+   resolves the REAL target via `fs.realpath` and requires it to (a) stay
+   inside the real project root and (b) itself be, at its resolved
+   project-relative path, git-tracked — allowing a tracked symlink to
+   another tracked file while denying any escape. Fails closed on any
+   resolution error. `list_directory` is unchanged — it already derives its
+   listing entirely from the tracked-file set, never `fs.readdir`.
+2. **Reachable production multi-turn provider.** `createLLMProvider`'s
+   `'anthropic'` case constructed the REST-based `AnthropicProvider`, which
+   has no `completeMultiTurn` — so the real application boot path
+   (`resolveLLMProvider()` → `DynamicLLMProvider`) could never actually
+   reach `AgentLoop`'s multi-turn path, regardless of §3's capability seam.
+   The factory now constructs `AnthropicSDKProvider`
+   (`src/anthropic-provider.ts`, pre-existing and previously unwired),
+   which implements both `ILLMProvider` and `IMultiTurnProvider` against the
+   real Anthropic SDK. `openai_compatible`/`glm`/`openrouter` remain
+   single-turn-only, unchanged.
+3. **Objective human intent threaded to execution.** `define-work` only
+   ever received `objectiveId` plus the WorkItem's own
+   goal/constraints/acceptanceCriteria — the Objective's own
+   title/description/constraints/successCriteria could be silently omitted.
+   `ObjectiveContext` (`src/workflow/types.ts`) is now resolved once, at
+   dispatch/resume time, by `resolveObjectiveContext()`
+   (`src/execution/dispatch-primitive.ts`, mirroring `resolveRepositories`'s
+   fail-closed style) inside `Scheduler.tryDispatch()` and `ResumeService`'s
+   resume path, threaded through `ExecutionRequest.objectiveContext` →
+   `WorkflowEngine.run()` → `StepRunContext.objectiveContext`, and rendered
+   by `ContextManager` under a `## Objective — human intent` header opted
+   into per step (`WorkflowStep.includeObjectiveContext`) — visibly separate
+   from the `## Current bounded WorkItem` section. A WorkItem whose
+   `objectiveId` cannot be resolved, or resolves to an Objective outside the
+   WorkItem's own project, fails dispatch/resume closed before any adapter
+   execution. No `ObjectiveService` dependency was added to `WorkflowEngine`,
+   `ContextManager`, `AgentRunner`, or `AgentLoop`; no new domain entity or
+   Artifact→Objective FK; no new WorkflowRun snapshot persistence.
+4. **Self-contained runtime methodology.** `define-work`'s instructions
+   referenced `docs/developmentPlan/d3a-definition-readiness-methodology.md`
+   by path — a Stratum-repo document that does not exist in the target
+   repository `define-work` actually runs against, and
+   `definition-readiness-review` (forced single-turn, per §3) has no tool
+   available to compensate. `src/workflow/methodology/definition-
+   readiness.ts` now exports the fact-ledger rules, the seven readiness
+   dimensions, and the four-way gap classification (with the
+   cost-and-kind dividing rule) as plain string constants, composed
+   directly into `define-work`'s `instruction` strings. `templateId` stays
+   inert. The Markdown document remains the human-readable design record;
+   it is no longer a runtime dependency of any workflow.
+
+`tests/d3b1-1-closure.test.ts` (15 tests) covers all four: three real-
+filesystem/real-git/real-symlink deny regressions plus one legitimate-
+tracked-symlink allow case; `resolveObjectiveContext` unit behavior (no
+objectiveId, happy path, not-found, wrong-project) plus Scheduler and
+ResumeService regressions proving `objectiveContext` reaches
+`ExecutionRequest` and that dispatch/resume fails closed when it cannot be
+resolved; a `ContextManager` rendering test proving the Objective/WorkItem
+headers are visibly separate; and one combined end-to-end run proving, in a
+single pass, that Objective intent reaches synthesis, synthesis takes the
+multi-turn path and reads a git-tracked repository file, the resulting
+Definition records the fact as `KNOWN`/`source: repository`, the readiness
+review stays on the single-turn `requiresReviewVerdict` path and passes, and
+the run commits — while retaining, unmodified, `tests/d3b1-define-work.test.ts`'s
+existing pass-after-refinement test, cap-exhaustion test, and generic
+synthetic repository-inspection proof. `tests/llm-provider.test.ts` gained
+one factory-level regression proving the anthropic production configuration
+is genuinely, reachably multi-turn-capable. Full `npm run verify`
+(type-check, build, 1223 tests) is green.

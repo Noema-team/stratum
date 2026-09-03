@@ -3,9 +3,9 @@ import type Database from 'better-sqlite3';
 import type { ExecutorRegistry } from '../execution/registry.js';
 import type { WorkItem } from '../domain/index.js';
 import { WorkService } from '../services/work-service.js';
-import { WorkItemRepository, StepExecutionRepository, RepositoryRepository } from '../storage/repositories.js';
+import { WorkItemRepository, StepExecutionRepository, RepositoryRepository, ObjectiveRepository } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
-import { resolveRepositories, selectAdapter } from '../execution/dispatch-primitive.js';
+import { resolveRepositories, resolveObjectiveContext, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from './lease-manager.js';
 import type { SchedulerConfig, DispatchResult } from './types.js';
 import { DEFAULT_SCHEDULER_CONFIG } from './types.js';
@@ -26,6 +26,7 @@ export class Scheduler {
   private readonly workRepo: WorkItemRepository;
   private readonly stepExecRepo: StepExecutionRepository;
   private readonly repoRepo: RepositoryRepository;
+  private readonly objectiveRepo: ObjectiveRepository;
   private readonly workService: WorkService;
   private readonly leaseManager: LeaseManager;
   private readonly config: SchedulerConfig;
@@ -41,6 +42,7 @@ export class Scheduler {
     this.workRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
     this.repoRepo = new RepositoryRepository(db);
+    this.objectiveRepo = new ObjectiveRepository(db);
     this.workService = workService ?? new WorkService(db, workspaceId);
     this.leaseManager = new LeaseManager(db);
   }
@@ -109,6 +111,16 @@ export class Scheduler {
       return { workItemId, outcome: 'failed', error: String(err) };
     }
 
+    // 6c. Resolve the WorkItem's Objective (if any) into an immutable context
+    // snapshot — fail closed before creating any DB state, same as 6b.
+    let objectiveContext;
+    try {
+      objectiveContext = resolveObjectiveContext(item.objectiveId, projectId, this.objectiveRepo);
+    } catch (err) {
+      this.leaseManager.releaseAll(workItemId);
+      return { workItemId, outcome: 'failed', error: String(err) };
+    }
+
     // 7. Atomically create StepExecution + transition WorkItem to running.
     const stepExecutionId = randomUUID();
     const workflowRunId = randomUUID();
@@ -149,6 +161,7 @@ export class Scheduler {
         repositories,
         goal: item.goal,
         objectiveId: item.objectiveId,
+        objectiveContext,
         acceptanceCriteria: item.acceptanceCriteria,
         constraints: item.constraints,
         permissions: { pushBranch: false, createPr: false, merge: false },
