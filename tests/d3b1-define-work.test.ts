@@ -118,7 +118,17 @@ test('D.3b1: a requiresReviewVerdict step stays on the single-turn path even whe
     },
   };
   const ram = { async writeNodeOutput() {} } as any;
-  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test' }, undefined);
+  // A mock fs, not the real one: '/project-d3b1' is a synthetic root with no
+  // real filesystem backing, so a real fs.mkdir() against it fails outside a
+  // root-privileged sandbox (this test only needs to prove the single-turn/
+  // verdict-consuming behavior, not a real file write).
+  const fsMock = {
+    mkdir: async () => {},
+    writeFile: async () => {},
+    appendFile: async () => {},
+    readFile: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+  } as unknown as typeof import('fs').promises;
+  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test' }, fsMock);
 
   const result = await runner.run('explorer', {
     workflowRunId: 'r1', workflowId: 'synthetic-unfamiliar', stepId: 'review', iteration: 1, revision: 0,
