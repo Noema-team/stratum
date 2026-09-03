@@ -248,8 +248,18 @@ export class AgentRunner {
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
-    // Check if the provider supports native multi-turn execution (DDR-030 integration)
-    const isMultiTurn = typeof (this.llmProvider as any).completeMultiTurn === 'function';
+    // Check if the provider supports native multi-turn execution (DDR-030 integration).
+    // D.3b1 — a step that opted into requiresReviewVerdict is deliberately
+    // forced onto the single-turn path even when the provider supports
+    // multi-turn: AgentLoop's output format (agent-loop.ts/output-parser.ts)
+    // has no preamble/verdict concept at all, so it cannot carry
+    // `verdict: pass | fail`. Forcing single-turn here — rather than letting
+    // AgentLoop run and then failing the D.3b0 verdict gate below — keeps a
+    // semantic review deterministic without weakening or redesigning
+    // AgentLoop's protocol.
+    const isMultiTurn =
+      !ctx.requiresReviewVerdict &&
+      typeof (this.llmProvider as any).completeMultiTurn === 'function';
 
     if (isMultiTurn) {
       const loop = new AgentLoop(

@@ -1,14 +1,16 @@
 import type { WorkflowDefinition } from './types.js';
 import { FULL_BUILD } from './builtins/full-build.js';
 import { DRAFT_ARTIFACT } from './builtins/draft-artifact.js';
+import { DEFINE_WORK } from './builtins/define-work.js';
 
 // Built-in workflow ids — reserved; cannot be overridden by user-authored workflows.
-export const BUILTIN_IDS = new Set(['full-build', 'draft-artifact']);
+export const BUILTIN_IDS = new Set(['full-build', 'draft-artifact', 'define-work']);
 
 // Registry — keyed by workflow id.
 const REGISTRY = new Map<string, WorkflowDefinition>([
   ['full-build', FULL_BUILD],
   ['draft-artifact', DRAFT_ARTIFACT],
+  ['define-work', DEFINE_WORK],
 ]);
 
 // Register a user-authored workflow. Throws if the id is a reserved builtin.

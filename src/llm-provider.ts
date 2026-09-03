@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AgentLLMConfig } from './types.js';
+import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult } from './agent-loop.js';
 
 export interface LLMCompletionParams {
   model: string;
@@ -179,15 +180,35 @@ export class AnthropicProvider implements ILLMProvider {
   }
 }
 
+function supportsMultiTurn(provider: ILLMProvider): provider is ILLMProvider & IMultiTurnProvider {
+  return typeof (provider as Partial<IMultiTurnProvider>).completeMultiTurn === 'function';
+}
+
+// D.3b1 — the narrowest capability-preserving seam: `completeMultiTurn` is
+// only ever present on this instance (as an own, dynamically (re)assigned
+// property, not a class method) when the currently-wrapped provider itself
+// implements it. AgentRunner's multi-turn detection is exactly
+// `typeof provider.completeMultiTurn === 'function'` — if this class
+// declared `completeMultiTurn` as an ordinary method, that check would
+// always be true regardless of what the wrapped provider actually supports,
+// and AgentRunner would select the multi-turn path only to have it throw.
+// Declaring it as an optional property and (re)computing it in
+// syncMultiTurnCapability() — called from the constructor and every
+// setProvider() — keeps the capability honest across provider swaps: a
+// provider that doesn't support multi-turn leaves the capability genuinely
+// absent, never a promise that fails later.
 export class DynamicLLMProvider implements ILLMProvider {
   private activeProvider: ILLMProvider;
+  completeMultiTurn?: (params: MultiTurnParams) => Promise<MultiTurnResult>;
 
   constructor(initialProvider: ILLMProvider) {
     this.activeProvider = initialProvider;
+    this.syncMultiTurnCapability();
   }
 
   setProvider(provider: ILLMProvider) {
     this.activeProvider = provider;
+    this.syncMultiTurnCapability();
   }
 
   getProvider(): ILLMProvider {
@@ -196,6 +217,15 @@ export class DynamicLLMProvider implements ILLMProvider {
 
   async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
     return this.activeProvider.complete(params);
+  }
+
+  private syncMultiTurnCapability(): void {
+    if (supportsMultiTurn(this.activeProvider)) {
+      const provider = this.activeProvider;
+      this.completeMultiTurn = (params) => provider.completeMultiTurn(params);
+    } else {
+      delete this.completeMultiTurn;
+    }
   }
 }
 

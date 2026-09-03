@@ -86,7 +86,12 @@ function makeRunArtifacts() {
 function makeLoop(
   provider: IMultiTurnProvider,
   opts: Partial<Parameters<typeof AgentLoop['prototype']['run']>[0]> = {},
-  root = '/project'
+  root = '/project',
+  // D.3b1 — the Git-tracked-file read authority (tools.ts) defaults to
+  // empty (fail closed) unless a run supplies its own tracked-file list;
+  // tests that need read_file/list_directory to actually succeed pass one
+  // here instead of requiring a real git repository in a temp directory.
+  trackedFiles: string[] = [],
 ) {
   const loop = new AgentLoop(provider, {
     model: 'claude-sonnet-4-6',
@@ -97,6 +102,7 @@ function makeLoop(
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
     fsModule: makeMockFs({}),
+    listTrackedFiles: async () => trackedFiles,
   });
   return loop;
 }
@@ -227,6 +233,7 @@ test('Multi-turn: list_directory returns file list correctly', async () => {
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
+    listTrackedFiles: async () => ['docs/requirements.md', 'docs/architecture.md'],
   });
 
   const result = await loop.run('System', 'List docs.');
@@ -262,6 +269,7 @@ test('Multi-turn: read_file returns file contents correctly', async () => {
     iteration: 1,
     nodeId: 'DESIGN',
     runArtifacts: makeRunArtifacts(),
+    listTrackedFiles: async () => ['docs/existing.md'],
   });
 
   await loop.run('System', 'Read and produce.');
@@ -281,7 +289,9 @@ test('Multi-turn: read_file on non-existent file → tool returns error (no exce
     toolUseResult('read_file', { path: 'docs/nonexistent.md' }),
     endTurnResult(sle('docs/requirements.md', '# Requirements')),
   ]);
-  const loop = makeLoop(provider);
+  // Tracked so the read reaches the filesystem layer (and reports "file not
+  // found" there) rather than being denied at the read-authority check.
+  const loop = makeLoop(provider, {}, '/project', ['docs/nonexistent.md']);
 
   const result = await loop.run('System', 'Read missing file.');
 

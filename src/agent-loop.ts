@@ -3,7 +3,7 @@ import path from 'path';
 import type { AgentRole } from './types.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import { parseWithRetry } from './output-parser.js';
-import { handleToolCall, AGENT_TOOLS, type ToolName } from './tools.js';
+import { handleToolCall, AGENT_TOOLS, listGitTrackedFiles, type ToolName, type TrackedFilesLister } from './tools.js';
 import type { ParsedOutput } from './output-parser.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -59,6 +59,11 @@ export interface AgentLoopOptions {
   nodeId: string;
   runArtifacts: RunArtifactManager;
   fsModule?: typeof import('fs').promises;
+  // D.3b1 — injectable lister for the Git-tracked-file read authority (see
+  // tools.ts). Defaults to the real `git ls-files`-backed implementation;
+  // tests inject a synthetic tracked-file list instead of requiring a real
+  // git repository.
+  listTrackedFiles?: TrackedFilesLister;
 }
 
 export interface AgentLoopResult {
@@ -87,6 +92,13 @@ export class AgentLoop {
     let totalTokens = 0;
     let turns = 0;
     const toolCallLog: Array<{ tool: string; path: string; turn: number }> = [];
+
+    // D.3b1 — the tracked-file set is computed once per run (not once per
+    // tool call) and reused for every read_file/list_directory invocation
+    // below, so a run's read authority is fixed for its own duration.
+    const trackedFiles = new Set(
+      await (this.opts.listTrackedFiles ?? listGitTrackedFiles)(this.opts.projectRoot),
+    );
 
     while (turns < MAX_AGENT_TURNS) {
       turns++;
@@ -128,7 +140,8 @@ export class AgentLoop {
             tu.name as ToolName,
             tu.input,
             this.opts.projectRoot,
-            this.fs
+            this.fs,
+            trackedFiles,
           );
           resultBlocks.push({
             type: 'tool_result',
