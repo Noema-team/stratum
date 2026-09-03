@@ -15,4 +15,17 @@ jobs:
           node-version: "22"
           cache: "npm"
       - run: npm ci
-      - run: npm run verify
+      - name: verify
+        id: verify
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run verify 2>&1 | tee /tmp/verify.log
+      - name: show failure detail (diagnostic — temporary)
+        if: steps.verify.outcome == 'failure'
+        run: |
+          echo "===== not ok summary ====="
+          grep -n "not ok" /tmp/verify.log || echo "(no 'not ok' line found in captured output)"
+          echo "===== not ok context (30 lines after each) ====="
+          grep -A 30 "not ok" /tmp/verify.log || true
+          exit 1
