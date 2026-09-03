@@ -23,6 +23,7 @@ import Database from 'better-sqlite3';
 import { openDatabase, MIGRATIONS } from '../src/storage/database.js';
 import { WorkspaceRepository, ProjectRepository, ObjectiveRepository } from '../src/storage/repositories.js';
 import { ObjectiveService, ObjectiveServiceError } from '../src/services/objective-service.js';
+import { ObjectiveSchema } from '../src/domain/index.js';
 import type { Workspace, Project } from '../src/domain/index.js';
 
 function makeDb() { return openDatabase(':memory:'); }
@@ -335,6 +336,16 @@ test('D.2.1: opening a DB with a pre-existing NULL-timestamp Objective row backf
     // as a normal, fully-valid Objective.
     const viaService = new ObjectiveService(db, wsId).findById(objectiveId);
     assert.deepEqual(viaService, found);
+
+    // D.2.2 — findById() does not itself schema-validate reads (only
+    // create() does, at the persistence boundary), so "fully valid
+    // Objective" is otherwise just an assertion about individual fields.
+    // Make the actual claim explicit: the backfilled row, read back exactly
+    // as any caller would get it, must still satisfy ObjectiveSchema as a
+    // whole.
+    const parsed = ObjectiveSchema.safeParse(found);
+    assert.ok(parsed.success, `backfilled Objective must satisfy ObjectiveSchema: ${!parsed.success ? JSON.stringify(parsed.error.issues) : ''}`);
+
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

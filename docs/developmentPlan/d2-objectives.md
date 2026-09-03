@@ -1,8 +1,9 @@
 # D.2 — Objectives
 
-**Status:** Complete, including the D.2.1 correction (§5). D.2 is closed.
-**Milestone:** D, phase D.2 → D.2.1 (see `CURRENT_FOCUS_INTENT_TO_READY_WORK.md`
-§10, as amended; follows D.1 — declarative workflow-step contract, closed)
+**Status:** Complete, including the D.2.1 and D.2.2 corrections (§5). D.2 is closed.
+**Milestone:** D, phase D.2 → D.2.1 → D.2.2 (see
+`CURRENT_FOCUS_INTENT_TO_READY_WORK.md` §10, as amended; follows D.1 —
+declarative workflow-step contract, closed)
 
 ## 1. Goal
 
@@ -130,13 +131,24 @@ ISO-8601 string) for both, a row written before that requirement existed
 would type as `string` at compile time while reading back as runtime `null`.
 
 Migration 10 backfills, once, conservatively: `created_at IS NULL` rows get
-a fixed migration timestamp; `updated_at IS NULL` rows fall back to the
-row's `created_at` (by then always non-null, whether original or
+the actual time the migration runs; `updated_at IS NULL` rows fall back to
+the row's `created_at` (by then always non-null, whether original or
 just-backfilled in the same migration). Existing non-null values are never
 touched. No table recreation — the columns stay nullable at the schema
 level; the guarantee that no NULL survives comes from the one-time backfill
 plus every future write going through `ObjectiveService`, which always
 supplies both fields.
+
+**D.2.2 correction:** the first version of this migration hardcoded
+`created_at`'s backfill to a single literal date (the date D.2.1 was
+authored), which would have been wrong for any database first migrated on
+a later date. Fixed to `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` — SQLite's
+UTC clock evaluated at actual migration-execution time, formatted to the
+same millisecond-precision ISO-8601 shape `new Date().toISOString()`
+produces everywhere else in this codebase, which is what `TimestampSchema`
+(`z.string().datetime()`) requires. The policy itself (§5.2 above) is
+unchanged — only the "this migration's timestamp" value stopped being a
+constant.
 
 ### 5.3 A real file-backed restart test, plus a migration-compatibility fixture
 
@@ -146,13 +158,21 @@ anything, so it couldn't have caught a real persistence bug. Kept (as a
 cheap same-handle sanity check) and supplemented with a genuine
 close/reopen test against a temp-directory DB *file*.
 
-Also added: `MIGRATIONS` is now exported (read-only) from
+Also added: `MIGRATIONS` is now exported as `readonly string[]` from
 `storage/database.ts` specifically so a test can construct a DB at exactly
 the migration-9 checkpoint, insert an `Objective` row with `NULL`
 timestamps the way pre-D.2.1 raw SQL would have, and then open it normally
 — proving migration 10 backfills that row into something
 `ObjectiveService`/`ObjectiveSchema` accept as fully valid, and a sibling
 test proving an already-timestamped row is left untouched.
+
+**D.2.2 addition:** the backfill fixture now also runs the resulting
+Objective through `ObjectiveSchema.safeParse()` directly and asserts
+success. `ObjectiveRepository.findById()`/`ObjectiveService.findById()` do
+not themselves schema-validate reads (only `create()` does, at the
+persistence boundary — §5.1), so without this the test only proved
+individual fields were non-null, not that the backfilled row actually
+satisfies the schema as a whole.
 
 ### 5.4 Recorded, not fixed here
 
