@@ -148,6 +148,7 @@ export class Scheduler {
         workflowId,
         repositories,
         goal: item.goal,
+        objectiveId: item.objectiveId,
         acceptanceCriteria: item.acceptanceCriteria,
         constraints: item.constraints,
         permissions: { pushBranch: false, createPr: false, merge: false },

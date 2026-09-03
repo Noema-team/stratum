@@ -459,6 +459,7 @@ export class ResumeService {
           workflowId: run.workflow_id,
           repositories,
           goal: workItem.goal,
+          objectiveId: workItem.objectiveId,
           acceptanceCriteria: workItem.acceptanceCriteria,
           constraints: workItem.constraints,
           permissions: { pushBranch: false, createPr: false, merge: false },

@@ -13,6 +13,7 @@ import type {
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
+import { materializeStepRunContext } from './artifact-refs.js';
 
 // ============================================================================
 // WorkflowEngine dependencies
@@ -90,6 +91,13 @@ export class WorkflowEngine {
     workItemId?: string,
     maxIterations?: number,
     resolvedParameters?: Record<string, unknown>,
+    // D.3b0 — WorkItem snapshot, threaded in by the caller (StratumAgentAdapter,
+    // from ExecutionRequest.objectiveId/constraints/acceptanceCriteria — itself
+    // populated by Scheduler/ResumeService from the WorkItem row). Never
+    // queried here: the engine only carries these through to StepRunContext.
+    objectiveId?: string,
+    workItemConstraints?: Array<{ description: string; type?: string }>,
+    workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -291,7 +299,32 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const ctx = this.makeStepRunContext(step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters);
+      const rawCtx = this.makeStepRunContext(
+        step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters,
+        objectiveId, workItemConstraints, workItemAcceptanceCriteria,
+      );
+
+      // D.3b0 — materialize any {workItemId}/{objectiveId} placeholders in a
+      // declared outputArtifact/inputArtifactRefs BEFORE calling executeStep,
+      // i.e. before ContextManager or AgentRunner (LLM call, filesystem
+      // write) ever sees the context. A workflow that declares no
+      // placeholders is unaffected — materializeStepRunContext is a no-op.
+      const materialized = materializeStepRunContext(rawCtx);
+      if (!materialized.ok) {
+        await this.updateRunCursor(workflowRunId, {
+          status: 'halted',
+          current_step_id: step.id,
+          iteration, revision, awaiting_checkpoint: null,
+        });
+        return {
+          run_id: workflowRunId,
+          status: 'halted',
+          final_step_id: step.id,
+          iterations_used: iteration,
+          error: materialized.error,
+        };
+      }
+      const ctx = materialized.value;
       const result = await this.executeStep(step, workflowRunId, iteration, ctx);
 
       // Generic revision increment — produced by confirm-revise (and any future step
@@ -554,6 +587,48 @@ export class WorkflowEngine {
 
     const result = await this.deps.stepRunner.run(step, ctx);
 
+    // D.3b0 — opt-in semantic review verdict contract. Generic execution
+    // success is not the same thing as a review's semantic pass/fail
+    // judgment (see WorkflowStep.requiresReviewVerdict and AgentRunner.run()).
+    // Every review step that does not opt in falls through to the unchanged
+    // legacy branch below, byte-for-byte — this includes every full-build
+    // review step.
+    if (step.requiresReviewVerdict) {
+      const verdict = result.reviewVerdict;
+      if (!result.success || (verdict !== 'pass' && verdict !== 'fail')) {
+        // Execution failure (transport/parse/write) OR a missing/invalid
+        // verdict on an otherwise-successful execution — neither is a
+        // semantic judgment, so this halts rather than routing through
+        // on_fail/on_pass as if it were one.
+        await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          duration_ms: Date.now() - start,
+        });
+        return {
+          outcome: 'failed',
+          next_step_id: null,
+          error: result.error ?? `Review step '${step.id}' requires a semantic verdict but produced none`,
+        };
+      }
+
+      // A successful review execution whose semantic result is 'fail' is not
+      // an execution failure — the produced review artifact (if any) is
+      // preserved via the same markComplete/provenance path as a 'pass'.
+      await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
+      if (verdict === 'fail') {
+        return {
+          outcome: 'completed',
+          next_step_id: step.on_fail?.target_step_id ?? null,
+          _iterate: step.on_fail?.iteration_loop ? true : undefined,
+          duration_ms: Date.now() - start,
+        };
+      }
+      const passTarget = step.on_pass?.target_step_id ?? '__next__';
+      return { outcome: 'completed', next_step_id: passTarget, duration_ms: Date.now() - start };
+    }
+
+    // Legacy behavior — unchanged for every review step that does not opt in.
     if (!result.success) {
       await this.markComplete(step.id, workflowRunId, iteration, []);
       return {
@@ -668,6 +743,9 @@ export class WorkflowEngine {
     workflowId: string,
     workItemId: string | undefined,
     resolvedParameters?: Record<string, unknown>,
+    objectiveId?: string,
+    workItemConstraints?: Array<{ description: string; type?: string }>,
+    workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
   ): StepRunContext {
     return {
       workflowRunId,
@@ -685,6 +763,15 @@ export class WorkflowEngine {
       outputArtifact: step.outputArtifact,
       inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
+      // D.3b0 — WorkItem snapshot passed straight through from run()'s own
+      // params (never queried here). Rendering constraints/acceptance
+      // criteria into the assembled context is still gated by
+      // includeWorkItemContext — see ContextManager.buildTaskDescription.
+      objectiveId,
+      workItemConstraints,
+      workItemAcceptanceCriteria,
+      includeWorkItemContext: step.includeWorkItemContext,
+      requiresReviewVerdict: step.requiresReviewVerdict,
     };
   }
 

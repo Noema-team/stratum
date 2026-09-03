@@ -253,13 +253,29 @@ number of refinement rounds (§5.2 demonstrates this), but it never said
 when the loop must stop. That gap is closed here, conservatively, as
 workflow methodology — not new kernel machinery. `WorkflowEngine` already
 supports a per-workflow iteration cap (`WorkflowDefinition.max_iterations`,
-a review step marked `is_iteration_gate`, enforced by the engine's
-existing cap-hit handling — see `workflow/engine.ts`). D.3b's `define-work`
-workflow uses that mechanism directly; nothing new is added to the engine.
+enforced by the engine's existing cap-hit handling — see `workflow/engine.ts`).
+D.3b's `define-work` workflow uses that mechanism directly; nothing new is
+added to the engine.
+
+**Correction (while implementing D.3b0):** the mechanism description and
+the cap value above were both wrong. `WorkflowEngine` starts a run at
+iteration 1 and checks whether the *next* iteration would exceed
+`max_iterations` before advancing — and `is_iteration_gate` plays no part
+in that check at all (the field exists on `WorkflowStep` but is never read
+by the engine's cap logic; it is unused today). The actual mechanism is a
+review step's `on_fail.iteration_loop: true`, which signals the engine's
+existing `_iterate` flag; the engine increments its iteration counter and
+compares it to `max_iterations` before looping back. So: an initial
+Definition draft, plus at most 3 refinement passes, is iterations 1, 2, 3,
+4 — **`max_iterations: 4`**, not 3. The versions-produced count (v1 through
+v4, four Definition versions in the worst case) was already correct and is
+unchanged; only the `max_iterations` value and the mechanism description
+were wrong.
 
 **Policy:** an initial Definition draft, plus at most 3 refinement passes
-(`max_iterations: 3` on the review step gating refinement) — at most 4
-Definition versions (v1 through v4) before the workflow must stop looping.
+(`max_iterations: 4` on the review step gating refinement, via
+`on_fail.iteration_loop`) — at most 4 Definition versions (v1 through v4)
+before the workflow must stop looping.
 
 At cap, in order:
 

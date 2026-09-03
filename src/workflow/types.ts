@@ -61,6 +61,27 @@ export interface WorkflowStep {
 
   // iteration cap check: which review step triggers the cap
   is_iteration_gate?: boolean;
+
+  // D.3b0 — opt-in semantic review verdict contract. Generic execution
+  // success (AgentRunner.success / StepRunOutcome.success) means the LLM
+  // call, output parsing, and write succeeded — it is NOT the same thing as
+  // whether a review step's semantic judgment passed. Without this flag,
+  // WorkflowEngine.executeReview preserves its legacy behavior exactly
+  // (execution success routes on_pass, execution failure routes on_fail).
+  // With it set, only a successful execution that also produced a parsed
+  // `verdict: pass | fail` in the SLE-OUTPUT preamble (see agent-runner.ts)
+  // is treated as a semantic judgment; anything else (transport/parse/write
+  // failure, or a missing/invalid verdict) halts instead of being routed
+  // through on_fail/on_pass as if it were one.
+  requiresReviewVerdict?: boolean;
+
+  // D.3b0 — opt-in: render the run's WorkItem constraints/acceptance
+  // criteria (threaded in from Scheduler/ResumeService, never queried by
+  // ContextManager) into this step's assembled context. See
+  // ContextManager.buildTaskDescription. Goal remains available via
+  // ctx.goal regardless of this flag; full-build/draft-artifact steps
+  // never set it, so their prompts are unaffected.
+  includeWorkItemContext?: boolean;
 }
 
 // ============================================================================
@@ -169,6 +190,10 @@ export interface StepRunOutcome {
   // increment and/or non-sequential routing (e.g. the debug step after validation failure).
   next_step_id?: string;
   _iterate?: true;
+  // D.3b0 — the semantic review verdict, set only when execution succeeded
+  // AND the step opted into requiresReviewVerdict (see agent-runner.ts).
+  // Absent for every non-opted-in step and for a failed/legacy execution.
+  reviewVerdict?: 'pass' | 'fail';
 }
 
 export interface StepRunner {
@@ -215,4 +240,18 @@ export interface StepRunContext {
   ephemeral?: Record<string, string>;
   // Builder source files (from map.yaml repo.key_files).
   sourceFiles?: string[];
+
+  // D.3b0 — WorkItem snapshot, threaded in from Scheduler/ResumeService via
+  // ExecutionRequest -> StratumAgentAdapter -> WorkflowEngine.run(), never
+  // queried here or by ContextManager/AgentRunner (no ObjectiveService
+  // dependency in any of those). objectiveId is execution/provenance
+  // context only — used by artifact-refs.ts placeholder materialization —
+  // and is not rendered into the assembled context by itself.
+  objectiveId?: string;
+  workItemConstraints?: Array<{ description: string; type?: string }>;
+  workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>;
+  // Copied from WorkflowStep by WorkflowEngine.makeStepRunContext, same as
+  // instruction/outputArtifact/inputArtifactRefs above.
+  includeWorkItemContext?: boolean;
+  requiresReviewVerdict?: boolean;
 }

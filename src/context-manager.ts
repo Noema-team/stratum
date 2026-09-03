@@ -485,18 +485,47 @@ export class ContextManager {
     // D.1b — a step's own declared instruction takes priority over the
     // legacy step-id/role lookup below. full-build/draft-artifact steps
     // declare no `instruction` yet, so their behavior is unchanged.
+    let text: string;
     if (ctx.instruction) {
-      return `${ctx.instruction}\n\nCycle intent: "${ctx.goal}"`;
+      text = `${ctx.instruction}\n\nCycle intent: "${ctx.goal}"`;
+    } else {
+      const stepId = ctx.stepId;
+      // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
+      const base = stepId
+        ? (NODE_TASK_DESCRIPTIONS[stepId] ??
+           NODE_TASK_DESCRIPTIONS[stepId.toUpperCase()] ??
+           NODE_TASK_DESCRIPTIONS[role.toUpperCase()] ??
+           `Execute the ${stepId} step.`)
+        : 'Prepare for the cycle.';
+      text = `${base}\n\nCycle intent: "${ctx.goal}"`;
     }
-    const stepId = ctx.stepId;
-    // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
-    const base = stepId
-      ? (NODE_TASK_DESCRIPTIONS[stepId] ??
-         NODE_TASK_DESCRIPTIONS[stepId.toUpperCase()] ??
-         NODE_TASK_DESCRIPTIONS[role.toUpperCase()] ??
-         `Execute the ${stepId} step.`)
-      : 'Prepare for the cycle.';
-    return `${base}\n\nCycle intent: "${ctx.goal}"`;
+    // D.3b0 — opt-in only (WorkflowStep.includeWorkItemContext). Goal stays
+    // available via ctx.goal above regardless of this flag; full-build/
+    // draft-artifact steps never set it, so their prompts are byte-for-byte
+    // unchanged. objectiveId is deliberately not rendered here — it is
+    // execution/provenance context (see artifact-refs.ts), not something a
+    // step shows the model unless it explicitly asks via its own instruction.
+    if (ctx.includeWorkItemContext) {
+      text += this.formatWorkItemContext(ctx);
+    }
+    return text;
+  }
+
+  private formatWorkItemContext(ctx: StepRunContext): string {
+    const lines: string[] = [];
+    if (ctx.workItemConstraints && ctx.workItemConstraints.length > 0) {
+      lines.push('', '## WorkItem Constraints');
+      for (const c of ctx.workItemConstraints) {
+        lines.push(`- ${c.type ? `[${c.type}] ` : ''}${c.description}`);
+      }
+    }
+    if (ctx.workItemAcceptanceCriteria && ctx.workItemAcceptanceCriteria.length > 0) {
+      lines.push('', '## WorkItem Acceptance Criteria');
+      for (const a of ctx.workItemAcceptanceCriteria) {
+        lines.push(`- ${a.description}`);
+      }
+    }
+    return lines.length > 0 ? `\n${lines.join('\n')}` : '';
   }
 
   // ─── Component 5: Failure context ─────────────────────────────────────────

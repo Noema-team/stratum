@@ -70,6 +70,11 @@ export interface ExecutionRequest {
   workflowId: string;
   repositories: RepositoryContext[];
   goal: string;
+  // D.3b0 — the WorkItem's Objective, when it has one. Threaded through to
+  // WorkflowEngine/StepRunContext for provenance and declarative-ref
+  // materialization (see workflow/artifact-refs.ts) — never queried by
+  // WorkflowEngine, ContextManager, or AgentRunner.
+  objectiveId?: string;
   acceptanceCriteria: Array<{ description: string; met?: boolean }>;
   constraints: Array<{ description: string; type?: string }>;
   permissions: ExecutionPermissions;

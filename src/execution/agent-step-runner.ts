@@ -17,6 +17,7 @@ export class AgentStepRunner implements StepRunner {
       tokens_used: result.tokens_used,
       duration_ms: result.duration_ms,
       error: result.error,
+      reviewVerdict: result.reviewVerdict,
     };
   }
 }

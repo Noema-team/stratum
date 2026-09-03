@@ -19,3 +19,5 @@ export type { WorkflowRunRepository } from '../storage/repositories.js';
 export { getWorkflow, registerWorkflow, listWorkflowIds, stepCount, BUILTIN_IDS } from './registry.js';
 export { FULL_BUILD } from './builtins/full-build.js';
 export { DRAFT_ARTIFACT } from './builtins/draft-artifact.js';
+export { materializeTemplate, materializeStepRunContext } from './artifact-refs.js';
+export type { MaterializeResult } from './artifact-refs.js';

@@ -20,12 +20,21 @@ export interface AgentRunResult {
   duration_ms: number;
   raw_output_path: string;
   error?: string;
+  // D.3b0 — the semantic review verdict, set only when ctx.requiresReviewVerdict
+  // was true AND execution succeeded with a valid `verdict: pass | fail` in
+  // the preamble. See the requiresReviewVerdict handling in run() below.
+  reviewVerdict?: 'pass' | 'fail';
 }
 
 export interface SLEOutputPreamble {
   role: string;
   node: string;
   artifacts: Array<{ id: string; path: string }>;
+  // D.3b0 — optional semantic review verdict. Only meaningful (and only
+  // validated) when the invoking step declares requiresReviewVerdict; loose
+  // string type here because this is straight off yaml.load() before any
+  // validation — see the verdict check in AgentRunner.run().
+  verdict?: string;
 }
 
 export interface ParsedOutput {
@@ -230,6 +239,12 @@ export class AgentRunner {
     let parsed: { sections: Array<{ path: string; content: string }> };
     let tokensUsed = 0;
     let rawPath = '';
+    // D.3b0 — the raw `verdict` string from the SLE-OUTPUT preamble, when one
+    // exists. Only the single-turn path below has a preamble/verdict concept
+    // at all — the multi-turn AgentLoop path (agent-loop.ts) parses a
+    // different delimiter format with no preamble, so this stays undefined
+    // there. Validated against ctx.requiresReviewVerdict after both branches.
+    let reviewVerdictRaw: string | undefined;
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
@@ -308,7 +323,9 @@ export class AgentRunner {
       rawPath = await this.writeRaw(ctx, nodeId, llmResult.content);
 
       try {
-        parsed = parseAgentOutput(llmResult.content, role);
+        const fullParsed = parseAgentOutput(llmResult.content, role);
+        parsed = fullParsed;
+        reviewVerdictRaw = fullParsed.preamble?.verdict;
       } catch (err) {
         return {
           success: false,
@@ -329,6 +346,27 @@ export class AgentRunner {
       raw_output_path: rawPath,
       error,
     });
+
+    // 5b. D.3b0 — semantic review verdict gate (opt-in via ctx.requiresReviewVerdict,
+    // copied from WorkflowStep.requiresReviewVerdict by WorkflowEngine). A
+    // transport/parse/write failure already returned above and never reaches
+    // here. This check treats a *missing or invalid* verdict on an otherwise-
+    // successful execution as an execution failure too — fail closed, before
+    // any output is written — because neither "the model didn't declare a
+    // verdict" nor "it declared something unparseable" is a semantic
+    // judgment WorkflowEngine.executeReview may route through on_fail/on_pass.
+    // A validly declared 'pass' or 'fail' is NOT gated here; both proceed
+    // through the ordinary write + provenance path below exactly the same way,
+    // so a semantic-fail review artifact is preserved just like a pass.
+    let reviewVerdict: 'pass' | 'fail' | undefined;
+    if (ctx.requiresReviewVerdict) {
+      if (reviewVerdictRaw !== 'pass' && reviewVerdictRaw !== 'fail') {
+        return fail(
+          `Step requires a review verdict but the preamble declared '${reviewVerdictRaw ?? 'none'}' (expected 'pass' or 'fail')`,
+        );
+      }
+      reviewVerdict = reviewVerdictRaw;
+    }
 
     // 6a. D.1c — canonicalize every produced path exactly once, before any
     // other check. This is THE single value used from here on for exact
@@ -422,6 +460,7 @@ export class AgentRunner {
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
       raw_output_path: rawPath,
+      reviewVerdict,
     };
   }
 
