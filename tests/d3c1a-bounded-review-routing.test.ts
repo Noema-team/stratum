@@ -445,6 +445,24 @@ test('D.3c1a: WorkflowEngine defensively re-validates a missing route the same w
   assert.match(result.error ?? '', /no valid route/);
 });
 
+test('D.3c1a.1: WorkflowEngine rejects an inherited Object.prototype member ("toString") as if it were an undeclared route, not an accepted mapping', async () => {
+  const engine = makeStubEngine(new StubRouteStepRunner('toString'));
+
+  const result = await engine.run(D3C1A_ROUTING_WF, `run-${randomUUID()}`, 'goal', undefined, 'wi-1');
+
+  assert.equal(result.status, 'halted');
+  assert.match(result.error ?? '', /no valid route/, '"toString" must never resolve to Object.prototype.toString as a truthy mapping');
+});
+
+test('D.3c1a.1: WorkflowEngine rejects "constructor" the same way — an own-key check, not a truthy property lookup', async () => {
+  const engine = makeStubEngine(new StubRouteStepRunner('constructor'));
+
+  const result = await engine.run(D3C1A_ROUTING_WF, `run-${randomUUID()}`, 'goal', undefined, 'wi-1');
+
+  assert.equal(result.status, 'halted');
+  assert.match(result.error ?? '', /no valid route/);
+});
+
 test('D.3c1a: WorkflowEngine correctly routes a StepRunner-supplied token that IS declared, end to end', async () => {
   const engine = makeStubEngine(new StubRouteStepRunner('human'));
 

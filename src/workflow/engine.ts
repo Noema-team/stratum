@@ -640,7 +640,15 @@ export class WorkflowEngine {
         // exactly the legacy on_fail behavior below, byte-for-byte.
         if (step.on_fail_routes) {
           const route = result.reviewRoute;
-          const mapping = route ? step.on_fail_routes[route] : undefined;
+          // D.3c1a.1 — an exact OWN-key allowlist membership test. A plain
+          // `step.on_fail_routes[route]` lookup resolves inherited
+          // Object.prototype members for a token like 'toString' or
+          // 'constructor' (both truthy functions), which would let an
+          // undeclared token slip past this defensive re-check even though
+          // AgentRunner's own Object.keys()-based gate correctly rejects
+          // it — silently defeating the "own declared key" invariant.
+          const isDeclaredRoute = !!route && Object.prototype.hasOwnProperty.call(step.on_fail_routes, route);
+          const mapping = isDeclaredRoute ? step.on_fail_routes[route!] : undefined;
           if (!route || !mapping) {
             await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
               status: 'failed',
