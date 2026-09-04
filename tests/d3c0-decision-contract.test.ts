@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { StratumAgentAdapter } from '../src/execution/stratum-agent-adapter.js';
+import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
 import { getCheckpointDecisionOptions } from '../src/execution/checkpoint-resolver.js';
 import { parseDecisionRequest } from '../src/execution/decision-request.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
@@ -525,6 +526,32 @@ registerWorkflow({
   ],
 });
 
+// D.3c0.2 — same step ids as D3C0_RESUME_WF (so seedHaltedRun below works
+// unchanged for both), but 'ck' opts into the dynamic mechanism. The second
+// checkpoint 'ck2' exists so a single resumed run can chain into a SECOND
+// dynamic checkpoint, for the "subsequent dynamic DecisionRequest" proof.
+const D3C0_2_DYNAMIC_RESUME_WF = `d3c0-2-dynamic-resume-${randomUUID()}`;
+registerWorkflow({
+  id: D3C0_2_DYNAMIC_RESUME_WF,
+  label: 'D.3c0.2 dynamic-checkpoint resume harness',
+  steps: [
+    { id: 'snap', kind: 'produce', agentRole: 'designer' },
+    { id: 'ck', kind: 'checkpoint', label: 'Gate', decisionRequestArtifact: '.sle/work/{workItemId}/decision-request.json' },
+    { id: 'after-decision', kind: 'produce', agentRole: 'builder', includeDecisionContext: true },
+  ],
+});
+const D3C0_2_CHAINED_DYNAMIC_WF = `d3c0-2-chained-dynamic-${randomUUID()}`;
+registerWorkflow({
+  id: D3C0_2_CHAINED_DYNAMIC_WF,
+  label: 'D.3c0.2 chained dynamic-checkpoint resume harness',
+  steps: [
+    { id: 'snap', kind: 'produce', agentRole: 'designer' },
+    { id: 'ck', kind: 'checkpoint', label: 'Gate A', decisionRequestArtifact: '.sle/work/{workItemId}/decision-request.json' },
+    { id: 'ck2', kind: 'checkpoint', label: 'Gate B', decisionRequestArtifact: '.sle/work/{workItemId}/decision-request-b.json' },
+    { id: 'after-decision', kind: 'produce', agentRole: 'builder' },
+  ],
+});
+
 class CapturingStepRunner implements StepRunner {
   calls: Array<{ stepId: string; ctx: StepRunContext }> = [];
   async run(step: { id: string }, ctx: StepRunContext): Promise<StepRunOutcome> {
@@ -533,16 +560,23 @@ class CapturingStepRunner implements StepRunner {
   }
 }
 
-function makeResumeAdapter(stepRunner: StepRunner): StratumAgentAdapter {
+function makeResumeAdapter(
+  stepRunner: StepRunner,
+  opts: { db?: ReturnType<typeof openDb>; projectRoot?: string; artifactRepository?: ArtifactRepository } = {},
+): StratumAgentAdapter {
   const engineDeps: WorkflowEngineDeps = {
     stepRunner,
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
     runArtifacts: {
       updateNodeStatus: async () => {}, createRunDir: async () => {}, createManifest: async () => {},
     } as any,
+    projectRoot: opts.projectRoot,
+    // Matches production wiring (application.ts) so a chained checkpoint
+    // halt's cursor-authority check behaves exactly as in production.
+    workflowRunRepository: opts.db ? new WorkflowRunRepository(opts.db) : undefined,
   };
   const engineOpts: WorkflowEngineOptions = { onCheckpoint: async () => 'halt' };
-  return new StratumAgentAdapter(engineDeps, engineOpts);
+  return new StratumAgentAdapter(engineDeps, engineOpts, opts.artifactRepository);
 }
 
 function openDb() { return openDatabase(':memory:'); }
@@ -567,7 +601,13 @@ function seedWorld(db: ReturnType<typeof openDb>, workflowId: string) {
   return { ws, proj, wi };
 }
 
-function seedHaltedRun(db: ReturnType<typeof openDb>, workspaceId: string, workItemId: string, workflowId: string, projectId: string) {
+function seedHaltedRun(
+  db: ReturnType<typeof openDb>, workspaceId: string, workItemId: string, workflowId: string, projectId: string,
+  options: Array<{ id: string; label: string; description: string }> = [
+    { id: 'server-authoritative', label: 'Server-authoritative', description: 'Route through a dedicated server.' },
+    { id: 'host-authoritative', label: 'Host-authoritative', description: 'One client is authoritative.' },
+  ],
+) {
   const workflowRunId = randomUUID();
   const decisionId = randomUUID();
   const runRepo = new WorkflowRunRepository(db);
@@ -586,10 +626,7 @@ function seedHaltedRun(db: ReturnType<typeof openDb>, workspaceId: string, workI
     subjectRef: { workflowRunId, workItemId, stepId: 'ck' },
     title: 'Which authority model should multiplayer use?',
     summary: 'Halted at ck',
-    options: [
-      { id: 'server-authoritative', label: 'Server-authoritative', description: 'Route through a dedicated server.' },
-      { id: 'host-authoritative', label: 'Host-authoritative', description: 'One client is authoritative.' },
-    ],
+    options,
     impact: 'medium', reversibility: 'medium', urgency: 'normal', status: 'pending',
   });
   stepExecRepo.save({
@@ -857,4 +894,169 @@ test('D.3c0.1: a legacy generic checkpoint yields the exact same durable human-f
   assert.equal(decision.impact, 'medium');
   assert.equal(decision.reversibility, 'easy');
   assert.equal(decision.urgency, 'normal');
+});
+
+// ============================================================================
+// Part D — D.3c0.2: dynamic HUMAN_DECISION options resume through the real
+// production CheckpointResolver (FullBuildStepRunner), and a SECOND
+// (chained) dynamic DecisionRequest reached during resumed execution
+// preserves its own exact title/summary/options.
+// ============================================================================
+
+function makeProductionCheckpointResolver(): FullBuildStepRunner {
+  const stub = (x: unknown) => x;
+  return new FullBuildStepRunner(
+    {
+      agentStepRunner: stub as any, mapManager: stub as any, runArtifacts: stub as any, projectRoot: '/tmp',
+      confirmService: stub as any, execService: stub as any, validationGateService: stub as any,
+      snapshotService: stub as any, summariseService: stub as any,
+    },
+    { onCheckpoint: async () => 'halt', onConfirmGate: async () => 'halt', onShardingGate: async () => 'halt' },
+  );
+}
+
+test('D.3c0.2: dynamic option server-authoritative resumes through the real production CheckpointResolver (FullBuildStepRunner)', async () => {
+  const db = openDb();
+  const { ws, proj, wi } = seedWorld(db, D3C0_2_DYNAMIC_RESUME_WF);
+  const { decisionId } = seedHaltedRun(db, ws.id, wi.id, D3C0_2_DYNAMIC_RESUME_WF, proj.id);
+
+  const capturing = new CapturingStepRunner();
+  const adapter = makeResumeAdapter(capturing);
+  const registry = new ExecutorRegistry();
+  registry.register(adapter);
+  const svc = new ResumeService(db, ws.id, registry, {}, undefined, makeProductionCheckpointResolver());
+
+  await svc.resume(decisionId, { selectedOptionId: 'server-authoritative', resolvedAt: NOW });
+
+  assert.ok(
+    capturing.calls.some(c => c.stepId === 'after-decision'),
+    'the continuation must run — the production resolver must not reject a valid dynamic option',
+  );
+  assert.notEqual(new WorkItemRepository(db).findById(wi.id)!.state, 'cancelled');
+});
+
+test('D.3c0.2: dynamic option host-authoritative also resumes through the real production CheckpointResolver', async () => {
+  const db = openDb();
+  const { ws, proj, wi } = seedWorld(db, D3C0_2_DYNAMIC_RESUME_WF);
+  const { decisionId } = seedHaltedRun(db, ws.id, wi.id, D3C0_2_DYNAMIC_RESUME_WF, proj.id);
+
+  const capturing = new CapturingStepRunner();
+  const adapter = makeResumeAdapter(capturing);
+  const registry = new ExecutorRegistry();
+  registry.register(adapter);
+  const svc = new ResumeService(db, ws.id, registry, {}, undefined, makeProductionCheckpointResolver());
+
+  await svc.resume(decisionId, { selectedOptionId: 'host-authoritative', resolvedAt: NOW });
+
+  assert.ok(capturing.calls.some(c => c.stepId === 'after-decision'));
+});
+
+test('D.3c0.2: a dynamic option literally named "reject" continues as a human choice — it does not implicitly cancel', async () => {
+  const db = openDb();
+  const { ws, proj, wi } = seedWorld(db, D3C0_2_DYNAMIC_RESUME_WF);
+  const { decisionId } = seedHaltedRun(db, ws.id, wi.id, D3C0_2_DYNAMIC_RESUME_WF, proj.id, [
+    { id: 'reject', label: 'Reject the async approach', description: 'A genuine, workflow-defined choice — not the generic cancel command.' },
+    { id: 'accept', label: 'Accept the async approach', description: 'The other genuine choice.' },
+  ]);
+
+  const capturing = new CapturingStepRunner();
+  const adapter = makeResumeAdapter(capturing);
+  const registry = new ExecutorRegistry();
+  registry.register(adapter);
+  const svc = new ResumeService(db, ws.id, registry, {}, undefined, makeProductionCheckpointResolver());
+
+  await svc.resume(decisionId, { selectedOptionId: 'reject', resolvedAt: NOW });
+
+  assert.ok(
+    capturing.calls.some(c => c.stepId === 'after-decision'),
+    'an option literally named "reject" must continue the workflow, not cancel it',
+  );
+  assert.notEqual(
+    new WorkItemRepository(db).findById(wi.id)!.state, 'cancelled',
+    'the WorkItem must not be cancelled by a dynamic option merely named "reject"',
+  );
+  assert.equal(new DecisionRepository(db).findById(decisionId)!.status, 'resolved');
+});
+
+test('D.3c0.2: a static generic "reject" still cancels the workflow through the real production CheckpointResolver', async () => {
+  const db = openDb();
+  const { ws, proj, wi } = seedWorld(db, D3C0_RESUME_WF); // D3C0_RESUME_WF's 'ck' is generic — no decisionRequestArtifact
+  const { decisionId } = seedHaltedRun(db, ws.id, wi.id, D3C0_RESUME_WF, proj.id, [
+    { id: 'approve', label: 'Approve', description: 'Continue' },
+    { id: 'reject', label: 'Reject', description: 'Cancel' },
+  ]);
+
+  const capturing = new CapturingStepRunner();
+  const adapter = makeResumeAdapter(capturing);
+  const registry = new ExecutorRegistry();
+  registry.register(adapter);
+  const svc = new ResumeService(db, ws.id, registry, {}, undefined, makeProductionCheckpointResolver());
+
+  await svc.resume(decisionId, { selectedOptionId: 'reject', resolvedAt: NOW });
+
+  assert.ok(
+    !capturing.calls.some(c => c.stepId === 'after-decision'),
+    'a static generic reject must still cancel — no continuation must run',
+  );
+  assert.equal(new WorkItemRepository(db).findById(wi.id)!.state, 'cancelled');
+});
+
+const DECISION_B_REQUEST = {
+  type: 'human_decision',
+  title: 'Which persistence backend should the prototype use?',
+  summary: 'The exploratory spike needs a concrete backend choice before implementation can start.',
+  options: [
+    { id: 'sqlite', label: 'SQLite', description: 'Local file-backed, zero ops overhead.' },
+    { id: 'postgres', label: 'Postgres', description: 'Networked, more ops overhead, better concurrency.' },
+  ],
+};
+
+test('D.3c0.2: resumed execution reaching a SECOND dynamic checkpoint preserves its exact title/summary/options — no fabricated approve recommendation', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-2-chained-'));
+  try {
+    const db = openDb();
+    const { ws, proj, wi } = seedWorld(db, D3C0_2_CHAINED_DYNAMIC_WF);
+    const { decisionId: decisionAId, workflowRunId } = seedHaltedRun(db, ws.id, wi.id, D3C0_2_CHAINED_DYNAMIC_WF, proj.id);
+
+    // Seed checkpoint B's declared decisionRequestArtifact with matching
+    // current-run provenance (D.3c0.1's boundary), exactly as an ordinary
+    // outputArtifact from a prior step would.
+    const artifacts = new ArtifactRepository(db);
+    const dir = path.join(root, '.sle', 'work', wi.id);
+    await fs.mkdir(dir, { recursive: true });
+    const raw = JSON.stringify(DECISION_B_REQUEST);
+    await fs.writeFile(path.join(dir, 'decision-request-b.json'), raw, 'utf-8');
+    artifacts.save({
+      id: randomUUID(), workflowRunId, type: 'decision-request',
+      ref: `decision-request-b:${workflowRunId}`, path: `.sle/work/${wi.id}/decision-request-b.json`,
+      hash: createHash('sha256').update(raw).digest('hex'), createdAt: NOW,
+    });
+
+    const capturing = new CapturingStepRunner();
+    const adapter = makeResumeAdapter(capturing, { db, projectRoot: root, artifactRepository: artifacts });
+    const registry = new ExecutorRegistry();
+    registry.register(adapter);
+    const svc = new ResumeService(db, ws.id, registry);
+
+    // This exercises ResumeService's actual blocked-result handling for the
+    // chained checkpoint, not a standalone helper.
+    await svc.resume(decisionAId, { selectedOptionId: 'server-authoritative', resolvedAt: NOW });
+
+    const decisions = new DecisionRepository(db).listByWorkItem(wi.id);
+    assert.equal(decisions.length, 2, `expected Decision A + Decision B; got: ${decisions.map(d => d.status).join(', ')}`);
+    const decisionA = decisions.find(d => d.id === decisionAId)!;
+    assert.equal(decisionA.status, 'resolved');
+    const decisionB = decisions.find(d => d.id !== decisionAId)!;
+    assert.equal(decisionB.status, 'pending');
+    assert.equal(decisionB.title, DECISION_B_REQUEST.title);
+    assert.equal(decisionB.summary, DECISION_B_REQUEST.summary);
+    assert.deepStrictEqual(decisionB.options, DECISION_B_REQUEST.options);
+    assert.equal(decisionB.type, 'checkpoint', 'Decision.type must stay checkpoint');
+    assert.equal(decisionB.recommendedOptionId, undefined, 'no approve option exists among Decision B\'s options — must not be fabricated');
+
+    // The continuation past checkpoint B never ran — it's still pending.
+    assert.ok(!capturing.calls.some(c => c.stepId === 'after-decision'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
