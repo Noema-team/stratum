@@ -231,6 +231,25 @@ export class DynamicLLMProvider implements ILLMProvider {
   }
 }
 
+// D.3b1.2 — AgentLLMConfig.base_url's pre-existing convention (see the old
+// AnthropicProvider.complete() above) treats the value as the exact prefix
+// placed immediately before '/messages' — a caller configuring the
+// standard form 'https://api.anthropic.com/v1' relies on that producing
+// '.../v1/messages'. The official SDK instead treats its own `baseURL`
+// option as a host/prefix placed before the SDK's OWN fixed '/v1/messages'
+// resource path — passing the old convention's value straight through
+// would double it into '.../v1/v1/messages'. Stripping a trailing '/v1'
+// (the standard existing form) before handing the value to the SDK
+// reproduces exactly the old resulting URL. A base_url that does not end
+// in '/v1' is passed through unchanged (out of scope — narrower than the
+// old provider's fully free-form '/messages' suffixing, but preserves the
+// one convention callers actually depend on).
+export function anthropicSdkBaseUrl(configBaseUrl: string | undefined): string | undefined {
+  if (!configBaseUrl) return undefined;
+  const trimmed = configBaseUrl.replace(/\/$/, '');
+  return trimmed.endsWith('/v1') ? trimmed.slice(0, -'/v1'.length) : trimmed;
+}
+
 // D.3b1.1 — the anthropic case is the one production configuration that
 // must return a genuinely multi-turn-capable provider: AnthropicSDKProvider
 // implements IMultiTurnProvider against the real Anthropic SDK, so a run
@@ -252,7 +271,8 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
           `API key not found. Set ${config.api_key_env} or SLE_LLM_API_KEY environment variable.`
         );
       }
-      const client = config.base_url ? new Anthropic({ apiKey, baseURL: config.base_url }) : undefined;
+      const baseURL = anthropicSdkBaseUrl(config.base_url);
+      const client = baseURL ? new Anthropic({ apiKey, baseURL }) : undefined;
       return new AnthropicSDKProvider(apiKey, { defaultModel: config.model, client });
     }
     case 'glm': {

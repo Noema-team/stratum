@@ -165,9 +165,8 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
   // ── Agent execution stack ──────────────────────────────────────────────────
   const contextManager = new ContextManager(projectRoot);
-  const agentRunner = new AgentRunner(
-    contextManager, llmProvider, projectRoot, runArtifacts,
-    undefined, undefined, artifactRepository,
+  const agentRunner = buildAgentRunner(
+    contextManager, llmProvider, projectRoot, runArtifacts, resolvedModel, artifactRepository,
   );
   const agentStepRunner = new AgentStepRunner(agentRunner);
 
@@ -279,6 +278,29 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 interface LLMProviderResult {
   provider: ILLMProvider;
   model: string;
+}
+
+// D.3b1.2 — narrow composition-root seam. AgentRunner defaults its
+// runnerConfig to { model: 'default' } when none is given, and that literal
+// is truthy — so `params.model || this.defaultModel` in the provider layer
+// (e.g. AnthropicSDKProvider) would send the sentinel string 'default'
+// instead of falling back to the provider's own configured model. The
+// composition root must always pass the resolved application model through
+// explicitly. Extracted only so this specific wiring has direct regression
+// coverage without exposing db/scheduler/registry or any new control-plane
+// concept — createStratumApplication calls this exact function.
+export function buildAgentRunner(
+  contextManager: ContextManager,
+  llmProvider: ILLMProvider,
+  projectRoot: string,
+  runArtifacts: RunArtifactManager,
+  resolvedModel: string,
+  artifactRepository: ArtifactRepository,
+): AgentRunner {
+  return new AgentRunner(
+    contextManager, llmProvider, projectRoot, runArtifacts,
+    { model: resolvedModel }, undefined, artifactRepository,
+  );
 }
 
 function resolveLLMProvider(projectRoot: string): LLMProviderResult {

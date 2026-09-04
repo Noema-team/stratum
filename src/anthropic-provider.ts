@@ -58,6 +58,10 @@ export class AnthropicSDKProvider implements ILLMProvider, IMultiTurnProvider {
       max_tokens: params.max_tokens,
       messages: turns,
       ...(systemParam.length > 0 && { system: systemParam }),
+      // D.3b1.2 — the old REST-based AnthropicProvider forwarded temperature;
+      // preserve that for the ILLMProvider contract's single-turn path,
+      // which requiresReviewVerdict steps intentionally use.
+      ...(params.temperature !== undefined && { temperature: params.temperature }),
     };
 
     let message: Anthropic.Message;

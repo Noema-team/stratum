@@ -206,6 +206,15 @@ test('AnthropicSDKProvider: max_tokens passed through correctly', async () => {
   assert.strictEqual(calls[0].params.max_tokens, 4096);
 });
 
+test('D.3b1.2: AnthropicSDKProvider.complete() forwards temperature unchanged, preserving the ILLMProvider contract the old REST provider honored', async () => {
+  const { client, calls } = makeMockClient();
+  const provider = new AnthropicSDKProvider('sk-test', { client });
+
+  await provider.complete(makeParams({ temperature: 0.3 }));
+
+  assert.strictEqual((calls[0].params as { temperature?: number }).temperature, 0.3);
+});
+
 test('AnthropicSDKProvider: user/assistant messages passed through unmodified', async () => {
   const { client, calls } = makeMockClient();
   const provider = new AnthropicSDKProvider('sk-test', { client });

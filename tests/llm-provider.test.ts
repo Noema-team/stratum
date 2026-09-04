@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import Anthropic from '@anthropic-ai/sdk';
 import {
   OpenAICompatibleProvider,
   AnthropicProvider,
   createLLMProvider,
+  anthropicSdkBaseUrl,
   LLMCompletionParamsSchema,
   LLMCompletionResultSchema,
   DynamicLLMProvider,
@@ -353,6 +355,46 @@ test('D.3b1.1: createLLMProvider anthropic config is a reachable production mult
     // when wrapping this exact production configuration.
     const dynamic = new DynamicLLMProvider(anthropic);
     assert.equal(typeof dynamic.completeMultiTurn, 'function');
+  } finally {
+    delete process.env.TEST_LLM_API_KEY;
+  }
+});
+
+test('D.3b1.2: anthropicSdkBaseUrl strips the standard trailing /v1 so the SDK\'s own /v1/messages composition is not doubled', () => {
+  assert.equal(anthropicSdkBaseUrl(undefined), undefined);
+  assert.equal(anthropicSdkBaseUrl('https://api.anthropic.com/v1'), 'https://api.anthropic.com');
+  assert.equal(anthropicSdkBaseUrl('https://api.anthropic.com/v1/'), 'https://api.anthropic.com');
+  // Not ending in /v1 — passed through unchanged (out of scope beyond the
+  // one convention callers actually depend on).
+  assert.equal(anthropicSdkBaseUrl('https://my-proxy.example.com'), 'https://my-proxy.example.com');
+});
+
+test('D.3b1.2: createLLMProvider anthropic with the standard base_url convention produces exactly one /v1/messages, not doubled', () => {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  try {
+    const provider = createLLMProvider({
+      provider: 'anthropic',
+      base_url: 'https://api.anthropic.com/v1', // the standard existing AgentLLMConfig.base_url form
+      api_key_env: 'TEST_LLM_API_KEY',
+      model: 'claude-3',
+    });
+    assert.ok(provider instanceof AnthropicSDKProvider);
+
+    // AnthropicSDKProvider does not expose its internal client, so this
+    // reconstructs the exact same composition the factory performs
+    // (anthropicSdkBaseUrl(config.base_url) -> new Anthropic({ baseURL })
+    // -- see createLLMProvider's 'anthropic' case) and asks the REAL SDK
+    // client to build the outbound URL. buildURL is pure string
+    // composition — no network call is made.
+    const sdkBaseUrl = anthropicSdkBaseUrl('https://api.anthropic.com/v1');
+    const client = new Anthropic({ apiKey: 'test-key', baseURL: sdkBaseUrl });
+    const outboundUrl = client.buildURL('/v1/messages', null);
+
+    assert.equal(outboundUrl, 'https://api.anthropic.com/v1/messages');
+    assert.equal(
+      (outboundUrl.match(/\/v1\/messages/g) ?? []).length, 1,
+      `expected exactly one /v1/messages, got: ${outboundUrl}`,
+    );
   } finally {
     delete process.env.TEST_LLM_API_KEY;
   }

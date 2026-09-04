@@ -11,7 +11,7 @@ import { EvidenceService } from '../src/services/evidence-service.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
 import { ResumeService } from '../src/services/resume-service.js';
-import { SchedulerLoop, createStratumApplication } from '../src/application.js';
+import { SchedulerLoop, createStratumApplication, buildAgentRunner } from '../src/application.js';
 import { getCheckpointDecisionOptions } from '../src/execution/checkpoint-resolver.js';
 import {
   WorkspaceRepository,
@@ -19,8 +19,12 @@ import {
   WorkItemRepository,
   DecisionRepository,
   WorkflowRunRepository,
+  ArtifactRepository,
 } from '../src/storage/repositories.js';
 import { registerWorkflow } from '../src/workflow/registry.js';
+import { ContextManager } from '../src/context-manager.js';
+import { RunArtifactManager } from '../src/run-artifacts.js';
+import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet } from '../src/execution/types.js';
 import type { Workspace, Project, WorkItem } from '../src/domain/index.js';
 
@@ -139,6 +143,59 @@ test('createStratumApplication: creates .sle directory if absent', () => {
       port: 0,
     });
     assert.ok(existsSync(join(root, '.sle')), '.sle directory should be created');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── D.3b1.2: resolved application model reaches AgentRunner ───────────────────
+//
+// createStratumApplication() previously constructed AgentRunner with its
+// runnerConfig argument undefined, so AgentRunner defaulted to
+// { model: 'default' } — a truthy sentinel that, for a provider resolving
+// `params.model || this.defaultModel` (e.g. AnthropicSDKProvider), silently
+// overrode the actually-configured model. buildAgentRunner is the exact
+// composition-root seam createStratumApplication now delegates to; this
+// exercises it directly against a capturing single-turn provider stub.
+
+class CapturingLLMProvider implements ILLMProvider {
+  calls: LLMCompletionParams[] = [];
+  async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
+    this.calls.push(params);
+    return {
+      content: [
+        '<!-- SLE-OUTPUT', 'role: explorer', 'node: probe', 'artifacts:',
+        '  - id: probe', '    path: .sle/work/probe.md', '-->', '',
+        '## .sle/work/probe.md', '', 'ok',
+      ].join('\n'),
+      tokens_used: 1, duration_ms: 1,
+    };
+  }
+}
+
+test('D.3b1.2: buildAgentRunner threads the resolved application model into AgentRunner, not the "default" sentinel', async () => {
+  const root = makeTmpRoot();
+  try {
+    const db = openDatabase(':memory:');
+    const provider = new CapturingLLMProvider();
+    const cm = new ContextManager(root);
+    const runArtifacts = new RunArtifactManager({ projectRoot: root });
+    const artifactRepository = new ArtifactRepository(db);
+
+    const agentRunner = buildAgentRunner(cm, provider, root, runArtifacts, 'claude-configured-model', artifactRepository);
+
+    const result = await agentRunner.run('explorer', {
+      workflowRunId: 'r1', workflowId: 'd3b1-2-model-probe', stepId: 'probe',
+      iteration: 1, revision: 0, goal: 'probe', projectRoot: root,
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/probe.md' },
+    } as any);
+
+    assert.ok(result.success, result.error);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(
+      provider.calls[0].model, 'claude-configured-model',
+      'AgentRunner must send the resolved application model, not the "default" sentinel',
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
