@@ -518,7 +518,32 @@ export class ContextManager {
     if (ctx.includeWorkItemContext) {
       text += this.formatWorkItemContext(ctx);
     }
+    // D.3c0 — the human's resolved checkpoint decision (when opted in),
+    // rendered under its own header, distinct from Objective/WorkItem
+    // content — never blurred together, same separation discipline as
+    // formatObjectiveContext below. Only ever present on a resumed
+    // continuation step (see DecisionContext in workflow/types.ts).
+    if (ctx.includeDecisionContext) {
+      text += this.formatDecisionContext(ctx);
+    }
     return text;
+  }
+
+  private formatDecisionContext(ctx: StepRunContext): string {
+    const decision = ctx.decisionContext;
+    if (!decision) return '';
+    const lines: string[] = ['', '## Human Decision', ''];
+    lines.push(`**Selected:** ${decision.selectedOptionLabel ?? decision.selectedOptionId} (option id: \`${decision.selectedOptionId}\`)`);
+    if (decision.rationale) {
+      lines.push('', `**Rationale:** ${decision.rationale}`);
+    }
+    if (decision.resolvedBy || decision.resolvedAt) {
+      const who = decision.resolvedBy ? `by ${decision.resolvedBy}` : '';
+      const when = decision.resolvedAt ? `at ${decision.resolvedAt}` : '';
+      lines.push('', `**Resolved:** ${[who, when].filter(Boolean).join(' ')}`);
+    }
+    lines.push('', `(Decision id: \`${decision.decisionId}\`)`);
+    return `\n${lines.join('\n')}`;
   }
 
   private formatObjectiveContext(ctx: StepRunContext): string {

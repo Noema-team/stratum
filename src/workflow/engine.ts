@@ -11,6 +11,7 @@ import type {
   StepRunner,
   StepRunContext,
   ObjectiveContext,
+  DecisionContext,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
@@ -104,6 +105,11 @@ export class WorkflowEngine {
     // — itself resolved once by Scheduler/ResumeService via
     // ObjectiveRepository). Never queried here.
     objectiveContext?: ObjectiveContext,
+    // D.3c0 — the human's resolved checkpoint decision, threaded in the same
+    // way, but only ever present on a ResumeService continuation (from
+    // ExecutionRequest.decisionContext) — Scheduler's initial dispatch has
+    // none. Never queried here.
+    decisionContext?: DecisionContext,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -307,7 +313,7 @@ export class WorkflowEngine {
       // Execute the step.
       const rawCtx = this.makeStepRunContext(
         step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters,
-        objectiveId, workItemConstraints, workItemAcceptanceCriteria, objectiveContext,
+        objectiveId, workItemConstraints, workItemAcceptanceCriteria, objectiveContext, decisionContext,
       );
 
       // D.3b0 — materialize any {workItemId}/{objectiveId} placeholders in a
@@ -753,6 +759,7 @@ export class WorkflowEngine {
     workItemConstraints?: Array<{ description: string; type?: string }>,
     workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
     objectiveContext?: ObjectiveContext,
+    decisionContext?: DecisionContext,
   ): StepRunContext {
     return {
       workflowRunId,
@@ -784,6 +791,11 @@ export class WorkflowEngine {
       // includeObjectiveContext — see ContextManager.buildTaskDescription.
       objectiveContext,
       includeObjectiveContext: step.includeObjectiveContext,
+      // D.3c0 — resolved human decision, passed straight through from run()'s
+      // own params (never queried here). Rendering is gated by
+      // includeDecisionContext — see ContextManager.buildTaskDescription.
+      decisionContext,
+      includeDecisionContext: step.includeDecisionContext,
     };
   }
 

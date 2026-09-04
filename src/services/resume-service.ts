@@ -12,6 +12,7 @@ import {
   CheckpointApplicationRepository,
 } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
+import type { DecisionContext } from '../workflow/types.js';
 import type { ExecutorRegistry } from '../execution/registry.js';
 import { resolveRepositories, resolveObjectiveContext, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from '../scheduler/lease-manager.js';
@@ -128,6 +129,20 @@ export class ResumeService {
         'INVALID_OPTION',
       );
     }
+
+    // D.3c0 — the human's resolved decision, using only fields already
+    // available from this Decision + the caller-supplied resolution. Built
+    // here (not queried by WorkflowEngine/ContextManager/AgentRunner/
+    // AgentLoop) and threaded through the continuation's ExecutionRequest
+    // below. Scheduler's initial dispatch never constructs one of these.
+    const decisionContext: DecisionContext = {
+      decisionId,
+      selectedOptionId: resolution.selectedOptionId,
+      selectedOptionLabel: selectedOption.label,
+      rationale: resolution.rationale,
+      resolvedAt: resolution.resolvedAt,
+      resolvedBy: resolution.resolvedBy,
+    };
 
     // ── (1e) Strict 9-field linkage validation. ───────────────────────────────
     // All three WorkItem IDs must be present and equal:
@@ -473,6 +488,7 @@ export class ResumeService {
           goal: workItem.goal,
           objectiveId: workItem.objectiveId,
           objectiveContext,
+          decisionContext,
           acceptanceCriteria: workItem.acceptanceCriteria,
           constraints: workItem.constraints,
           permissions: { pushBranch: false, createPr: false, merge: false },

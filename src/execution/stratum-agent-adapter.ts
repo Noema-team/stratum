@@ -1,10 +1,14 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { WorkflowEngine } from '../workflow/engine.js';
 import { getWorkflow } from '../workflow/registry.js';
+import { materializeTemplate } from '../workflow/artifact-refs.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../workflow/engine.js';
-import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, ArtifactReference, CapabilitySet, ExecutorCapability } from './types.js';
+import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, ArtifactReference, DecisionRequest, ExecutionFailureInfo, CapabilitySet, ExecutorCapability } from './types.js';
 import type { ArtifactRepository } from '../storage/repositories.js';
 import { resolveWorkflowInvocation } from './workflow-invocation.js';
 import { getCheckpointDecisionOptions } from './checkpoint-resolver.js';
+import { parseDecisionRequest } from './decision-request.js';
 
 const STRATUM_CAPABILITIES: ReadonlySet<ExecutorCapability> = new Set<ExecutorCapability>([
   'repo.read',
@@ -70,14 +74,22 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       request.constraints,
       request.acceptanceCriteria,
       request.objectiveContext,
+      request.decisionContext,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —
-    // that is a structured 'blocked' outcome, not a failure.
+    // that is a structured 'blocked' outcome, not a failure (unless the
+    // checkpoint declared a dynamic DecisionRequest that failed to resolve —
+    // see resolveCheckpointDecisionRequests below, which then fails closed).
     const isCheckpoint = result.status === 'halted' && !result.error;
+    const checkpoint = isCheckpoint
+      ? await this.resolveCheckpointDecisionRequests(request, def, result.final_step_id)
+      : { decisionRequests: [] as DecisionRequest[], failure: undefined as ExecutionFailureInfo | undefined };
+
     const outcome: ExecutionResult['outcome'] =
       result.status === 'complete' ? 'succeeded'
       : result.error ? 'failed'
+      : checkpoint.failure ? 'failed'
       : 'blocked';
 
     const artifacts: ArtifactReference[] = this.artifactRepository
@@ -94,20 +106,77 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       outcome,
       artifacts,
       evidenceClaims: [],
-      checkpointStepId: isCheckpoint ? (result.final_step_id ?? undefined) : undefined,
-      decisionRequests: isCheckpoint
-        ? [{
-            type: 'checkpoint',
-            title: 'Workflow paused',
-            summary: `Waiting at step: ${result.final_step_id ?? 'unknown'}`,
-            options: getCheckpointDecisionOptions(request.workflowId, result.final_step_id),
-          }]
-        : [],
+      checkpointStepId: (isCheckpoint && !checkpoint.failure) ? (result.final_step_id ?? undefined) : undefined,
+      decisionRequests: checkpoint.decisionRequests,
       usage: { durationMs: Date.now() - start },
-      failure: result.error
-        ? { code: 'workflow_error', message: result.error }
-        : undefined,
+      failure: checkpoint.failure
+        ?? (result.error ? { code: 'workflow_error', message: result.error } : undefined),
     };
+  }
+
+  // D.3c0 — translates a checkpoint halt into the DecisionRequest(s) the
+  // adapter reports. A checkpoint step with no decisionRequestArtifact
+  // declared gets exactly today's synthesized generic approve/reject
+  // request — byte-for-byte unchanged, including for full-build (whose
+  // steps never declare this field) and any other non-opted-in checkpoint.
+  // A step that DOES declare one has its materialized path read and
+  // structurally validated; any failure (unknown placeholder, missing
+  // file, malformed JSON, or a structural violation) fails closed — this
+  // never silently falls back to the generic approve/reject request.
+  private async resolveCheckpointDecisionRequests(
+    request: ExecutionRequest,
+    def: ReturnType<typeof getWorkflow>,
+    checkpointStepId: string | null,
+  ): Promise<{ decisionRequests: DecisionRequest[]; failure?: ExecutionFailureInfo }> {
+    const checkpointStep = def?.steps.find((s) => s.id === checkpointStepId);
+    const declaredArtifact = checkpointStep?.decisionRequestArtifact;
+
+    if (!declaredArtifact) {
+      return {
+        decisionRequests: [{
+          type: 'checkpoint',
+          title: 'Workflow paused',
+          summary: `Waiting at step: ${checkpointStepId ?? 'unknown'}`,
+          options: getCheckpointDecisionOptions(request.workflowId, checkpointStepId),
+        }],
+      };
+    }
+
+    const materialized = materializeTemplate(declaredArtifact, {
+      workItemId: request.workItemId,
+      objectiveId: request.objectiveId,
+    });
+    if (!materialized.ok) {
+      return {
+        decisionRequests: [],
+        failure: { code: 'invalid_decision_request', message: materialized.error },
+      };
+    }
+
+    const projectRoot = this.engineDeps.projectRoot ?? process.cwd();
+    const absPath = path.join(projectRoot, materialized.value);
+    let raw: string;
+    try {
+      raw = await fs.readFile(absPath, 'utf-8');
+    } catch (err) {
+      return {
+        decisionRequests: [],
+        failure: {
+          code: 'missing_decision_request',
+          message: `Declared decisionRequestArtifact '${materialized.value}' could not be read: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      };
+    }
+
+    const parsed = parseDecisionRequest(raw);
+    if (!parsed.ok) {
+      return {
+        decisionRequests: [],
+        failure: { code: 'invalid_decision_request', message: parsed.error },
+      };
+    }
+
+    return { decisionRequests: [parsed.value] };
   }
 
   async cancel(_stepExecutionId: string): Promise<void> {

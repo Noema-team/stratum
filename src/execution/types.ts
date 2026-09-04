@@ -1,5 +1,5 @@
 import type { UUID } from '../domain/primitives.js';
-import type { ObjectiveContext } from '../workflow/types.js';
+import type { ObjectiveContext, DecisionContext } from '../workflow/types.js';
 
 export type ExecutorCapability =
   | 'repo.read'
@@ -84,6 +84,12 @@ export interface ExecutionRequest {
   // case dispatch/resume itself fails before execution, so this field is
   // never silently missing while objectiveId is present.
   objectiveContext?: ObjectiveContext;
+  // D.3c0 — the human's resolved checkpoint decision, present ONLY when
+  // this request is a ResumeService continuation past a checkpoint (never
+  // on Scheduler's initial dispatch). Threaded through unchanged to
+  // WorkflowEngine/StepRunContext — never queried by WorkflowEngine,
+  // ContextManager, AgentRunner, or AgentLoop.
+  decisionContext?: DecisionContext;
   acceptanceCriteria: Array<{ description: string; met?: boolean }>;
   constraints: Array<{ description: string; type?: string }>;
   permissions: ExecutionPermissions;

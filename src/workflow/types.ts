@@ -56,6 +56,19 @@ export interface WorkflowStep {
   // commit — write + claim-release; optionally appends to decisions log
   logs_decision?: boolean;
 
+  // D.3c0 — checkpoint: opt-in declarative source for a dynamic
+  // DecisionRequest. When set, this checkpoint's halt is resolved by
+  // reading, materializing ({workItemId}/{objectiveId}, the same mechanism
+  // as outputArtifact/inputArtifactRefs — see artifact-refs.ts), and
+  // structurally validating the JSON DecisionRequest at this path (a prior
+  // 'produce' step is expected to have written it) — see
+  // StratumAgentAdapter.execute(). WorkflowEngine itself never reads this
+  // field or the file it names; it is inert here, exactly like templateId,
+  // consulted only by the execution-layer checkpoint translation. A
+  // checkpoint step that leaves this unset gets the existing generic
+  // approve/reject behavior, byte-for-byte unchanged.
+  decisionRequestArtifact?: string;
+
   // conditional steps — skipped when predicate returns false
   skip_if?: (ctx: WorkflowStepContext) => boolean;
 
@@ -90,6 +103,35 @@ export interface WorkflowStep {
   // way as includeWorkItemContext — from Scheduler/ResumeService via
   // ExecutionRequest.objectiveContext, never queried by ContextManager.
   includeObjectiveContext?: boolean;
+
+  // D.3c0 — opt-in: render the human's resolved checkpoint decision (see
+  // DecisionContext below) into this step's assembled context, under a
+  // header distinct from the Objective/WorkItem sections (see
+  // ContextManager.buildTaskDescription). Only a resumed continuation step
+  // can meaningfully set this — initial Scheduler dispatch never has a
+  // DecisionContext to render.
+  includeDecisionContext?: boolean;
+}
+
+// ============================================================================
+// DecisionContext — an immutable snapshot of a human's resolution of a
+// checkpoint Decision, threaded ONLY on ResumeService's continuation
+// (Scheduler's initial dispatch never has one to supply). Uses exactly the
+// fields already available from the existing Decision + its resolution —
+// no new persistence, no new domain entity. Analogous in shape/threading to
+// ObjectiveContext above: resolved once by the control plane
+// (ResumeService, via DecisionRepository — through the Decision it already
+// loads to validate the resume), never queried by WorkflowEngine,
+// ContextManager, AgentRunner, or AgentLoop.
+// ============================================================================
+
+export interface DecisionContext {
+  decisionId: string;
+  selectedOptionId: string;
+  selectedOptionLabel?: string;
+  rationale?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
 }
 
 // ============================================================================
@@ -289,4 +331,11 @@ export interface StepRunContext {
   // See ObjectiveContext and includeObjectiveContext above.
   objectiveContext?: ObjectiveContext;
   includeObjectiveContext?: boolean;
+
+  // D.3c0 — the human's resolved checkpoint decision, threaded in from
+  // ResumeService via ExecutionRequest.decisionContext on a resumed
+  // continuation only (absent on initial Scheduler dispatch). Rendering is
+  // gated by includeDecisionContext — see ContextManager.buildTaskDescription.
+  decisionContext?: DecisionContext;
+  includeDecisionContext?: boolean;
 }
