@@ -13,18 +13,24 @@
 // mechanism generically, never via define-work or any HUMAN_DECISION-
 // specific branch (WorkflowEngine itself is untouched by any of this).
 //
-// Part A: dynamic DecisionRequest at the adapter boundary — reaches
+// Part A: dynamic DecisionRequest at the adapter boundary — path safety,
+//         current-WorkflowRun Artifact provenance (D.3c0.1), reaches
 //         ExecutionResult unchanged; malformed/missing/duplicate-id/empty-
-//         options payloads fail closed; a non-opt-in checkpoint (including
-//         full-build) is byte-for-byte unchanged.
+//         options/unprovenanced/hash-mismatched payloads all fail closed;
+//         a non-opt-in checkpoint (including full-build) is byte-for-byte
+//         unchanged.
 // Part B: DecisionContext threading — ResumeService constructs it from the
 //         resolved Decision and threads it to a resumed continuation step
 //         only when that step opts in; Scheduler's initial dispatch never
 //         has one; existing strict linkage/idempotency guards are unweakened.
+// Part C: the durable Decision itself — Scheduler takes title/summary/
+//         options from the validated DecisionRequest uniformly, recommends
+//         'approve' only when it is an actual option, and a legacy generic
+//         checkpoint yields the exact same human-facing Decision as before.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,6 +51,7 @@ import {
   DecisionRepository,
   WorkflowRunRepository,
   StepExecutionRepository,
+  ArtifactRepository,
 } from '../src/storage/repositories.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/engine.js';
 import type { StepRunner, StepRunContext, StepRunOutcome, DecisionContext } from '../src/workflow/types.js';
@@ -57,6 +64,9 @@ import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 // ============================================================================
 
 const D3C0_DYNAMIC_WF = `d3c0-dynamic-checkpoint-${randomUUID()}`;
+const D3C0_UNSAFE_PARENT_WF = `d3c0-unsafe-parent-${randomUUID()}`;
+const D3C0_UNSAFE_ABS_WF = `d3c0-unsafe-abs-${randomUUID()}`;
+const D3C0_UNSAFE_REL_WF = `d3c0-unsafe-rel-${randomUUID()}`;
 registerWorkflow({
   id: D3C0_DYNAMIC_WF,
   label: 'D.3c0 dynamic checkpoint harness',
@@ -69,6 +79,21 @@ registerWorkflow({
     },
     { id: 'after', kind: 'produce', agentRole: 'explorer' },
   ],
+});
+registerWorkflow({
+  id: D3C0_UNSAFE_PARENT_WF,
+  label: 'D.3c0.1 unsafe parent-traversal path harness',
+  steps: [{ id: 'gate', kind: 'checkpoint', decisionRequestArtifact: '.sle/work/{workItemId}/../../outside.json' }],
+});
+registerWorkflow({
+  id: D3C0_UNSAFE_ABS_WF,
+  label: 'D.3c0.1 unsafe absolute path harness',
+  steps: [{ id: 'gate', kind: 'checkpoint', decisionRequestArtifact: '/etc/decision-request.json' }],
+});
+registerWorkflow({
+  id: D3C0_UNSAFE_REL_WF,
+  label: 'D.3c0.1 unsafe leading-.. path harness',
+  steps: [{ id: 'gate', kind: 'checkpoint', decisionRequestArtifact: '../decision-request.json' }],
 });
 
 const D3C0_GENERIC_WF = `d3c0-generic-checkpoint-${randomUUID()}`;
@@ -87,7 +112,7 @@ class NeverRunStepRunner implements StepRunner {
   }
 }
 
-function makeAdapter(projectRoot: string): StratumAgentAdapter {
+function makeAdapter(projectRoot: string, artifactRepository?: ArtifactRepository): StratumAgentAdapter {
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: new NeverRunStepRunner(),
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
@@ -99,7 +124,7 @@ function makeAdapter(projectRoot: string): StratumAgentAdapter {
   // Matches production wiring (application.ts): the inline callback always
   // halts — real resolutions come via ResumeService.
   const engineOpts: WorkflowEngineOptions = { onCheckpoint: async () => 'halt' };
-  return new StratumAgentAdapter(engineDeps, engineOpts);
+  return new StratumAgentAdapter(engineDeps, engineOpts, artifactRepository);
 }
 
 function makeRequest(overrides: Partial<ExecutionRequest>): ExecutionRequest {
@@ -130,19 +155,59 @@ const AUTHORITY_MODEL_REQUEST = {
   ],
 };
 
-async function writeDecisionRequest(root: string, workItemId: string, content: unknown): Promise<void> {
-  const dir = path.join(root, '.sle', 'work', workItemId);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, 'decision-request.json'), JSON.stringify(content), 'utf-8');
+const TEST_WORK_ITEM_ID = 'wi-1'; // .sle/work/wi-1/decision-request.json
+
+function decisionRequestCanonicalPath(workItemId: string): string {
+  return `.sle/work/${workItemId}/decision-request.json`;
 }
 
-test('D.3c0: a valid dynamic DecisionRequest reaches ExecutionResult unchanged', async () => {
+async function writeDecisionRequestFile(root: string, workItemId: string, content: unknown): Promise<string> {
+  const dir = path.join(root, '.sle', 'work', workItemId);
+  await fs.mkdir(dir, { recursive: true });
+  const raw = JSON.stringify(content);
+  await fs.writeFile(path.join(dir, 'decision-request.json'), raw, 'utf-8');
+  return raw;
+}
+
+function sha256(raw: string): string {
+  return createHash('sha256').update(raw).digest('hex');
+}
+
+// Seeds the CURRENT-run Artifact provenance record a dynamic checkpoint
+// requires (D.3c0.1) — as an ordinary declared outputArtifact from a prior
+// 'produce' step would (see Item 2's design note: no new Artifact type).
+function seedProvenance(
+  artifacts: ArtifactRepository,
+  workflowRunId: string,
+  canonicalPath: string,
+  hash: string,
+): void {
+  artifacts.save({
+    id: randomUUID(), workflowRunId, type: 'decision-request',
+    ref: `decision-request:${workflowRunId}`, path: canonicalPath, hash,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// Writes the file AND registers matching current-run provenance in one call
+// — the "everything lines up" happy-path setup shared by most tests below.
+async function writeProvenancedDecisionRequest(
+  root: string, artifacts: ArtifactRepository, workflowRunId: string, workItemId: string, content: unknown,
+): Promise<void> {
+  const raw = await writeDecisionRequestFile(root, workItemId, content);
+  seedProvenance(artifacts, workflowRunId, decisionRequestCanonicalPath(workItemId), sha256(raw));
+}
+
+test('D.3c0.1: a valid dynamic DecisionRequest with matching current-run provenance reaches ExecutionResult unchanged', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'd3c0-dynamic-'));
   try {
-    await writeDecisionRequest(root, 'wi-1', AUTHORITY_MODEL_REQUEST);
-    const adapter = makeAdapter(root);
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-provenance-1';
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    const adapter = makeAdapter(root, artifacts);
 
-    const result = await adapter.execute(makeRequest({}));
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
 
     assert.equal(result.outcome, 'blocked', `expected blocked, got: ${result.outcome} (${result.failure?.message})`);
     assert.equal(result.checkpointStepId, 'gate');
@@ -153,16 +218,165 @@ test('D.3c0: a valid dynamic DecisionRequest reaches ExecutionResult unchanged',
   }
 });
 
-test('D.3c0: a malformed DecisionRequest payload fails closed before any Decision could be created', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-malformed-'));
+test('D.3c0.1: no ArtifactRepository configured fails closed for a dynamic checkpoint', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-noartifactrepo-'));
   try {
-    // Missing 'summary' — structurally invalid.
-    await writeDecisionRequest(root, 'wi-1', {
-      type: 'human_decision', title: 'X', options: [{ id: 'a', label: 'A', description: 'a' }],
-    });
-    const adapter = makeAdapter(root);
+    await writeDecisionRequestFile(root, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    const adapter = makeAdapter(root); // no artifactRepository
 
     const result = await adapter.execute(makeRequest({}));
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.checkpointStepId, undefined);
+    assert.deepStrictEqual(result.decisionRequests, []);
+    assert.equal(result.failure?.code, 'missing_decision_request_provenance');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a file exists but has no current-run ArtifactRecord — denied', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-noprovrecord-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db); // empty — no records at all
+    await writeDecisionRequestFile(root, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowRunId: 'run-x' }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.deepStrictEqual(result.decisionRequests, []);
+    assert.equal(result.failure?.code, 'missing_decision_request');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: an ArtifactRecord belonging to a different WorkflowRun is denied', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-wrongrun-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const raw = await writeDecisionRequestFile(root, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    // Provenance recorded for a DIFFERENT run than the one being executed.
+    seedProvenance(artifacts, 'run-other', decisionRequestCanonicalPath(TEST_WORK_ITEM_ID), sha256(raw));
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowRunId: 'run-mine' }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failure?.code, 'missing_decision_request');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a recorded hash that differs from the current file content is denied', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-hashmismatch-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-hash-mismatch';
+    await writeDecisionRequestFile(root, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    // Record provenance for DIFFERENT content than what's actually on disk.
+    seedProvenance(artifacts, workflowRunId, decisionRequestCanonicalPath(TEST_WORK_ITEM_ID), sha256('{"stale":"content"}'));
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failure?.code, 'decision_request_hash_mismatch');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a matching current-run ArtifactRecord + hash is accepted (redundant with the happy-path test, kept for explicit bullet coverage)', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-happy-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-happy';
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, AUTHORITY_MODEL_REQUEST);
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
+
+    assert.equal(result.outcome, 'blocked', result.failure?.message);
+    assert.deepStrictEqual(result.decisionRequests[0], AUTHORITY_MODEL_REQUEST);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a declared decisionRequestArtifact with a parent-traversal placeholder result fails closed before reading', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-unsafe-parent-'));
+  try {
+    // If an unsafe path were ever read, this file (outside .sle/work) would
+    // be the thing that got read — its presence plus a 'missing_decision_
+    // request' code (rather than 'invalid_decision_request') would prove a
+    // read was attempted. It must never be reached.
+    await fs.writeFile(path.join(root, 'outside.json'), JSON.stringify(AUTHORITY_MODEL_REQUEST), 'utf-8');
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowId: D3C0_UNSAFE_PARENT_WF }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.deepStrictEqual(result.decisionRequests, []);
+    assert.equal(result.failure?.code, 'invalid_decision_request', 'must fail path-safety, not fall through to a provenance/read failure');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: an absolute declared decisionRequestArtifact path fails closed before reading', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-unsafe-abs-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowId: D3C0_UNSAFE_ABS_WF }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failure?.code, 'invalid_decision_request');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a declared decisionRequestArtifact starting with .. fails closed before reading', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-unsafe-rel-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowId: D3C0_UNSAFE_REL_WF }));
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failure?.code, 'invalid_decision_request');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3c0.1: a malformed DecisionRequest payload (with valid provenance) fails closed before any Decision could be created', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c0-malformed-'));
+  try {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-malformed';
+    // Missing 'summary' — structurally invalid.
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, {
+      type: 'human_decision', title: 'X', options: [{ id: 'a', label: 'A', description: 'a' }],
+    });
+    const adapter = makeAdapter(root, artifacts);
+
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
 
     assert.equal(result.outcome, 'failed');
     assert.equal(result.checkpointStepId, undefined, 'no checkpoint must be reported for a failed dynamic request');
@@ -173,11 +387,13 @@ test('D.3c0: a malformed DecisionRequest payload fails closed before any Decisio
   }
 });
 
-test('D.3c0: a missing declared DecisionRequest artifact fails closed', async () => {
+test('D.3c0.1: a missing declared DecisionRequest artifact (no file, no provenance) fails closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'd3c0-missing-'));
   try {
-    // Never written.
-    const adapter = makeAdapter(root);
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    // Never written, never recorded.
+    const adapter = makeAdapter(root, artifacts);
 
     const result = await adapter.execute(makeRequest({}));
 
@@ -189,19 +405,22 @@ test('D.3c0: a missing declared DecisionRequest artifact fails closed', async ()
   }
 });
 
-test('D.3c0: duplicate option ids in a DecisionRequest fail closed', async () => {
+test('D.3c0.1: duplicate option ids in a DecisionRequest (with valid provenance) fail closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'd3c0-dupids-'));
   try {
-    await writeDecisionRequest(root, 'wi-1', {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-dupids';
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, {
       type: 'human_decision', title: 'X', summary: 'Y',
       options: [
         { id: 'same', label: 'A', description: 'a' },
         { id: 'same', label: 'B', description: 'b' },
       ],
     });
-    const adapter = makeAdapter(root);
+    const adapter = makeAdapter(root, artifacts);
 
-    const result = await adapter.execute(makeRequest({}));
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
 
     assert.equal(result.outcome, 'failed');
     assert.equal(result.failure?.code, 'invalid_decision_request');
@@ -211,13 +430,18 @@ test('D.3c0: duplicate option ids in a DecisionRequest fail closed', async () =>
   }
 });
 
-test('D.3c0: an empty options list in a DecisionRequest fails closed', async () => {
+test('D.3c0.1: an empty options list in a DecisionRequest (with valid provenance) fails closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'd3c0-emptyopts-'));
   try {
-    await writeDecisionRequest(root, 'wi-1', { type: 'human_decision', title: 'X', summary: 'Y', options: [] });
-    const adapter = makeAdapter(root);
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-emptyopts';
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, {
+      type: 'human_decision', title: 'X', summary: 'Y', options: [],
+    });
+    const adapter = makeAdapter(root, artifacts);
 
-    const result = await adapter.execute(makeRequest({}));
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
 
     assert.equal(result.outcome, 'failed');
     assert.equal(result.failure?.code, 'invalid_decision_request');
@@ -226,16 +450,19 @@ test('D.3c0: an empty options list in a DecisionRequest fails closed', async () 
   }
 });
 
-test('D.3c0: an option with an empty id/label/description fails closed', async () => {
+test('D.3c0.1: an option with an empty id/label/description (with valid provenance) fails closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'd3c0-emptyfield-'));
   try {
-    await writeDecisionRequest(root, 'wi-1', {
+    const db = openDatabase(':memory:');
+    const artifacts = new ArtifactRepository(db);
+    const workflowRunId = 'run-emptyfield';
+    await writeProvenancedDecisionRequest(root, artifacts, workflowRunId, TEST_WORK_ITEM_ID, {
       type: 'human_decision', title: 'X', summary: 'Y',
       options: [{ id: 'a', label: '', description: 'a' }],
     });
-    const adapter = makeAdapter(root);
+    const adapter = makeAdapter(root, artifacts);
 
-    const result = await adapter.execute(makeRequest({}));
+    const result = await adapter.execute(makeRequest({ workflowRunId }));
 
     assert.equal(result.outcome, 'failed');
     assert.equal(result.failure?.code, 'invalid_decision_request');
@@ -261,8 +488,8 @@ test('D.3c0: a non-opt-in generic checkpoint still gets exactly the current stat
     assert.equal(result.checkpointStepId, 'gate');
     assert.deepStrictEqual(result.decisionRequests, [{
       type: 'checkpoint',
-      title: 'Workflow paused',
-      summary: 'Waiting at step: gate',
+      title: 'Workflow reached a checkpoint',
+      summary: `Workflow '${D3C0_GENERIC_WF}' paused at step 'gate' and requires operator approval to continue.`,
       options: getCheckpointDecisionOptions(D3C0_GENERIC_WF, 'gate'),
     }]);
   } finally {
@@ -540,4 +767,94 @@ test('D.3c0: resuming an already-resolved Decision twice remains rejected (idemp
   );
   // No second continuation execution.
   assert.equal(capturing.calls.filter((c) => c.stepId === 'after-decision').length, 1);
+});
+
+// ============================================================================
+// Part C — the durable Decision: Scheduler takes title/summary/options from
+// the validated DecisionRequest uniformly (D.3c0.1)
+// ============================================================================
+
+function makeBlockedAdapter(decisionRequest: { type: string; title: string; summary: string; options: Array<{ id: string; label: string; description: string }> }): ExecutionAdapter {
+  return {
+    id: 'stratum-agent',
+    getCapabilities: () => new Set(['repo.read']) as any,
+    async execute(req: ExecutionRequest): Promise<ExecutionResult> {
+      return {
+        schemaVersion: 1, stepExecutionId: req.stepExecutionId, outcome: 'blocked',
+        checkpointStepId: 'gate', artifacts: [], evidenceClaims: [],
+        decisionRequests: [decisionRequest], usage: { durationMs: 1 },
+      };
+    },
+  };
+}
+
+test('D.3c0.1: Scheduler persists a dynamic DecisionRequest\'s exact title/summary/options into the durable Decision, with no fabricated approve recommendation', async () => {
+  const db = openDb();
+  const { ws, wi } = seedWorld(db, D3C0_DYNAMIC_WF);
+
+  const registry = new ExecutorRegistry();
+  registry.register(makeBlockedAdapter(AUTHORITY_MODEL_REQUEST)); // no 'approve' among its options
+  const scheduler = new Scheduler(db, ws.id, registry);
+  const results = await scheduler.tick();
+
+  assert.equal(results[0].outcome, 'dispatched');
+  const decisions = new DecisionRepository(db).listByWorkItem(wi.id);
+  assert.equal(decisions.length, 1);
+  const decision = decisions[0];
+  assert.equal(decision.title, AUTHORITY_MODEL_REQUEST.title);
+  assert.equal(decision.summary, AUTHORITY_MODEL_REQUEST.summary);
+  assert.deepStrictEqual(decision.options, AUTHORITY_MODEL_REQUEST.options);
+  assert.equal(decision.type, 'checkpoint', 'Decision.type must stay checkpoint — ResumeService\'s lifecycle depends on it');
+  assert.equal(decision.recommendedOptionId, undefined, 'must never recommend an option id that does not exist among the actual options');
+  assert.equal(decision.impact, 'medium');
+  assert.equal(decision.reversibility, 'easy');
+  assert.equal(decision.urgency, 'normal');
+});
+
+test('D.3c0.1: Scheduler recommends approve for a dynamic DecisionRequest that genuinely includes an approve option', async () => {
+  const db = openDb();
+  const { ws, wi } = seedWorld(db, D3C0_DYNAMIC_WF);
+
+  const withApprove = {
+    type: 'human_decision',
+    title: 'Proceed with the proposed plan?',
+    summary: 'Review the proposal before continuing.',
+    options: [
+      { id: 'approve', label: 'Approve', description: 'Accept the proposal as-is.' },
+      { id: 'reject', label: 'Reject', description: 'Reject the proposal.' },
+    ],
+  };
+  const registry = new ExecutorRegistry();
+  registry.register(makeBlockedAdapter(withApprove));
+  const scheduler = new Scheduler(db, ws.id, registry);
+  await scheduler.tick();
+
+  const decision = new DecisionRepository(db).listByWorkItem(wi.id)[0];
+  assert.equal(decision.recommendedOptionId, 'approve');
+});
+
+test('D.3c0.1: a legacy generic checkpoint yields the exact same durable human-facing Decision as before (via the real StratumAgentAdapter)', async () => {
+  const db = openDb();
+  const { ws, wi } = seedWorld(db, D3C0_GENERIC_WF);
+
+  const engineDeps: WorkflowEngineDeps = {
+    stepRunner: new NeverRunStepRunner(),
+    mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
+    runArtifacts: { updateNodeStatus: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as any,
+  };
+  const engineOpts: WorkflowEngineOptions = { onCheckpoint: async () => 'halt' };
+  const adapter = new StratumAgentAdapter(engineDeps, engineOpts);
+  const registry = new ExecutorRegistry();
+  registry.register(adapter);
+  const scheduler = new Scheduler(db, ws.id, registry);
+  await scheduler.tick();
+
+  const decision = new DecisionRepository(db).listByWorkItem(wi.id)[0];
+  assert.equal(decision.title, 'Workflow reached a checkpoint');
+  assert.equal(decision.summary, `Workflow '${D3C0_GENERIC_WF}' paused at step 'gate' and requires operator approval to continue.`);
+  assert.deepStrictEqual(decision.options, getCheckpointDecisionOptions(D3C0_GENERIC_WF, 'gate'));
+  assert.equal(decision.recommendedOptionId, 'approve', 'the generic approve/reject checkpoint has always recommended approve');
+  assert.equal(decision.impact, 'medium');
+  assert.equal(decision.reversibility, 'easy');
+  assert.equal(decision.urgency, 'normal');
 });

@@ -194,7 +194,16 @@ export class Scheduler {
           return { workItemId, outcome: 'failed', error: 'invalid_checkpoint_contract' };
         }
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt });
-        const decisionOptions = decisionReq.options;
+        // D.3c0.1 — the durable Decision's title/summary/options are taken
+        // uniformly from the adapter's DecisionRequest, never re-synthesized
+        // here. For a non-opt-in checkpoint the adapter's static request
+        // carries exactly this text (see StratumAgentAdapter's
+        // resolveCheckpointDecisionRequests) — for a dynamic checkpoint it
+        // carries the workflow's own validated question. recommendedOptionId
+        // is 'approve' only when that id genuinely exists among the options
+        // (true for every static/generic checkpoint today) — never a
+        // fabricated recommendation for an option that doesn't exist.
+        const recommendedOptionId = decisionReq.options.some(o => o.id === 'approve') ? 'approve' : undefined;
         this.workService.needsDecision({
           workItemId,
           decision: {
@@ -204,10 +213,10 @@ export class Scheduler {
               workItemId,
               stepId: execResult.checkpointStepId,
             },
-            title: 'Workflow reached a checkpoint',
-            summary: `Workflow '${workflowId}' paused at step '${execResult.checkpointStepId ?? 'unknown'}' and requires operator approval to continue.`,
-            options: decisionOptions,
-            recommendedOptionId: 'approve',
+            title: decisionReq.title,
+            summary: decisionReq.summary,
+            options: decisionReq.options,
+            recommendedOptionId,
             impact: 'medium',
             reversibility: 'easy',
             urgency: 'normal',
