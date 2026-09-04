@@ -18,6 +18,7 @@ export class AgentStepRunner implements StepRunner {
       duration_ms: result.duration_ms,
       error: result.error,
       reviewVerdict: result.reviewVerdict,
+      reviewRoute: result.reviewRoute,
     };
   }
 }

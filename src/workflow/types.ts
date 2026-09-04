@@ -52,6 +52,19 @@ export interface WorkflowStep {
     target_step_id: string;       // must be a 'produce' step in this workflow
     iteration_loop?: boolean;     // increment iteration counter before routing (full-build pattern)
   };
+  // D.3c1a — bounded semantic-fail routing. An ALLOWLIST of named routes a
+  // requiresReviewVerdict review step authorizes for a semantic `verdict:
+  // fail`, each mapping a workflow-declared token to its own target step +
+  // iteration behavior. Only meaningful together with requiresReviewVerdict
+  // — see the SLE-OUTPUT preamble's `route: <token>` (agent-runner.ts) and
+  // WorkflowEngine.executeReview, which maps the token through this table
+  // (never the reverse — the model supplies a token, never a step id).
+  // A review step that leaves this unset keeps exactly today's single
+  // on_fail target, byte-for-byte unchanged. WorkflowEngine itself carries
+  // no knowledge of what any route token *means* (no HUMAN_DECISION/
+  // CAN_RESOLVE/define-work awareness) — the mapping is pure declarative
+  // data the workflow author supplies.
+  on_fail_routes?: Record<string, { target_step_id: string; iteration_loop?: boolean }>;
 
   // commit — write + claim-release; optionally appends to decisions log
   logs_decision?: boolean;
@@ -264,6 +277,13 @@ export interface StepRunOutcome {
   // AND the step opted into requiresReviewVerdict (see agent-runner.ts).
   // Absent for every non-opted-in step and for a failed/legacy execution.
   reviewVerdict?: 'pass' | 'fail';
+  // D.3c1a — the validated route token, set only when reviewVerdict is
+  // 'fail' AND the step declared on_fail_routes AND the model's preamble
+  // supplied a token AgentRunner found among that step's declared keys
+  // (see agent-runner.ts). Absent whenever on_fail_routes is not declared,
+  // regardless of verdict — WorkflowEngine.executeReview still re-validates
+  // this token against step.on_fail_routes itself before routing.
+  reviewRoute?: string;
 }
 
 export interface StepRunner {
@@ -324,6 +344,12 @@ export interface StepRunContext {
   // instruction/outputArtifact/inputArtifactRefs above.
   includeWorkItemContext?: boolean;
   requiresReviewVerdict?: boolean;
+  // D.3c1a — copied from WorkflowStep.on_fail_routes by
+  // WorkflowEngine.makeStepRunContext, the same way requiresReviewVerdict
+  // is already copied. AgentRunner validates a semantic-fail route token
+  // against this table's keys (never against a raw step id) — see
+  // AgentRunResult.reviewRoute / StepRunOutcome.reviewRoute above.
+  on_fail_routes?: Record<string, { target_step_id: string; iteration_loop?: boolean }>;
 
   // D.3b1.1 — the Objective's own human intent snapshot, threaded in from
   // Scheduler/ResumeService via ExecutionRequest.objectiveContext, resolved

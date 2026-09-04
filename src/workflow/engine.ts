@@ -629,6 +629,37 @@ export class WorkflowEngine {
       // preserved via the same markComplete/provenance path as a 'pass'.
       await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
       if (verdict === 'fail') {
+        // D.3c1a — bounded semantic-fail routing. A step that declares
+        // on_fail_routes requires a validated route token (StepRunner —
+        // AgentRunner — already checked it against this same table; this
+        // is a defensive re-check, never the sole gate) and routes through
+        // the declared mapping instead of the single legacy on_fail
+        // target. WorkflowEngine never interprets what any token *means*
+        // — it only maps the token through data the workflow author
+        // supplied. A step that does NOT declare on_fail_routes keeps
+        // exactly the legacy on_fail behavior below, byte-for-byte.
+        if (step.on_fail_routes) {
+          const route = result.reviewRoute;
+          const mapping = route ? step.on_fail_routes[route] : undefined;
+          if (!route || !mapping) {
+            await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              duration_ms: Date.now() - start,
+            });
+            return {
+              outcome: 'failed',
+              next_step_id: null,
+              error: `Review step '${step.id}' declares on_fail_routes but produced no valid route (got: '${route ?? 'none'}')`,
+            };
+          }
+          return {
+            outcome: 'completed',
+            next_step_id: mapping.target_step_id,
+            _iterate: mapping.iteration_loop ? true : undefined,
+            duration_ms: Date.now() - start,
+          };
+        }
         return {
           outcome: 'completed',
           next_step_id: step.on_fail?.target_step_id ?? null,
@@ -786,6 +817,9 @@ export class WorkflowEngine {
       workItemAcceptanceCriteria,
       includeWorkItemContext: step.includeWorkItemContext,
       requiresReviewVerdict: step.requiresReviewVerdict,
+      // D.3c1a — copied the same way, so AgentRunner can validate a
+      // semantic-fail route token against this step's own declared keys.
+      on_fail_routes: step.on_fail_routes,
       // D.3b1.1 — Objective human-intent snapshot, passed straight through
       // from run()'s own params (never queried here). Rendering is gated by
       // includeObjectiveContext — see ContextManager.buildTaskDescription.

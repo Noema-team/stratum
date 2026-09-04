@@ -24,6 +24,10 @@ export interface AgentRunResult {
   // was true AND execution succeeded with a valid `verdict: pass | fail` in
   // the preamble. See the requiresReviewVerdict handling in run() below.
   reviewVerdict?: 'pass' | 'fail';
+  // D.3c1a — the validated route token, set only when reviewVerdict is
+  // 'fail' AND ctx.on_fail_routes was declared AND the preamble's `route:`
+  // matched one of its keys exactly. See the route-gate in run() below.
+  reviewRoute?: string;
 }
 
 export interface SLEOutputPreamble {
@@ -35,6 +39,11 @@ export interface SLEOutputPreamble {
   // string type here because this is straight off yaml.load() before any
   // validation — see the verdict check in AgentRunner.run().
   verdict?: string;
+  // D.3c1a — optional bounded-routing token. Only meaningful (and only
+  // validated) when verdict: fail AND the invoking step declares
+  // on_fail_routes; loose string type here for the same reason as verdict
+  // above — see the route-gate in AgentRunner.run().
+  route?: string;
 }
 
 export interface ParsedOutput {
@@ -245,6 +254,8 @@ export class AgentRunner {
     // different delimiter format with no preamble, so this stays undefined
     // there. Validated against ctx.requiresReviewVerdict after both branches.
     let reviewVerdictRaw: string | undefined;
+    // D.3c1a — same story for the optional bounded-routing token.
+    let reviewRouteRaw: string | undefined;
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
@@ -336,6 +347,7 @@ export class AgentRunner {
         const fullParsed = parseAgentOutput(llmResult.content, role);
         parsed = fullParsed;
         reviewVerdictRaw = fullParsed.preamble?.verdict;
+        reviewRouteRaw = fullParsed.preamble?.route;
       } catch (err) {
         return {
           success: false,
@@ -376,6 +388,25 @@ export class AgentRunner {
         );
       }
       reviewVerdict = reviewVerdictRaw;
+    }
+
+    // D.3c1a — bounded semantic-fail routing gate. Only meaningful on a
+    // 'fail' verdict for a step that declared on_fail_routes (an allowlist
+    // of tokens the WORKFLOW author authorized — never a raw step id). A
+    // missing or unrecognized token is treated exactly like a missing/
+    // invalid verdict above: fail closed, before any output is written, so
+    // no artifact/control routing can ever occur from an invalid route.
+    // 'pass' never requires (or validates) a route — on_pass stays
+    // authoritative regardless of what the preamble happens to contain.
+    let reviewRoute: string | undefined;
+    if (reviewVerdict === 'fail' && ctx.on_fail_routes) {
+      const allowedRoutes = Object.keys(ctx.on_fail_routes);
+      if (!reviewRouteRaw || !allowedRoutes.includes(reviewRouteRaw)) {
+        return fail(
+          `Review step requires a route (one of: ${allowedRoutes.join(', ')}) but the preamble declared '${reviewRouteRaw ?? 'none'}'`,
+        );
+      }
+      reviewRoute = reviewRouteRaw;
     }
 
     // 6a. D.1c — canonicalize every produced path exactly once, before any
@@ -471,6 +502,7 @@ export class AgentRunner {
       duration_ms: Date.now() - start,
       raw_output_path: rawPath,
       reviewVerdict,
+      reviewRoute,
     };
   }
 
