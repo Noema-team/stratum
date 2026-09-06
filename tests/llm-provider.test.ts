@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   OpenAICompatibleProvider,
+  OpenAICompatibleMultiTurnProvider,
   AnthropicProvider,
   createLLMProvider,
   anthropicSdkBaseUrl,
@@ -11,6 +12,7 @@ import {
   DynamicLLMProvider,
   type ILLMProvider,
 } from '../src/llm-provider.js';
+import type { MultiTurnParams } from '../src/agent-loop.js';
 import { AnthropicSDKProvider } from '../src/anthropic-provider.js';
 import type { AgentLLMConfig } from '../src/types.js';
 
@@ -333,6 +335,9 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
     api_key_env: 'TEST_LLM_API_KEY'
   });
   assert.ok(openrouter instanceof OpenAICompatibleProvider);
+  assert.ok(openrouter instanceof OpenAICompatibleMultiTurnProvider, 'D.3d: openrouter must get genuine multi-turn tool-calling capability');
+  assert.ok(!(glm instanceof OpenAICompatibleMultiTurnProvider), 'glm must stay single-turn-only, unaffected by the openrouter change');
+  assert.ok(!(openai instanceof OpenAICompatibleMultiTurnProvider), 'openai_compatible must stay single-turn-only, unaffected by the openrouter change');
 
   delete process.env.TEST_LLM_API_KEY;
 });
@@ -473,4 +478,155 @@ test('testLLMCompletionResultSchema', async () => {
   const negativeTokens = { content: 'hello', tokens_used: -1, duration_ms: 100 };
   const result2 = LLMCompletionResultSchema.safeParse(negativeTokens);
   assert(!result2.success, 'Negative tokens_used should fail');
+});
+
+// ============================================================================
+// D.3d — OpenAICompatibleMultiTurnProvider: genuine tool-calling multi-turn
+// support over the OpenAI-compatible wire format (used by createLLMProvider
+// for 'openrouter'). See src/llm-provider.ts.
+// ============================================================================
+
+const MULTI_TURN_CONFIG: AgentLLMConfig = {
+  provider: 'openrouter',
+  api_key_env: 'TEST_LLM_API_KEY',
+  model: 'test-model',
+};
+
+function baseMultiTurnParams(overrides: Partial<MultiTurnParams> = {}): MultiTurnParams {
+  return {
+    model: 'test-model',
+    system: 'You are a helpful assistant.',
+    messages: [{ role: 'user', content: 'Draft the Definition.' }],
+    max_tokens: 100,
+    tools: [
+      {
+        name: 'read_file',
+        description: 'Read a file.',
+        input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      },
+    ],
+    ...overrides,
+  } as MultiTurnParams;
+}
+
+test('testOpenAICompatibleMultiTurnProviderMapsToolCallsToToolUse', async () => {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  let capturedBody: any;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = JSON.parse(init!.body as string);
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{ id: 'call_1', function: { name: 'read_file', arguments: '{"path":"docs/architecture.md"}' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+      usage: { total_tokens: 42 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
+    const result = await provider.completeMultiTurn(baseMultiTurnParams());
+
+    assert.equal(result.stop_reason, 'tool_use');
+    assert.equal(result.tool_uses.length, 1);
+    assert.equal(result.tool_uses[0].name, 'read_file');
+    assert.deepStrictEqual(result.tool_uses[0].input, { path: 'docs/architecture.md' });
+    assert.equal(result.tokens_used, 42);
+
+    // The declared tool is sent in the genuine OpenAI function-calling shape.
+    assert.equal(capturedBody.tools[0].type, 'function');
+    assert.equal(capturedBody.tools[0].function.name, 'read_file');
+    assert.deepStrictEqual(capturedBody.tools[0].function.parameters, baseMultiTurnParams().tools[0].input_schema);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
+});
+
+test('testOpenAICompatibleMultiTurnProviderMapsEndTurnAndMaxTokens', async () => {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '<<<SLE-OUTPUT>>>...' }, finish_reason: 'stop' }],
+      usage: { total_tokens: 5 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
+    const endTurn = await provider.completeMultiTurn(baseMultiTurnParams());
+    assert.equal(endTurn.stop_reason, 'end_turn');
+    assert.equal(endTurn.tool_uses.length, 0);
+    assert.equal(endTurn.text, '<<<SLE-OUTPUT>>>...');
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'truncated' }, finish_reason: 'length' }],
+      usage: { total_tokens: 100 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const maxTokens = await provider.completeMultiTurn(baseMultiTurnParams());
+    assert.equal(maxTokens.stop_reason, 'max_tokens');
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
+});
+
+test('testOpenAICompatibleMultiTurnProviderConvertsToolUseAndToolResultMessagesToOpenAIShape', async () => {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  let capturedBody: any;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = JSON.parse(init!.body as string);
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+      usage: { total_tokens: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
+    await provider.completeMultiTurn(baseMultiTurnParams({
+      messages: [
+        { role: 'user', content: 'Draft the Definition.' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'a.md' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'file contents' }] },
+      ],
+    }));
+
+    // system + user + assistant(tool_calls) + tool(result) — no grouped
+    // content-block message, since OpenAI has no such grouping.
+    assert.equal(capturedBody.messages[0].role, 'system');
+    assert.equal(capturedBody.messages[1].role, 'user');
+    assert.equal(capturedBody.messages[2].role, 'assistant');
+    assert.equal(capturedBody.messages[2].tool_calls[0].id, 'call_1');
+    assert.equal(capturedBody.messages[2].tool_calls[0].function.name, 'read_file');
+    assert.equal(JSON.parse(capturedBody.messages[2].tool_calls[0].function.arguments).path, 'a.md');
+    assert.equal(capturedBody.messages[3].role, 'tool');
+    assert.equal(capturedBody.messages[3].tool_call_id, 'call_1');
+    assert.equal(capturedBody.messages[3].content, 'file contents');
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
+});
+
+test('testOpenAICompatibleMultiTurnProviderMalformedToolArgumentsFailClosedToEmptyObject', async () => {
+  process.env.TEST_LLM_API_KEY = 'test-key';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{
+      message: { content: null, tool_calls: [{ id: 'call_1', function: { name: 'read_file', arguments: 'not-json' } }] },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { total_tokens: 1 },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
+    const result = await provider.completeMultiTurn(baseMultiTurnParams());
+    assert.equal(result.stop_reason, 'tool_use');
+    assert.deepStrictEqual(result.tool_uses[0].input, {});
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_LLM_API_KEY;
+  }
 });

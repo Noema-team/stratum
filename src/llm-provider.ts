@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AgentLLMConfig } from './types.js';
-import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult } from './agent-loop.js';
+import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult, MultiTurnMessage } from './agent-loop.js';
 import { AnthropicSDKProvider } from './anthropic-provider.js';
 
 export interface LLMCompletionParams {
@@ -40,9 +40,9 @@ export const LLMCompletionResultSchema = z.object({
 });
 
 export class OpenAICompatibleProvider implements ILLMProvider {
-  private baseUrl: string;
-  private apiKey: string;
-  private defaultModel: string;
+  protected baseUrl: string;
+  protected apiKey: string;
+  protected defaultModel: string;
 
   constructor(config: AgentLLMConfig) {
     this.baseUrl = (config.base_url || 'https://api.openai.com/v1').replace(/\/$/, '');
@@ -102,6 +102,137 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     LLMCompletionResultSchema.parse(result);
     return result;
   }
+}
+
+// D.3d — genuine multi-turn (tool-calling) support for an OpenAI-compatible
+// endpoint, using the OpenAI chat-completions `tools`/`tool_calls` wire
+// format that OpenRouter (and OpenAI itself) both speak natively. This is
+// not "faking" multi-turn capability onto a provider that lacks it — a
+// tool-calling-capable model reached through OpenRouter genuinely executes
+// the same tool_use/tool_result round trip AgentLoop already drives for
+// AnthropicSDKProvider (see agent-loop.ts); only the wire format differs.
+// Kept as a separate class (rather than changing OpenAICompatibleProvider
+// itself) so plain openai_compatible/glm configurations — whose target
+// model or endpoint may not support tool calling — are unaffected; only
+// the 'openrouter' case in createLLMProvider() below opts into it.
+export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider implements IMultiTurnProvider {
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    const model = params.model || this.defaultModel;
+    const messages = buildOpenAIToolMessages(params.system, params.messages);
+    const tools = params.tools.map((t) => ({
+      type: 'function' as const,
+      function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model, messages, max_tokens: params.max_tokens, tools, tool_choice: 'auto',
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'unknown error');
+      throw new Error(`LLM API request failed: ${response.status} ${response.statusText} — ${errorBody}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{
+        message: { content: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
+        finish_reason: string;
+      }>;
+      usage?: { total_tokens: number };
+    };
+
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    const finishReason = choice?.finish_reason ?? 'stop';
+    const rawToolCalls = message?.tool_calls ?? [];
+
+    const toolUses = rawToolCalls.map((tc) => ({
+      type: 'tool_use' as const,
+      id: tc.id,
+      name: tc.function.name,
+      input: parseToolArguments(tc.function.arguments),
+    }));
+
+    const stopReason =
+      finishReason === 'length' ? 'max_tokens'
+      : (finishReason === 'tool_calls' || toolUses.length > 0) ? 'tool_use'
+      : 'end_turn';
+
+    return {
+      stop_reason: stopReason,
+      text: message?.content ?? '',
+      tool_uses: toolUses,
+      tokens_used: data.usage?.total_tokens ?? 0,
+    };
+  }
+}
+
+// A malformed tool_call.function.arguments string (not valid JSON) fails
+// closed to an empty object rather than throwing — handleToolCall (tools.ts)
+// then reports a normal tool-result error for a missing/invalid argument,
+// the same way it already handles any other malformed tool input.
+function parseToolArguments(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+// Converts AgentLoop's provider-agnostic MultiTurnMessage[] (Anthropic-
+// content-block-shaped: one assistant message carrying an array of
+// tool_use blocks, one user message carrying an array of tool_result
+// blocks) into the OpenAI wire format, which has no equivalent grouping —
+// an assistant tool-calling turn is `tool_calls` on one assistant message,
+// and each tool result is its OWN `role: 'tool'` message.
+function buildOpenAIToolMessages(system: string, messages: MultiTurnMessage[]): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  if (system) result.push({ role: 'system', content: system });
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      result.push({ role: msg.role, content: msg.content });
+      continue;
+    }
+
+    const toolUseBlocks = msg.content.filter(
+      (b): b is { type: 'tool_use'; id: string; name: string; input: unknown } => b.type === 'tool_use',
+    );
+    const toolResultBlocks = msg.content.filter(
+      (b): b is { type: 'tool_result'; tool_use_id: string; content: string } => b.type === 'tool_result',
+    );
+    const textBlocks = msg.content.filter(
+      (b): b is { type: 'text'; text: string } => b.type === 'text',
+    );
+
+    if (toolUseBlocks.length > 0) {
+      result.push({
+        role: 'assistant',
+        content: textBlocks.length > 0 ? textBlocks.map((b) => b.text).join('') : null,
+        tool_calls: toolUseBlocks.map((b) => ({
+          id: b.id,
+          type: 'function',
+          function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+        })),
+      });
+      continue;
+    }
+
+    if (toolResultBlocks.length > 0) {
+      for (const b of toolResultBlocks) {
+        result.push({ role: 'tool', tool_call_id: b.tool_use_id, content: b.content });
+      }
+      continue;
+    }
+
+    result.push({ role: msg.role, content: textBlocks.map((b) => b.text).join('') });
+  }
+
+  return result;
 }
 
 export class AnthropicProvider implements ILLMProvider {
@@ -258,8 +389,11 @@ export function anthropicSdkBaseUrl(configBaseUrl: string | undefined): string |
 // a capability that's genuinely present on what it wraps. The REST-based
 // AnthropicProvider above stays exported (and covered by its own tests) but
 // is no longer reachable from this factory, since it has no multi-turn
-// implementation. openai_compatible/glm/openrouter intentionally remain
-// single-turn-only — they are not faked into multi-turn capability.
+// implementation. openai_compatible/glm stay single-turn-only — they are
+// not faked into multi-turn capability. openrouter DOES get genuine
+// multi-turn capability (OpenAICompatibleMultiTurnProvider, D.3d) since
+// OpenRouter's own wire format for tool-calling-capable models is real,
+// not faked.
 export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
   switch (config.provider) {
     case 'openai_compatible':
@@ -294,7 +428,11 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
         model: config.model || 'google/gemini-2.5-pro',
         api_key_env: config.api_key_env || 'OPENROUTER_API_KEY',
       };
-      return new OpenAICompatibleProvider(orConfig);
+      // D.3d — OpenRouter genuinely supports the OpenAI tool-calling wire
+      // format for tool-capable models, so it gets real multi-turn
+      // capability (OpenAICompatibleMultiTurnProvider above), unlike
+      // openai_compatible/glm above which stay single-turn-only.
+      return new OpenAICompatibleMultiTurnProvider(orConfig);
     }
     default:
       throw new Error(`Unknown LLM provider: ${(config as { provider: string }).provider}`);
