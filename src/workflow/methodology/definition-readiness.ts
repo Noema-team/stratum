@@ -183,10 +183,12 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
   const deferFinalization = routes.includes('DEFER')
     ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
       'readiness Artifact) classified DEFER for this Definition round must already carry ' +
-      '`status: DEFERRED` in the fact ledger. A DEFER classification alone is not resolution — ' +
-      'it becomes non-blocking only once the DEFERRED transition is actually recorded. A fact ' +
-      'still classified DEFER but still ASSUMED/UNKNOWN in the ledger is not eligible for ' +
-      '`pass`; declare `route: defer` instead so apply-deferred-gaps can record the transition.'
+      '`status: DEFERRED` in the fact ledger. A DEFER classification alone does not complete ' +
+      'the required ledger bookkeeping — the gap is already non-blocking, but the Definition ' +
+      'is not eligible for `verdict: pass` until that scope decision is explicitly recorded as ' +
+      '`status: DEFERRED`. A fact still classified DEFER but still ASSUMED/UNKNOWN in the ' +
+      'ledger is not eligible for `pass`; declare `route: defer` instead so apply-deferred-gaps ' +
+      'can record the transition.'
     : '';
   return `On \`verdict: fail\`, the readiness Artifact must name every gap keeping this verdict from
 \`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or EXPLORE_AS_WORK) and every gap

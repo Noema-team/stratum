@@ -793,6 +793,24 @@ test('D.3c1b.1: READINESS_ROUTE_CONTRACT states the DEFER finalization rule — 
   assert.ok(!noDefer.split('\n').some((l) => l.trim().startsWith('- defer')));
 });
 
+test('D.3c1b.1: READINESS_ROUTE_CONTRACT never implies the DEFERRED transition is what makes a DEFER gap non-blocking — it is already non-blocking; the transition is ledger bookkeeping for pass-eligibility', () => {
+  const text = READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK']);
+  // The gap is non-blocking from the moment it is correctly classified
+  // DEFER — the DEFERRED transition changes pass-eligibility bookkeeping,
+  // never whether the gap blocks the scope. None of these phrasings may
+  // appear anywhere in the rendered contract.
+  for (const antipattern of [/becomes? non-blocking/i, /no longer blocking/i]) {
+    assert.ok(!antipattern.test(text), `READINESS_ROUTE_CONTRACT must never say a DEFER gap "${antipattern}" — it is already non-blocking: ${text}`);
+  }
+  // The positive fix: DEFER's non-blocking status is stated up front (the
+  // route line), and the finalization rule is framed as ledger bookkeeping/
+  // pass-eligibility, not as a change in whether the gap blocks the scope.
+  const deferLine = text.split('\n').find((l) => l.trim().startsWith('- defer'));
+  assert.ok(/does not block/i.test(deferLine ?? ''));
+  assert.ok(/does not complete the required ledger bookkeeping/i.test(text));
+  assert.ok(/already non-blocking/i.test(text));
+});
+
 test('D.3c1b.1: no define-work step instruction reintroduces the specific "DEFER gap ... blocking" phrasing this closure fixed', () => {
   // Targeted literal-phrase regression locks (not a generic classifier —
   // "DEFER was never blocking" is correct wording and must NOT trip this):
