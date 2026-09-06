@@ -293,8 +293,23 @@ test('D.3b1: repository inspection remains bounded by AgentLoop\'s existing turn
 test('D.3b1: define-work is registered with the expected structure', () => {
   assert.equal(getWorkflow('define-work'), DEFINE_WORK);
   assert.equal(DEFINE_WORK.max_iterations, 4);
+  // D.3c1b — the four gap-classification routes each got their own
+  // dedicated step(s); see tests/d3c1b-define-work-routing.test.ts for the
+  // DEFER/HUMAN_DECISION/EXPLORE_AS_WORK end-to-end proofs.
   const ids = DEFINE_WORK.steps.map((s) => s.id);
-  assert.deepStrictEqual(ids, ['synthesize-definition', 'refine-definition', 'definition-readiness-review', 'commit']);
+  assert.deepStrictEqual(ids, [
+    'synthesize-definition',
+    'refine-definition',
+    'definition-readiness-review',
+    'apply-deferred-gaps',
+    'post-defer-readiness-review',
+    'prepare-human-decision',
+    'human-decision-checkpoint',
+    'apply-human-decision',
+    'post-human-readiness-review',
+    'record-exploration-need',
+    'commit',
+  ]);
 
   const synth = DEFINE_WORK.steps.find((s) => s.id === 'synthesize-definition')!;
   assert.equal(synth.kind, 'produce');
@@ -316,14 +331,88 @@ test('D.3b1: define-work is registered with the expected structure', () => {
   assert.equal(review.outputArtifact?.type, 'definition-readiness');
   assert.equal(review.outputArtifact?.ref, 'definition-readiness:{objectiveId}');
   assert.equal(review.on_pass?.target_step_id, 'commit');
-  assert.equal(review.on_fail?.target_step_id, 'refine-definition');
-  assert.equal(review.on_fail?.iteration_loop, true);
+  assert.equal(review.on_fail, undefined, 'D.3c1b replaces the single legacy on_fail with on_fail_routes');
+  assert.deepStrictEqual(review.on_fail_routes, {
+    refine: { target_step_id: 'refine-definition', iteration_loop: true },
+    defer: { target_step_id: 'apply-deferred-gaps' },
+    human: { target_step_id: 'prepare-human-decision' },
+    explore: { target_step_id: 'record-exploration-need' },
+  });
   // Physical materialized path, not the semantic ref — ContextManager does
   // not query ArtifactRepository for definition:{objectiveId}.
   assert.deepStrictEqual(review.inputArtifactRefs, ['.sle/work/{workItemId}/definition.md']);
 
+  const applyDeferred = DEFINE_WORK.steps.find((s) => s.id === 'apply-deferred-gaps')!;
+  assert.equal(applyDeferred.kind, 'produce');
+  assert.equal(applyDeferred.outputArtifact?.ref, 'definition:{objectiveId}');
+  assert.equal(applyDeferred.outputArtifact?.path, '.sle/work/{workItemId}/definition.md');
+
+  const postDefer = DEFINE_WORK.steps.find((s) => s.id === 'post-defer-readiness-review')!;
+  assert.equal(postDefer.kind, 'review');
+  assert.equal(postDefer.requiresReviewVerdict, true);
+  assert.deepStrictEqual(postDefer.on_fail_routes, {
+    refine: { target_step_id: 'refine-definition', iteration_loop: true },
+    human: { target_step_id: 'prepare-human-decision' },
+    explore: { target_step_id: 'record-exploration-need' },
+  }, 'post-defer-readiness-review must not offer another defer route — no unbounded DEFER loop');
+
+  const prepareHuman = DEFINE_WORK.steps.find((s) => s.id === 'prepare-human-decision')!;
+  assert.equal(prepareHuman.kind, 'produce');
+  assert.equal(prepareHuman.outputArtifact?.type, 'decision-request');
+  assert.equal(prepareHuman.outputArtifact?.path, '.sle/work/{workItemId}/decision-request.json');
+
+  const checkpoint = DEFINE_WORK.steps.find((s) => s.id === 'human-decision-checkpoint')!;
+  assert.equal(checkpoint.kind, 'checkpoint');
+  assert.equal(checkpoint.decisionRequestArtifact, '.sle/work/{workItemId}/decision-request.json');
+
+  const applyHuman = DEFINE_WORK.steps.find((s) => s.id === 'apply-human-decision')!;
+  assert.equal(applyHuman.kind, 'produce');
+  assert.equal(applyHuman.includeDecisionContext, true);
+  assert.equal(applyHuman.outputArtifact?.ref, 'definition:{objectiveId}');
+
+  const postHuman = DEFINE_WORK.steps.find((s) => s.id === 'post-human-readiness-review')!;
+  assert.equal(postHuman.kind, 'review');
+  assert.deepStrictEqual(postHuman.on_fail_routes, {
+    refine: { target_step_id: 'refine-definition', iteration_loop: true },
+    defer: { target_step_id: 'apply-deferred-gaps' },
+    human: { target_step_id: 'prepare-human-decision' },
+    explore: { target_step_id: 'record-exploration-need' },
+  }, 'post-human-readiness-review must support all four routes, so several human decisions can occur in one WorkflowRun');
+
+  const recordExploration = DEFINE_WORK.steps.find((s) => s.id === 'record-exploration-need')!;
+  assert.equal(recordExploration.kind, 'produce');
+  assert.equal(recordExploration.outputArtifact?.type, 'exploration-need');
+
   const commit = DEFINE_WORK.steps.find((s) => s.id === 'commit')!;
   assert.equal(commit.kind, 'commit');
+});
+
+test('D.3c1b: full-build never declares on_fail_routes/decisionRequestArtifact — untouched by define-work\'s routing', () => {
+  // Sanity companion to the D.3c0/D.3c1a full-build regressions — no new
+  // assertion beyond what those already prove, kept here so this file's
+  // structural coverage of define-work does not implicitly depend on
+  // reading those other files.
+  const fullBuild = getWorkflow('full-build')!;
+  for (const step of fullBuild.steps) {
+    assert.equal(step.on_fail_routes, undefined);
+    assert.equal(step.decisionRequestArtifact, undefined);
+  }
+});
+
+test('D.3c1b: every define-work review step\'s on_fail_routes route precedence matches GAP_CLASSIFICATION_PRECEDENCE order', () => {
+  // Each review step's instruction text enumerates its routes' precedence
+  // in GAP_CLASSIFICATION_PRECEDENCE order (see READINESS_ROUTE_CONTRACT) —
+  // this locks that the workflow's own declared route tables never drift
+  // from that fixed order, independent of prompt-text inspection (see
+  // tests/d3c1b-define-work-routing.test.ts for the direct prompt-text lock).
+  const order = ['refine', 'defer', 'human', 'explore'];
+  for (const step of DEFINE_WORK.steps) {
+    if (!step.on_fail_routes) continue;
+    const keys = Object.keys(step.on_fail_routes);
+    const indices = keys.map((k) => order.indexOf(k));
+    const sorted = [...indices].sort((a, b) => a - b);
+    assert.deepStrictEqual(indices, sorted, `step '${step.id}' on_fail_routes keys must be declarable in GAP_CLASSIFICATION_PRECEDENCE order`);
+  }
 });
 
 test('D.3b1: no step in define-work is gathered by a no-op context.gather step', () => {
@@ -350,13 +439,15 @@ function definitionOutput(content: string, path: string): string {
   ].join('\n');
 }
 
-function readinessOutput(verdict: 'pass' | 'fail', content: string, path: string): string {
-  return [
-    '<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work',
-    `verdict: ${verdict}`,
-    'artifacts:', `  - id: readiness`, `    path: ${path}`, '-->', '',
-    `## ${path}`, '', content,
-  ].join('\n');
+// D.3c1b — definition-readiness-review now declares on_fail_routes, so a
+// `verdict: fail` must also carry a `route:` token (see the route-gate in
+// agent-runner.ts). route is optional here only so a 'pass' verdict (which
+// never requires or validates a route) can omit it.
+function readinessOutput(verdict: 'pass' | 'fail', content: string, path: string, route?: string): string {
+  const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
+  if (route !== undefined) lines.push(`route: ${route}`);
+  lines.push('artifacts:', `  - id: readiness`, `    path: ${path}`, '-->', '', `## ${path}`, '', content);
+  return lines.join('\n');
 }
 
 function seedWorkItem(db: ReturnType<typeof openDatabase>, workItemId: string): void {
@@ -401,7 +492,7 @@ test('D.3b1: define-work end-to-end — a failed readiness review triggers CAN_R
 
     const provider = new SequenceLLMProvider([
       definitionOutput('Definition v1 — no acceptance criteria yet.', definitionPath),
-      readinessOutput('fail', 'Dimension 6 (acceptance) fails: no criteria stated.', readinessPath),
+      readinessOutput('fail', 'Dimension 6 (acceptance) fails: no criteria stated.', readinessPath, 'refine'),
       definitionOutput('Definition v2 — acceptance criteria added.', definitionPath),
       readinessOutput('pass', 'All seven dimensions pass.', readinessPath),
     ]);
@@ -447,18 +538,19 @@ test('D.3b1: define-work end-to-end — cap exhaustion fails closed, never force
     seedWorkItem(db, workItemId);
     const artifacts = new ArtifactRepository(db);
 
-    // Always fails: v1 review fail, refine -> v2 review fail, refine -> v3
-    // review fail, refine -> v4 review fail -> next iteration (5) exceeds
-    // max_iterations (4) -> cap hit -> halt.
+    // Always fails via the refine route (CAN_RESOLVE): v1 review fail,
+    // refine -> v2 review fail, refine -> v3 review fail, refine -> v4
+    // review fail -> next iteration (5) exceeds max_iterations (4) -> cap
+    // hit -> halt.
     const provider = new SequenceLLMProvider([
       definitionOutput('Definition v1.', definitionPath),
-      readinessOutput('fail', 'v1: still missing acceptance criteria.', readinessPath),
+      readinessOutput('fail', 'v1: still missing acceptance criteria.', readinessPath, 'refine'),
       definitionOutput('Definition v2.', definitionPath),
-      readinessOutput('fail', 'v2: cross-platform decision still open (HUMAN_DECISION, unresolved).', readinessPath),
+      readinessOutput('fail', 'v2: same blocker remains — not yet resolved.', readinessPath, 'refine'),
       definitionOutput('Definition v3.', definitionPath),
-      readinessOutput('fail', 'v3: same blocker remains — not a CAN_RESOLVE gap.', readinessPath),
+      readinessOutput('fail', 'v3: same blocker remains — not yet resolved.', readinessPath, 'refine'),
       definitionOutput('Definition v4.', definitionPath),
-      readinessOutput('fail', 'v4: same blocker remains, unresolved.', readinessPath),
+      readinessOutput('fail', 'v4: same blocker remains, unresolved.', readinessPath, 'refine'),
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
