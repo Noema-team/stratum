@@ -275,7 +275,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-interface LLMProviderResult {
+export interface LLMProviderResult {
   provider: ILLMProvider;
   model: string;
 }
@@ -303,7 +303,12 @@ export function buildAgentRunner(
   );
 }
 
-function resolveLLMProvider(projectRoot: string): LLMProviderResult {
+// D.3d — exported so the define-work live-provider evaluation harness
+// (scripts/eval-define-work.ts) resolves its provider/model exactly the
+// way createStratumApplication does: reading `.sle/settings.json` under
+// the target project root, honoring the same env-var fallbacks, with no
+// bespoke provider path or hard-coded eval-only model.
+export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
   const settingsPath = path.join(projectRoot, '.sle', 'settings.json');
   let config: AgentLLMConfig = {
     provider: 'openai_compatible',
