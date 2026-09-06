@@ -449,6 +449,209 @@ test('D.3c1b: HUMAN_DECISION end-to-end — Scheduler creates the durable Decisi
   }
 });
 
+// D.3c1b.1 — two distinct HUMAN_DECISION facts, resolved one at a time
+// through the SAME reusable human-decision-checkpoint step id (unlike
+// D.3c0.2's chained-checkpoint test, which used two DIFFERENT checkpoint
+// step ids). Proves re-entering one checkpoint step twice within the same
+// WorkflowRun carries no cross-Decision journal/cursor/linkage defect.
+
+const RECONNECT_DECISION_REQUEST = {
+  type: 'human_decision',
+  title: 'Reconnect policy after disconnection',
+  summary: 'The bounded scope needs a policy for what happens when a player disconnects mid-session.',
+  options: [
+    { id: 'resume-session', label: 'Resume session', description: 'The player can rejoin and resume where they left off.' },
+    { id: 'restart-session', label: 'Restart session', description: 'The player must restart the session from the beginning.' },
+    { id: 'no-reconnect', label: 'No reconnect', description: 'A disconnected player cannot rejoin this session.' },
+  ],
+};
+
+const AUTHORITY_STATEMENT = 'Which network authority model multiplayer uses.';
+const RECONNECT_STATEMENT = 'What happens when a player disconnects mid-session.';
+
+function unknownFactLine(id: string, statement: string): string {
+  return `- id: ${id}\n  statement: ${statement}\n  status: UNKNOWN\n  source: human`;
+}
+function decidedFactLine(id: string, statement: string, decisionId: string, selectedOptionId: string): string {
+  return `- id: ${id}\n  statement: ${statement}\n  status: DECIDED\n  source: decision\n  decision: ${decisionId}\n  selected: ${selectedOptionId}`;
+}
+// Extracts the (real, previously-unknown) Decision id + selected option id
+// straight out of the assembled "## Human Decision" context, exactly as the
+// single-decision test above does, then rewrites the WHOLE fact ledger
+// (factId's fact becomes DECIDED; priorFactsText carries every other fact
+// forward unchanged) — matching outputArtifact's single-section-overwrite
+// contract (apply-human-decision's declared output is the whole Definition,
+// not a diff).
+function applyDecisionResponse(
+  factId: string, statement: string, priorFactsText: string,
+): (params: LLMCompletionParams) => string {
+  return (params: LLMCompletionParams): string => {
+    const userMessage = String(params.messages[1]?.content ?? '');
+    const decisionIdMatch = userMessage.match(/Decision id: `([^`]+)`/);
+    const optionIdMatch = userMessage.match(/option id: `([^`]+)`/);
+    assert.ok(decisionIdMatch, `expected a rendered Decision id in the assembled context: ${userMessage}`);
+    assert.ok(optionIdMatch, `expected a rendered selected option id: ${userMessage}`);
+    const decisionId = decisionIdMatch![1];
+    const selectedOptionId = optionIdMatch![1];
+    return definitionOutput(
+      `## Facts\n${priorFactsText}\n${decidedFactLine(factId, statement, decisionId, selectedOptionId)}`,
+      `.sle/work/${WI_REPEATED_CHECKPOINT}/definition.md`,
+    );
+  };
+}
+
+function extractFactBlock(text: string, factId: string): string {
+  const m = text.match(new RegExp(`- id: ${factId}[\\s\\S]*?(?=\\n- id: |$)`));
+  return m ? m[0] : '';
+}
+
+const WI_REPEATED_CHECKPOINT = 'wi-human-repeated';
+
+test('D.3c1b.1: two HUMAN_DECISION facts resolve one at a time through the SAME reusable human-decision-checkpoint step id, with no cross-Decision journal/cursor/linkage defect', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3c1b-human-repeated-'));
+  try {
+    const workItemId = WI_REPEATED_CHECKPOINT;
+    const definitionPath = `.sle/work/${workItemId}/definition.md`;
+    const readinessPath = `.sle/work/${workItemId}/readiness.md`;
+    const decisionRequestPath = `.sle/work/${workItemId}/decision-request.json`;
+
+    const db = openDatabase(':memory:');
+    const objective = makeObjective('proj-d3c1b-human-repeated');
+    new WorkspaceRepository(db).save({ id: 'ws-d3c1b-human-repeated', name: 'ws', createdAt: objective.createdAt });
+    new ProjectRepository(db).save({
+      id: 'proj-d3c1b-human-repeated', workspaceId: 'ws-d3c1b-human-repeated', name: 'proj', status: 'active', priority: 0,
+      createdAt: objective.createdAt, updatedAt: objective.createdAt,
+    });
+    new ObjectiveRepository(db).save(objective);
+    new WorkItemRepository(db).save({
+      id: workItemId, projectId: 'proj-d3c1b-human-repeated', objectiveId: objective.id, repositoryIds: [],
+      title: 'Definition work item', goal: 'Add real-time multiplayer to Evershift', workflowId: 'define-work',
+      state: 'ready', priority: 0,
+      acceptanceCriteria: [], constraints: [], requiredEvidence: [],
+      dependencies: [], createdAt: objective.createdAt, updatedAt: objective.createdAt,
+    });
+    const artifacts = new ArtifactRepository(db);
+
+    // Index 6 (round B's apply-human-decision) is assigned once decisionA's
+    // real id is known, between the two resume() calls — see below.
+    const responses: Array<string | ((params: LLMCompletionParams) => string)> = [
+      // 0: synthesize-definition — two open HUMAN_DECISION facts.
+      definitionOutput(
+        `## Facts\n${unknownFactLine('authority-model', AUTHORITY_STATEMENT)}\n${unknownFactLine('reconnect-policy', RECONNECT_STATEMENT)}`,
+        definitionPath,
+      ),
+      // 1: definition-readiness-review — fail/human, chooses authority-model first.
+      readinessOutput(
+        'fail', 'human',
+        'HUMAN_DECISION — fact authority-model: a genuine product tradeoff. HUMAN_DECISION — ' +
+        'fact reconnect-policy: also a genuine product tradeoff, not yet asked (one checkpoint asks one question).',
+        readinessPath,
+      ),
+      // 2: prepare-human-decision — request A (authority-model).
+      jsonOutput(AUTHORITY_DECISION_REQUEST, decisionRequestPath),
+      // 3: apply-human-decision — round A: authority-model becomes DECIDED.
+      applyDecisionResponse('authority-model', AUTHORITY_STATEMENT, unknownFactLine('reconnect-policy', RECONNECT_STATEMENT)),
+      // 4: post-human-readiness-review — fail/human again, reconnect-policy now the sole blocker.
+      readinessOutput(
+        'fail', 'human',
+        'HUMAN_DECISION — fact reconnect-policy: a genuine product tradeoff only a human can authorize. authority-model is DECIDED.',
+        readinessPath,
+      ),
+      // 5: prepare-human-decision — request B (reconnect-policy), SAME step id as request A.
+      jsonOutput(RECONNECT_DECISION_REQUEST, decisionRequestPath),
+      // 6: (placeholder — replaced below once Decision A's real id is known)
+      '',
+      // 7: post-human-readiness-review — passes.
+      readinessOutput('pass', undefined, 'All seven dimensions pass; both facts are DECIDED.', readinessPath),
+    ];
+    const provider = new SequenceLLMProvider(responses);
+
+    const adapter = makeProductionAdapter(root, db, artifacts, provider);
+    const registry = new ExecutorRegistry();
+    registry.register(adapter);
+
+    const scheduler = new Scheduler(db, 'ws-d3c1b-human-repeated', registry);
+    const dispatchResults = await scheduler.tick();
+    assert.equal(dispatchResults[0].outcome, 'dispatched', JSON.stringify(dispatchResults[0]));
+    const workflowRunId = dispatchResults[0].workflowRunId!;
+
+    const decisionRepo = new DecisionRepository(db);
+    const afterFirstDispatch = decisionRepo.listByWorkItem(workItemId);
+    assert.equal(afterFirstDispatch.length, 1, 'exactly one Decision (A) must exist after initial dispatch');
+    const decisionA = afterFirstDispatch[0];
+    assert.equal(decisionA.title, AUTHORITY_DECISION_REQUEST.title);
+
+    const resumeService = new ResumeService(db, 'ws-d3c1b-human-repeated', registry);
+    await resumeService.resume(decisionA.id, {
+      selectedOptionId: 'dedicated-server',
+      rationale: 'Consistency matters more than hosting cost for this increment.',
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: 'reviewer@example.com',
+    });
+
+    // ── Intermediate state: Decision B now pending, at the SAME checkpoint
+    // step id Decision A used, within the SAME WorkflowRun. ──────────────
+    const afterRoundA = decisionRepo.listByWorkItem(workItemId);
+    assert.equal(afterRoundA.length, 2, 'exactly two Decisions must exist now — A and B, no third');
+    const decisionAResolved = afterRoundA.find((d) => d.id === decisionA.id)!;
+    const decisionB = afterRoundA.find((d) => d.id !== decisionA.id)!;
+    assert.equal(decisionAResolved.status, 'resolved');
+    assert.equal(decisionB.status, 'pending');
+    assert.notEqual(decisionA.id, decisionB.id);
+    assert.equal(decisionB.title, RECONNECT_DECISION_REQUEST.title);
+
+    const runAfterRoundA = new WorkflowRunRepository(db).findById(workflowRunId);
+    assert.equal(runAfterRoundA?.status, 'halted');
+    assert.equal(runAfterRoundA?.current_step_id, 'human-decision-checkpoint');
+    assert.equal(runAfterRoundA?.awaiting_checkpoint, 'human-decision-checkpoint');
+
+    const subjectRefA = decisionAResolved.subjectRef as { workflowRunId?: string; stepId?: string };
+    const subjectRefB = decisionB.subjectRef as { workflowRunId?: string; stepId?: string };
+    assert.equal(subjectRefA.workflowRunId, workflowRunId);
+    assert.equal(subjectRefB.workflowRunId, workflowRunId, 'Decision B must belong to the SAME WorkflowRun as Decision A');
+    assert.equal(subjectRefA.stepId, 'human-decision-checkpoint');
+    assert.equal(subjectRefB.stepId, 'human-decision-checkpoint', 'Decision B is raised at the same reusable checkpoint step id');
+
+    const definitionAfterRoundA = await fs.readFile(path.join(root, definitionPath), 'utf-8');
+    assert.ok(definitionAfterRoundA.includes(`decision: ${decisionA.id}`), 'the Definition must already reference Decision A\'s real id');
+    const factAAfterRoundA = extractFactBlock(definitionAfterRoundA, 'authority-model');
+    assert.ok(factAAfterRoundA.includes('status: DECIDED') && factAAfterRoundA.includes('source: decision'));
+    const factBAfterRoundA = extractFactBlock(definitionAfterRoundA, 'reconnect-policy');
+    assert.ok(factBAfterRoundA.includes('status: UNKNOWN'), 'fact B must NOT have been silently marked DECIDED');
+    assert.ok(!factBAfterRoundA.includes('DECIDED'));
+
+    // ── Resolve Decision B — the SECOND pass through the SAME checkpoint step. ──
+    responses[6] = applyDecisionResponse(
+      'reconnect-policy', RECONNECT_STATEMENT,
+      decidedFactLine('authority-model', AUTHORITY_STATEMENT, decisionA.id, 'dedicated-server'),
+    );
+
+    await resumeService.resume(decisionB.id, {
+      selectedOptionId: 'resume-session',
+      rationale: 'Players should not lose progress on a transient disconnect.',
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: 'reviewer@example.com',
+    });
+
+    const finalRun = new WorkflowRunRepository(db).findById(workflowRunId);
+    assert.equal(finalRun?.status, 'complete', `expected the SAME WorkflowRun to complete via commit; got status=${finalRun?.status}`);
+
+    const finalDecisions = decisionRepo.listByWorkItem(workItemId);
+    assert.equal(finalDecisions.length, 2, 'no third Decision must have been created');
+    assert.ok(finalDecisions.every((d) => d.status === 'resolved'), 'both Decisions must be resolved');
+
+    const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
+    assert.ok(finalDefinition.includes(`decision: ${decisionA.id}`), 'the Definition must reference Decision A\'s real id');
+    assert.ok(finalDefinition.includes(`decision: ${decisionB.id}`), 'the Definition must reference Decision B\'s real id');
+    const factAFinal = extractFactBlock(finalDefinition, 'authority-model');
+    const factBFinal = extractFactBlock(finalDefinition, 'reconnect-policy');
+    assert.ok(factAFinal.includes('status: DECIDED') && factAFinal.includes('source: decision'));
+    assert.ok(factBFinal.includes('status: DECIDED') && factBFinal.includes('source: decision'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ============================================================================
 // Part C — EXPLORE_AS_WORK
 // ============================================================================
@@ -549,4 +752,63 @@ test('D.3c1b: definition-readiness-review\'s actual instruction text locks CAN_R
     assert.ok(idx > lastIndex, `expected '${classification}' to appear after the previous classification in precedence order`);
     lastIndex = idx;
   }
+});
+
+// ============================================================================
+// D.3c1b.1 — DEFER runtime semantics: DEFER is not blocking. These lock the
+// wording fix so the runtime instruction can never regress to saying a
+// DEFER fact "blocks" the candidate bounded scope (see GAP_CLASSIFICATION:
+// "the gap is real but does NOT block the bounded scope").
+// ============================================================================
+
+test('D.3c1b.1: READINESS_ROUTE_CONTRACT\'s defer route line never says the DEFER gap itself blocks the candidate scope', () => {
+  const text = READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK']);
+  const deferLine = text.split('\n').find((l) => l.trim().startsWith('- defer'));
+  assert.ok(deferLine, `expected a '- defer' route line in: ${text}`);
+  assert.ok(/does not block/i.test(deferLine!), `the defer route line must explicitly say the gap does not block: "${deferLine}"`);
+  assert.ok(
+    !/DEFER gap (?:is |remains )?blocking|blocking DEFER gap|\bremains blocking\b/i.test(deferLine!),
+    `the defer route line must never call the DEFER gap itself blocking: "${deferLine}"`,
+  );
+  assert.ok(/DEFERRED/.test(deferLine!), 'the defer route line must describe the required DEFERRED ledger transition');
+
+  // The other three routes ARE genuinely blocking — the fix must not have
+  // swept blocking language off of them too.
+  for (const token of ['refine', 'human', 'explore']) {
+    const line = text.split('\n').find((l) => l.trim().startsWith(`- ${token}`));
+    assert.ok(line, `expected a '- ${token}' route line`);
+    assert.ok(/blocks?/i.test(line!), `the ${token} route line must still say its gap blocks the candidate scope: "${line}"`);
+  }
+});
+
+test('D.3c1b.1: READINESS_ROUTE_CONTRACT states the DEFER finalization rule — a DEFER-classified fact must already be DEFERRED before verdict:pass', () => {
+  const text = READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK']);
+  assert.ok(/status: DEFERRED/.test(text), 'expected the finalization rule to name the required DEFERRED status');
+  assert.ok(/verdict: pass/.test(text), 'expected the finalization rule to be phrased against verdict: pass eligibility');
+  // A review step that does not declare a defer route at all (post-defer-
+  // readiness-review) has no defer route line and no defer-specific
+  // finalization rule to state — never rendered when 'DEFER' isn't in scope.
+  const noDefer = READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'HUMAN_DECISION', 'EXPLORE_AS_WORK']);
+  assert.ok(!/status: DEFERRED/.test(noDefer));
+  assert.ok(!noDefer.split('\n').some((l) => l.trim().startsWith('- defer')));
+});
+
+test('D.3c1b.1: no define-work step instruction reintroduces the specific "DEFER gap ... blocking" phrasing this closure fixed', () => {
+  // Targeted literal-phrase regression locks (not a generic classifier —
+  // "DEFER was never blocking" is correct wording and must NOT trip this):
+  // the two exact antipatterns the D.3c1b.1 fix removed from
+  // READINESS_ROUTE_CONTRACT's rendered output and post-defer-readiness-
+  // review's instruction, respectively.
+  const antipatterns = [/DEFER gap (?:is |remains )?blocking/i, /blocking DEFER gap/i, /no longer a blocking gap/i];
+  for (const step of DEFINE_WORK.steps) {
+    const instruction = step.instruction ?? '';
+    for (const pattern of antipatterns) {
+      assert.ok(!pattern.test(instruction), `step '${step.id}' instruction must not reintroduce "${pattern}"`);
+    }
+  }
+});
+
+test('D.3c1b.1: post-defer-readiness-review\'s instruction explicitly says DEFER was never blocking, not merely "no longer" blocking', () => {
+  const postDefer = DEFINE_WORK.steps.find((s) => s.id === 'post-defer-readiness-review')!;
+  assert.match(postDefer.instruction ?? '', /DEFER was never blocking/);
 });

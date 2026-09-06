@@ -1,7 +1,10 @@
-// D.3b1.1 — Stratum-owned, self-contained runtime methodology for the
-// define-work workflow (D.3a's Definition/readiness contract, reduced to
-// exactly what an executing agent needs to draft, refine, and review a
-// Definition Artifact).
+// Stratum-owned, self-contained runtime methodology for the define-work
+// workflow (D.3a's Definition/readiness contract, reduced to exactly what
+// an executing agent needs to draft, refine, and review a Definition
+// Artifact). Originated in D.3b1.1 with CAN_RESOLVE-only resolution; D.3c1b
+// added the DEFER/HUMAN_DECISION/EXPLORE_AS_WORK route contracts below, so
+// this module now backs every step in builtins/define-work.ts, not just
+// synthesize/refine/review.
 //
 // This module exists because define-work's steps run with `projectRoot` set
 // to the TARGET repository being worked on (e.g. Evershift), not Stratum's
@@ -79,10 +82,10 @@ fail and why, and name every remaining blocker.`;
 
 // ─── Gap classification (D.3a §3) ──────────────────────────────────────────────
 //
-// D.3b1(.1) implements CAN_RESOLVE resolution only — HUMAN_DECISION/DEFER/
-// EXPLORE_AS_WORK gaps are named but stay unresolved blockers (no checkpoint,
-// no investigation WorkItem creation, no DEFERRED-marking automation yet).
-// D.3c wires those three; this scope is intentionally narrower.
+// All four classifications now have a dedicated resolution path wired in
+// builtins/define-work.ts (D.3c1b): CAN_RESOLVE through the existing
+// iterating refine-definition loop, DEFER/HUMAN_DECISION/EXPLORE_AS_WORK
+// through their own dedicated, non-iterating steps.
 
 // D.3c1b — the fixed precedence order among the four gap classifications:
 // cheap/direct/autonomous closure happens before human escalation or
@@ -149,21 +152,50 @@ that.`;
 // never be told about a route it cannot actually take; see
 // builtins/define-work.ts, where definition-readiness-review declares all
 // four and the post-defer/post-human reviews declare a narrower subset.
+//
+// D.3c1b.1 — DEFER is NOT blocking (see GAP_CLASSIFICATION above: "the gap
+// is real but does not block the bounded scope"). What keeps a verdict from
+// `pass` is either (a) a genuinely blocking gap — CAN_RESOLVE, HUMAN_DECISION,
+// or EXPLORE_AS_WORK — or (b) an actionable-but-non-blocking DEFER gap: a
+// fact determined irrelevant to the candidate bounded scope but not yet
+// explicitly recorded as DEFERRED in the ledger. The `defer` route means
+// "at least one gap has been classified DEFER and still needs its explicit
+// DEFERRED ledger transition" — never "a DEFER gap blocks this scope". The
+// wording below must never collapse that distinction, or a model can
+// reasonably (and wrongly) treat DEFER as just another kind of blocker to
+// avoid routing.
+function classificationLine(c: GapClassification): string {
+  const token = ROUTE_TOKEN_FOR_CLASSIFICATION[c];
+  if (c === 'DEFER') {
+    return `- ${token} — at least one gap has been classified DEFER and still needs its explicit ` +
+      'DEFERRED ledger transition (the gap itself does not block the candidate bounded scope — ' +
+      'see apply-deferred-gaps).';
+  }
+  return `- ${token} — at least one ${c} gap blocks the candidate bounded scope.`;
+}
+
 export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): string {
-  const routeLines = routes
-    .map((c) => `- ${ROUTE_TOKEN_FOR_CLASSIFICATION[c]} — at least one ${c} gap remains blocking.`)
-    .join('\n');
+  const routeLines = routes.map(classificationLine).join('\n');
   const precedenceOrder = GAP_CLASSIFICATION_PRECEDENCE.filter((c) => routes.includes(c));
   const precedenceLines = precedenceOrder
     .map((c, i) => `${i + 1}. ${c}${i === 0 ? ' (checked first)' : ''}`)
     .join('\n');
-  return `On \`verdict: fail\`, the readiness Artifact must name every blocking/actionable gap, each with at
-least these fields:
+  const deferFinalization = routes.includes('DEFER')
+    ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
+      'readiness Artifact) classified DEFER for this Definition round must already carry ' +
+      '`status: DEFERRED` in the fact ledger. A DEFER classification alone is not resolution — ' +
+      'it becomes non-blocking only once the DEFERRED transition is actually recorded. A fact ' +
+      'still classified DEFER but still ASSUMED/UNKNOWN in the ledger is not eligible for ' +
+      '`pass`; declare `route: defer` instead so apply-deferred-gaps can record the transition.'
+    : '';
+  return `On \`verdict: fail\`, the readiness Artifact must name every gap keeping this verdict from
+\`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or EXPLORE_AS_WORK) and every gap
+classified DEFER whose fact is not yet recorded as DEFERRED — each with at least these fields:
 - fact id (or an explicit missing-area identifier, when no fact entry exists yet)
 - description
 - classification: one of ${GAP_CLASSIFICATION_PRECEDENCE.join(', ')}
 - reason for that classification
-- what closure would require
+- what closure (or, for DEFER, what recording the DEFERRED transition) would require
 
 Never classify cheap repository inspection as EXPLORE_AS_WORK — see the CAN_RESOLVE/
 EXPLORE_AS_WORK dividing line above.
@@ -171,12 +203,12 @@ EXPLORE_AS_WORK dividing line above.
 This step may declare exactly one route token in the preamble's \`route:\` field, chosen from:
 ${routeLines}
 
-When more than one classification is present among the current blocking gaps, precedence
-decides which single route to declare — cheap/direct/autonomous closure before human escalation
-or substantive exploration:
+When more than one classification is present among the current gaps this verdict must resolve,
+precedence decides which single route to declare — cheap/direct/autonomous closure before human
+escalation or substantive exploration:
 ${precedenceLines}
 
-Never declare a route not listed above, and never declare a route when \`verdict: pass\`.`;
+Never declare a route not listed above, and never declare a route when \`verdict: pass\`.${deferFinalization}`;
 }
 
 // D.3c1b — apply-deferred-gaps: converts every gap the readiness Artifact

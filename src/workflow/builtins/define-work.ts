@@ -192,7 +192,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'A residual DEFER gap here means apply-deferred-gaps failed to perform its declared ' +
         'job — never leave a DEFER classification standing here; either its fact is now ' +
-        'DEFERRED (no longer a blocking gap) or it was misclassified and belongs to CAN_RESOLVE, ' +
+        'DEFERRED (no longer an actionable gap — DEFER was never blocking) or it was ' +
+        'misclassified and belongs to CAN_RESOLVE, ' +
         'HUMAN_DECISION, or EXPLORE_AS_WORK instead.\n\n' +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.',
