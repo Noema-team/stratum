@@ -59,17 +59,35 @@ const SCENARIOS: ScenarioDef[] = [
 // to raise a legitimate Decision at all — any Decision on partial/mature is
 // itself an oracle failure, not something this policy should paper over by
 // guessing an answer.
+//
+// Chained decisions: the workflow explicitly supports several real human
+// decisions in one run (one checkpoint per question). The scenario's scripted
+// answer exists only for the cross-platform scope question — when that choice
+// is among the offered options it is selected (findSamePlatformOnlyOption);
+// for any OTHER genuine product question the run raises along the chain, the
+// policy resolves the first offered option with a transparent rationale so
+// the chain can proceed to the scope question. The specific resolution of
+// non-scope questions is not under test — the fact that a genuine,
+// non-repository-lookup question was asked IS — and every resolution lands in
+// the report for human review.
 function decisionPolicy(scenarioId: ScenarioId) {
   return (
     options: Array<{ id: string; label: string; description?: string }>,
     decision: { title: string },
   ): { selectedOptionId: string; rationale: string } | undefined => {
     if (scenarioId !== 'early') return undefined;
-    const chosen = findSamePlatformOnlyOption(options);
-    if (!chosen) return undefined;
+    const scripted = findSamePlatformOnlyOption(options);
+    if (scripted) {
+      return {
+        selectedOptionId: scripted.id,
+        rationale: `Same-platform only for this bounded increment (eval scenario policy; decision: "${decision.title}").`,
+      };
+    }
+    const any = options[0];
+    if (!any) return undefined;
     return {
-      selectedOptionId: chosen.id,
-      rationale: `Same-platform only for this bounded increment (eval scenario policy; decision: "${decision.title}").`,
+      selectedOptionId: any.id,
+      rationale: `Eval scenario policy — qualification proceeds past this additional genuine product question ("${decision.title}"); its specific resolution is not under test.`,
     };
   };
 }
@@ -128,6 +146,7 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
         fixtureFiles: scenario.fixtureFiles,
         objectiveIntent: scenario.objectiveIntent,
         provider,
+        model,
         resolveDecision: decisionPolicy(scenario.scenarioId),
       });
     } catch (err) {

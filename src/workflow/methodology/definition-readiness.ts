@@ -65,20 +65,91 @@ candidate bounded scope this Definition defines — not the entire Objective:
 1. Outcome — is goal a single, concrete statement? Could a reader tell whether the eventual
    work satisfies it?
 2. Boundary — does nonGoals meaningfully exclude adjacent scope, so the bounded scope has an
-   actual edge?
+   actual edge? A scope item whose membership in THIS increment the Objective leaves genuinely
+   undecided keeps this dimension from passing: recording it UNKNOWN is honest bookkeeping,
+   not a boundary — only a recorded human decision (include, or exclude as a deliberate
+   non-goal) settles membership. Items already understood to be later-phase are excluded via
+   DEFERRED and do not block this dimension.
 3. Critical constraints — are the must/must_not constraints that would change the shape of the
    work captured (not an exhaustive list of every constraint imaginable)?
 4. Consistency — do requirements, constraints, and nonGoals contradict each other or goal?
 5. Risky assumptions — among ASSUMED facts, are there any whose falsity would invalidate goal
-   or a critical (must/must_not) constraint? Not every assumption is risky.
+   or a critical (must/must_not) constraint? Not every assumption is risky. A risky assumption
+   does not automatically become a human question either: the definition-side closures are a
+   safe default with recorded mitigation (keep it ASSUMED, state its rationale, and add the
+   fallback requirement), or EXPLORE_AS_WORK when only building/measuring could answer it.
 6. Acceptance — does acceptanceModel contain at least one criterion sufficient to know when the
    authorized work is done?
 7. Remaining unknowns — among UNKNOWN facts, are there any that block the candidate bounded
-   scope (as opposed to ones that are real but irrelevant to this particular scope)?
+   scope (as opposed to ones that are real but irrelevant to this particular scope)? An
+   UNKNOWN whose answer could falsify the goal or a critical (must) constraint — for example,
+   whether the performance the scope requires is achievable at all — is never "irrelevant":
+   it is the scope's own feasibility, and it blocks authorization until it is isolated
+   (EXPLORE_AS_WORK) or resolved.
 
 Readiness = pass on all seven for the current version. A failing dimension points at one or
 more specific facts (or a missing fact) in the ledger — name exactly which dimensions pass or
-fail and why, and name every remaining blocker.`;
+fail and why, and name every remaining blocker.
+
+Readiness is not an editorial review: do not fail a Definition for stylistic preference,
+hypothetical completeness, or information nobody would need in order to authorize the bounded
+scope. If all seven dimensions pass, the verdict is pass. A refinement round must be justified
+by a genuine, named gap — never by polish; manufacturing definition process for an already-
+sufficient intent is a failure of this rubric, not diligence.`;
+
+// ─── Output transport contract (D.3d) ──────────────────────────────────────────
+//
+// The contracts above describe artifact CONTENT; these two describe the exact
+// WIRE FORMAT a step's reply must use so AgentRunner/AgentLoop can physically
+// consume it. AgentRunner parses two different shapes: produce steps run
+// through the multi-turn AgentLoop (output-parser.ts: <<<SLE-OUTPUT>>>
+// delimiters with '### <path>' sections), while review steps are forced
+// single-turn (agent-runner.ts: an '<!-- SLE-OUTPUT' YAML preamble with
+// '## <path>' body headers). Neither shape was ever taught by any prompt —
+// Layer A's scripted provider had always emitted them by construction, so
+// the D.3d live-provider qualification was the first thing able to catch the
+// gap: a real model produced sensible methodology content but never emitted
+// the delimiters. They are taught as TWO separate, per-step-kind contracts —
+// composing both into one instruction made a real model mix the shapes
+// (it emitted the preamble inside a tool conversation, which cannot parse).
+// Composed into define-work's step instructions (builtins/define-work.ts).
+export const PRODUCE_OUTPUT_FORMAT_CONTRACT = `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+End your final message with the artifact wrapped in exactly these literal delimiters, as a
+single '### <path>' section whose path is the declared output artifact path named in the task:
+
+<<<SLE-OUTPUT>>>
+### .sle/work/<workItemId>/<artifact>.md
+<the full artifact content>
+<<<END-SLE-OUTPUT>>>
+
+- Use the declared output artifact path exactly as named in the task — never a path you
+  invented, and never more than one artifact section.
+- The delimiters are literal structural requirements: a reply without them cannot be parsed
+  and fails the step regardless of content quality. Never reply in prose alone, in any other
+  comment or preamble style, or with any wrapper other than these exact delimiters.`;
+
+export const REVIEW_OUTPUT_FORMAT_CONTRACT = `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+Begin your reply with an HTML-comment YAML preamble, then give the readiness Artifact body
+under a '## <path>' header matching the declared output artifact path named in the task:
+
+<!-- SLE-OUTPUT
+role: explorer
+node: <this step's id, shown in Current State above>
+artifacts:
+  - id: readiness
+    path: .sle/work/<workItemId>/readiness.md
+verdict: pass
+-->
+
+## .sle/work/<workItemId>/readiness.md
+
+<the full readiness Artifact content>
+
+- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line —
+  plus a 'route: <token>' line chosen from the routing contract above when, and only when,
+  the verdict is fail.
+- The preamble comment and the '## <path>' header are literal structural requirements: a
+  reply without them cannot be parsed and fails the step regardless of content quality.`;
 
 // ─── Gap classification (D.3a §3) ──────────────────────────────────────────────
 //
@@ -113,12 +184,32 @@ export const GAP_CLASSIFICATION = `Every readiness failure resolves to a specifi
 exists), classified into exactly one bucket:
 - CAN_RESOLVE — closeable without a human decision or exploratory work: an omitted non-goal
   obvious from the stated goal, a missing acceptance criterion for an already-stated
-  requirement, a direct contradiction to fix, or information that already exists elsewhere in
-  the repository and just hasn't been pulled into this Definition yet.
+  requirement, a direct contradiction to fix, information that already exists elsewhere in
+  the repository and just hasn't been pulled into this Definition yet, or an open parameter
+  a competent engineer can settle by adopting a reasonable default — recording it ASSUMED
+  (source: investigation) with its rationale in the ledger, never silently.
 - HUMAN_DECISION — the gap is a choice only a human can authorize: product tradeoffs, risk
   acceptance, prioritization among competing constraints, anything costly or irreversible to
-  get wrong. Never guessed by an agent, never silently downgraded to ASSUMED.
-- DEFER — the gap is real but does not block the bounded scope being authorized now.
+  get wrong. "Risk acceptance" means accepting a product-level risk on the human's behalf
+  (shipping something whose failure harms users or the business) — never engineering
+  uncertainty about data or behavior, which is closed by a safe default or isolated as
+  exploration. Never guessed by an agent, never silently downgraded to ASSUMED. Whether an
+  undecided scope item belongs inside the candidate bounded scope is itself such a choice:
+  settling it by writing a prefer/must_not constraint, a non-goal, or a "does not block"
+  judgment is exactly the silent guessing this classification forbids — record the item as
+  UNKNOWN (or ASSUMED) and let the review classify it, so a human decides. The converse holds
+  too: a question a competent engineer can settle with a reasonable stated default (recorded
+  in the Definition as ASSUMED, with its rationale) is NOT HUMAN_DECISION — robustness and
+  error-handling behavior for degenerate inputs being the canonical example: choose the safe
+  default, record it with its rationale, and move on. An unstated implementation detail that
+  connects facts the Objective already states is likewise derived design, not a fresh human
+  choice — and a fact the Objective states is authoritative: never re-open it as a question.
+  Reserving human attention for choices that genuinely need it is part of this classification's
+  discipline.
+- DEFER — the gap is real but does not block the bounded scope being defined now. DEFER is
+  for items already understood to lie outside the candidate bounded scope (clearly later-phase
+  work) — never a place to park an undecided question about what the bounded scope itself
+  contains (that is HUMAN_DECISION).
 - EXPLORE_AS_WORK — the gap can't be closed by reading or reasoning; answering it requires
   doing something (building or measuring) to get an answer.
 
@@ -190,6 +281,18 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
       'ledger is not eligible for `pass`; declare `route: defer` instead so apply-deferred-gaps ' +
       'can record the transition.'
     : '';
+  const exploreFinalization = routes.includes('EXPLORE_AS_WORK')
+    ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
+      'readiness Artifact) classified EXPLORE_AS_WORK for this Definition must have been ' +
+      'actually resolved — by the measurement/build work itself (status KNOWN, source ' +
+      'investigation), by a recorded human decision that eliminated the question (status ' +
+      'DECIDED, source decision), or by an explicit re-classification recorded with its reason ' +
+      'in the fact ledger. An EXPLORE_AS_WORK fact still ASSUMED/UNKNOWN in the ledger is not ' +
+      'eligible for `pass` — arguing it "does not block" or is "an implementation choice" ' +
+      'without recorded evidence or a recorded decision is exactly the silent resolution this ' +
+      'classification forbids; declare `route: explore` instead so record-exploration-need can ' +
+      'isolate it as bounded work.'
+    : '';
   return `On \`verdict: fail\`, the readiness Artifact must name every gap keeping this verdict from
 \`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or EXPLORE_AS_WORK) and every gap
 classified DEFER whose fact is not yet recorded as DEFERRED — each with at least these fields:
@@ -210,7 +313,7 @@ precedence decides which single route to declare — cheap/direct/autonomous clo
 escalation or substantive exploration:
 ${precedenceLines}
 
-Never declare a route not listed above, and never declare a route when \`verdict: pass\`.${deferFinalization}`;
+Never declare a route not listed above, and never declare a route when \`verdict: pass\`.${deferFinalization}${exploreFinalization}`;
 }
 
 // D.3c1b — apply-deferred-gaps: converts every gap the readiness Artifact

@@ -261,12 +261,19 @@ test('D.3b1: a Definition-producing explorer receives its instruction, inspects 
 });
 
 test('D.3b1: repository inspection remains bounded by AgentLoop\'s existing turn cap — it is not given a second, looser cap', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'd3b1-turn-cap-'));
-  try {
-    gitInit(root);
-    const infiniteToolUse: MultiTurnResult[] = Array.from({ length: 20 }, (_, i) =>
-      toolUseTurn('read_file', { path: 'nonexistent.md' }, `tu_${i}`),
-    );
+    const root = mkdtempSync(path.join(tmpdir(), 'd3b1-turn-cap-'));
+    try {
+      gitInit(root);
+      // D.3d — MAX_AGENT_TURNS is now 24 (raised from 10: the live-provider
+      // qualification showed a genuinely targeted investigation consumes one
+      // turn per tool round trip, so 10 cut off correct behavior
+      // mid-investigation). The scripted sequence must exceed the CURRENT cap
+      // so the loop actually exhausts it — the invariant under test is that
+      // repository inspection is bounded by the one existing cap, whatever
+      // its value, not given a second, looser cap.
+      const infiniteToolUse: MultiTurnResult[] = Array.from({ length: 30 }, (_, i) =>
+        toolUseTurn('read_file', { path: 'nonexistent.md' }, `tu_${i}`),
+      );
     const provider = new ScriptedMultiTurnProvider(infiniteToolUse);
     const cm = { async assemble() {
       return { system_prompt: 's', artifact_slices: {}, state_summary: '', task: 't', token_count: 1, truncated: [] };

@@ -8,7 +8,14 @@ import type { ParsedOutput } from './output-parser.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export const MAX_AGENT_TURNS = 10;
+// D.3d — raised from 10. The live-provider qualification showed a genuinely
+// targeted investigation (orient, drill to the relevant directory, read the
+// 2-3 files that answer the Objective's questions) consumes one turn per
+// tool round trip, so a correct read-verify-conclude flow needs ~12+ turns;
+// at 10 the loop cut off correct behavior mid-investigation. This is a turn
+// budget on ONE step's tool loop — unrelated to define-work's max_iterations
+// (the workflow-level refinement cap, which stays 4).
+export const MAX_AGENT_TURNS = 24;
 
 export interface MultiTurnMessage {
   role: 'user' | 'assistant';

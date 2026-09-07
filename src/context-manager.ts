@@ -526,6 +526,17 @@ export class ContextManager {
     if (ctx.includeDecisionContext) {
       text += this.formatDecisionContext(ctx);
     }
+    // D.3d — surface the step's declared output artifact path. AgentRunner
+    // requires exactly one section at exactly this path (agent-runner.ts §6b),
+    // and define-work's OUTPUT_FORMAT_CONTRACT references "the declared output
+    // artifact path named in the task" — but the path itself was never
+    // rendered anywhere a model could see. This is prompt-surface only: no
+    // validation, mechanism, or routing changes. Steps without a declared
+    // outputArtifact (all legacy full-build/draft-artifact steps) render
+    // byte-for-byte unchanged.
+    if (ctx.outputArtifact) {
+      text += `\n\nDeclared output artifact: write exactly one artifact section at '${ctx.outputArtifact.path}'.`;
+    }
     return text;
   }
 

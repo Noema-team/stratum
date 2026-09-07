@@ -9,6 +9,8 @@ import {
   HUMAN_DECISION_PREPARE_CONTRACT,
   HUMAN_DECISION_APPLY_CONTRACT,
   EXPLORATION_NEED_CONTRACT,
+  PRODUCE_OUTPUT_FORMAT_CONTRACT,
+  REVIEW_OUTPUT_FORMAT_CONTRACT,
 } from '../methodology/definition-readiness.js';
 
 // define-work (D.3b1, closure-fixed in D.3b1.1; D.3c1b wires all four gap
@@ -96,9 +98,16 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Draft Definition v1 for this Objective: a goal, constraints, requirements, ' +
         'non-goals, design notes, risks, an acceptance model, and a fact ledger.\n\n' +
-        `${DEFINITION_CONTRACT}\n\n` +
+        `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n` +
         'If a repository-inspection tool is available, use it to verify factual claims ' +
-        'about this repository directly before marking any fact KNOWN with source: repository.',
+        'about this repository directly before marking any fact KNOWN with source: repository. ' +
+        'Inspect only repository reality that materially affects this bounded scope, and batch ' +
+        'independent reads into a single turn rather than one file per turn: once the facts ' +
+        'you need are verified, stop reading and produce the artifact — running out of turns ' +
+        'on exhaustive reading fails the step just as surely as never reading at all. When the ' +
+        'Objective leaves a scope question genuinely undecided, record it as an UNKNOWN fact ' +
+        'in the ledger — never settle it yourself as a non-goal or a prefer constraint.\n\n' +
+        `${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       outputArtifact: {
         type: 'definition',
         ref: 'definition:{objectiveId}',
@@ -116,7 +125,10 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Revise the Definition using the prior readiness review\'s findings (the ' +
         'readiness artifact).\n\n' +
-        `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n${REFINE_DEFINITION_SCOPE}`,
+        `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n${REFINE_DEFINITION_SCOPE}` +
+        '\n\nInspect only repository reality that materially affects this bounded scope: ' +
+        'once the gap\'s answer is found, stop reading and produce the revised artifact.' +
+        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -141,7 +153,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
         `${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.',
+        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
       // The physical materialized path, not the semantic ref: ContextManager
       // resolves inputArtifactRefs against the filesystem, it does not query
       // ArtifactRepository for the semantic 'definition:{objectiveId}' ref.
@@ -166,7 +179,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
-      instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${DEFER_APPLICATION_CONTRACT}`,
+      instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${DEFER_APPLICATION_CONTRACT}` +
+        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -196,7 +210,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'misclassified and belongs to CAN_RESOLVE, ' +
         'HUMAN_DECISION, or EXPLORE_AS_WORK instead.\n\n' +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.',
+        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {
         type: 'definition-readiness',
@@ -217,7 +232,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
-      instruction: HUMAN_DECISION_PREPARE_CONTRACT,
+      instruction: HUMAN_DECISION_PREPARE_CONTRACT + `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -242,7 +257,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       includeDecisionContext: true,
-      instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${HUMAN_DECISION_APPLY_CONTRACT}`,
+      instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${HUMAN_DECISION_APPLY_CONTRACT}` +
+        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -270,7 +286,8 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'A further HUMAN_DECISION gap routes `human` again — one checkpoint per question, ' +
         'chained within this same WorkflowRun for as many real human decisions as remain.\n\n' +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.',
+        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {
         type: 'definition-readiness',
@@ -292,7 +309,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
-      instruction: EXPLORATION_NEED_CONTRACT,
+      instruction: EXPLORATION_NEED_CONTRACT + `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',

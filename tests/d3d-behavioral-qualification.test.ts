@@ -27,6 +27,8 @@ import path from 'node:path';
 
 import type { MultiTurnParams, MultiTurnResult, ToolUseBlock } from '../src/agent-loop.js';
 import type { LLMCompletionParams } from '../src/llm-provider.js';
+import { DEFINE_WORK } from '../src/workflow/builtins/define-work.js';
+import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 
 import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES,
@@ -509,5 +511,98 @@ test('D.3d Layer A — maturity comparison: more complete intent produces less d
     cleanup(early.root);
     cleanup(partial.root);
     cleanup(mature.root);
+  }
+});
+
+// ============================================================================
+// D.3d live-provider qualification regression — the exact first Layer B
+// failure, locked deterministically. Running the SAME scenarios through a
+// real provider (OpenRouter / claude-sonnet-4) failed every scenario at
+// synthesize-definition: the model produced sensible methodology content but
+// never emitted the SLE-OUTPUT transport delimiters, and could not have — no
+// prompt anywhere taught them (agent-runner.ts parses an '<!-- SLE-OUTPUT'
+// YAML preamble on the forced single-turn review path; agent-loop.ts +
+// output-parser.ts parse '<<<SLE-OUTPUT>>>' delimiters on the multi-turn
+// produce path), and the declared output path a reply must be written to was
+// never rendered into any prompt either. Layer A never caught this because
+// its scripted provider emitted the correct transport by construction.
+//
+// The fix composes OUTPUT_FORMAT_CONTRACT into every define-work step
+// instruction and renders ctx.outputArtifact.path into the task text.
+// ============================================================================
+
+test('D.3d regression (live-provider failure): every define-work step instruction teaches its own transport format, exclusively', () => {
+  for (const step of DEFINE_WORK.steps) {
+    // A checkpoint step (human-decision-checkpoint) produces no LLM output and
+    // carries no instruction — only steps that drive a model reply can teach
+    // (or fail to teach) a transport format.
+    const instruction = step.instruction;
+    if (!instruction) continue;
+    const isReview = step.requiresReviewVerdict === true;
+    if (isReview) {
+      assert.ok(
+        instruction.includes('<!-- SLE-OUTPUT'),
+        `review step '${step.id}' must teach the single-turn <!-- SLE-OUTPUT preamble`,
+      );
+      assert.ok(
+        instruction.includes('verdict: pass') || instruction.includes("'verdict: pass'") || instruction.includes('verdict:'),
+        `review step '${step.id}' must teach the verdict declaration`,
+      );
+      assert.ok(
+        !instruction.includes('<<<SLE-OUTPUT>>>'),
+        `review step '${step.id}' must NOT teach the multi-turn delimiter format (mixing the two shapes made a real model emit the wrong one)`,
+      );
+    } else {
+      assert.ok(
+        instruction.includes('<<<SLE-OUTPUT>>>') && instruction.includes('<<<END-SLE-OUTPUT>>>'),
+        `produce step '${step.id}' must teach the multi-turn <<<SLE-OUTPUT>>> delimiters`,
+      );
+      assert.ok(
+        instruction.includes('declared output artifact path'),
+        `produce step '${step.id}' must tie the transport to the declared output artifact path`,
+      );
+      assert.ok(
+        !instruction.includes('<!-- SLE-OUTPUT'),
+        `produce step '${step.id}' must NOT teach the single-turn preamble format (mixing the two shapes made a real model emit the wrong one)`,
+      );
+    }
+  }
+});
+
+test('D.3d regression (live-provider failure): the declared output artifact path is rendered into the task text, and only when declared', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'd3d-output-path-'));
+  try {
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const baseCtx = {
+      workflowRunId: 'd3d-format-run',
+      workflowId: 'define-work',
+      iteration: 1,
+      revision: 0,
+      goal: 'Prove the declared output path is visible to the model',
+      projectRoot: root,
+    };
+
+    const withOutput = await cm.assemble('explorer', {
+      ...baseCtx,
+      stepId: 'synthesize-definition',
+      instruction: DEFINE_WORK.steps[0].instruction!,
+      outputArtifact: { type: 'definition', ref: 'definition:o1', path: '.sle/work/wi-x/definition.md' },
+    });
+    assert.ok(
+      withOutput.task.includes("Declared output artifact: write exactly one artifact section at '.sle/work/wi-x/definition.md'"),
+      `task must render the declared output path:\n${withOutput.task}`,
+    );
+
+    const withoutOutput = await cm.assemble('explorer', {
+      ...baseCtx,
+      stepId: 'some-legacy-step',
+      instruction: 'Do the legacy thing.',
+    });
+    assert.ok(
+      !withoutOutput.task.includes('Declared output artifact:'),
+      'a step with no declared outputArtifact must render byte-for-byte as before',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

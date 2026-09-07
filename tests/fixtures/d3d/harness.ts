@@ -154,6 +154,36 @@ export function extractFactBlock(text: string, factId: string): string {
   return m ? m[0] : '';
 }
 
+// D.3d — format-robust fact-ledger lookup. The D.3a contract prescribes the
+// ledger entry SHAPE ({ id, statement, status, source }) but not the textual
+// rendering: a live model may write `- id: x` lines (Layer A's scripted
+// style) or inline-object entries like `- { id: "f2", statement: "...",
+// status: "KNOWN", source: "repository" }`. Both are compliant, so the
+// oracle must find facts SEMANTICALLY (by what the statement says) and then
+// check status/provenance within the matched entry — never by prescribed id
+// or line format (spec: "Exact wording/fact ids are not prescribed").
+export function findFactBlocksAbout(text: string, topic: RegExp): string[] {
+  const blocks: string[] = [];
+  // Split into candidate entries at every "- " bullet line (any ledger
+  // rendering starts one: "- id: x", '- { id: "x" ... }', "- F001: { ... }").
+  // Non-ledger bullets (constraints, requirements, acceptance criteria) also
+  // become "blocks" here but are filtered out below by the /status/ marker.
+  const lines = text.split('\n');
+  let current: string[] = [];
+  const flush = () => {
+    const block = current.join('\n').trim();
+    if (block && /status/.test(block)) blocks.push(block);
+    current = [];
+  };
+  for (const line of lines) {
+    const startsEntry = /^-\s/.test(line);
+    if (startsEntry) flush();
+    if (current.length > 0 || startsEntry) current.push(line);
+  }
+  flush();
+  return blocks.filter((b) => topic.test(b) && /status/.test(b));
+}
+
 function check(name: string, pass: boolean, detail?: string): OracleCheck {
   return { name, pass, detail };
 }
@@ -169,21 +199,33 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   const firstReview = reviews[0];
   const refineIdx = trace.steps.findIndex((s) => s.reviewRoute === 'refine');
   const escalationIdx = trace.steps.findIndex((s) => s.reviewRoute === 'human' || s.reviewRoute === 'explore');
-  const networkingFact = extractFactBlock(trace.definitionText, 'networking-layer')
-    || extractFactBlock(trace.definitionText, 'networking');
+  // D.3d — semantic lookup: any ledger entry whose statement is about the
+  // networking layer, whatever id the model gave it (spec: ids not prescribed).
+  const networkingFacts = findFactBlocksAbout(trace.definitionText, /network/i);
+  const networkingKnown = networkingFacts.find(
+    (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(repository|investigation)/.test(b),
+  );
   const resolvedDecision = trace.decisions.find((d) => d.selectedOptionId);
+  // Spec §7: "at least one CAN_RESOLVE refinement occurs before human/explore
+  // escalation when such a gap exists". Whether such a gap was ever named is
+  // read from the recorded readiness Artifact (the harness keeps the final
+  // one) — the authoritative record of what reviews found. A model that
+  // resolves cheap facts during synthesis (by actually reading the
+  // repository) legitimately leaves no CAN_RESOLVE gap for any review to
+  // route, and must not be failed for it.
+  const reviewSawCanResolve = /CAN_RESOLVE/i.test(trace.readinessText ?? '');
 
   const checks: OracleCheck[] = [
     check('initial review is not pass', firstReview?.reviewVerdict === 'fail',
       `first review (${firstReview?.stepId}) verdict=${firstReview?.reviewVerdict}`),
-    check('a CAN_RESOLVE (refine) round occurs before human/explore escalation',
-      refineIdx !== -1 && (escalationIdx === -1 || refineIdx < escalationIdx),
-      `refineIdx=${refineIdx} escalationIdx=${escalationIdx}`),
+    check('a CAN_RESOLVE (refine) round occurs before human/explore escalation when such a gap exists',
+      !reviewSawCanResolve || (refineIdx !== -1 && (escalationIdx === -1 || refineIdx < escalationIdx)),
+      `readiness named a CAN_RESOLVE gap=${reviewSawCanResolve} refineIdx=${refineIdx} escalationIdx=${escalationIdx}`),
     check('repository investigation actually occurred (a tool-use round trip)',
       trace.toolUseRoundTrips >= 1, `toolUseRoundTrips=${trace.toolUseRoundTrips}`),
     check('the networking fact is KNOWN with repository/investigation provenance, not guessed',
-      /status: KNOWN/.test(networkingFact) && /source: (repository|investigation)/.test(networkingFact),
-      networkingFact || '(no networking fact block found)'),
+      networkingKnown !== undefined,
+      networkingKnown || `(networking-related entries found: ${networkingFacts.length})`),
     check('a real Decision exists for the product/platform-scope question',
       trace.decisions.length >= 1, `decisions=${trace.decisions.length}`),
     check('the human question was not merely a repository lookup',
@@ -285,6 +327,13 @@ export interface DriveOptions {
   objectiveIntent: ObjectiveIntent;
   provider: ILLMProvider;
   /**
+   * Model id passed to AgentRunner. Layer A's scripted provider ignores the
+   * model string (default 'test' keeps recorded traces stable); Layer B must
+   * pass the model resolveLLMProvider() actually resolved, or the live
+   * provider receives a nonsense model id and every call fails.
+   */
+  model?: string;
+  /**
    * Called for each pending Decision the run raises. Return the resolution
    * to apply, or `undefined` to refuse resolving it (the run is left
    * halted — used when no legitimate option represents the scenario's
@@ -340,7 +389,7 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   const runArtifactsStub = {
     async writeNodeOutput() {}, async updateNodeStatus() {}, async createRunDir() {}, async createManifest() {},
   } as any;
-  const agentRunner = new AgentRunner(cm, provider, root, runArtifactsStub, { model: 'test' }, undefined, artifacts);
+  const agentRunner = new AgentRunner(cm, provider, root, runArtifactsStub, { model: opts.model ?? 'test' }, undefined, artifacts);
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: recordingStepRunner,
