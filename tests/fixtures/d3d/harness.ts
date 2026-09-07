@@ -29,7 +29,7 @@ import type { StepRunner, StepRunContext, StepRunOutcome, WorkflowStep } from '.
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../../../src/llm-provider.js';
 import type { Objective } from '../../../src/domain/index.js';
 import type { ObjectiveIntent, FixtureFile } from './fixtures.js';
-import { materializeFixtureRepo } from './fixtures.js';
+import { materializeFixtureRepo, findSamePlatformOnlyOption } from './fixtures.js';
 
 // ============================================================================
 // RecordingStepRunner — captures the exact step/verdict/route trace of a run,
@@ -188,6 +188,24 @@ function check(name: string, pass: boolean, detail?: string): OracleCheck {
   return { name, pass, detail };
 }
 
+// D.3d.1 — semantic identification of the platform-scope Decision. The early
+// scenario's REQUIRED human question is whether cross-platform support
+// belongs in this bounded increment; the oracle must fail if a run completes
+// without it, whatever other genuine chained Decisions the model also raises.
+// Matched from title/summary/option text — never one exact title or option id
+// (spec: ids not prescribed). A repository lookup posed as a Decision is
+// already a separate failure (see the not-a-repository-lookup check below).
+function isPlatformScopeDecision(
+  d: DecisionSummary,
+): boolean {
+  const text = (
+    `${d.title} ${d.summary} ` +
+    d.options.map((o) => `${o.label} ${o.description ?? ''}`).join(' ')
+  ).toLowerCase();
+  return /cross-?platform/.test(text) &&
+    /(scope|increment|belongs?|includ|exclud|support)/.test(text);
+}
+
 const REVIEW_STEP_IDS = ['definition-readiness-review', 'post-defer-readiness-review', 'post-human-readiness-review'];
 
 function reviewSteps(trace: DefineWorkTrace): RecordedStep[] {
@@ -205,35 +223,53 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   const networkingKnown = networkingFacts.find(
     (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(repository|investigation)/.test(b),
   );
-  const resolvedDecision = trace.decisions.find((d) => d.selectedOptionId);
-  // Spec §7: "at least one CAN_RESOLVE refinement occurs before human/explore
-  // escalation when such a gap exists". Whether such a gap was ever named is
-  // read from the recorded readiness Artifact (the harness keeps the final
-  // one) — the authoritative record of what reviews found. A model that
-  // resolves cheap facts during synthesis (by actually reading the
-  // repository) legitimately leaves no CAN_RESOLVE gap for any review to
-  // route, and must not be failed for it.
-  const reviewSawCanResolve = /CAN_RESOLVE/i.test(trace.readinessText ?? '');
+  // D.3d.1 — the REQUIRED platform-scope Decision, found semantically. Other
+  // genuine chained Decisions may also exist; the run must fail if the
+  // cross-platform membership question was never raised, never offered a
+  // legitimate same-platform-only option, resolved to a different option,
+  // or is not traceable into the final Definition via its real id.
+  const platformScopeDecision = trace.decisions.find(isPlatformScopeDecision);
+  const platformScopeOption = platformScopeDecision
+    ? findSamePlatformOnlyOption(platformScopeDecision.options)
+    : undefined;
+  const platformScopeResolved =
+    platformScopeDecision !== undefined &&
+    platformScopeOption !== undefined &&
+    platformScopeDecision.selectedOptionId === platformScopeOption.id;
+  // D.3d.1 — read from the recorded route TRACE, not the final readiness
+  // artifact (that only reflects the LAST review, not the history of what
+  // earlier reviews named). Invariant: if refinement occurred, its first
+  // occurrence must precede the first escalation; if it never occurred, that
+  // is acceptable — synthesis itself resolving the cheap repository fact is
+  // the anti-ceremony behavior, and the independent repository/tool-use and
+  // provenance checks below still guard that it actually happened.
+  const refineBeforeEscalation =
+    refineIdx === -1 || escalationIdx === -1 || refineIdx < escalationIdx;
 
   const checks: OracleCheck[] = [
     check('initial review is not pass', firstReview?.reviewVerdict === 'fail',
       `first review (${firstReview?.stepId}) verdict=${firstReview?.reviewVerdict}`),
-    check('a CAN_RESOLVE (refine) round occurs before human/explore escalation when such a gap exists',
-      !reviewSawCanResolve || (refineIdx !== -1 && (escalationIdx === -1 || refineIdx < escalationIdx)),
-      `readiness named a CAN_RESOLVE gap=${reviewSawCanResolve} refineIdx=${refineIdx} escalationIdx=${escalationIdx}`),
+    check('refine precedes human/explore escalation when refinement occurs (cheap facts may be resolved during synthesis)',
+      refineBeforeEscalation,
+      `refineIdx=${refineIdx} escalationIdx=${escalationIdx}`),
     check('repository investigation actually occurred (a tool-use round trip)',
       trace.toolUseRoundTrips >= 1, `toolUseRoundTrips=${trace.toolUseRoundTrips}`),
     check('the networking fact is KNOWN with repository/investigation provenance, not guessed',
       networkingKnown !== undefined,
       networkingKnown || `(networking-related entries found: ${networkingFacts.length})`),
-    check('a real Decision exists for the product/platform-scope question',
-      trace.decisions.length >= 1, `decisions=${trace.decisions.length}`),
+    check('a Decision genuinely concerns whether cross-platform support belongs in this bounded increment',
+      platformScopeDecision !== undefined,
+      platformScopeDecision ? `"${platformScopeDecision.title}"` : `decisions=[${trace.decisions.map((d) => d.title).join(' | ')}]`),
     check('the human question was not merely a repository lookup',
       !trace.decisions.some((d) => /already have networking|networking code|does the repository/i.test(d.title)),
       trace.decisions.map((d) => d.title).join(' | ')),
-    check('the resolved Decision\'s real id is referenced in the Definition',
-      !resolvedDecision || trace.definitionText.includes(resolvedDecision.id),
-      resolvedDecision ? `decision ${resolvedDecision.id}` : '(no decision resolved)'),
+    check('the platform-scope Decision offers a legitimate same-platform-only option and was resolved to it',
+      platformScopeResolved,
+      `decision="${platformScopeDecision?.title}" samePlatformOption=${platformScopeOption?.id} selected=${platformScopeDecision?.selectedOptionId}`),
+    check('the final Definition references the resolved platform-scope Decision\'s real id',
+      platformScopeDecision !== undefined && platformScopeResolved &&
+        trace.definitionText.includes(platformScopeDecision.id),
+      `decision id=${platformScopeDecision?.id}`),
     check('an exploration-need Artifact exists for the empirical latency/feasibility question',
       trace.explorationNeedText !== null && /latency|frame budget|feasib/i.test(trace.explorationNeedText ?? ''),
       trace.explorationNeedText?.slice(0, 120) ?? '(none)'),
@@ -252,9 +288,50 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   return { scenarioId: 'early', checks, pass: checks.every((c) => c.pass) };
 }
 
+// D.3d.1 — the authoritative facts the PARTIAL Objective supplies as intent.
+// The final Definition must not silently weaken any of them into guesses:
+// where a topic is represented as a ledger entry, that entry must remain an
+// authoritative KNOWN fact with suitable provenance (human for stated product
+// intent, repository where inspection independently confirmed reality).
+// Matched semantically — exact ids and textual formatting are not prescribed.
+// `requireLedgerEntry: false` for combat: it may legitimately be represented
+// as a constraint/non-goal rather than a ledger entry (the dedicated combat
+// boundary check covers presence; this check covers epistemics when present).
+const AUTHORITATIVE_FACT_TOPICS: Array<{ name: string; topic: RegExp; requireLedgerEntry: boolean }> = [
+  { name: 'settlements have factions', topic: /factions?\b/i, requireLedgerEntry: true },
+  { name: 'NPCs have loyalty', topic: /loyalty/i, requireLedgerEntry: true },
+  { name: 'faction relations affect dialogue', topic: /dialogue/i, requireLedgerEntry: true },
+  { name: 'faction relations affect trade', topic: /trade|price/i, requireLedgerEntry: true },
+  { name: 'combat is out of scope', topic: /combat/i, requireLedgerEntry: false },
+];
+
+export function authoritativeFactsPreserved(definitionText: string): { pass: boolean; detail: string } {
+  const problems: string[] = [];
+  for (const { name, topic, requireLedgerEntry } of AUTHORITATIVE_FACT_TOPICS) {
+    const blocks = findFactBlocksAbout(definitionText, topic);
+    if (blocks.length === 0) {
+      if (requireLedgerEntry) problems.push(`${name}: no ledger entry found`);
+      continue;
+    }
+    const authoritative = blocks.find(
+      (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(human|repository)/.test(b),
+    );
+    if (!authoritative) {
+      problems.push(
+        `${name}: ${blocks.length} ledger entr${blocks.length === 1 ? 'y' : 'ies'} but none KNOWN with human/repository provenance`,
+      );
+    }
+  }
+  return {
+    pass: problems.length === 0,
+    detail: problems.join(' | ') || 'all authoritative supplied facts KNOWN with provenance',
+  };
+}
+
 export function oraclePartial(trace: DefineWorkTrace): OracleResult {
   const combatFact = extractFactBlock(trace.definitionText, 'combat-out-of-scope')
     || extractFactBlock(trace.definitionText, 'combat');
+  const epistemic = authoritativeFactsPreserved(trace.definitionText);
   const checks: OracleCheck[] = [
     check('supplied product facts (faction/loyalty/dialogue/trade) remain represented',
       ['faction', 'loyalty', 'dialogue', 'trade'].every((kw) => new RegExp(kw, 'i').test(trace.definitionText)),
@@ -262,6 +339,8 @@ export function oraclePartial(trace: DefineWorkTrace): OracleResult {
     check('combat remains an explicit non-goal/boundary',
       /combat/i.test(trace.definitionText) && /(non-?goal|out of scope|must_not|must not)/i.test(trace.definitionText),
       ''),
+    check('authoritative supplied facts are KNOWN with provenance, not silently weakened to ASSUMED/UNKNOWN',
+      epistemic.pass, epistemic.detail),
     check('no unnecessary Decision was created', trace.decisions.length === 0, `decisions=${trace.decisions.length}`),
     check('no unnecessary exploration Artifact was created', trace.explorationNeedText === null, ''),
     check('iteration count stays low (<=2)', trace.iterationsUsed <= 2, `iterationsUsed=${trace.iterationsUsed}`),
