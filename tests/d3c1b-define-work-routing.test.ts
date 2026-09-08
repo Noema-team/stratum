@@ -754,6 +754,45 @@ test('D.3c1b: definition-readiness-review\'s actual instruction text locks CAN_R
   }
 });
 
+// ── D.3d.3 — every readiness-review step receives the drafter's contract ──────
+//
+// The DeepSeek Pro live qualification (D.3d Layer B, PARTIAL observations #2
+// and #5) exposed what happens when the readiness reviewer does not see the
+// Definition contract: the reviewer passed (and in #5 explicitly PASSED) a
+// Definition whose fact ledger omitted every authoritative supplied fact,
+// because the rubric's consistency and risky-assumptions dimensions are only
+// judgeable against the contract that defines what KNOWN/ASSUMED/UNKNOWN
+// mean. The review steps run single-turn and cannot read any methodology
+// document at runtime, so the contract must be composed into the
+// instruction itself — for ALL THREE readiness-review steps, not just the
+// first one.
+
+test('D.3d.3: every readiness-review step receives the DEFINITION_CONTRACT in its instruction', () => {
+  const reviewStepIds = ['definition-readiness-review', 'post-defer-readiness-review', 'post-human-readiness-review'];
+  // Distinctive fragments that exist only inside DEFINITION_CONTRACT — if
+  // the contract is dropped from an instruction, these vanish with it.
+  const contractFragments = ['Fact ledger rules:', 'status is exactly one of:', 'source records where the fact came from:'];
+  for (const stepId of reviewStepIds) {
+    const step = DEFINE_WORK.steps.find((s) => s.id === stepId)!;
+    assert.ok(step, `expected step ${stepId} to exist`);
+    const instruction = step.instruction ?? '';
+    for (const fragment of contractFragments) {
+      assert.ok(
+        instruction.includes(fragment),
+        `${stepId}'s instruction must include the DEFINITION_CONTRACT fragment '${fragment}' — a readiness reviewer without the Definition contract cannot judge ledger/epistemic discipline`,
+      );
+    }
+    // The contract must precede the rubric: the reviewer reads the contract
+    // as the definition of the artifact BEFORE judging it against the rubric.
+    const contractIdx = instruction.indexOf('Fact ledger rules:');
+    const rubricIdx = instruction.indexOf('seven dimensions');
+    assert.ok(
+      contractIdx !== -1 && rubricIdx !== -1 && contractIdx < rubricIdx,
+      `${stepId}: DEFINITION_CONTRACT must appear before the readiness rubric in the instruction`,
+    );
+  }
+});
+
 // ============================================================================
 // D.3c1b.1 — DEFER runtime semantics: DEFER is not blocking. These lock the
 // wording fix so the runtime instruction can never regress to saying a
