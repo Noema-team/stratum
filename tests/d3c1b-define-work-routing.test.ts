@@ -55,7 +55,9 @@ import {
   DecisionRepository,
 } from '../src/storage/repositories.js';
 import {
+  GAP_CLASSIFICATION,
   GAP_CLASSIFICATION_PRECEDENCE,
+  READINESS_RUBRIC,
   READINESS_ROUTE_CONTRACT,
 } from '../src/workflow/methodology/definition-readiness.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/types.js';
@@ -791,6 +793,71 @@ test('D.3d.3: every readiness-review step receives the DEFINITION_CONTRACT in it
       `${stepId}: DEFINITION_CONTRACT must appear before the readiness rubric in the instruction`,
     );
   }
+});
+
+// ============================================================================
+// D.3d.4 — the semantic-contract correction, driven by cross-model evidence.
+//
+// DeepSeek V4 Pro (4/5 PARTIAL runs) and GLM 5.3 Flash (1/1) independently
+// converged on escalating "what does loyalty do here?" as HUMAN_DECISION
+// when the Objective stated "NPCs have loyalty" beside "faction relations
+// affect dialogue and trade" — a reasonable reading of an authority
+// boundary the input never settled. The GLM run additionally showed the
+// reviewer routing straight to `human` while the Definition's ledger
+// weakened every authoritative fact: having DEFINITION_CONTRACT in context
+// (D.3d.3) is not the same as contract compliance being an explicit
+// readiness precondition that participates in route precedence. These two
+// tests lock the two generic methodology corrections so they cannot
+// silently regress.
+// ============================================================================
+
+test('D.3d.4: GAP_CLASSIFICATION forbids manufacturing relationships between independently stated facts', () => {
+  // The constants wrap lines, so match against normalized whitespace.
+  const text = GAP_CLASSIFICATION.replace(/\s+/g, ' ');
+  // The rule lives in the HUMAN_DECISION block — it refines exactly the
+  // boundary where DeepSeek Pro and GLM 5.3 Flash failed.
+  const humanBlock = text.slice(text.indexOf('- HUMAN_DECISION'), text.indexOf('- DEFER'));
+  assert.ok(
+    humanBlock.includes('a fact being MENTIONED in the Objective does not imply that it participates'),
+    'the HUMAN_DECISION block must state that mentioning a fact does not imply participation in every behavior',
+  );
+  assert.ok(
+    humanBlock.includes('Never manufacture a relationship between independently stated facts'),
+    'the HUMAN_DECISION block must forbid manufacturing relationships and treating their absence as an open scope question',
+  );
+  assert.ok(
+    humanBlock.includes('only a relationship actually required to satisfy the stated goal'),
+    'the rule must be bounded: only goal/requirement/constraint/acceptance-required relationships need resolving',
+  );
+  assert.ok(
+    humanBlock.includes('KNOWN, source: human'),
+    'the rule must give the correct resting state for a mentioned-but-unconnected fact',
+  );
+});
+
+test('D.3d.4: READINESS_RUBRIC makes contract compliance an explicit CAN_RESOLVE precondition that outranks human escalation', () => {
+  const rubric = READINESS_RUBRIC.replace(/\s+/g, ' ');
+  const preconditionIdx = rubric.indexOf('verify the Definition obeys DEFINITION_CONTRACT');
+  assert.ok(preconditionIdx !== -1, 'the rubric must open with a contract-compliance precondition');
+  const dimensionsIdx = rubric.indexOf('1. Outcome');
+  assert.ok(
+    preconditionIdx < dimensionsIdx,
+    'the contract-compliance precondition must appear BEFORE the seven dimensions',
+  );
+  // All three defect classes the live qualification exposed must be named.
+  assert.ok(rubric.includes('absent from the ledger'), 'absence from the ledger must be a named contract defect');
+  assert.ok(rubric.includes('silently weakened to ASSUMED/UNKNOWN'), 'silent weakening must be a named contract defect');
+  assert.ok(rubric.includes('provenance it does not have'), 'invalid provenance must be a named contract defect');
+  // The precedence consequence is the operational point: contract defects
+  // are CAN_RESOLVE and refine before any human question.
+  assert.ok(
+    rubric.includes('CAN_RESOLVE Definition defect'),
+    'contract defects must be classified CAN_RESOLVE',
+  );
+  assert.ok(
+    /refine comes first/.test(rubric),
+    'the rubric must state that refine precedes human escalation when both a ledger defect and a candidate question exist',
+  );
 });
 
 // ============================================================================

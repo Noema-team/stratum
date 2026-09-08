@@ -102,7 +102,17 @@ A single-player action game. See docs/architecture.md for current systems.
 export const PARTIAL_OBJECTIVE: ObjectiveIntent = {
   title: 'Factions affect NPC dialogue and trade',
   description:
-    'Settlements have factions. NPCs have loyalty. Faction relations affect dialogue and ' +
+    // D.3d.4 — the loyalty sentence is disambiguated at the source. The
+    // original wording ("NPCs have loyalty.") left the fact's participation
+    // in this increment genuinely unstated, and three different capable
+    // models (DeepSeek V4 Pro x4, GLM 5.3 Flash) all converged on
+    // escalating "what does loyalty do here?" as a HUMAN_DECISION — a
+    // reasonable reading of an ambiguous authority boundary, not noise.
+    // The Objective now settles membership itself, so the expected
+    // behavior is objective: loyalty is a stated fact to represent in the
+    // ledger (KNOWN, source: human) and nothing more.
+    'Settlements have factions. NPCs have loyalty, but loyalty is not part of the ' +
+    'behavior being changed in this increment. Faction relations affect dialogue and ' +
     'trade. Combat is explicitly out of scope for this increment.',
   constraints: [{ description: 'Combat is out of scope for this increment', type: 'must_not' as const }],
   successCriteria: [{ description: 'An NPC\'s dialogue and trade prices reflect their faction\'s relation to the player' }],

@@ -62,6 +62,20 @@ Fact ledger rules:
 
 export const READINESS_RUBRIC = `Evaluate the current Definition against these seven dimensions, each scoped to the
 candidate bounded scope this Definition defines — not the entire Objective:
+
+D.3d.4 — before the seven dimensions, verify the Definition obeys DEFINITION_CONTRACT itself.
+Every fact the Objective authoritatively states (product intent and stated domain facts) must
+be represented in the ledger with the epistemic status and provenance it actually has: KNOWN
+with source: human for stated human intent — repository verification may confirm a
+repository-state claim and make it KNOWN with source: repository too. An authoritative
+Objective fact that is absent from the ledger, silently weakened to ASSUMED/UNKNOWN, or given
+provenance it does not have is a CAN_RESOLVE Definition defect: name it among the current gaps
+so the normal classification order applies. A ledger defect is fixable by refining the
+Definition and must never be the reason a separate question escalates to a human first — if
+the review finds both a contract defect and a candidate HUMAN_DECISION, refine comes first
+and the question is re-examined against the corrected ledger. Then evaluate the seven
+dimensions:
+
 1. Outcome — is goal a single, concrete statement? Could a reader tell whether the eventual
    work satisfies it?
 2. Boundary — does nonGoals meaningfully exclude adjacent scope, so the bounded scope has an
@@ -201,11 +215,17 @@ exists), classified into exactly one bucket:
   too: a question a competent engineer can settle with a reasonable stated default (recorded
   in the Definition as ASSUMED, with its rationale) is NOT HUMAN_DECISION — robustness and
   error-handling behavior for degenerate inputs being the canonical example: choose the safe
-  default, record it with its rationale, and move on. An unstated implementation detail that
-  connects facts the Objective already states is likewise derived design, not a fresh human
-  choice — and a fact the Objective states is authoritative: never re-open it as a question.
-  Reserving human attention for choices that genuinely need it is part of this classification's
-  discipline.
+   default, record it with its rationale, and move on. An unstated implementation detail that
+   connects facts the Objective already states is likewise derived design, not a fresh human
+   choice — and a fact the Objective states is authoritative: never re-open it as a question.
+   D.3d.4 — a fact being MENTIONED in the Objective does not imply that it participates in every
+   behavior the Objective describes. Never manufacture a relationship between independently
+   stated facts and then treat the absence of that relationship as an open scope question:
+   only a relationship actually required to satisfy the stated goal, a requirement, a
+   constraint, or an acceptance criterion needs resolving at all. A mentioned-but-unconnected
+   fact simply stays in the ledger as what it is (KNOWN, source: human) and requires no
+   question, no invented behavior, and no non-goal. Reserving human attention for choices that
+   genuinely need it is part of this classification's discipline.
 - DEFER — the gap is real but does not block the bounded scope being defined now. DEFER is
   for items already understood to lie outside the candidate bounded scope (clearly later-phase
   work) — never a place to park an undecided question about what the bounded scope itself
