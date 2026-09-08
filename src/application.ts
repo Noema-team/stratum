@@ -161,12 +161,12 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   const artifactRepository = new ArtifactRepository(db);
 
   // ── LLM provider (reads settings file; falls back gracefully) ─────────────
-  const { provider: llmProvider, model: resolvedModel } = resolveLLMProvider(projectRoot);
+  const { provider: llmProvider, model: resolvedModel, maxTokens: resolvedMaxTokens } = resolveLLMProvider(projectRoot);
 
   // ── Agent execution stack ──────────────────────────────────────────────────
   const contextManager = new ContextManager(projectRoot);
   const agentRunner = buildAgentRunner(
-    contextManager, llmProvider, projectRoot, runArtifacts, resolvedModel, artifactRepository,
+    contextManager, llmProvider, projectRoot, runArtifacts, resolvedModel, artifactRepository, resolvedMaxTokens,
   );
   const agentStepRunner = new AgentStepRunner(agentRunner);
 
@@ -278,6 +278,25 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 export interface LLMProviderResult {
   provider: ILLMProvider;
   model: string;
+  // D.3d.2 — resolved completion budget from the same `.sle/settings.json`
+  // the provider/model resolve from (`"max_tokens": 16384`). Absent or
+  // invalid → 4096, AgentRunner's own historical default, so existing
+  // deployments behave byte-for-byte as before. This is the REAL production
+  // configuration seam: reasoning-style models spend completion budget on
+  // hidden reasoning tokens, so the budget must be an operator setting, not
+  // a fixed assumption — and the live-eval harness resolves through this
+  // exact same path so Layer B always evaluates the production budget.
+  maxTokens: number;
+}
+
+// D.3d.2 — the completion-budget validation rule, matching the existing
+// settings philosophy in resolveLLMProvider: strict per-field typeof checks,
+// anything not a positive integer falls back to the 4096 default silently
+// (same as an invalid model type falls back to the default model). Exported
+// only for direct regression coverage of the validation edge cases.
+export function resolveCompletionBudget(saved: unknown): number {
+  const v = (saved as Record<string, unknown> | null)?.max_tokens;
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 4096;
 }
 
 // D.3b1.2 — narrow composition-root seam. AgentRunner defaults its
@@ -296,10 +315,11 @@ export function buildAgentRunner(
   runArtifacts: RunArtifactManager,
   resolvedModel: string,
   artifactRepository: ArtifactRepository,
+  maxTokens: number,
 ): AgentRunner {
   return new AgentRunner(
     contextManager, llmProvider, projectRoot, runArtifacts,
-    { model: resolvedModel }, undefined, artifactRepository,
+    { model: resolvedModel, max_tokens: maxTokens }, undefined, artifactRepository,
   );
 }
 
@@ -316,6 +336,7 @@ export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
     model: 'gpt-4o',
     api_key_env: 'OPENAI_API_KEY',
   };
+  let maxTokens = 4096;
 
   if (existsSync(settingsPath)) {
     try {
@@ -331,19 +352,25 @@ export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
         };
         if (saved.api_key) process.env.SLE_LLM_API_KEY = String(saved.api_key);
       }
+      // D.3d.2 — optional completion budget, validated by the same strict
+      // per-field philosophy as model/base_url above. Read independently of
+      // the provider guard so a settings file refining only the budget still
+      // applies it; absent/invalid keeps AgentRunner's 4096 default exactly.
+      maxTokens = resolveCompletionBudget(saved);
     } catch {
       // malformed settings — fall back to default
     }
   }
 
   try {
-    return { provider: new DynamicLLMProvider(createLLMProvider(config)), model: config.model };
+    return { provider: new DynamicLLMProvider(createLLMProvider(config)), model: config.model, maxTokens };
   } catch {
     return {
       provider: new DynamicLLMProvider({
         complete: () => Promise.reject(new Error('LLM not configured')),
       }),
       model: config.model,
+      maxTokens,
     };
   }
 }

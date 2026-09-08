@@ -117,6 +117,8 @@ interface ScenarioScript {
   singleTurnSequence: SingleTurnEntry[];
   /** Called if the run halts at a checkpoint — must resolve the Decision. */
   resolveDecision?: (options: Array<{ id: string; label: string; description?: string }>) => { selectedOptionId: string; rationale: string };
+  /** D.3d.2 — optional resolved completion budget (Layer A omits it → 4096). */
+  maxTokens?: number;
 }
 
 // Both layers share the SAME orchestration (driveDefineWorkRun in
@@ -132,6 +134,7 @@ async function runScenario(script: ScenarioScript): Promise<{ trace: DefineWorkT
     fixtureFiles: script.fixtureFiles,
     objectiveIntent: script.objectiveIntent,
     provider: provider as any,
+    maxTokens: script.maxTokens,
     resolveDecision: (options, decision) => {
       assert.ok(script.resolveDecision, `scenario '${script.scenarioId}' raised a Decision (${decision.title}) but declared no resolveDecision policy`);
       return script.resolveDecision!(options);
@@ -511,6 +514,71 @@ test('D.3d Layer A — maturity comparison: more complete intent produces less d
     cleanup(early.root);
     cleanup(partial.root);
     cleanup(mature.root);
+  }
+});
+
+// ============================================================================
+// D.3d.2 — the live-eval harness must evaluate the production completion
+// budget. DriveOptions.maxTokens is what scripts/eval-define-work.ts passes
+// from resolveLLMProvider's resolved value; this proves it reaches the model
+// call path (AgentRunner → AgentLoop → provider params) unchanged.
+// ============================================================================
+
+test('D.3d.2: driveDefineWorkRun passes the resolved production maxTokens into every model call', async () => {
+  const script = matureScript();
+  const seen: number[] = [];
+  const capture = (entry: MultiTurnEntry): MultiTurnEntry => (params: MultiTurnParams) => {
+    seen.push(params.max_tokens);
+    return typeof entry === 'function' ? entry(params) : entry;
+  };
+  const { trace, root } = await runScenario({
+    ...script,
+    multiTurnSequence: script.multiTurnSequence.map(capture),
+    singleTurnSequence: script.singleTurnSequence.map((entry) => (params: LLMCompletionParams) => {
+      seen.push(params.max_tokens);
+      return typeof entry === 'function' ? entry(params) : entry;
+    }),
+    maxTokens: 16384,
+  });
+  try {
+    const oracle = runOracle(trace);
+    assert.ok(oracle.pass, 'scripted mature run must still pass with a configured budget');
+    assert.ok(seen.length > 0, 'the capture provider must have observed model calls');
+    assert.ok(
+      seen.every((mt) => mt === 16384),
+      `every model call must carry the resolved production budget, saw: ${seen.join(', ')}`,
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+// Layer A (no maxTokens option) must behave exactly as before — AgentRunner's
+// own 4096 default applies, so scripted traces are unaffected by the seam.
+test('D.3d.2: omitted maxTokens keeps the historical 4096 default in the harness', async () => {
+  const script = matureScript();
+  const seen: number[] = [];
+  const capture = (entry: MultiTurnEntry): MultiTurnEntry => (params: MultiTurnParams) => {
+    seen.push(params.max_tokens);
+    return typeof entry === 'function' ? entry(params) : entry;
+  };
+  const { trace, root } = await runScenario({
+    ...script,
+    multiTurnSequence: script.multiTurnSequence.map(capture),
+    singleTurnSequence: script.singleTurnSequence.map((entry) => (params: LLMCompletionParams) => {
+      seen.push(params.max_tokens);
+      return typeof entry === 'function' ? entry(params) : entry;
+    }),
+  });
+  try {
+    assert.ok(trace.finalStatus === 'complete');
+    assert.ok(seen.length > 0);
+    assert.ok(
+      seen.every((mt) => mt === 4096),
+      `omitted maxTokens must default to 4096 everywhere, saw: ${seen.join(', ')}`,
+    );
+  } finally {
+    cleanup(root);
   }
 });
 

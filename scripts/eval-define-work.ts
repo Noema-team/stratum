@@ -53,6 +53,24 @@ const SCENARIOS: ScenarioDef[] = [
   { scenarioId: 'mature', objectiveIntent: MATURE_OBJECTIVE, fixtureFiles: MATURE_FIXTURE_FILES },
 ];
 
+// D.3d.2 — cheap scenario-selective screening: `--scenario <early|partial|mature>`
+// runs ONE scenario (candidate-model screening without paying for the full
+// suite); no argument runs all three exactly as before. A full QUALIFIED
+// verdict always requires the final combined run — screening never closes D.3d.
+function parseScenarioFilter(argv: string[]): ScenarioDef[] {
+  const flagIndex = argv.indexOf('--scenario');
+  if (flagIndex === -1) return SCENARIOS;
+  const id = argv[flagIndex + 1];
+  const selected = SCENARIOS.find((s) => s.scenarioId === id);
+  if (!selected) {
+    console.error(
+      `Unknown or missing --scenario value: ${id ?? '(none)'} — expected one of: ${SCENARIOS.map((s) => s.scenarioId).join(', ')}`,
+    );
+    process.exit(1);
+  }
+  return [selected];
+}
+
 // D.3d spec item 4: the human question must be resolved by matching a
 // genuine option the workflow itself offered, never a hardcoded option id
 // the live model has no obligation to reproduce. Only 'early' is expected
@@ -133,9 +151,10 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
       await fs.copyFile(settingsOverride, path.join(root, '.sle', 'settings.json'));
     }
 
-    // D.3d — the SAME provider/model resolution createStratumApplication
-    // uses. No bespoke provider path, no hard-coded eval-only model.
-    const { provider, model } = resolveLLMProvider(root);
+    // D.3d — the SAME provider/model/completion-budget resolution
+    // createStratumApplication uses. No bespoke provider path, no hard-coded
+    // eval-only model or budget.
+    const { provider, model, maxTokens } = resolveLLMProvider(root);
 
     let trace: DefineWorkTrace;
     let errorMessage: string | undefined;
@@ -147,6 +166,7 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
         objectiveIntent: scenario.objectiveIntent,
         provider,
         model,
+        maxTokens,
         resolveDecision: decisionPolicy(scenario.scenarioId),
       });
     } catch (err) {
@@ -238,7 +258,9 @@ async function main(): Promise<void> {
   await fs.mkdir(outDir, { recursive: true });
 
   const reports: ScenarioReport[] = [];
-  for (const scenario of SCENARIOS) {
+  const selected = parseScenarioFilter(process.argv.slice(2));
+  process.stdout.write(`Scenarios: ${selected.map((s) => s.scenarioId).join(', ')}\n`);
+  for (const scenario of selected) {
     process.stdout.write(`Running scenario '${scenario.scenarioId}'...\n`);
     const report = await runOneScenario(scenario, outDir);
     reports.push(report);

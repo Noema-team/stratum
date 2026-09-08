@@ -413,6 +413,13 @@ export interface DriveOptions {
    */
   model?: string;
   /**
+   * D.3d.2 — the completion budget resolved by the SAME production settings
+   * path (resolveLLMProvider's maxTokens), so Layer B evaluates the exact
+   * production model + production completion budget. Omitted in Layer A →
+   * AgentRunner keeps its own 4096 default, byte-for-byte as before.
+   */
+  maxTokens?: number;
+  /**
    * Called for each pending Decision the run raises. Return the resolution
    * to apply, or `undefined` to refuse resolving it (the run is left
    * halted — used when no legitimate option represents the scenario's
@@ -468,7 +475,10 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   const runArtifactsStub = {
     async writeNodeOutput() {}, async updateNodeStatus() {}, async createRunDir() {}, async createManifest() {},
   } as any;
-  const agentRunner = new AgentRunner(cm, provider, root, runArtifactsStub, { model: opts.model ?? 'test' }, undefined, artifacts);
+  const agentRunner = new AgentRunner(
+    cm, provider, root, runArtifactsStub,
+    { model: opts.model ?? 'test', max_tokens: opts.maxTokens }, undefined, artifacts,
+  );
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: recordingStepRunner,
