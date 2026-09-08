@@ -64,12 +64,14 @@ export const READINESS_RUBRIC = `Evaluate the current Definition against these s
 candidate bounded scope this Definition defines — not the entire Objective:
 
 D.3d.4 — before the seven dimensions, verify the Definition obeys DEFINITION_CONTRACT itself.
-Every fact the Objective authoritatively states (product intent and stated domain facts) must
-be represented in the ledger with the epistemic status and provenance it actually has: KNOWN
-with source: human for stated human intent — repository verification may confirm a
-repository-state claim and make it KNOWN with source: repository too. An authoritative
-Objective fact that is absent from the ledger, silently weakened to ASSUMED/UNKNOWN, or given
-provenance it does not have is a CAN_RESOLVE Definition defect: name it among the current gaps
+Every fact the Objective states must be represented in the ledger with the epistemic status
+and provenance DEFINITION_CONTRACT assigns it — one epistemic rule, applied here too:
+authoritative product/domain intent is KNOWN (source: human), while a human assertion about
+repository reality is NOT KNOWN merely because the Objective states it — it follows the
+existing verification rule (ASSUMED, source: human until repository or investigation evidence
+confirms it). An authoritative Objective fact that is absent from the ledger, silently
+weakened to ASSUMED/UNKNOWN without that cause, or given provenance it does not have is a
+CAN_RESOLVE Definition defect: name it among the current gaps
 so the normal classification order applies. A ledger defect is fixable by refining the
 Definition and must never be the reason a separate question escalates to a human first — if
 the review finds both a contract defect and a candidate HUMAN_DECISION, refine comes first
@@ -223,8 +225,12 @@ exists), classified into exactly one bucket:
    stated facts and then treat the absence of that relationship as an open scope question:
    only a relationship actually required to satisfy the stated goal, a requirement, a
    constraint, or an acceptance criterion needs resolving at all. A mentioned-but-unconnected
-   fact simply stays in the ledger as what it is (KNOWN, source: human) and requires no
-   question, no invented behavior, and no non-goal. Reserving human attention for choices that
+   fact requires no relationship to be invented or resolved. Preserve it in the ledger with
+   the epistemic status and provenance DEFINITION_CONTRACT requires — this rule changes no
+   epistemic status: authoritative product/domain intent may be KNOWN (source: human), while
+   an assertion about repository reality is not KNOWN merely because the Objective states it
+   and still requires repository or investigation evidence first. It needs no question, no
+   invented behavior, and no non-goal either way. Reserving human attention for choices that
    genuinely need it is part of this classification's discipline.
 - DEFER — the gap is real but does not block the bounded scope being defined now. DEFER is
   for items already understood to lie outside the candidate bounded scope (clearly later-phase

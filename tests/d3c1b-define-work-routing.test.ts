@@ -829,9 +829,25 @@ test('D.3d.4: GAP_CLASSIFICATION forbids manufacturing relationships between ind
     humanBlock.includes('only a relationship actually required to satisfy the stated goal'),
     'the rule must be bounded: only goal/requirement/constraint/acceptance-required relationships need resolving',
   );
+  // The rule must NOT override repository provenance: resting epistemic
+  // status defers to DEFINITION_CONTRACT's one epistemic rule — the Redis
+  // counterexample: an unconnected repository-state claim must not become
+  // KNOWN/source:human merely because the Objective mentions it.
   assert.ok(
-    humanBlock.includes('KNOWN, source: human'),
-    'the rule must give the correct resting state for a mentioned-but-unconnected fact',
+    humanBlock.includes('requires no relationship to be invented or resolved'),
+    'the rule must state the resting consequence: no relationship to invent or resolve',
+  );
+  assert.ok(
+    humanBlock.includes('the epistemic status and provenance DEFINITION_CONTRACT requires'),
+    'the resting epistemic status must defer to DEFINITION_CONTRACT, not be fixed by this rule',
+  );
+  assert.ok(
+    humanBlock.includes('an assertion about repository reality is not KNOWN merely because the Objective states it'),
+    'the rule must preserve the product-intent vs repository-assertion distinction',
+  );
+  assert.ok(
+    humanBlock.includes('still requires repository or investigation evidence first'),
+    'repository-state assertions must still require verification before KNOWN',
   );
 });
 
@@ -848,6 +864,20 @@ test('D.3d.4: READINESS_RUBRIC makes contract compliance an explicit CAN_RESOLVE
   assert.ok(rubric.includes('absent from the ledger'), 'absence from the ledger must be a named contract defect');
   assert.ok(rubric.includes('silently weakened to ASSUMED/UNKNOWN'), 'silent weakening must be a named contract defect');
   assert.ok(rubric.includes('provenance it does not have'), 'invalid provenance must be a named contract defect');
+  // The precondition must apply ONE epistemic rule — the same distinction
+  // DEFINITION_CONTRACT draws — not a competing one:
+  assert.ok(
+    rubric.includes('authoritative product/domain intent is KNOWN (source: human)'),
+    'stated product/domain intent must be KNOWN with source: human',
+  );
+  assert.ok(
+    rubric.includes('NOT KNOWN merely because the Objective states it'),
+    'a repository-state assertion must not become KNOWN merely because the Objective states it',
+  );
+  assert.ok(
+    rubric.includes('ASSUMED, source: human until repository or investigation evidence'),
+    'repository-state assertions must follow the existing verification rule',
+  );
   // The precedence consequence is the operational point: contract defects
   // are CAN_RESOLVE and refine before any human question.
   assert.ok(
