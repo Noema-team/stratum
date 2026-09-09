@@ -17,7 +17,6 @@ import {
   formatRepairExhaustedDiagnostic,
 } from './transport/step-result.js';
 import {
-  extractLegacyReviewRoute,
   resolveResultTransport,
 } from './transport/textual-sle-output.js';
 
@@ -27,10 +26,10 @@ import {
 // extraction for both execution paths. Re-exported here for backward
 // compatibility with existing tests/importers; AgentRunner itself consumes
 // ONLY StepResult — it never sees YAML preambles, HTML comments, or
-// delimiters.
+// delimiters. (D.3d.5 commit 3 removed the legacy `route:` extraction —
+// routes are derived, never parsed from the reply.)
 export {
   parseAgentOutput,
-  extractLegacyReviewRoute,
   type SLEOutputPreamble,
   type ParsedSingleTurnOutput,
 } from './transport/textual-sle-output.js';
@@ -48,11 +47,14 @@ export interface AgentRunResult {
   // was true AND execution succeeded with a valid `verdict: pass | fail` in
   // the transport-extracted StepResult. See run() below.
   reviewVerdict?: 'pass' | 'fail';
-  // D.3c1a — the validated route token, set only when reviewVerdict is
-  // 'fail' AND ctx.on_fail_routes was declared AND the legacy textual
-  // `route:` token matched one of its keys exactly. SOLE sanctioned
-  // migration exception: parsed by the transport (extractLegacyReviewRoute),
-  // removed when commit 3 derives routes deterministically.
+  // D.3c1a — the route token, set only when reviewVerdict is 'fail' AND
+  // ctx.on_fail_routes was declared. D.3d.5 commit 3 — NEVER model-authored:
+  // derived deterministically from the readiness artifact's structured gap
+  // classifications (GAP_CLASSIFICATION_PRECEDENCE) via the
+  // deriveReviewRoute seam, then checked against the step's own declared
+  // keys. Without a registered deriver, a step declaring exactly ONE
+  // fail route uses it deterministically; multiple routes without a
+  // deriver is a workflow-authoring error (fail closed).
   reviewRoute?: string;
   // D.3d.5 commit 1 — bounded format-repair attempts on this step's
   // multi-turn execution, tracked separately from turns_taken (which counts
@@ -147,6 +149,18 @@ export interface AgentRunnerConfig {
   // contract, never what 'definition' (or any other name) means — the
   // composition root wires the methodology-owned implementations.
   inputValidators?: Record<string, InputValidator>;
+  // D.3d.5 commit 3 — the review-route derivation seam. Receives the
+  // review step's produced artifact text and the step's OWN declared route
+  // tokens, and returns the deterministic route (or a fail-closed error).
+  // The runner is generic: it never learns what a gap classification is —
+  // the composition root wires the methodology-owned deriver. When absent,
+  // a step declaring exactly ONE fail route uses it deterministically;
+  // multiple declared routes without a deriver fail closed (authoring
+  // error) — the model is never asked to break the tie.
+  deriveReviewRoute?: (
+    artifactText: string,
+    declaredRoutes: readonly string[],
+  ) => { ok: true; route: string } | { ok: false; error: string };
 }
 
 /**
@@ -162,7 +176,7 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -218,8 +232,6 @@ export class AgentRunner {
     // either execution path; validated against ctx.requiresReviewVerdict
     // after both branches.
     let reviewVerdictRaw: string | undefined;
-    // D.3c1a — same story for the optional bounded-routing token.
-    let reviewRouteRaw: string | undefined;
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
@@ -412,7 +424,6 @@ export class AgentRunner {
       rawPath = await this.writeRaw(ctx, nodeId, raw);
       parsed = { sections: stepResult.artifacts };
       reviewVerdictRaw = stepResult.review?.verdict;
-      reviewRouteRaw = extractLegacyReviewRoute(raw);
     }
 
     const fail = (error: string): AgentRunResult => ({
@@ -447,21 +458,42 @@ export class AgentRunner {
 
     // D.3c1a — bounded semantic-fail routing gate. Only meaningful on a
     // 'fail' verdict for a step that declared on_fail_routes (an allowlist
-    // of tokens the WORKFLOW author authorized — never a raw step id). A
-    // missing or unrecognized token is treated exactly like a missing/
-    // invalid verdict above: fail closed, before any output is written, so
-    // no artifact/control routing can ever occur from an invalid route.
+    // of tokens the WORKFLOW author authorized — never a raw step id).
+    // D.3d.5 commit 3 — the route is NEVER model-authored. It is derived
+    // deterministically from the review step's produced artifact (its
+    // structured gap classifications) via the deriveReviewRoute seam,
+    // then checked against the same allowlist as before. Derivation
+    // failure is treated exactly like a missing/invalid verdict above:
+    // fail closed, before any output is written, so no artifact/control
+    // routing can ever occur from an unparseable or misclassified state.
     // 'pass' never requires (or validates) a route — on_pass stays
     // authoritative regardless of what the reply happens to contain.
+    // Without a registered deriver, a step declaring exactly ONE fail
+    // route uses it deterministically (no judgment involved); multiple
+    // declared routes without a deriver fail closed — the model is never
+    // asked to break the tie.
     let reviewRoute: string | undefined;
     if (reviewVerdict === 'fail' && ctx.on_fail_routes) {
       const allowedRoutes = Object.keys(ctx.on_fail_routes);
-      if (!reviewRouteRaw || !allowedRoutes.includes(reviewRouteRaw)) {
-        return fail(
-          `Review step requires a route (one of: ${allowedRoutes.join(', ')}) but the reply declared '${reviewRouteRaw ?? 'none'}'`,
-        );
+      if (this.runnerConfig.deriveReviewRoute) {
+        const artifactText = parsed.sections.find(
+          (s) => !ctx.outputArtifact || s.path === ctx.outputArtifact.path,
+        )?.content ?? parsed.sections[0]?.content ?? '';
+        const derived = this.runnerConfig.deriveReviewRoute(artifactText, allowedRoutes);
+        if (!derived.ok || !allowedRoutes.includes(derived.route)) {
+          return fail(
+            `Review step requires a derivable route (one of: ${allowedRoutes.join(', ')}) but the produced artifact does not determine one: ${derived.ok ? `derived '${derived.route}' is not declared` : derived.error}`,
+          );
+        }
+        reviewRoute = derived.route;
+      } else {
+        if (allowedRoutes.length !== 1) {
+          return fail(
+            `Review step declares ${allowedRoutes.length} fail routes (one of: ${allowedRoutes.join(', ')}) but no route deriver is registered — cannot choose deterministically (fail closed)`,
+          );
+        }
+        reviewRoute = allowedRoutes[0];
       }
-      reviewRoute = reviewRouteRaw;
     }
 
     // 6a. D.1c — canonicalize every produced path exactly once, before any

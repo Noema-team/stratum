@@ -7,8 +7,9 @@
 //   single-turn produce:  '<!-- SLE-OUTPUT' YAML preamble + '## <path>'
 //                         headers                  (parseAgentOutput)
 //   single-turn review:   same preamble shape, plus the `verdict:` line
-//                         (and, during migration only, the legacy `route:`
-//                         token — see extractLegacyReviewRoute)
+//                         (D.3d.5 commit 3 removed the legacy `route:`
+//                         token — routes are derived by Stratum, never
+//                         declared by the model)
 //
 // D.3d.5 review amendment: ownership must be TOTAL. AgentRunner consumes
 // ONLY StepResult — it never sees (or knows about) YAML preambles, HTML
@@ -50,11 +51,12 @@ export interface SLEOutputPreamble {
   // string type here because this is straight off yaml.load() before any
   // validation — see the verdict gate in AgentRunner.run().
   verdict?: string;
-  // D.3c1a — optional bounded-routing token. Legacy during D.3d.5 migration:
-  // never part of the canonical StepResult; read only via
-  // extractLegacyReviewRoute to feed the interim allowlist gate until
-  // commit 3 derives the route deterministically.
-  route?: string;
+  // D.3d.5 commit 3 — there is NO `route` field. Routes are derived
+  // deterministically from the produced artifact's structured gap
+  // classifications (src/workflow/methodology/readiness-artifact.ts,
+  // deriveReviewRoute) — never read from the reply. A model that still
+  // emits a `route:` line is simply ignored: the token carries no
+  // authority anywhere in the system.
 }
 
 export interface ParsedSingleTurnOutput {
@@ -232,9 +234,10 @@ function singleTurnFormatInstruction(ctx: TransportContext): string {
 `;
   const verdictRequirement = ctx.requiresReviewVerdict
     ? `
-- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line —
-  plus a 'route: <token>' line chosen from the routing contract above when, and only when,
-  the verdict is fail.`
+- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line.
+  Never write a 'route:' line: routes are derived by the system from the structured gap
+  classifications in your artifact (see the routing contract above) — a declared route token
+  carries no authority and is ignored.`
     : '';
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 Begin your reply with an HTML-comment YAML preamble, then give the artifact body under a
@@ -337,22 +340,6 @@ export class TextualSleOutputTransport implements ResultTransport {
       `${shape}.`
     );
   }
-}
-
-// ─── Legacy route extraction (DEPRECATED — removed in commit 3) ──────────────
-//
-// D.3d.5 amendment: `route` must cease being model authority. Until commit 3
-// derives the route deterministically from validated gap classifications,
-// the legacy textual `route:` token still flows through the existing
-// D.3c1a allowlist gate UNCHANGED so semantic workflow behavior does not
-// move in this commit. It is deliberately NOT part of StepResult; the
-// runner reads it via this deprecated helper only to feed the interim gate.
-
-export function extractLegacyReviewRoute(raw: string): string | undefined {
-  const match = raw.match(/<!--\s*SLE-OUTPUT([\s\S]*?)-->/);
-  if (!match) return undefined;
-  const routeLine = match[1].split('\n').find((l) => l.trim().startsWith('route:'));
-  return routeLine?.split(':')[1]?.trim() || undefined;
 }
 
 // ─── Transport resolution (the capability-order seam) ─────────────────────────

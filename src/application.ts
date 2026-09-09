@@ -20,6 +20,7 @@ import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
 import { AgentStepRunner } from './execution/agent-step-runner.js';
 import { createDefinitionInputValidator } from './workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from './workflow/methodology/readiness-artifact.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -349,6 +350,11 @@ export function buildAgentRunner(
             : {}),
         }),
       },
+      // D.3d.5 commit 3 — review routes are NEVER model-authored: derived
+      // deterministically from the readiness artifact's structured gap
+      // classifications (GAP_CLASSIFICATION_PRECEDENCE). Same seam shape as
+      // the validators — the runner stays generic, methodology owns meaning.
+      deriveReviewRoute: createReviewRouteDeriver(),
     }, undefined, artifactRepository,
   );
 }

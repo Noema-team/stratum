@@ -15,6 +15,7 @@ import { strict as assert } from 'node:assert';
 import { ContextManager, DEFAULT_CONFIG } from '../../../src/context-manager.js';
 import { AgentRunner } from '../../../src/agent-runner.js';
 import { createDefinitionInputValidator, parseDefinition, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../../../src/workflow/methodology/readiness-artifact.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
 import { StratumAgentAdapter } from '../../../src/execution/stratum-agent-adapter.js';
 import { ExecutorRegistry } from '../../../src/execution/registry.js';
@@ -256,7 +257,6 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   // D.3d — semantic lookup: any ledger entry whose statement is about the
   // networking layer, whatever id the model gave it (spec: ids not prescribed).
   const networkingFacts = findFactBlocksAbout(trace.definitionText, /network/i);
-  console.log('DEBUG oracle canonical:', JSON.stringify(canonicalFactsOf(trace.definitionText)?.length), 'blocks:', JSON.stringify(networkingFacts.length));
   const networkingKnown = networkingFacts.find(
     (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(repository|investigation)/.test(b),
   );
@@ -539,6 +539,9 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
       // D.3d.5 commit 2 — Layer A/Layer B run the same deterministic
       // Definition gate production runs, Decision resolution included.
       inputValidators: { definition: definitionValidator },
+      // D.3d.5 commit 3 — same parity for route derivation: routes are
+      // derived from structured gap classifications, never model-authored.
+      deriveReviewRoute: createReviewRouteDeriver(),
     }, undefined, artifacts,
   );
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));

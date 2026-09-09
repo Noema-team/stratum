@@ -15,6 +15,7 @@
 import { test } from 'node:test';
 import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
 import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 // D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
 const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
@@ -211,7 +212,7 @@ function makeAgentRunner(opts: {
     llm,
     ROOT,
     ram as unknown as RunArtifactManager,
-    { model: 'test-model', inputValidators: TEST_INPUT_VALIDATORS },
+    { model: 'test-model', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() },
     opts.fsMock,
     opts.artifactRepository,
   );

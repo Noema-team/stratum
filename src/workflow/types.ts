@@ -56,10 +56,10 @@ export interface WorkflowStep {
   // requiresReviewVerdict review step authorizes for a semantic `verdict:
   // fail`, each mapping a workflow-declared token to its own target step +
   // iteration behavior. Only meaningful together with requiresReviewVerdict
-  // — see the legacy textual route token (src/transport/textual-sle-output.ts,
-  // WorkflowEngine.executeReview, which maps the token through this table
-  // (never the reverse — the model supplies a token, never a step id).
-  // A review step that leaves this unset keeps exactly today's single
+  // — see WorkflowEngine.executeReview, which maps the derived token
+  // through this table (never the reverse — the model classifies gaps; the
+  // token is derived by Stratum, D.3d.5 commit 3). A review step that
+  // leaves this unset keeps exactly today's single
   // on_fail target, byte-for-byte unchanged. WorkflowEngine itself carries
   // no knowledge of what any route token *means* (no HUMAN_DECISION/
   // CAN_RESOLVE/define-work awareness) — the mapping is pure declarative

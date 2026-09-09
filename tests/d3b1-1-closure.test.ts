@@ -30,6 +30,7 @@
 import { test } from 'node:test';
 import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
 import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 // D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
 const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
@@ -641,7 +642,7 @@ test('D.3b1.1: define-work end-to-end — Objective intent reaches synthesis, sy
     const dyn = new DynamicLLMProvider(provider);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, dyn, root, makeRunArtifactsStubC(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, dyn, root, makeRunArtifactsStubC(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(

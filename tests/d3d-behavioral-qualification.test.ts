@@ -104,10 +104,28 @@ function extractDecisionFromContext(userMessage: string): { decisionId: string; 
   return { decisionId: decisionIdMatch![1], selectedOptionId: optionIdMatch![1] };
 }
 
-function stOutput(verdict: 'pass' | 'fail', route: string | undefined, content: string, outPath: string): string {
+// D.3d.5 commit 3 — review outputs carry structured gap classifications in
+// canonical front matter (the artifact FILE body — i.e. the first lines of
+// the section content, exactly where the file's front matter lives);
+// Stratum derives the route, never the model.
+function stOutput(
+  verdict: 'pass' | 'fail',
+  gaps: Array<{ target: string; description: string; classification: string; reason: string }>,
+  content: string,
+  outPath: string,
+): string {
+  const fm = [
+    '---',
+    'schemaVersion: 1',
+    'gaps:',
+    ...(gaps.length > 0
+      ? gaps.map((g) => '  - ' + JSON.stringify({ closure: 'see body', ...g }))
+      : ['  []']),
+    '---',
+  ].join('\n');
   const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
-  if (route !== undefined) lines.push(`route: ${route}`);
-  lines.push('artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '', `## ${outPath}`, '', content);
+  lines.push('artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '');
+  lines.push(`## ${outPath}`, '', fm, '', content);
   return lines.join('\n');
 }
 
@@ -270,10 +288,21 @@ function earlyScript(): ScenarioScript {
       mtOutput(EARLY_EXPLORATION_NEED, explorationPath),                    // record-exploration-need
     ],
     singleTurnSequence: [
-      stOutput('fail', 'refine', 'CAN_RESOLVE — fact networking-layer: cheap repository check needed; acceptance criteria missing.', readinessPath),
-      stOutput('fail', 'defer', 'DEFER — fact wider-multiplayer-features: real gap, does not block this bounded 2-player scope. HUMAN_DECISION and EXPLORE_AS_WORK gaps also remain open.', readinessPath),
-      stOutput('fail', 'human', 'HUMAN_DECISION — fact cross-platform-scope: a genuine product/architecture tradeoff only a human can authorize.', readinessPath),
-      stOutput('fail', 'explore', 'EXPLORE_AS_WORK — fact sync-latency-feasibility: answering requires a prototype/benchmark, not reading or reasoning.', readinessPath),
+      stOutput('fail', [
+        { target: 'networking-layer', description: 'cheap repository check needed; acceptance criteria missing', classification: 'CAN_RESOLVE', reason: 'closeable by reading the repository and restating the goal' },
+      ], 'CAN_RESOLVE — fact networking-layer: cheap repository check needed; acceptance criteria missing.', readinessPath),
+      stOutput('fail', [
+        { target: 'wider-multiplayer-features', description: 'real gap, does not block this bounded 2-player scope', classification: 'DEFER', reason: 'the gap is real but does not block the bounded scope' },
+        { target: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
+        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+      ], 'DEFER — fact wider-multiplayer-features: real gap, does not block this bounded 2-player scope. HUMAN_DECISION and EXPLORE_AS_WORK gaps also remain open.', readinessPath),
+      stOutput('fail', [
+        { target: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
+        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+      ], 'HUMAN_DECISION — fact cross-platform-scope: a genuine product/architecture tradeoff only a human can authorize.', readinessPath),
+      stOutput('fail', [
+        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+      ], 'EXPLORE_AS_WORK — fact sync-latency-feasibility: answering requires a prototype/benchmark, not reading or reasoning.', readinessPath),
     ],
     resolveDecision: (options) => {
       const chosen = findSamePlatformOnlyOption(options);
@@ -335,8 +364,10 @@ function partialScript(): ScenarioScript {
       mtOutput(PARTIAL_V2, definitionPath),
     ],
     singleTurnSequence: [
-      stOutput('fail', 'refine', 'CAN_RESOLVE — missing acceptance criterion for the stated goal; combat non-goal and dialogue/trade wiring need a targeted repository check.', readinessPath),
-      stOutput('pass', undefined, 'All seven dimensions pass.', readinessPath),
+      stOutput('fail', [
+        { target: 'acceptance-criteria', description: 'missing acceptance criterion for the stated goal', classification: 'CAN_RESOLVE', reason: 'closeable by restating the goal as measurable criteria' },
+      ], 'CAN_RESOLVE — missing acceptance criterion for the stated goal; combat non-goal and dialogue/trade wiring need a targeted repository check.', readinessPath),
+      stOutput('pass', [], 'All seven dimensions pass.', readinessPath),
     ],
   };
 }
@@ -391,7 +422,7 @@ function matureScript(): ScenarioScript {
       mtOutput(MATURE_V1, definitionPath),
     ],
     singleTurnSequence: [
-      stOutput('pass', undefined, 'All seven dimensions pass on v1 — the request is already sufficiently defined.', readinessPath),
+      stOutput('pass', [], 'All seven dimensions pass on v1 — the request is already sufficiently defined.', readinessPath),
     ],
   };
 }

@@ -30,6 +30,7 @@
 import { test } from 'node:test';
 import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
 import { parseDefinition, validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 // D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
 const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
@@ -102,10 +103,42 @@ function definitionOutput(content: string, outPath: string): string {
   ].join('\n');
 }
 
-function readinessOutput(verdict: 'pass' | 'fail', route: string | undefined, content: string, outPath: string): string {
+// D.3d.5 commit 3 — review outputs carry structured gap classifications in
+// canonical front matter (the artifact FILE body); Stratum derives the route
+// deterministically — the classification, never a model-declared token,
+// drives routing. `classification` is the legacy route-token shorthand
+// ('refine'|'defer'|'human'|'explore') mapped to its classification; pass an
+// array to classify multiple gaps (precedence then applies mechanically).
+const CLASSIFICATION_FOR_TOKEN: Record<string, string> = {
+  refine: 'CAN_RESOLVE',
+  defer: 'DEFER',
+  human: 'HUMAN_DECISION',
+  explore: 'EXPLORE_AS_WORK',
+};
+
+function readinessOutput(
+  verdict: 'pass' | 'fail',
+  classification: string | string[] | undefined,
+  content: string,
+  outPath: string,
+): string {
+  const gaps = (classification === undefined ? [] : Array.isArray(classification) ? classification : [classification])
+    .map((c) => ({
+      target: 'gap-under-review',
+      description: content.slice(0, 80),
+      classification: CLASSIFICATION_FOR_TOKEN[c] ?? c,
+      reason: 'see body',
+    }));
+  const fm = [
+    '---',
+    'schemaVersion: 1',
+    'gaps:',
+    ...(gaps.length > 0 ? gaps.map((g) => '  - ' + JSON.stringify({ closure: 'see body', ...g })) : ['  []']),
+    '---',
+  ].join('\n');
   const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
-  if (route !== undefined) lines.push(`route: ${route}`);
-  lines.push('artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '', `## ${outPath}`, '', content);
+  lines.push('artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '');
+  lines.push(`## ${outPath}`, '', fm, '', content);
   return lines.join('\n');
 }
 
@@ -179,7 +212,7 @@ test('D.3c1b: DEFER routes to apply-deferred-gaps, marks the fact DEFERRED (neve
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -241,7 +274,7 @@ test('D.3c1b: a genuine non-blocking DEFER gap can be marked DEFERRED at the FIN
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -285,7 +318,7 @@ test('D.3c1b: post-defer-readiness-review does not offer another defer route —
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -322,7 +355,7 @@ function makeProductionAdapter(
   root: string, db: ReturnType<typeof openDatabase>, artifacts: ArtifactRepository, provider: ILLMProvider,
 ): StratumAgentAdapter {
   const cm = new ContextManager(root, DEFAULT_CONFIG);
-  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: new AgentStepRunner(agentRunner),
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
@@ -706,7 +739,7 @@ test('D.3c1b: EXPLORE_AS_WORK records a bounded exploration need and terminates 
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const workflowRunId = `run-explore-${randomUUID()}`;

@@ -3,8 +3,9 @@
 // Locks the new boundary established by this commit:
 //
 //   - the canonical StepResult contract (artifacts + optional review
-//     verdict, NEVER a route — the route is a control transition Stratum
-//     will derive deterministically in commit 3, not model authority);
+//     verdict, NEVER a route — commit 3 removed model route authority:
+//     routes are derived deterministically from structured gap
+//     classifications, never read from the reply);
 //   - the textual SLE-OUTPUT fallback as the only transport current
 //     providers genuinely get, with a structured transport injectable for
 //     providers/adapters that have real structured-output capability;
@@ -16,9 +17,8 @@
 //   - honest diagnostics: ordinary turns and format-repair attempts are
 //     counted and reported separately (the pre-D.3d.5 "after N turn(s)"
 //     message implied N repair attempts where none had happened);
-//   - the legacy textual `route:` token keeps flowing through the interim
-//     D.3c1a allowlist gate unchanged during migration, but lives OUTSIDE
-//     the canonical StepResult.
+//   - a model-declared `route:` token is IGNORED — it carries no authority
+//     anywhere in the system.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -29,6 +29,7 @@ import { join } from 'node:path';
 
 import { AgentLoop, type IMultiTurnProvider, type MultiTurnResult, type MultiTurnParams } from '../src/agent-loop.js';
 import { AgentRunner, type AgentRunnerConfig, validateOutputPath } from '../src/agent-runner.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 import type { RunArtifactManager } from '../src/run-artifacts.js';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 import {
@@ -40,7 +41,6 @@ import {
 } from '../src/transport/step-result.js';
 import {
   TextualSleOutputTransport,
-  extractLegacyReviewRoute,
   resolveResultTransport,
 } from '../src/transport/textual-sle-output.js';
 
@@ -101,7 +101,7 @@ class JsonStepResultTransport implements ResultTransport {
 
 // ─── Canonical contract ───────────────────────────────────────────────────────
 
-test('D.3d.5.1: the canonical StepResult carries no route — the legacy route token stays outside the contract', () => {
+test('D.3d.5.1: the canonical StepResult carries no route — the model token stays outside the contract (commit 3: ignored everywhere)', () => {
   const t = new TextualSleOutputTransport();
   const raw =
     '<!-- SLE-OUTPUT\n' +
@@ -112,9 +112,9 @@ test('D.3d.5.1: the canonical StepResult carries no route — the legacy route t
   assert.deepEqual(Object.keys(stepResult).sort(), ['artifacts', 'review'], 'StepResult has exactly artifacts and (optionally) review');
   assert.equal(stepResult.review?.verdict, 'fail');
   assert.equal((stepResult as Record<string, unknown>)['route'], undefined, 'route must never appear on StepResult');
-  // The legacy token is still extractable for the interim allowlist gate…
-  assert.equal(extractLegacyReviewRoute(raw), 'human');
-  // …and only via the deprecated migration helper, never via the transport contract.
+  // D.3d.5 commit 3 — the model-declared token is simply ignored: the
+  // transport neither extracts nor surfaces it, and no migration helper
+  // exists anymore. Control flow comes only from deterministic derivation.
   assert.equal(resolveResultTransport(undefined).name, 'textual-sle-output', 'default transport is the textual fallback');
 });
 
@@ -340,7 +340,7 @@ test('D.3d.5.1: a structured transport serves a REVIEW step end to end — the r
   }
 });
 
-test('D.3d.5.1: the legacy textual path still serves a REVIEW step (migration behavior unchanged)', async () => {
+test('D.3d.5.1: the legacy textual path still serves a REVIEW step — a model-declared route token carries NO authority (commit 3)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'd3d5-review2-'));
   try {
     const provider = {
@@ -358,20 +358,25 @@ test('D.3d.5.1: the legacy textual path still serves a REVIEW step (migration be
       provider as never,
       root,
       { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
-      { model: 'test' },
+      { model: 'test', deriveReviewRoute: createReviewRouteDeriver() },
     );
     const result = await runner.run('explorer', {
       workflowRunId: 'r', workflowId: 'wf', stepId: 'definition-readiness-review',
       iteration: 1, revision: 0, goal: 'review', projectRoot: root,
       instruction: 'Review the definition.',
       requiresReviewVerdict: true,
-      on_fail_routes: { refine: { target_step_id: 'refine-definition' } },
+      on_fail_routes: { refine: { target_step_id: 'refine-definition' }, human: { target_step_id: 'prepare-human' } },
       outputArtifact: { type: 'definition-readiness', ref: 'dr:1', path: '.sle/work/w/readiness.md' },
     } as never);
 
-    assert.equal(result.success, true, result.error);
-    assert.equal(result.reviewVerdict, 'fail');
-    assert.equal(result.reviewRoute, 'refine', 'the legacy route token still flows through the interim gate');
+    // The model declared `route: refine` AND multiple routes are declared —
+    // but the artifact carries no structured gap classifications, so the
+    // token is ignored and derivation fails closed. The model can no longer
+    // select control flow by declaring a token.
+    assert.equal(result.success, false);
+    assert.deepStrictEqual(result.artifacts_written, []);
+    assert.match(result.error ?? '', /derivable route/);
+    assert.match(result.error ?? '', /FRONT_MATTER_MISSING/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

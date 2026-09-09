@@ -359,10 +359,10 @@ function sleOutput(content: string, path: string): string {
   ].join('\n');
 }
 
-function readinessOutput(verdict: 'pass' | 'fail', content: string, path: string, route?: string): string {
+function readinessOutput(verdict: 'pass' | 'fail', content: string, path: string): string {
+  const fm = ['---', 'schemaVersion: 1', 'gaps:', '  []', '---'].join('\n');
   const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
-  if (route !== undefined) lines.push(`route: ${route}`);
-  lines.push('artifacts:', '  - id: readiness', `    path: ${path}`, '-->', '', `## ${path}`, '', content);
+  lines.push('artifacts:', '  - id: readiness', `    path: ${path}`, '-->', '', `## ${path}`, '', fm, '', content);
   return lines.join('\n');
 }
 

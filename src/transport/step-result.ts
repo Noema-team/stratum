@@ -26,10 +26,11 @@
 //      every current provider actually gets — no capability is faked).
 //
 // Canonical StepResult deliberately carries NO route field: the review
-// route is a CONTROL TRANSITION derived by Stratum (commit 3 will derive it
-// deterministically from validated gap classifications). During migration
-// the legacy textual `route:` preamble token is still extracted, but via a
-// separate deprecated helper — it is not part of this contract.
+// route is a CONTROL TRANSITION derived by Stratum — deterministically,
+// from the produced artifact's structured gap classifications
+// (D.3d.5 commit 3; src/workflow/methodology/readiness-artifact.ts). The
+// reply never declares a route: a model-emitted `route:` token is ignored
+// by the transport and carries no authority anywhere.
 import type { AgentRole } from '../types.js';
 
 export interface StepResultArtifact {

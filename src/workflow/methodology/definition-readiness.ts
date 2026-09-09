@@ -170,9 +170,10 @@ export type GapClassification = (typeof GAP_CLASSIFICATION_PRECEDENCE)[number];
 // on_fail_routes — see builtins/define-work.ts) to the classification it
 // exists to resolve. Never consulted by WorkflowEngine or AgentRunner —
 // those validate a route token only against the step's own declared
-// on_fail_routes keys; this mapping exists purely so the prompt text below
-// can name the right route for each classification, in one place.
-const ROUTE_TOKEN_FOR_CLASSIFICATION: Record<GapClassification, string> = {
+// on_fail_routes keys; D.3d.5 commit 3 also consumes it for deterministic
+// route derivation (src/workflow/methodology/readiness-artifact.ts). The
+// mapping exists so the classification→route pairing is defined in one place.
+export const ROUTE_TOKEN_FOR_CLASSIFICATION: Record<GapClassification, string> = {
   CAN_RESOLVE: 'refine',
   DEFER: 'defer',
   HUMAN_DECISION: 'human',
@@ -244,17 +245,16 @@ that.`;
 
 // D.3c1b — the definition-readiness-review output contract: the readiness
 // Artifact stays the authoritative record of why the Definition is or is
-// not ready, and the legacy `route: <token>` migration token (carried by
-// the textual transport only; see src/transport/textual-sle-output.ts,
-// extractLegacyReviewRoute) is only the interim control token
-// WorkflowEngine maps through the review step's
-// own on_fail_routes (engine.ts) — never a substitute for the reasoning,
-// which belongs in the Artifact body. D.3d.5 commit 3 replaces it with
-// deterministic route derivation. `routes` names exactly the tokens
-// THIS review step declares (its on_fail_routes keys) — a review step must
-// never be told about a route it cannot actually take; see
-// builtins/define-work.ts, where definition-readiness-review declares all
-// four and the post-defer/post-human reviews declare a narrower subset.
+// not ready. D.3d.5 commit 3 — the reviewer NO LONGER declares any control
+// token: it classifies every gap in the artifact's canonical YAML front
+// matter, and Stratum derives the route deterministically from
+// GAP_CLASSIFICATION_PRECEDENCE, constrained to the routes this review
+// step declares. `routes` names exactly the classifications THIS review
+// step can resolve (the tokens its on_fail_routes carry) — a review step
+// must never be told about a classification it cannot actually act on;
+// see builtins/define-work.ts, where definition-readiness-review declares
+// all four and the post-defer/post-human reviews declare a narrower
+// subset.
 //
 // D.3c1b.1 — DEFER is NOT blocking (see GAP_CLASSIFICATION above: "the gap
 // is real but does not block the bounded scope"). What keeps a verdict from
@@ -278,10 +278,10 @@ function classificationLine(c: GapClassification): string {
 }
 
 export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): string {
-  const routeLines = routes.map(classificationLine).join('\n');
+  const classificationLines = routes.map(classificationLine).join('\n');
   const precedenceOrder = GAP_CLASSIFICATION_PRECEDENCE.filter((c) => routes.includes(c));
   const precedenceLines = precedenceOrder
-    .map((c, i) => `${i + 1}. ${c}${i === 0 ? ' (checked first)' : ''}`)
+    .map((c, i) => `${i + 1}. ${c}${i === 0 ? ' (applied first)' : ''}`)
     .join('\n');
   const deferFinalization = routes.includes('DEFER')
     ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
@@ -290,8 +290,8 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
       'the required ledger bookkeeping — the gap is already non-blocking, but the Definition ' +
       'is not eligible for `verdict: pass` until that scope decision is explicitly recorded as ' +
       '`status: DEFERRED`. A fact still classified DEFER but still ASSUMED/UNKNOWN in the ' +
-      'ledger is not eligible for `pass`; declare `route: defer` instead so apply-deferred-gaps ' +
-      'can record the transition.'
+      'ledger is not eligible for `pass`; classify it DEFER in the readiness front matter so ' +
+      'apply-deferred-gaps can record the transition.'
     : '';
   const exploreFinalization = routes.includes('EXPLORE_AS_WORK')
     ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
@@ -302,30 +302,35 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
       'in the fact ledger. An EXPLORE_AS_WORK fact still ASSUMED/UNKNOWN in the ledger is not ' +
       'eligible for `pass` — arguing it "does not block" or is "an implementation choice" ' +
       'without recorded evidence or a recorded decision is exactly the silent resolution this ' +
-      'classification forbids; declare `route: explore` instead so record-exploration-need can ' +
-      'isolate it as bounded work.'
+      'classification forbids; classify it EXPLORE_AS_WORK in the readiness front matter so ' +
+      'record-exploration-need can isolate it as bounded work.'
     : '';
-  return `On \`verdict: fail\`, the readiness Artifact must name every gap keeping this verdict from
-\`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or EXPLORE_AS_WORK) and every gap
-classified DEFER whose fact is not yet recorded as DEFERRED — each with at least these fields:
-- fact id (or an explicit missing-area identifier, when no fact entry exists yet)
+  return `On \`verdict: fail\`, the readiness Artifact's canonical YAML front matter must classify every
+gap keeping this verdict from \`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or
+EXPLORE_AS_WORK) and every gap classified DEFER whose fact is not yet recorded as DEFERRED —
+each with at least these fields:
+- target: the fact id (or an explicit missing-area identifier, when no fact entry exists yet)
 - description
 - classification: one of ${GAP_CLASSIFICATION_PRECEDENCE.join(', ')}
 - reason for that classification
-- what closure (or, for DEFER, what recording the DEFERRED transition) would require
+- closure: what resolving it (or, for DEFER, recording the DEFERRED transition) would require
+
+The front matter is the authoritative gap record; explain and argue in the Markdown body —
+never duplicate the ledger there.
 
 Never classify cheap repository inspection as EXPLORE_AS_WORK — see the CAN_RESOLVE/
 EXPLORE_AS_WORK dividing line above.
 
-This step declares exactly one route token, chosen from:
-${routeLines}
+Stratum derives the next step deterministically from these classifications — the reviewer
+never selects a route. This step resolves exactly these classifications:
+${classificationLines}
 
 When more than one classification is present among the current gaps this verdict must resolve,
-precedence decides which single route to declare — cheap/direct/autonomous closure before human
-escalation or substantive exploration:
+precedence decides — cheap/direct/autonomous closure before human escalation or substantive
+exploration:
 ${precedenceLines}
 
-Never declare a route not listed above, and never declare a route when \`verdict: pass\`.${deferFinalization}${exploreFinalization}`;
+On \`verdict: pass\`, the front matter carries \`gaps: []\` (or names no unresolved gap).${deferFinalization}${exploreFinalization}`;
 }
 
 // D.3c1b — apply-deferred-gaps: converts every gap the readiness Artifact

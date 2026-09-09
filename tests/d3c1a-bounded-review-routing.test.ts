@@ -7,15 +7,22 @@
 // src/execution/agent-step-runner.ts, and src/workflow/engine.ts
 // (executeReview's route-mapping + defensive re-validation).
 //
+// D.3d.5 commit 3 — the route is NEVER model-authored. The reviewer
+// classifies gaps in the review artifact's canonical front matter; a
+// registered deriver (createReviewRouteDeriver) derives the token
+// deterministically, and the SAME allowlist invariants below still hold:
+// the derived token must be one of the step's OWN declared keys.
+//
 // WorkflowEngine carries no knowledge of what any route token *means* — no
 // HUMAN_DECISION/CAN_RESOLVE/define-work awareness anywhere in this file or
 // in the engine. Every workflow/step id here is synthetic and unfamiliar.
 //
-// Part A: AgentRunner's route-gate — token validated against ctx.
-//         on_fail_routes, exposed as reviewRoute; missing/unknown route
-//         fails closed before any output is written; pass never requires
+// Part A: AgentRunner's route gate — the route is derived from the review
+//         artifact's structured gap classifications, validated against ctx.
+//         on_fail_routes, exposed as reviewRoute; underivable routes
+//         fail closed before any output is written; pass never requires
 //         a route.
-// Part B: WorkflowEngine's routing — a declared route reaches its own
+// Part B: WorkflowEngine's routing — a derived route reaches its own
 //         target; iteration_loop is route-specific; the existing iteration
 //         cap still applies only to iterating routes; legacy on_fail (no
 //         on_fail_routes declared) and non-opted-in reviews are unchanged;
@@ -26,6 +33,7 @@
 import { test } from 'node:test';
 import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
 import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 // D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
 const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
@@ -70,10 +78,30 @@ function produceOutput(content: string, path: string): string {
   ].join('\n');
 }
 
-function reviewOutput(verdict: 'pass' | 'fail', route: string | undefined, note: string, path: string): string {
+// D.3d.5 commit 3 — review outputs carry structured gap classifications in
+// canonical front matter (the artifact FILE body); the registered deriver
+// derives the route mechanically. `classification` is the legacy route-token
+// shorthand ('refine'|'human'|'explore') mapped to its classification; any
+// OTHER string passes through as an invalid classification (fail closed),
+// preserving the old unknown-token and raw-step-id tests' intent.
+const CLASSIFICATION_FOR_TOKEN: Record<string, string> = {
+  refine: 'CAN_RESOLVE',
+  human: 'HUMAN_DECISION',
+  explore: 'EXPLORE_AS_WORK',
+};
+
+function reviewOutput(verdict: 'pass' | 'fail', classification: string | undefined, note: string, path: string): string {
+  const gap = classification === undefined ? undefined : {
+    target: 'gap-under-review',
+    description: note.slice(0, 80),
+    classification: CLASSIFICATION_FOR_TOKEN[classification] ?? classification,
+    reason: 'see body',
+    closure: 'see body',
+  };
+  const fm = ['---', 'schemaVersion: 1', 'gaps:', ...(gap ? ['  - ' + JSON.stringify(gap)] : ['  []']), '---'].join('\n');
   const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: review', `verdict: ${verdict}`];
-  if (route !== undefined) lines.push(`route: ${route}`);
-  lines.push('artifacts:', '  - id: review', `    path: ${path}`, '-->', '', `## ${path}`, '', note);
+  lines.push('artifacts:', '  - id: review', `    path: ${path}`, '-->', '');
+  lines.push(`## ${path}`, '', fm, '', note);
   return lines.join('\n');
 }
 
@@ -103,7 +131,7 @@ function makeAgentRunner(content: string): { runner: AgentRunner; calls: LLMComp
       return { system_prompt: 's', artifact_slices: {}, state_summary: '', task: 't', token_count: 1, truncated: [] };
     },
   };
-  const runner = new AgentRunner(cm as any, provider, '/proj', makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, mockFs());
+  const runner = new AgentRunner(cm as any, provider, '/proj', makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, mockFs());
   return { runner, calls };
 }
 
@@ -113,7 +141,7 @@ const ROUTES = {
   explore: { target_step_id: 'prepare-explore' },
 };
 
-test('D.3c1a: a valid route token is validated against ctx.on_fail_routes and exposed as reviewRoute', async () => {
+test('D.3c1a: a derived route is validated against ctx.on_fail_routes and exposed as reviewRoute', async () => {
   const { runner } = makeAgentRunner(reviewOutput('fail', 'refine', 'needs another pass', '.sle/work/review.md'));
   const result = await runner.run('explorer', makeCtx({ on_fail_routes: ROUTES }));
 
@@ -122,7 +150,7 @@ test('D.3c1a: a valid route token is validated against ctx.on_fail_routes and ex
   assert.equal(result.reviewRoute, 'refine');
 });
 
-test('D.3c1a: a missing route on a routed-fail review fails closed before any output is written', async () => {
+test('D.3c1a: an underivable route on a routed-fail review fails closed before any output is written', async () => {
   const { runner } = makeAgentRunner(reviewOutput('fail', undefined, 'x', '.sle/work/review.md'));
   const result = await runner.run('explorer', makeCtx({ on_fail_routes: ROUTES }));
 
@@ -131,7 +159,7 @@ test('D.3c1a: a missing route on a routed-fail review fails closed before any ou
   assert.match(result.error ?? '', /route/);
 });
 
-test('D.3c1a: an unknown route token fails closed', async () => {
+test('D.3c1a: an invalid gap classification fails closed', async () => {
   const { runner } = makeAgentRunner(reviewOutput('fail', 'bogus-route', 'x', '.sle/work/review.md'));
   const result = await runner.run('explorer', makeCtx({ on_fail_routes: ROUTES }));
 
@@ -140,10 +168,10 @@ test('D.3c1a: an unknown route token fails closed', async () => {
   assert.match(result.error ?? '', /route/);
 });
 
-test('D.3c1a: the model cannot route directly to an undeclared step id — a raw step id is not a valid route token', async () => {
-  // 'produce' is a REAL step id in the routing workflows below, but it was
-  // never declared as a route TOKEN on this ctx — proving the token space
-  // is a controlled allowlist, never a step-id passthrough.
+test('D.3c1a: the model cannot route by naming a step id — a raw step id is not a valid classification', async () => {
+  // 'produce' is a REAL step id in the routing workflows below, but it is
+  // not a valid gap classification — proving classification (and therefore
+  // routing) space is controlled, never a step-id passthrough.
   const { runner } = makeAgentRunner(reviewOutput('fail', 'produce', 'x', '.sle/work/review.md'));
   const result = await runner.run('explorer', makeCtx({ on_fail_routes: ROUTES }));
 
@@ -160,7 +188,7 @@ test('D.3c1a: verdict pass never requires (or validates) a route, even when on_f
   assert.equal(result.reviewRoute, undefined);
 });
 
-test('D.3c1a: without on_fail_routes declared, a route in the preamble is simply irrelevant — verdict:fail still succeeds with reviewRoute absent', async () => {
+test('D.3c1a: without on_fail_routes declared, classified gaps are simply irrelevant — verdict:fail still succeeds with reviewRoute absent', async () => {
   const { runner } = makeAgentRunner(reviewOutput('fail', 'refine', 'x', '.sle/work/review.md'));
   const result = await runner.run('explorer', makeCtx({ on_fail_routes: undefined }));
 
@@ -241,7 +269,7 @@ class SequenceLLMProvider implements ILLMProvider {
 
 function makeEngine(provider: ILLMProvider, root: string): WorkflowEngine {
   const cm = new ContextManager(root, DEFAULT_CONFIG, mockFs());
-  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, mockFs());
+  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, mockFs());
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: new AgentStepRunner(agentRunner),
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,

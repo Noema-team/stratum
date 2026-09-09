@@ -19,6 +19,7 @@
 import { test } from 'node:test';
 import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
 import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
 // D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
 const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
@@ -132,7 +133,7 @@ test('D.3b1: a requiresReviewVerdict step stays on the single-turn path even whe
     appendFile: async () => {},
     readFile: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
   } as unknown as typeof import('fs').promises;
-  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, fsMock);
+  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, fsMock);
 
   const result = await runner.run('explorer', {
     workflowRunId: 'r1', workflowId: 'synthetic-unfamiliar', stepId: 'review', iteration: 1, revision: 0,
@@ -229,7 +230,7 @@ test('D.3b1: a Definition-producing explorer receives its instruction, inspects 
     const recordingFs = new RecordingFs();
     const cm = new ContextManager(root, DEFAULT_CONFIG, recordingFs.wraps());
     const runner = new AgentRunner(
-      cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, recordingFs.wraps(),
+      cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, recordingFs.wraps(),
     );
 
     const result = await runner.run('explorer', {
@@ -282,7 +283,7 @@ test('D.3b1: repository inspection remains bounded by AgentLoop\'s existing turn
     const cm = { async assemble() {
       return { system_prompt: 's', artifact_slices: {}, state_summary: '', task: 't', token_count: 1, truncated: [] };
     } } as any;
-    const runner = new AgentRunner(cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS });
+    const runner = new AgentRunner(cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() });
 
     const result = await runner.run('explorer', {
       workflowRunId: 'cap-run', workflowId: 'a-synthetic-workflow-not-define-work',
@@ -452,14 +453,17 @@ function definitionOutput(content: string, path: string): string {
   ].join('\n');
 }
 
-// D.3c1b — definition-readiness-review now declares on_fail_routes, so a
-// `verdict: fail` must also carry a `route:` token (see the route-gate in
-// agent-runner.ts). route is optional here only so a 'pass' verdict (which
-// never requires or validates a route) can omit it.
+// D.3d.5 commit 3 — a `verdict: fail` review carries structured gap
+// classifications in canonical front matter (the artifact file body);
+// Stratum derives the route deterministically — the `route` argument is the
+// legacy shorthand ('refine' -> CAN_RESOLVE) rendered as the classification.
 function readinessOutput(verdict: 'pass' | 'fail', content: string, path: string, route?: string): string {
+  const gaps = route === 'refine'
+    ? [{ target: 'gap-under-review', description: content.slice(0, 80), classification: 'CAN_RESOLVE', reason: 'see body', closure: 'see body' }]
+    : [];
+  const fm = ['---', 'schemaVersion: 1', 'gaps:', ...(gaps.length > 0 ? gaps.map((g) => '  - ' + JSON.stringify(g)) : ['  []']), '---'].join('\n');
   const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
-  if (route !== undefined) lines.push(`route: ${route}`);
-  lines.push('artifacts:', `  - id: readiness`, `    path: ${path}`, '-->', '', `## ${path}`, '', content);
+  lines.push('artifacts:', `  - id: readiness`, `    path: ${path}`, '-->', '', `## ${path}`, '', fm, '', content);
   return lines.join('\n');
 }
 
@@ -511,7 +515,7 @@ test('D.3b1: define-work end-to-end — a failed readiness review triggers CAN_R
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -567,7 +571,7 @@ test('D.3b1: define-work end-to-end — cap exhaustion fails closed, never force
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS, deriveReviewRoute: createReviewRouteDeriver() }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
