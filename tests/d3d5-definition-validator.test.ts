@@ -39,7 +39,9 @@ import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
 import { WorkflowEngine, DEFINE_WORK } from '../src/workflow/index.js';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 import type { WorkflowEngineDeps, StepRunContext } from '../src/workflow/types.js';
-import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
+import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult, MultiTurnParams, MultiTurnResult } from '../src/llm-provider.js';
+import { driveDefineWorkRun } from './fixtures/d3d/harness.js';
+import { EARLY_FIXTURE_FILES, EARLY_OBJECTIVE } from './fixtures/d3d/fixtures.js';
 import type { RunArtifactManager } from '../src/run-artifacts.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -450,6 +452,114 @@ test('D.3d.5.2: no new workflow concept — the gate reuses the existing refine 
   }
   const kinds = new Set(DEFINE_WORK.steps.map((s) => s.kind));
   assert.ok(![...kinds].some((k) => /valid/i.test(k)), 'no VALIDATE step kind was introduced');
+});
+
+// ─── Harness parity (commit-2 amendment) ─────────────────────────────────────
+//
+// driveDefineWorkRun must register the SAME resolver-backed validator
+// production registers — not the resolver-less validateDefinitionArtifactText
+// instance. Smallest proof: a Layer A run whose synthesized Definition
+// carries an INVENTED decisionRef must be intercepted by the harness's own
+// gate (refine, reviewer skipped) instead of passing semantic review.
+
+type MultiTurnEntry = MultiTurnResult | ((params: MultiTurnParams) => MultiTurnResult);
+type SingleTurnEntry = string | ((params: LLMCompletionParams) => string);
+
+class ScriptedDualModeProvider {
+  multiTurnCallCount = 0;
+  singleTurnCallCount = 0;
+  constructor(private multi: MultiTurnEntry[], private single: SingleTurnEntry[]) {}
+  async complete(params: LLMCompletionParams) {
+    this.singleTurnCallCount++;
+    const entry = this.single[this.singleTurnCallCount - 1] ?? '';
+    return { content: typeof entry === 'function' ? entry(params) : entry, tokens_used: 10, duration_ms: 1 };
+  }
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    this.multiTurnCallCount++;
+    const entry = this.multi[this.multiTurnCallCount - 1];
+    if (!entry) return { stop_reason: 'end_turn', text: '', tool_uses: [], tokens_used: 1 };
+    return typeof entry === 'function' ? entry(params) : entry;
+  }
+}
+
+function mtOut(content: string, outPath: string): MultiTurnResult {
+  return {
+    stop_reason: 'end_turn', tool_uses: [], tokens_used: 10,
+    text: ['<<<SLE-OUTPUT>>>', `### ${outPath}`, content, '<<<END-SLE-OUTPUT>>>'].join('\n'),
+  };
+}
+
+function stPass(content: string, outPath: string): string {
+  return ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', 'verdict: pass',
+    'artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '', `## ${outPath}`, '', content].join('\n');
+}
+
+function decidedFactArtifact(decisionRef: string): string {
+  return [
+    '---',
+    'schemaVersion: 1',
+    '"goal": "Harness decision-authority parity"',
+    'facts:',
+    `  - {"id":"F1","statement":"WebSocket transport.","status":"DECIDED","source":"decision","decisionRef":"${decisionRef}"}`,
+    '---',
+  ].join('\n');
+}
+
+test('D.3d.5.2: the harness gate resolves Decisions — an invented decisionRef is refined, not reviewed (parity with production)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-harness-parity-'));
+  try {
+    const definitionPath = '.sle/work/wi-d3d-decision-gate/definition.md';
+    const readinessPath = '.sle/work/wi-d3d-decision-gate/readiness.md';
+    const corrected = [
+      '---',
+      'schemaVersion: 1',
+      '"goal": "Harness decision-authority parity"',
+      'facts:',
+      '  - {"id":"F1","statement":"WebSocket transport, still unconfirmed.","status":"ASSUMED","source":"human"}',
+      '---',
+    ].join('\n');
+
+    const reviewedContexts: string[] = [];
+    const provider = new ScriptedDualModeProvider(
+      [
+        mtOut(decidedFactArtifact('dec-invented-in-harness'), definitionPath),
+        mtOut(corrected, definitionPath),
+      ],
+      [
+        (params: LLMCompletionParams) => {
+          const context = params.messages.find((m) => m.role === 'user')?.content ?? '';
+          reviewedContexts.push(context);
+          return stPass('All dimensions pass.', readinessPath);
+        },
+      ],
+    );
+
+    const trace = await driveDefineWorkRun({
+      scenarioId: 'decision-gate',
+      root,
+      fixtureFiles: EARLY_FIXTURE_FILES,
+      objectiveIntent: EARLY_OBJECTIVE,
+      provider: provider as any,
+      resolveDecision: () => undefined, // never reached — no checkpoint in this script
+    });
+
+    assert.equal(trace.finalStatus, 'complete', trace.error);
+    // synthesize + refine = 2 multi-turn calls; exactly ONE reviewer call,
+    // and it saw the CORRECTED Definition (the invented one never reached
+    // semantic review).
+    assert.equal(provider.multiTurnCallCount, 2, 'the gate must bounce the invented decisionRef to refine');
+    assert.equal(provider.singleTurnCallCount, 1, 'the reviewer runs exactly once — on the corrected Definition');
+    assert.ok(
+      !reviewedContexts[0].includes('dec-invented-in-harness'),
+      'the reviewer never saw the invented decisionRef',
+    );
+    assert.ok(
+      reviewedContexts[0].includes('"status":"ASSUMED"'),
+      'the reviewer saw the corrected artifact',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ─── Production Decision resolution (Blocker 2) ──────────────────────────────

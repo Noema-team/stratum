@@ -14,7 +14,7 @@ import { strict as assert } from 'node:assert';
 
 import { ContextManager, DEFAULT_CONFIG } from '../../../src/context-manager.js';
 import { AgentRunner } from '../../../src/agent-runner.js';
-import { parseDefinition, validateDefinitionArtifactText, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
+import { createDefinitionInputValidator, parseDefinition, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
 import { StratumAgentAdapter } from '../../../src/execution/stratum-agent-adapter.js';
 import { ExecutorRegistry } from '../../../src/execution/registry.js';
@@ -116,7 +116,10 @@ export interface DecisionSummary {
   selectedOptionId?: string;
 }
 
-export type ScenarioId = 'early' | 'partial' | 'mature';
+// 'decision-gate' — a harness-only minimal scenario proving the harness path
+// wires the resolver-backed Definition validator (Decision-authority parity
+// with production); it exercises no oracle.
+export type ScenarioId = 'early' | 'partial' | 'mature' | 'decision-gate';
 
 export interface DefineWorkTrace {
   scenarioId: ScenarioId;
@@ -507,6 +510,23 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   });
   const artifacts = new ArtifactRepository(db);
 
+  // D.3d.5 commit 2 (amendment) — the harness registers the SAME
+  // Decision-authority gate production registers: createDefinitionInputValidator
+  // over a real DecisionRepository (this same in-memory db, which already
+  // backs the checkpoint/Decision lifecycle below). The methodology-owned
+  // factory stays storage-free; this closure is the exact shape the
+  // composition root builds in application.ts. Without it, Layer A/Layer B
+  // would exercise a weaker Definition gate than production for DECIDED
+  // facts — a live qualification run could PASS with a decisionRef
+  // production would reject.
+  const decisionRepo = new DecisionRepository(db);
+  const definitionValidator = createDefinitionInputValidator({
+    findDecision: (decisionRef: string) => {
+      const decision = decisionRepo.findById(decisionRef);
+      return decision ? { workItemId: decision.workItemId } : undefined;
+    },
+  });
+
   const provider = new RecordingProvider(rawProvider);
   const cm = new ContextManager(root, DEFAULT_CONFIG);
   const runArtifactsStub = {
@@ -516,9 +536,9 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
     cm, provider, root, runArtifactsStub,
     {
       model: opts.model ?? 'test', max_tokens: opts.maxTokens,
-      // D.3d.5 commit 2 — Layer A runs the same deterministic definition
-      // gate production runs.
-      inputValidators: { definition: validateDefinitionArtifactText },
+      // D.3d.5 commit 2 — Layer A/Layer B run the same deterministic
+      // Definition gate production runs, Decision resolution included.
+      inputValidators: { definition: definitionValidator },
     }, undefined, artifacts,
   );
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));
@@ -542,7 +562,6 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   assert.equal(dispatch[0]?.outcome, 'dispatched', `initial dispatch failed: ${JSON.stringify(dispatch[0])}`);
   const workflowRunId = dispatch[0].workflowRunId!;
 
-  const decisionRepo = new DecisionRepository(db);
   const resumeService = new ResumeService(db, workspaceId, registry);
 
   let rounds = 0;
