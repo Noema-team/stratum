@@ -25,15 +25,36 @@
 
 // ─── Fact ledger + Definition content shape (D.3a §1) ─────────────────────────
 
-export const DEFINITION_CONTRACT = `A Definition has these sections (all optional except goal):
-- goal: the single outcome being defined — one concrete statement, not a category.
-- constraints: boundaries the work must respect ({ description, type: must | must_not | prefer | prefer_not }).
-- requirements: concrete behavioral expectations the goal implies.
-- nonGoals: what this Definition explicitly excludes (the boundary counterpart to constraints).
-- design: current design thinking, if any — may be empty.
-- risks: named risks.
-- acceptanceModel: criteria sufficient to know the work is done ({ description, met }).
-- facts: the fact ledger below — the actual unit gaps are tracked against.
+export const DEFINITION_CONTRACT = `A Definition artifact has TWO parts: a YAML front matter block (canonical,
+machine-read — Stratum validates it deterministically BEFORE readiness review, and an
+invalid one is sent back to you with structured defects) and a Markdown body (the human
+explanation). The front matter is the authoritative representation: never duplicate its
+state in the body.
+
+The front matter must have exactly this shape:
+---
+schemaVersion: 1
+goal: "<the single outcome being defined — one concrete statement>"
+facts:
+  - id: F1
+    statement: "<the fact>"
+    status: KNOWN              # KNOWN | ASSUMED | UNKNOWN | DECIDED | DEFERRED
+    source: human              # human | repository | artifact | investigation | decision
+    kind: product-intent       # OPTIONAL: product-intent | repository-claim (see provenance rules below)
+    decisionRef: "<decision id>" # REQUIRED exactly when status is DECIDED
+requirements:
+  - "<concrete behavioral expectation the goal implies>"
+constraints:
+  - description: "<boundary the work must respect>"
+    type: must                 # must | must_not | prefer | prefer_not
+nonGoals:
+  - "<what this Definition explicitly excludes>"
+acceptance:
+  - description: "<criterion sufficient to know the work is done>"
+---
+
+The Markdown body AFTER the front matter carries the genuinely human-facing content:
+design thinking, named risks, tradeoffs, rationale. It must not restate the ledger.
 
 Fact ledger rules:
 - Every fact relevant to the goal is one entry { id, statement, status, source } in the ledger.
@@ -56,7 +77,12 @@ Fact ledger rules:
   fact — it starts ASSUMED, source: human, until something with source: repository or
   source: investigation actually confirms it. Mark a fact KNOWN with source: repository only
   after actually inspecting the relevant file(s) with an available repository-read tool, never
-  because it seems probably true.`;
+  because it seems probably true.
+- kind is the OPTIONAL explicit epistemic classification: 'product-intent' for what the human
+  wants, 'repository-claim' for an assertion about how the repository already behaves. The
+  deterministic validator enforces one rule from it mechanically — a repository-claim may not
+  be KNOWN on source: human alone — and leaves every other judgment to review. Use it when
+  the distinction is clear to you; it is never a substitute for honest status.`;
 
 // ─── Readiness rubric (D.3a §2) ────────────────────────────────────────────────
 

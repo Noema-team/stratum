@@ -28,6 +28,10 @@
 //         and the run commits.
 
 import { test } from 'node:test';
+import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
+import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+// D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
+const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -536,6 +540,8 @@ function toolUseTurn(name: string, input: Record<string, string>, id: string): M
 }
 
 function multiTurnDefinitionOutput(content: string, outputPath: string): MultiTurnResult {
+  // D.3d.5 commit 2 — scripted definitions are canonical artifacts.
+  content = canonicalizeDefinitionContent(content);
   return {
     stop_reason: 'end_turn',
     tool_uses: [],
@@ -635,7 +641,7 @@ test('D.3b1.1: define-work end-to-end — Objective intent reaches synthesis, sy
     const dyn = new DynamicLLMProvider(provider);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, dyn, root, makeRunArtifactsStubC(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, dyn, root, makeRunArtifactsStubC(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -664,8 +670,8 @@ test('D.3b1.1: define-work end-to-end — Objective intent reaches synthesis, sy
 
     // (4) the resulting Definition records the observed fact as KNOWN/source: repository.
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes('status: KNOWN'));
-    assert.ok(finalDefinition.includes('source: repository'));
+    assert.ok(finalDefinition.includes('"status":"KNOWN"'));
+    assert.ok(finalDefinition.includes('"source":"repository"'));
 
     // (5) definition-readiness-review stayed on the single-turn path and passed.
     assert.equal(provider.singleTurnCalls.length, 1, 'review must use exactly one single-turn call');

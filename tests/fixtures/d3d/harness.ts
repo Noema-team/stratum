@@ -14,6 +14,7 @@ import { strict as assert } from 'node:assert';
 
 import { ContextManager, DEFAULT_CONFIG } from '../../../src/context-manager.js';
 import { AgentRunner } from '../../../src/agent-runner.js';
+import { parseDefinition, validateDefinitionArtifactText, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
 import { StratumAgentAdapter } from '../../../src/execution/stratum-agent-adapter.js';
 import { ExecutorRegistry } from '../../../src/execution/registry.js';
@@ -150,6 +151,12 @@ export interface OracleResult {
 // of text) from a Definition's rendered fact-ledger text — the same
 // convention used throughout the D.3c1a/D.3c1b test suites.
 export function extractFactBlock(text: string, factId: string): string {
+  // D.3d.5 commit 2 — canonical artifacts: read the fact through the typed parser.
+  const canonical = canonicalFactsOf(text);
+  if (canonical !== null) {
+    const fact = canonical.find((f) => f.id === factId);
+    return fact ? JSON.stringify(fact) : '';
+  }
   const m = text.match(new RegExp(`- id: ${factId}[\\s\\S]*?(?=\\n- id: |$)`));
   return m ? m[0] : '';
 }
@@ -162,7 +169,33 @@ export function extractFactBlock(text: string, factId: string): string {
 // oracle must find facts SEMANTICALLY (by what the statement says) and then
 // check status/provenance within the matched entry — never by prescribed id
 // or line format (spec: "Exact wording/fact ids are not prescribed").
+// D.3d.5 commit 2 — the oracle reads machine-significant Definition state
+// (fact status/provenance/identity) through the SINGLE canonical parser.
+// Legacy markdown-ledger definitions remain readable via the semantic
+// fallback so pre-canonical scripted content keeps its exact semantics —
+// but whenever an artifact carries canonical front matter, the typed facts
+// are authoritative and the markdown heuristic path is not consulted for
+// epistemic checks.
+function canonicalFactsOf(definitionText: string): CanonicalFact[] | null {
+  try {
+    return parseDefinition(definitionText).definition.facts;
+  } catch (err) {
+      return null; // no/unparseable front matter → legacy fallback path
+  }
+}
+
 export function findFactBlocksAbout(text: string, topic: RegExp): string[] {
+  // D.3d.5 commit 2 — canonical path first: when the artifact carries valid
+  // front matter, the typed facts are authoritative. Each fact is returned
+  // as its JSON rendering, which the existing status/source regexes match
+  // unchanged ("status":"KNOWN" satisfies /status"?:\s*"?KNOWN/).
+  const canonical = canonicalFactsOf(text);
+  if (canonical !== null) {
+    return canonical
+      .filter((f) => topic.test(f.statement) || topic.test(f.id))
+      .map((f) => JSON.stringify(f));
+  }
+  // Legacy fallback (pre-canonical markdown ledgers — semantics unchanged).
   const blocks: string[] = [];
   // Split into candidate entries at every "- " bullet line (any ledger
   // rendering starts one: "- id: x", '- { id: "x" ... }', "- F001: { ... }").
@@ -220,6 +253,7 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   // D.3d — semantic lookup: any ledger entry whose statement is about the
   // networking layer, whatever id the model gave it (spec: ids not prescribed).
   const networkingFacts = findFactBlocksAbout(trace.definitionText, /network/i);
+  console.log('DEBUG oracle canonical:', JSON.stringify(canonicalFactsOf(trace.definitionText)?.length), 'blocks:', JSON.stringify(networkingFacts.length));
   const networkingKnown = networkingFacts.find(
     (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(repository|investigation)/.test(b),
   );
@@ -307,6 +341,9 @@ const AUTHORITATIVE_FACT_TOPICS: Array<{ name: string; topic: RegExp; requireLed
 
 export function authoritativeFactsPreserved(definitionText: string): { pass: boolean; detail: string } {
   const problems: string[] = [];
+  // D.3d.5 commit 2 — findFactBlocksAbout is canonical-aware: for artifacts
+  // with valid front matter it returns the TYPED facts (JSON-rendered), so
+  // epistemic checks always read the authoritative representation.
   for (const { name, topic, requireLedgerEntry } of AUTHORITATIVE_FACT_TOPICS) {
     const blocks = findFactBlocksAbout(definitionText, topic);
     if (blocks.length === 0) {
@@ -477,7 +514,12 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   } as any;
   const agentRunner = new AgentRunner(
     cm, provider, root, runArtifactsStub,
-    { model: opts.model ?? 'test', max_tokens: opts.maxTokens }, undefined, artifacts,
+    {
+      model: opts.model ?? 'test', max_tokens: opts.maxTokens,
+      // D.3d.5 commit 2 — Layer A runs the same deterministic definition
+      // gate production runs.
+      inputValidators: { definition: validateDefinitionArtifactText },
+    }, undefined, artifacts,
   );
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));
   const engineDeps: WorkflowEngineDeps = {

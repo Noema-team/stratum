@@ -101,6 +101,17 @@ export interface WorkflowStep {
   // through on_fail/on_pass as if it were one.
   requiresReviewVerdict?: boolean;
 
+  // D.3d.5 commit 2 — opt-in deterministic INPUT validation, executed by
+  // AgentRunner BEFORE any LLM call on this step. The value names a
+  // registered validator (e.g. 'definition'); when the named validator
+  // rejects the step's first declared inputArtifactRef, the LLM reviewer is
+  // NEVER called: the step deterministically yields verdict 'fail' with the
+  // refine route (the existing CAN_RESOLVE path) and a readiness artifact
+  // carrying the structured defects, which the existing refine step consumes.
+  // This is declarative DATA + a registry — not a new StepKind, route,
+  // status, or workflow path.
+  inputValidator?: string;
+
   // D.3b0 — opt-in: render the run's WorkItem constraints/acceptance
   // criteria (threaded in from Scheduler/ResumeService, never queried by
   // ContextManager) into this step's assembled context. See
@@ -345,6 +356,9 @@ export interface StepRunContext {
   // instruction/outputArtifact/inputArtifactRefs above.
   includeWorkItemContext?: boolean;
   requiresReviewVerdict?: boolean;
+  // D.3d.5 commit 2 — copied from WorkflowStep.inputValidator by
+  // WorkflowEngine.makeStepRunContext, same as requiresReviewVerdict.
+  inputValidator?: string;
   // D.3c1a — copied from WorkflowStep.on_fail_routes by
   // WorkflowEngine.makeStepRunContext, the same way requiresReviewVerdict
   // is already copied. AgentRunner validates a semantic-fail route token

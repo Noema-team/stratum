@@ -140,9 +140,25 @@ export interface AgentRunnerConfig {
   // adapters). Defaults to the textual SLE-OUTPUT fallback transport; see
   // transport/step-result.ts for the seam contract.
   resultTransport?: ResultTransport;
+  // D.3d.5 commit 2 — registered deterministic input validators, keyed by
+  // the WorkflowStep.inputValidator declared name. A validator receives the
+  // raw text of the step's FIRST declared input artifact and either accepts
+  // it or returns structured defects. The runner is generic: it knows the
+  // contract, never what 'definition' (or any other name) means — the
+  // composition root wires the methodology-owned implementations.
+  inputValidators?: Record<string, InputValidator>;
 }
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport'>> = {
+/**
+ * D.3d.5 commit 2 — the generic input-validator contract. Deliberately
+ * shape-agnostic: the validator decides what the artifact must look like;
+ * the runner only knows accept/reject + structured defects.
+ */
+export type InputValidator = (
+  artifactText: string,
+) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
+
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -170,6 +186,20 @@ export class AgentRunner {
 
   async run(role: AgentRole, ctx: StepRunContext): Promise<AgentRunResult> {
     const start = Date.now();
+
+    // 0. D.3d.5 commit 2 — deterministic INPUT VALIDATION GATE. When the
+    // step declares an inputValidator, the step's first declared input
+    // artifact is parsed+validated BEFORE any LLM call. On defects the
+    // reviewer is NEVER invoked: the step deterministically yields
+    // verdict 'fail' + the refine route (the existing CAN_RESOLVE path)
+    // and writes a readiness artifact carrying the structured defects,
+    // which the existing refine step already consumes as input. This is
+    // the narrowest seam that makes deterministic validation authoritative
+    // before semantic review — no new StepKind, route, loop, or status.
+    if (ctx.inputValidator !== undefined) {
+      const gateResult = await this.runInputValidationGate(ctx);
+      if (gateResult !== null) return gateResult;
+    }
 
     // 1. Assemble context
     const context = await this.contextManager.assemble(role, ctx);
@@ -526,6 +556,127 @@ export class AgentRunner {
       reviewRoute,
       ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
     };
+  }
+
+  /**
+   * D.3d.5 commit 2 — the deterministic input-validation gate. Returns null
+   * when validation passed (execution proceeds normally) or an AgentRunResult
+   * that short-circuits execution entirely (LLM reviewer never called).
+   *
+   * On rejection the step's own declared output artifact (the readiness
+   * artifact) is written with the structured defect report, so the existing
+   * refine step — which already consumes the readiness artifact as input —
+   * receives exactly what the validator rejected. Deterministic system
+   * identifies the mechanical defect; the model proposes the correction.
+   */
+  private async runInputValidationGate(ctx: StepRunContext): Promise<AgentRunResult | null> {
+    const start0 = Date.now();
+    const fail = (error: string, rawPath = ''): AgentRunResult => ({
+      success: false,
+      artifacts_written: [],
+      tokens_used: 0,
+      duration_ms: Date.now() - start0,
+      raw_output_path: rawPath,
+      error,
+    });
+    const validatorName = ctx.inputValidator!;
+    const validator = this.runnerConfig.inputValidators?.[validatorName];
+    if (!validator) {
+      return fail(
+        `Step declares inputValidator '${validatorName}' but no such validator is registered — workflow authoring error (fail closed, no LLM call)`,
+      );
+    }
+    if (!ctx.inputArtifactRefs || ctx.inputArtifactRefs.length === 0) {
+      return fail(`Step declares inputValidator '${validatorName}' but declares no inputArtifactRefs to validate`);
+    }
+    // The engine materializes {workItemId}/{objectiveId} placeholders before
+    // this point; canonicalize defensively (path-safety) before reading.
+    const inputPath = ctx.inputArtifactRefs[0];
+    const canonical = toSafeRelativePath(inputPath);
+    if (canonical === null) {
+      return fail(`Step input artifact ref '${inputPath}' is not a safe relative path`);
+    }
+    const absolute = path.join(this.projectRoot, canonical);
+    let artifactText: string | undefined;
+    try {
+      artifactText = await this.fs.readFile(absolute, 'utf-8');
+    } catch {
+      artifactText = undefined;
+    }
+    if (artifactText === undefined) {
+      const written = await this.writeGateRejection(ctx, [
+        { code: 'INPUT_ARTIFACT_MISSING', message: `input artifact '${canonical}' does not exist on disk yet` },
+      ]);
+      return {
+        success: true,
+        tokens_used: 0,
+        duration_ms: Date.now() - start0,
+        raw_output_path: '',
+        reviewVerdict: 'fail',
+        ...(ctx.on_fail_routes && Object.prototype.hasOwnProperty.call(ctx.on_fail_routes, 'refine')
+          ? { reviewRoute: 'refine' }
+          : {}),
+        error: undefined,
+        artifacts_written: written.artifacts_written,
+      };
+    }
+    const outcome = validator(artifactText);
+    if (outcome.ok) return null; // valid — semantic readiness review proceeds normally
+    // Deterministic rejection: verdict 'fail' routed to refine (CAN_RESOLVE).
+    // 'refine' must be one of the step's OWN declared route keys — the same
+    // allowlist invariant the D.3c1a route gate enforces for model tokens.
+    if (!ctx.on_fail_routes || !Object.prototype.hasOwnProperty.call(ctx.on_fail_routes, 'refine')) {
+      return fail(
+        `Input validation rejected the artifact but the step does not declare a 'refine' route — workflow authoring error (fail closed, no LLM call)`,
+      );
+    }
+    const written = await this.writeGateRejection(ctx, outcome.failure.defects);
+    return {
+      success: true,
+      tokens_used: 0,
+      duration_ms: Date.now() - start0,
+      raw_output_path: '',
+      reviewVerdict: 'fail',
+      reviewRoute: 'refine',
+      artifacts_written: written.artifacts_written,
+    };
+  }
+
+  /**
+   * Writes the readiness artifact carrying structured validator defects and
+   * returns the spreadable artifacts_written record. The existing refine
+   * step reads this artifact as input (inputArtifactRefs already includes
+   * it), so the defect list reaches the refinement agent verbatim.
+   */
+  private async writeGateRejection(
+    ctx: StepRunContext,
+    defects: Array<{ code: string; factId?: string; message: string }>,
+  ): Promise<{ artifacts_written: string[] }> {
+    if (!ctx.outputArtifact) return { artifacts_written: [] };
+    const canonical = toSafeRelativePath(ctx.outputArtifact.path);
+    if (canonical === null) return { artifacts_written: [] };
+    const lines: string[] = [
+      '# Definition Validation — deterministic gate',
+      '',
+      'verdict: fail (route: refine)',
+      '',
+      'The Definition Artifact was rejected by deterministic validation BEFORE semantic review.',
+      'These are mechanical contract defects: fix them exactly, in the Definition front matter,',
+      'and re-emit the full canonical Definition artifact.',
+      '',
+      '## Definition validator defects',
+      '',
+    ];
+    for (const d of defects) {
+      lines.push(`- ${d.code}${d.factId ? ` (${d.factId})` : ''}: ${d.message}`);
+    }
+    lines.push('');
+    lines.push('Nothing here is a semantic judgment — scope, classification, and acceptance');
+    lines.push('adequacy remain the readiness review\'s questions once the artifact is structurally valid.');
+    const filePath = path.join(this.projectRoot, canonical);
+    await this.fs.mkdir(path.dirname(filePath), { recursive: true });
+    await this.fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+    return { artifacts_written: [ctx.outputArtifact.path] };
   }
 
   private async writeRaw(

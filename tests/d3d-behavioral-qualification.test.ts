@@ -30,6 +30,7 @@ import type { LLMCompletionParams } from '../src/llm-provider.js';
 import { DEFINE_WORK } from '../src/workflow/builtins/define-work.js';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 import { TextualSleOutputTransport } from '../src/transport/textual-sle-output.js';
+import { parseDefinition } from '../src/workflow/methodology/definition-artifact.js';
 
 import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES,
@@ -153,85 +154,58 @@ function cleanup(root: string): void {
 // Scenario A — EARLY
 // ============================================================================
 
-const EARLY_V1 = `## Goal
-Make Evershift multiplayer-capable: two players can join and play a shared real-time session together.
+const EARLY_GOAL = 'Make Evershift multiplayer-capable: two players can join and play a shared real-time session together.';
 
-## Requirements
-- Two players can join and play a shared real-time session together.
+// D.3d.5 commit 2 — scripted definitions are CANONICAL artifacts (YAML front
+// matter carries the fact ledger; the markdown body stays human-facing).
+// JSON flow style per fact is valid YAML and keeps the helper trivial.
+function canonicalDefinition(
+  goal: string,
+  facts: Array<{ id: string; statement: string; status: string; source: string; decisionRef?: string; selected?: string }>,
+  body = '',
+): string {
+  const fm = [
+    '---',
+    'schemaVersion: 1',
+    `goal: ${JSON.stringify(goal)}`,
+    'facts:',
+    ...facts.map((f) => '  - ' + JSON.stringify(f)),
+    '---',
+  ].join('\n');
+  return body ? `${fm}\n\n${body}` : fm;
+}
 
-## Facts
-- id: networking-layer
-  statement: Whether the repository already has a networking/transport layer.
-  status: UNKNOWN
-  source: repository
-- id: cross-platform-scope
-  statement: Whether cross-platform play belongs in this bounded increment.
-  status: UNKNOWN
-  source: human
-- id: sync-latency-feasibility
-  statement: Whether client-side prediction with server reconciliation can meet the required latency/frame budget.
-  status: UNKNOWN
-  source: human
-- id: wider-multiplayer-features
-  statement: Matchmaking, voice chat, spectating, and more-than-two-player sessions.
-  status: ASSUMED
-  source: human`;
+const EARLY_V1 = canonicalDefinition(EARLY_GOAL, [
+  { id: 'networking-layer', statement: 'Whether the repository already has a networking/transport layer.', status: 'UNKNOWN', source: 'repository' },
+  { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
+  { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
+  { id: 'wider-multiplayer-features', statement: 'Matchmaking, voice chat, spectating, and more-than-two-player sessions.', status: 'ASSUMED', source: 'human' },
+], `## Requirements
+- Two players can join and play a shared real-time session together.`);
 
-const EARLY_V2 = `## Goal
-Make Evershift multiplayer-capable: two players can join and play a shared real-time session together.
-
-## Requirements
+const EARLY_V2 = canonicalDefinition(EARLY_GOAL, [
+  { id: 'networking-layer', statement: 'The repository has no networking/transport layer today (docs/architecture.md: single-player, no network transport, session, or replication code anywhere).', status: 'KNOWN', source: 'repository' },
+  { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
+  { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
+  { id: 'wider-multiplayer-features', statement: 'Matchmaking, voice chat, spectating, and more-than-two-player sessions.', status: 'ASSUMED', source: 'human' },
+], `## Requirements
 - Two players can join and play a shared real-time session together.
 
 ## Acceptance Model
 - description: Two players can join and play a shared real-time session together.
-  met: false
+  met: false`);
 
-## Facts
-- id: networking-layer
-  statement: The repository has no networking/transport layer today (docs/architecture.md: single-player, no network transport, session, or replication code anywhere).
-  status: KNOWN
-  source: repository
-- id: cross-platform-scope
-  statement: Whether cross-platform play belongs in this bounded increment.
-  status: UNKNOWN
-  source: human
-- id: sync-latency-feasibility
-  statement: Whether client-side prediction with server reconciliation can meet the required latency/frame budget.
-  status: UNKNOWN
-  source: human
-- id: wider-multiplayer-features
-  statement: Matchmaking, voice chat, spectating, and more-than-two-player sessions.
-  status: ASSUMED
-  source: human`;
-
-const EARLY_V3_DEFERRED = `## Goal
-Make Evershift multiplayer-capable: two players can join and play a shared real-time session together.
-
-## Non-Goals
+const EARLY_V3_DEFERRED = canonicalDefinition(EARLY_GOAL, [
+  { id: 'networking-layer', statement: 'The repository has no networking/transport layer today.', status: 'KNOWN', source: 'repository' },
+  { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
+  { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
+  { id: 'wider-multiplayer-features', statement: 'Matchmaking, voice chat, spectating, and more-than-two-player sessions — real, but does not block this bounded 2-player increment.', status: 'DEFERRED', source: 'human' },
+], `## Non-Goals
 - Matchmaking, voice chat, spectating, and more-than-two-player sessions are out of scope for this bounded increment (see wider-multiplayer-features).
 
 ## Acceptance Model
 - description: Two players can join and play a shared real-time session together.
-  met: false
-
-## Facts
-- id: networking-layer
-  statement: The repository has no networking/transport layer today.
-  status: KNOWN
-  source: repository
-- id: cross-platform-scope
-  statement: Whether cross-platform play belongs in this bounded increment.
-  status: UNKNOWN
-  source: human
-- id: sync-latency-feasibility
-  statement: Whether client-side prediction with server reconciliation can meet the required latency/frame budget.
-  status: UNKNOWN
-  source: human
-- id: wider-multiplayer-features
-  statement: Matchmaking, voice chat, spectating, and more-than-two-player sessions — real, but does not block this bounded 2-player increment.
-  status: DEFERRED
-  source: human`;
+  met: false`);
 
 const AUTHORITY_DECISION_REQUEST = {
   type: 'human_decision',
@@ -247,35 +221,17 @@ const AUTHORITY_DECISION_REQUEST = {
 function earlyApplyHumanDecision(params: MultiTurnParams): MultiTurnResult {
   const userMessage = String(params.messages[0]?.content ?? '');
   const { decisionId, selectedOptionId } = extractDecisionFromContext(userMessage);
-  return mtOutput(`## Goal
-Make Evershift multiplayer-capable: two players can join and play a shared real-time session together.
-
-## Non-Goals
+  return mtOutput(canonicalDefinition(EARLY_GOAL, [
+    { id: 'networking-layer', statement: 'The repository has no networking/transport layer today.', status: 'KNOWN', source: 'repository' },
+    { id: 'cross-platform-scope', statement: 'Same-platform only for this bounded increment.', status: 'DECIDED', source: 'decision', decisionRef: decisionId, selected: selectedOptionId },
+    { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
+    { id: 'wider-multiplayer-features', statement: 'Matchmaking, voice chat, spectating, and more-than-two-player sessions — real, but does not block this bounded 2-player increment.', status: 'DEFERRED', source: 'human' },
+  ], `## Non-Goals
 - Matchmaking, voice chat, spectating, and more-than-two-player sessions are out of scope for this bounded increment.
 
 ## Acceptance Model
 - description: Two players can join and play a shared real-time session together.
-  met: false
-
-## Facts
-- id: networking-layer
-  statement: The repository has no networking/transport layer today.
-  status: KNOWN
-  source: repository
-- id: cross-platform-scope
-  statement: Same-platform only for this bounded increment.
-  status: DECIDED
-  source: decision
-  decision: ${decisionId}
-  selected: ${selectedOptionId}
-- id: sync-latency-feasibility
-  statement: Whether client-side prediction with server reconciliation can meet the required latency/frame budget.
-  status: UNKNOWN
-  source: human
-- id: wider-multiplayer-features
-  statement: Matchmaking, voice chat, spectating, and more-than-two-player sessions — real, but does not block this bounded 2-player increment.
-  status: DEFERRED
-  source: human`, `.sle/work/wi-d3d-early/definition.md`);
+  met: false`), `.sle/work/wi-d3d-early/definition.md`);
 }
 
 const EARLY_EXPLORATION_NEED = `Exact question: can client-side prediction with server reconciliation meet the required
@@ -346,49 +302,25 @@ test('D.3d Layer A — EARLY: substantial uncertainty handling (CAN_RESOLVE -> D
 // Scenario B — PARTIAL
 // ============================================================================
 
-const PARTIAL_V1 = `## Goal
-Faction relations affect NPC dialogue and trade prices at settlements.
+const PARTIAL_GOAL = 'Faction relations affect NPC dialogue and trade prices at settlements.';
 
-## Non-Goals
-- Combat is out of scope for this increment.
+const PARTIAL_V1 = canonicalDefinition(PARTIAL_GOAL, [
+  { id: 'faction-loyalty-model', statement: 'Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).', status: 'KNOWN', source: 'human' },
+  { id: 'combat-out-of-scope', statement: 'Combat is explicitly out of scope for this increment.', status: 'KNOWN', source: 'human' },
+  { id: 'dialogue-trade-wiring', statement: 'The dialogue engine and trade post do not yet take faction relation as an input.', status: 'ASSUMED', source: 'human' },
+], `## Non-Goals
+- Combat is out of scope for this increment.`);
 
-## Facts
-- id: faction-loyalty-model
-  statement: Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).
-  status: KNOWN
-  source: human
-- id: combat-out-of-scope
-  statement: Combat is explicitly out of scope for this increment.
-  status: KNOWN
-  source: human
-- id: dialogue-trade-wiring
-  statement: The dialogue engine and trade post do not yet take faction relation as an input.
-  status: ASSUMED
-  source: human`;
-
-const PARTIAL_V2 = `## Goal
-Faction relations affect NPC dialogue and trade prices at settlements.
-
-## Non-Goals
+const PARTIAL_V2 = canonicalDefinition(PARTIAL_GOAL, [
+  { id: 'faction-loyalty-model', statement: 'Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).', status: 'KNOWN', source: 'human' },
+  { id: 'combat-out-of-scope', statement: 'Combat is explicitly out of scope for this increment (src/combat/ is self-contained, no dependency on faction/dialogue state).', status: 'KNOWN', source: 'repository' },
+  { id: 'dialogue-trade-wiring', statement: 'The dialogue engine (src/dialogue/dialogue-engine.ts) selects lines by disposition only; the trade post (src/trade/trade-post.ts) applies a flat multiplier — neither yet takes faction relation as an input.', status: 'KNOWN', source: 'repository' },
+], `## Non-Goals
 - Combat is out of scope for this increment.
 
 ## Acceptance Model
 - description: An NPC's dialogue line and trade price multiplier both reflect their faction's relation to the player.
-  met: false
-
-## Facts
-- id: faction-loyalty-model
-  statement: Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).
-  status: KNOWN
-  source: human
-- id: combat-out-of-scope
-  statement: Combat is explicitly out of scope for this increment (src/combat/ is self-contained, no dependency on faction/dialogue state).
-  status: KNOWN
-  source: repository
-- id: dialogue-trade-wiring
-  statement: The dialogue engine (src/dialogue/dialogue-engine.ts) selects lines by disposition only; the trade post (src/trade/trade-post.ts) applies a flat multiplier — neither yet takes faction relation as an input.
-  status: KNOWN
-  source: repository`;
+  met: false`);
 
 function partialScript(): ScenarioScript {
   const definitionPath = '.sle/work/wi-d3d-partial/definition.md';
@@ -426,10 +358,13 @@ test('D.3d Layer A — PARTIAL: targeted refinement only, supplied facts preserv
 // Scenario C — MATURE
 // ============================================================================
 
-const MATURE_V1 = `## Goal
-Add GET /objectives/:id/history, returning the Objective's recorded status transitions.
-
-## Constraints
+const MATURE_V1 = canonicalDefinition(
+  "Add GET /objectives/:id/history, returning the Objective's recorded status transitions.",
+  [
+    { id: 'existing-route-pattern', statement: 'GET /objectives/:id (src/api/routes/objectives.ts) already uses requireWorkspaceAccess (src/api/guards/workspace-guard.ts) and 404s when the Objective is absent or belongs to a different workspace.', status: 'KNOWN', source: 'repository' },
+    { id: 'existing-event-source', statement: 'ObjectiveEventRepository.listByObjective (src/domain/objective-events.ts) already records every status transition ordered by occurredAt — no new entity or event type is needed.', status: 'KNOWN', source: 'repository' },
+  ],
+  `## Constraints
 - description: Do not add a new entity or event type.
   type: must_not
 - description: Follow the existing GET /objectives/:id route pattern and workspace guard.
@@ -440,17 +375,8 @@ Add GET /objectives/:id/history, returning the Objective's recorded status trans
 
 ## Acceptance Model
 - description: Request returns the ordered transition history for an accessible Objective; 404 when absent/inaccessible.
-  met: false
-
-## Facts
-- id: existing-route-pattern
-  statement: GET /objectives/:id (src/api/routes/objectives.ts) already uses requireWorkspaceAccess (src/api/guards/workspace-guard.ts) and 404s when the Objective is absent or belongs to a different workspace.
-  status: KNOWN
-  source: repository
-- id: existing-event-source
-  statement: ObjectiveEventRepository.listByObjective (src/domain/objective-events.ts) already records every status transition ordered by occurredAt — no new entity or event type is needed.
-  status: KNOWN
-  source: repository`;
+  met: false`,
+);
 
 function matureScript(): ScenarioScript {
   const definitionPath = '.sle/work/wi-d3d-mature/definition.md';

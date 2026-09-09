@@ -825,6 +825,9 @@ export class WorkflowEngine {
       workItemAcceptanceCriteria,
       includeWorkItemContext: step.includeWorkItemContext,
       requiresReviewVerdict: step.requiresReviewVerdict,
+      // D.3d.5 commit 2 — copied the same way: the deterministic input-
+      // validation gate keys off this declared name (AgentRunner registry).
+      inputValidator: step.inputValidator,
       // D.3c1a — copied the same way, so AgentRunner can validate a
       // semantic-fail route token against this step's own declared keys.
       on_fail_routes: step.on_fail_routes,

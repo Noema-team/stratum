@@ -82,11 +82,55 @@ export function parseAgentOutput(raw: string, role: AgentRole): ParsedSingleTurn
   return { preamble, sections };
 }
 
+// D.3d.5 commit 2 — CONCRETE INVARIANT FIX (documented transport exception):
+// the canonical Definition artifact embeds YAML front matter delimited by
+// `---` lines, which the legacy single-turn section separator (`---`) would
+// swallow — a canonical artifact was physically unwritable through this
+// path. A `---` line is therefore a section separator ONLY when it is not
+// inside a front-matter block: a `---` immediately following the section's
+// '## <path>' header OPENS front matter, and the next `---` CLOSES it.
+// Legacy multi-section replies (separator between '## path' sections)
+// behave byte-for-byte as before.
+function splitStandardSections(body: string): string[] {
+  const lines = body.split('\n');
+  const out: string[] = [];
+  let cur: string[] = [];
+  let headerIdx = -1;       // index (in cur) of the current section's '## <path>' header
+  let inFrontMatter = false;
+  for (const line of lines) {
+    if (/^-{3,}\s*$/.test(line)) {
+      // content strictly AFTER the header line (the header itself is never content)
+      const contentAfterHeader = (headerIdx >= 0 ? cur.slice(headerIdx + 1) : []).join('\n').replace(/^\n+/, '');
+      if (!inFrontMatter && headerIdx >= 0 && contentAfterHeader === '') {
+        // front-matter opener — content, not a separator
+        inFrontMatter = true;
+        cur.push(line);
+        continue;
+      }
+      if (inFrontMatter) {
+        // front-matter closer — content, not a separator
+        inFrontMatter = false;
+        cur.push(line);
+        continue;
+      }
+      // genuine section separator
+      out.push(cur.join('\n'));
+      cur = [];
+      headerIdx = -1;
+      continue;
+    }
+    if (headerIdx === -1 && /^## /.test(line)) headerIdx = cur.length;
+    cur.push(line);
+  }
+  out.push(cur.join('\n'));
+  return out;
+}
+
 function parseStandardSections(
   body: string,
   preamble: SLEOutputPreamble
 ): Array<{ path: string; content: string }> {
-  const rawSections = body.split(/\n---+\n/);
+  const rawSections = splitStandardSections(body);
   const results: Array<{ path: string; content: string }> = [];
 
   for (const raw of rawSections) {

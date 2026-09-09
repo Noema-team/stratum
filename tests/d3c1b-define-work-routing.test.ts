@@ -28,6 +28,10 @@
 //         instruction text define-work's review steps carry.
 
 import { test } from 'node:test';
+import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
+import { parseDefinition, validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+// D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
+const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -89,6 +93,8 @@ class SequenceLLMProvider implements ILLMProvider {
 }
 
 function definitionOutput(content: string, outPath: string): string {
+  // D.3d.5 commit 2 — scripted definitions are canonical artifacts.
+  content = canonicalizeDefinitionContent(content);
   return [
     '<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work',
     'artifacts:', '  - id: definition', `    path: ${outPath}`, '-->', '',
@@ -173,7 +179,7 @@ test('D.3c1b: DEFER routes to apply-deferred-gaps, marks the fact DEFERRED (neve
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -186,8 +192,8 @@ test('D.3c1b: DEFER routes to apply-deferred-gaps, marks the fact DEFERRED (neve
     assert.equal(result.iterations_used, 1, 'DEFER must never increment iteration');
 
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes('status: DEFERRED'));
-    assert.ok(!finalDefinition.includes('status: ASSUMED'), 'the DEFER gap must not remain ASSUMED after apply-deferred-gaps');
+    assert.ok(finalDefinition.includes('"status":"DEFERRED"'));
+    assert.ok(!finalDefinition.includes('"status":"ASSUMED"'), 'the DEFER gap must not remain ASSUMED after apply-deferred-gaps');
     assert.ok(!/status: KNOWN/.test(finalDefinition), 'DEFERRED is not resolution — it must never become KNOWN');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -235,7 +241,7 @@ test('D.3c1b: a genuine non-blocking DEFER gap can be marked DEFERRED at the FIN
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -249,7 +255,7 @@ test('D.3c1b: a genuine non-blocking DEFER gap can be marked DEFERRED at the FIN
     assert.ok(!/Iteration cap/.test(result.error ?? ''), 'DEFER at the final iteration must never trip the cap');
 
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes('status: DEFERRED'), 'the DEFER gap must still be markable DEFERRED at the final allowed iteration');
+    assert.ok(finalDefinition.includes('"status":"DEFERRED"'), 'the DEFER gap must still be markable DEFERRED at the final allowed iteration');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -279,7 +285,7 @@ test('D.3c1b: post-defer-readiness-review does not offer another defer route —
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -316,7 +322,7 @@ function makeProductionAdapter(
   root: string, db: ReturnType<typeof openDatabase>, artifacts: ArtifactRepository, provider: ILLMProvider,
 ): StratumAgentAdapter {
   const cm = new ContextManager(root, DEFAULT_CONFIG);
-  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: new AgentStepRunner(agentRunner),
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
@@ -439,10 +445,10 @@ test('D.3c1b: HUMAN_DECISION end-to-end — Scheduler creates the durable Decisi
     assert.equal(finalWorkItem?.state, 'in_review');
 
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes('status: DECIDED'), 'the fact must become DECIDED');
-    assert.ok(finalDefinition.includes('source: decision'), 'the fact\'s source must become decision');
-    assert.ok(finalDefinition.includes(`decision: ${decision.id}`), 'the Definition must reference the REAL resolved Decision id');
-    assert.ok(finalDefinition.includes('selected: dedicated-server'), 'the Definition must record the human\'s actual selected option');
+    assert.ok(finalDefinition.includes('"status":"DECIDED"'), 'the fact must become DECIDED');
+    assert.ok(finalDefinition.includes('"source":"decision"'), 'the fact\'s source must become decision');
+    assert.ok(finalDefinition.includes(`"decisionRef":"${decision.id}"`), 'the Definition must reference the REAL resolved Decision id');
+    assert.ok(finalDefinition.includes('"selected":"dedicated-server"'), 'the Definition must record the human\'s actual selected option');
 
     const resolvedDecision = decisionRepo.findById(decision.id);
     assert.equal(resolvedDecision?.status, 'resolved');
@@ -502,9 +508,17 @@ function applyDecisionResponse(
   };
 }
 
+// D.3d.5 commit 2 — facts are canonical now: read them through the typed
+// parser (JSON flow style has no markdown bullets to regex).
 function extractFactBlock(text: string, factId: string): string {
   const m = text.match(new RegExp(`- id: ${factId}[\\s\\S]*?(?=\\n- id: |$)`));
-  return m ? m[0] : '';
+  if (m) return m[0];
+  try {
+    const fact = parseDefinition(text).definition.facts.find((f) => f.id === factId);
+    return fact ? JSON.stringify(fact) : '';
+  } catch {
+    return '';
+  }
 }
 
 const WI_REPEATED_CHECKPOINT = 'wi-human-repeated';
@@ -615,11 +629,11 @@ test('D.3c1b.1: two HUMAN_DECISION facts resolve one at a time through the SAME 
     assert.equal(subjectRefB.stepId, 'human-decision-checkpoint', 'Decision B is raised at the same reusable checkpoint step id');
 
     const definitionAfterRoundA = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(definitionAfterRoundA.includes(`decision: ${decisionA.id}`), 'the Definition must already reference Decision A\'s real id');
+    assert.ok(definitionAfterRoundA.includes(`"decisionRef":"${decisionA.id}"`), 'the Definition must already reference Decision A\'s real id');
     const factAAfterRoundA = extractFactBlock(definitionAfterRoundA, 'authority-model');
-    assert.ok(factAAfterRoundA.includes('status: DECIDED') && factAAfterRoundA.includes('source: decision'));
+    assert.ok(factAAfterRoundA.includes('"status":"DECIDED"') && factAAfterRoundA.includes('"source":"decision"'));
     const factBAfterRoundA = extractFactBlock(definitionAfterRoundA, 'reconnect-policy');
-    assert.ok(factBAfterRoundA.includes('status: UNKNOWN'), 'fact B must NOT have been silently marked DECIDED');
+    assert.ok(factBAfterRoundA.includes('"status":"UNKNOWN"'), 'fact B must NOT have been silently marked DECIDED');
     assert.ok(!factBAfterRoundA.includes('DECIDED'));
 
     // ── Resolve Decision B — the SECOND pass through the SAME checkpoint step. ──
@@ -643,12 +657,12 @@ test('D.3c1b.1: two HUMAN_DECISION facts resolve one at a time through the SAME 
     assert.ok(finalDecisions.every((d) => d.status === 'resolved'), 'both Decisions must be resolved');
 
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes(`decision: ${decisionA.id}`), 'the Definition must reference Decision A\'s real id');
-    assert.ok(finalDefinition.includes(`decision: ${decisionB.id}`), 'the Definition must reference Decision B\'s real id');
+    assert.ok(finalDefinition.includes(`"decisionRef":"${decisionA.id}"`), 'the Definition must reference Decision A\'s real id');
+    assert.ok(finalDefinition.includes(`"decisionRef":"${decisionB.id}"`), 'the Definition must reference Decision B\'s real id');
     const factAFinal = extractFactBlock(finalDefinition, 'authority-model');
     const factBFinal = extractFactBlock(finalDefinition, 'reconnect-policy');
-    assert.ok(factAFinal.includes('status: DECIDED') && factAFinal.includes('source: decision'));
-    assert.ok(factBFinal.includes('status: DECIDED') && factBFinal.includes('source: decision'));
+    assert.ok(factAFinal.includes('"status":"DECIDED"') && factAFinal.includes('"source":"decision"'));
+    assert.ok(factBFinal.includes('"status":"DECIDED"') && factBFinal.includes('"source":"decision"'));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -692,7 +706,7 @@ test('D.3c1b: EXPLORE_AS_WORK records a bounded exploration need and terminates 
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const workflowRunId = `run-explore-${randomUUID()}`;
@@ -714,7 +728,7 @@ test('D.3c1b: EXPLORE_AS_WORK records a bounded exploration need and terminates 
     // Definition remains not-ready. No WorkItem-creation or WorkProposal
     // mechanism exists anywhere in this workflow to have run.
     const finalDefinition = await fs.readFile(path.join(root, definitionPath), 'utf-8');
-    assert.ok(finalDefinition.includes('status: UNKNOWN'));
+    assert.ok(finalDefinition.includes('"status":"UNKNOWN"'));
     assert.ok(!finalDefinition.includes('status: KNOWN'), 'EXPLORE_AS_WORK must never mark the fact KNOWN/resolved');
 
     const workItemRows = new WorkItemRepository(db);

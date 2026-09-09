@@ -13,6 +13,10 @@
 // original spike's approach.
 
 import { test } from 'node:test';
+import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
+import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+// D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
+const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
 import { AgentRunner } from '../src/agent-runner.js';
@@ -207,7 +211,7 @@ function makeAgentRunner(opts: {
     llm,
     ROOT,
     ram as unknown as RunArtifactManager,
-    { model: 'test-model' },
+    { model: 'test-model', inputValidators: TEST_INPUT_VALIDATORS },
     opts.fsMock,
     opts.artifactRepository,
   );

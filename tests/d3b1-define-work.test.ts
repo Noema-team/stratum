@@ -17,6 +17,10 @@
 //         artifacts preserved).
 
 import { test } from 'node:test';
+import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
+import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+// D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
+const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -128,7 +132,7 @@ test('D.3b1: a requiresReviewVerdict step stays on the single-turn path even whe
     appendFile: async () => {},
     readFile: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
   } as unknown as typeof import('fs').promises;
-  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test' }, fsMock);
+  const runner = new AgentRunner(cm as any, dyn, '/project-d3b1', ram, { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, fsMock);
 
   const result = await runner.run('explorer', {
     workflowRunId: 'r1', workflowId: 'synthetic-unfamiliar', stepId: 'review', iteration: 1, revision: 0,
@@ -225,7 +229,7 @@ test('D.3b1: a Definition-producing explorer receives its instruction, inspects 
     const recordingFs = new RecordingFs();
     const cm = new ContextManager(root, DEFAULT_CONFIG, recordingFs.wraps());
     const runner = new AgentRunner(
-      cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test' }, recordingFs.wraps(),
+      cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, recordingFs.wraps(),
     );
 
     const result = await runner.run('explorer', {
@@ -278,7 +282,7 @@ test('D.3b1: repository inspection remains bounded by AgentLoop\'s existing turn
     const cm = { async assemble() {
       return { system_prompt: 's', artifact_slices: {}, state_summary: '', task: 't', token_count: 1, truncated: [] };
     } } as any;
-    const runner = new AgentRunner(cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test' });
+    const runner = new AgentRunner(cm, provider as unknown as ILLMProvider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS });
 
     const result = await runner.run('explorer', {
       workflowRunId: 'cap-run', workflowId: 'a-synthetic-workflow-not-define-work',
@@ -439,6 +443,8 @@ class SequenceLLMProvider implements ILLMProvider {
 }
 
 function definitionOutput(content: string, path: string): string {
+  // D.3d.5 commit 2 — scripted definitions are canonical artifacts.
+  content = canonicalizeDefinitionContent(content);
   return [
     '<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work',
     'artifacts:', `  - id: definition`, `    path: ${path}`, '-->', '',
@@ -505,7 +511,7 @@ test('D.3b1: define-work end-to-end — a failed readiness review triggers CAN_R
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(
@@ -561,7 +567,7 @@ test('D.3b1: define-work end-to-end — cap exhaustion fails closed, never force
     ]);
 
     const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, undefined, artifacts);
+    const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, undefined, artifacts);
     const engine = makeEngine(agentRunner, root);
 
     const result = await engine.run(

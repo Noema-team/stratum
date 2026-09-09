@@ -19,6 +19,7 @@ import { WorkflowRunRepository, ArtifactRepository } from './storage/repositorie
 import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
 import { AgentStepRunner } from './execution/agent-step-runner.js';
+import { validateDefinitionArtifactText } from './workflow/methodology/definition-artifact.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -319,7 +320,14 @@ export function buildAgentRunner(
 ): AgentRunner {
   return new AgentRunner(
     contextManager, llmProvider, projectRoot, runArtifacts,
-    { model: resolvedModel, max_tokens: maxTokens }, undefined, artifactRepository,
+    {
+      model: resolvedModel,
+      max_tokens: maxTokens,
+      // D.3d.5 commit 2 — the composition root wires the methodology-owned
+      // deterministic validators into the runner's generic registry. The
+      // runner itself never learns what a Definition is.
+      inputValidators: { definition: validateDefinitionArtifactText },
+    }, undefined, artifactRepository,
   );
 }
 

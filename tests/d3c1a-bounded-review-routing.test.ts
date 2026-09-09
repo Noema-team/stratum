@@ -24,6 +24,10 @@
 //         on_fail_routes.
 
 import { test } from 'node:test';
+import { canonicalizeDefinitionContent } from './fixtures/canonical-definition.js';
+import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
+// D.3d.5 commit 2 — test runners drive the same deterministic definition gate as production.
+const TEST_INPUT_VALIDATORS = { definition: validateDefinitionArtifactText };
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
 
@@ -99,7 +103,7 @@ function makeAgentRunner(content: string): { runner: AgentRunner; calls: LLMComp
       return { system_prompt: 's', artifact_slices: {}, state_summary: '', task: 't', token_count: 1, truncated: [] };
     },
   };
-  const runner = new AgentRunner(cm as any, provider, '/proj', makeRunArtifactsStub(), { model: 'test' }, mockFs());
+  const runner = new AgentRunner(cm as any, provider, '/proj', makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, mockFs());
   return { runner, calls };
 }
 
@@ -237,7 +241,7 @@ class SequenceLLMProvider implements ILLMProvider {
 
 function makeEngine(provider: ILLMProvider, root: string): WorkflowEngine {
   const cm = new ContextManager(root, DEFAULT_CONFIG, mockFs());
-  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test' }, mockFs());
+  const agentRunner = new AgentRunner(cm, provider, root, makeRunArtifactsStub(), { model: 'test', inputValidators: TEST_INPUT_VALIDATORS }, mockFs());
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: new AgentStepRunner(agentRunner),
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,

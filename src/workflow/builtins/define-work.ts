@@ -95,7 +95,9 @@ export const DEFINE_WORK: WorkflowDefinition = {
       includeObjectiveContext: true,
       instruction:
         'Draft Definition v1 for this Objective: a goal, constraints, requirements, ' +
-        'non-goals, design notes, risks, an acceptance model, and a fact ledger.\n\n' +
+        'non-goals, design notes, risks, an acceptance model, and a fact ledger — ' +
+        'as ONE canonical Definition artifact (front matter + body, exactly as the ' +
+        'contract below specifies).\n\n' +
         `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n` +
         'If a repository-inspection tool is available, use it to verify factual claims ' +
         'about this repository directly before marking any fact KNOWN with source: repository. ' +
@@ -104,8 +106,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'you need are verified, stop reading and produce the artifact — running out of turns ' +
         'on exhaustive reading fails the step just as surely as never reading at all. When the ' +
         'Objective leaves a scope question genuinely undecided, record it as an UNKNOWN fact ' +
-        'in the ledger — never settle it yourself as a non-goal or a prefer constraint.\n\n' +
-        ``,
+        'in the ledger — never settle it yourself as a non-goal or a prefer constraint.',
       outputArtifact: {
         type: 'definition',
         ref: 'definition:{objectiveId}',
@@ -123,10 +124,17 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Revise the Definition using the prior readiness review\'s findings (the ' +
         'readiness artifact).\n\n' +
+        // D.3d.5 commit 2 — deterministic validator defects arrive through
+        // the same readiness artifact: mechanical, fix exactly as stated.
+        'If that artifact carries a "Definition validator defects" section, the ' +
+        'Definition was rejected by deterministic validation before review. Those ' +
+        'defects are mechanical (duplicate/invalid ledger entries, missing decision ' +
+        'references, provenance conflicts): correct them exactly as stated — they are ' +
+        'not requests for editorial judgment — and re-emit the complete canonical ' +
+        'Definition artifact.\n\n' +
         `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n${REFINE_DEFINITION_SCOPE}` +
         '\n\nInspect only repository reality that materially affects this bounded scope: ' +
-        'once the gap\'s answer is found, stop reading and produce the revised artifact.' +
-        `\n\n`,
+        'once the gap\'s answer is found, stop reading and produce the revised artifact.',
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -143,6 +151,10 @@ export const DEFINE_WORK: WorkflowDefinition = {
       label: 'Definition Readiness Review',
       agentRole: 'explorer',
       requiresReviewVerdict: true,
+      // D.3d.5 commit 2 — deterministic validation BEFORE semantic review:
+      // a structurally/epistemically invalid Definition routes refine with
+      // structured defects (the reviewer is never called on an invalid artifact).
+      inputValidator: 'definition',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       instruction:
@@ -204,6 +216,10 @@ export const DEFINE_WORK: WorkflowDefinition = {
       label: 'Post-Defer Readiness Review',
       agentRole: 'explorer',
       requiresReviewVerdict: true,
+      // D.3d.5 commit 2 — deterministic validation BEFORE semantic review:
+      // a structurally/epistemically invalid Definition routes refine with
+      // structured defects (the reviewer is never called on an invalid artifact).
+      inputValidator: 'definition',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       instruction:
@@ -284,6 +300,10 @@ export const DEFINE_WORK: WorkflowDefinition = {
       label: 'Post-Human-Decision Readiness Review',
       agentRole: 'explorer',
       requiresReviewVerdict: true,
+      // D.3d.5 commit 2 — deterministic validation BEFORE semantic review:
+      // a structurally/epistemically invalid Definition routes refine with
+      // structured defects (the reviewer is never called on an invalid artifact).
+      inputValidator: 'definition',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       instruction:
