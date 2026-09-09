@@ -281,7 +281,7 @@ test('D.3b0: an output-parsing failure (malformed preamble) is an execution fail
   // bounded format repair as multi-turn, then fails closed. It is still an
   // EXECUTION failure (never a semantic verdict), so reviewVerdict stays
   // undefined and no routing can occur.
-  assert.match(result.error ?? '', /carried a malformed result block and format repair is exhausted/);
+  assert.match(result.error ?? '', /carried no recognizable result block and format repair is exhausted/);
   assert.equal(result.reviewVerdict, undefined);
 });
 

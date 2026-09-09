@@ -243,6 +243,17 @@ export class TextualSleOutputTransport implements ResultTransport {
   }
 
   extractSingleTurn(raw: string, ctx: TransportContext): StepResult {
+    // D.3d.5 closure — preserve the absent-vs-malformed taxonomy on THIS
+    // path too (matching extractProduce): no preamble marker at all is
+    // 'absent'; a preamble that exists but cannot be parsed is 'malformed'.
+    if (!raw.includes(SLE_PREAMBLE_MARK)) {
+      throw new TransportParseError(
+        'Missing SLE-OUTPUT preamble comment',
+        raw,
+        'the reply contained no recognizable result block',
+        'absent',
+      );
+    }
     let parsed: ParsedSingleTurnOutput;
     try {
       parsed = parseAgentOutput(raw, ctx.role);

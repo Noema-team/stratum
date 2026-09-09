@@ -278,19 +278,26 @@ export class AgentRunner {
         },
       ];
 
-      // D.3d.5 closure — the single-turn path now receives the SAME bounded
+      // D.3d.5 closure — the single-turn path receives the SAME bounded
       // format-repair policy as the multi-turn loop (shared repairDecision +
-      // diagnostic; budget NOT raised). Repair mechanics differ (a fresh
-      // completion carrying the transport's repair instruction plus the
-      // previous non-compliant reply), the policy does not.
+      // diagnostic; budget NOT raised). Repair mechanics: a genuine
+      // CONTINUATION of the original request — the repair conversation keeps
+      // the original system prompt, the original task/context, and the
+      // transport teaching, represents the previous non-compliant reply as
+      // the previous ASSISTANT turn, and asks for a reformat via the
+      // transport's repair instruction. Never a context-poor fresh task.
+      // Evidence preservation: providerCalls/tokensUsed/formatRepairs/raw
+      // accumulate across the original call and every repair attempt — a
+      // provider exception on a repair call must not erase earlier evidence.
       let providerCalls = 0;
       formatRepairs = 0;
       let repairMessage = '';
       let raw = '';
       let stepResult: StepResult | undefined;
       let transportError: string | undefined;
+      let providerError: string | undefined;
 
-      for (;;) {
+      while (providerError === undefined && transportError === undefined && stepResult === undefined) {
         let llmResult;
         try {
           llmResult = await this.llmProvider.complete({
@@ -300,27 +307,17 @@ export class AgentRunner {
                 ? [...baseMessages, { role: 'user', content: userContent }]
                 : [
                     ...baseMessages,
-                    {
-                      role: 'user',
-                      content:
-                        repairMessage +
-                        '\n\nYour previous reply, which could not be parsed, was:\n\n' +
-                        raw,
-                    },
+                    { role: 'user', content: userContent },
+                    // the previous non-compliant reply, AS an assistant turn
+                    { role: 'assistant', content: raw },
+                    { role: 'user', content: repairMessage },
                   ],
             temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
             max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
           });
         } catch (err) {
-          rawPath = await this.writeRaw(ctx, nodeId, '');
-          return {
-            success: false,
-            artifacts_written: [],
-            tokens_used: 0,
-            duration_ms: Date.now() - start,
-            raw_output_path: rawPath,
-            error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          providerError = `LLM call failed: ${err instanceof Error ? err.message : String(err)}`;
+          break;
         }
 
         providerCalls++;
@@ -334,7 +331,6 @@ export class AgentRunner {
           // is not part of StepResult and commit 3 replaces it with
           // deterministic derivation from validated gap classifications.
           stepResult = this.resultTransport.extractSingleTurn(raw, transportCtx);
-          break;
         } catch (err) {
           if (!(err instanceof TransportParseError)) {
             transportError = `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -349,6 +345,21 @@ export class AgentRunner {
         }
       }
 
+      if (providerError !== undefined) {
+        // Repair-call (or first-call) provider exception: preserve ALL prior
+        // evidence — accumulated tokens, repair attempts, latest raw reply.
+        rawPath = await this.writeRaw(ctx, nodeId, raw);
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: tokensUsed,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          ...(formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
+          error: providerError,
+        };
+      }
+
       if (transportError || !stepResult) {
         rawPath = await this.writeRaw(ctx, nodeId, raw);
         return {
@@ -357,7 +368,7 @@ export class AgentRunner {
           tokens_used: tokensUsed,
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
-          ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
+          ...(formatRepairs !== undefined && formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
           error: transportError ?? 'Step produced no result',
         };
       }

@@ -436,11 +436,12 @@ test('testRunnerReturnsFailureOnParseError', async () => {
   const result = await runner.run('designer', makeStepRunCtx());
 
   assert.strictEqual(result.success, false);
-  // D.3d.5 closure — a single-turn transport-compliance failure now receives
+  // D.3d.5 closure — a single-turn transport-compliance failure (prose with
+  // no preamble at all = ABSENT) now receives
   // the SAME bounded repair as multi-turn (one attempt here; the mock always
   // returns the same prose, so repair exhausts), then fails closed with the
   // shared precise diagnostic.
-  assert.ok(result.error?.includes('carried a malformed result block'), result.error);
+  assert.ok(result.error?.includes('carried no recognizable result block'), result.error);
   assert.ok(result.error?.includes('2 provider turn(s), 1 format-repair attempt(s)'), result.error);
   // tokens cover BOTH provider calls (the original + the repair attempt)
   assert.strictEqual(result.tokens_used, 20);

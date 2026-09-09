@@ -455,13 +455,14 @@ test('D.3d.5.1c: single-turn ABSENT output receives bounded repair and can still
     assert.equal(result.success, true, result.error);
     assert.equal(result.format_repairs, 1, 'exactly one bounded repair attempt');
     assert.equal(requests.length, 2, 'repair issued exactly one additional provider call');
-    // The repair message teaches the SINGLE-TURN representation and carries
-    // the previous non-compliant reply for context.
+    // The repair instruction teaches the SINGLE-TURN representation; the
+    // previous non-compliant reply appears as the previous ASSISTANT turn.
     const repairMsg = requests[1].messages.at(-1)!.content as string;
-    assert.ok(repairMsg.includes('not parseable'), 'names the parse reason');
-    assert.ok(repairMsg.includes('<!-- SLE-OUTPUT'), 'single-turn repair teaches the preamble shape');
+    assert.ok(repairMsg.includes('did not contain the required machine-readable output block'), 'absent-kind repair wording');
     assert.ok(!repairMsg.includes('<<<SLE-OUTPUT>>>'), 'single-turn repair must NOT teach the multi-turn delimiters');
-    assert.ok(repairMsg.includes('Plain prose, no block.'), 'the previous reply is included for context');
+    const priorAssistant = requests[1].messages.find((m) => m.role === 'assistant');
+    assert.ok(priorAssistant, 'previous reply represented as an assistant turn');
+    assert.equal(priorAssistant!.content, 'Plain prose, no block.');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -519,7 +520,7 @@ test('D.3d.5.1c: single-turn repair exhaustion fails closed with the shared prec
 
     assert.equal(result.success, false);
     assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS, 'budget NOT raised for single-turn');
-    assert.ok(result.error?.includes('carried a malformed result block and format repair is exhausted'), result.error);
+    assert.ok(result.error?.includes('carried no recognizable result block and format repair is exhausted'), result.error);
     assert.ok(result.error?.includes('2 provider turn(s), 1 format-repair attempt(s)'), result.error);
     assert.ok(result.raw_output_path.length > 0, 'raw output still written on exhaustion');
   } finally {
@@ -591,4 +592,123 @@ test('D.3d.5.1c: the one-artifact restriction is NOT a transport-wide law', () =
     'a multi-artifact-compatible execution must not have a false one-artifact restriction taught',
   );
   assert.ok(unconstrained.includes("one '### <path>' section per declared output artifact"), 'multi-artifact teaching asks for one section per declared artifact');
+});
+
+// ─── D.3d.5 commit-1 final closure: three repair-mechanics defects ───────────
+
+test('D.3d.5.1c: the repair conversation is a CONTINUATION — original task, teaching, assistant reply, then repair instruction', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c7-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    // First reply is invalid AND carries no reconstructable context (no path,
+    // no teaching — the repair can only succeed from retained conversation).
+    const replies = [
+      'A context-free prose answer.',
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nRepaired from retained context.',
+    ];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return { content: replies[Math.min(requests.length - 1, 1)], tokens_used: 3 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(requests.length, 2);
+    const repair = requests[1].messages;
+    // system retained
+    assert.equal(repair[0].role, 'system');
+    // ORIGINAL user content retained (task + transport teaching + declared path)
+    const originalUser = repair.find((m) => m.role === 'user')!;
+    assert.ok(originalUser.content.includes('Do the probe.'), 'original task retained');
+    assert.ok(originalUser.content.includes('<!-- SLE-OUTPUT'), 'original transport teaching retained');
+    assert.ok(originalUser.content.includes('.sle/work/w/probe.md'), 'declared path retained via original teaching');
+    // previous reply represented AS an assistant turn
+    const assistantTurn = repair.find((m) => m.role === 'assistant');
+    assert.ok(assistantTurn, 'previous reply appears as an assistant turn');
+    assert.equal(assistantTurn!.content, 'A context-free prose answer.');
+    // final user message is the transport repair instruction
+    const last = repair.at(-1)!;
+    assert.equal(last.role, 'user');
+    assert.ok(last.content.includes('did not contain the required machine-readable output block'), 'repair instruction is the final user message');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: a provider exception ON the repair call preserves all prior evidence', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c8-'));
+  try {
+    let calls = 0;
+    const provider = {
+      async complete() {
+        calls++;
+        if (calls === 1) return { content: 'Malformed prose, tokens count.', tokens_used: 7 };
+        throw new Error('network reset mid-repair');
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      {
+        updateNodeStatus: async () => {},
+        // actually persist, so raw-output preservation is observable
+        writeNodeOutput: async (runId: string, iter: number, node: string, content: string) => {
+          const p = join(root, '.sle', 'runs', runId, String(iter), 'node-outputs', `${node.toLowerCase()}.md`);
+          const dir = p.slice(0, p.lastIndexOf('/'));
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(p, content, 'utf-8');
+        },
+      } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, false);
+    assert.ok(result.error?.includes('network reset mid-repair'), result.error);
+    assert.equal(result.tokens_used, 7, 'accumulated tokens from the successful first call preserved');
+    assert.equal((result as { format_repairs?: number }).format_repairs, 1, 'the initiated repair attempt is counted');
+    // latest available raw reply preserved in the raw output record
+    const rawWritten = await fs.readFile(result.raw_output_path, 'utf-8');
+    assert.ok(rawWritten.includes('Malformed prose, tokens count.'), 'prior raw model reply not erased');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── D.3d.5 commit-1 final closure: single-turn absent/malformed taxonomy ────
+
+test('D.3d.5.1c: single-turn extraction taxonomy — no preamble is ABSENT, broken preamble is MALFORMED', () => {
+  const t = new TextualSleOutputTransport();
+  const stCtx: TransportContext = { role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' };
+  try {
+    t.extractSingleTurn('Pure prose, no preamble marker anywhere.', stCtx);
+    assert.fail('expected TransportParseError');
+  } catch (err) {
+    assert.ok(err instanceof TransportParseError);
+    assert.equal((err as TransportParseError).kind, 'absent', 'no preamble at all must classify ABSENT');
+  }
+  try {
+    // preamble exists but is invalid (missing artifacts list)
+    t.extractSingleTurn('<!-- SLE-OUTPUT\nrole: explorer\nnode: x\n-->\n\nbody without artifacts', stCtx);
+    assert.fail('expected TransportParseError');
+  } catch (err) {
+    assert.ok(err instanceof TransportParseError);
+    assert.equal((err as TransportParseError).kind, 'malformed', 'an existing-but-invalid preamble must classify MALFORMED');
+  }
 });
