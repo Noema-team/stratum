@@ -29,6 +29,7 @@ import type { MultiTurnParams, MultiTurnResult, ToolUseBlock } from '../src/agen
 import type { LLMCompletionParams } from '../src/llm-provider.js';
 import { DEFINE_WORK } from '../src/workflow/builtins/define-work.js';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
+import { TextualSleOutputTransport } from '../src/transport/textual-sle-output.js';
 
 import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES,
@@ -588,53 +589,52 @@ test('D.3d.2: omitted maxTokens keeps the historical 4096 default in the harness
 // real provider (OpenRouter / claude-sonnet-4) failed every scenario at
 // synthesize-definition: the model produced sensible methodology content but
 // never emitted the SLE-OUTPUT transport delimiters, and could not have — no
-// prompt anywhere taught them (agent-runner.ts parses an '<!-- SLE-OUTPUT'
-// YAML preamble on the forced single-turn review path; agent-loop.ts +
-// output-parser.ts parse '<<<SLE-OUTPUT>>>' delimiters on the multi-turn
-// produce path), and the declared output path a reply must be written to was
-// never rendered into any prompt either. Layer A never caught this because
-// its scripted provider emitted the correct transport by construction.
+// prompt anywhere taught them. Layer A never caught this because its
+// scripted provider emitted the correct transport by construction.
 //
-// The fix composes OUTPUT_FORMAT_CONTRACT into every define-work step
-// instruction and renders ctx.outputArtifact.path into the task text.
+// The D.3d fix taught the transport shapes inside the workflow instruction
+// text. D.3d.5 commit 1 INVERTED that ownership: transport syntax now lives
+// exclusively in the execution layer (src/transport/textual-sle-output.ts),
+// which injects the teaching at run time. These tests lock the new
+// invariant: workflow methodology owns artifact MEANING; the transport owns
+// serialization. A step instruction must never teach a wire shape again.
 // ============================================================================
 
-test('D.3d regression (live-provider failure): every define-work step instruction teaches its own transport format, exclusively', () => {
+test('D.3d regression (D.3d.5): workflow instructions teach NO transport syntax — the transport layer owns serialization', () => {
   for (const step of DEFINE_WORK.steps) {
-    // A checkpoint step (human-decision-checkpoint) produces no LLM output and
-    // carries no instruction — only steps that drive a model reply can teach
-    // (or fail to teach) a transport format.
     const instruction = step.instruction;
     if (!instruction) continue;
-    const isReview = step.requiresReviewVerdict === true;
-    if (isReview) {
-      assert.ok(
-        instruction.includes('<!-- SLE-OUTPUT'),
-        `review step '${step.id}' must teach the single-turn <!-- SLE-OUTPUT preamble`,
-      );
-      assert.ok(
-        instruction.includes('verdict: pass') || instruction.includes("'verdict: pass'") || instruction.includes('verdict:'),
-        `review step '${step.id}' must teach the verdict declaration`,
-      );
-      assert.ok(
-        !instruction.includes('<<<SLE-OUTPUT>>>'),
-        `review step '${step.id}' must NOT teach the multi-turn delimiter format (mixing the two shapes made a real model emit the wrong one)`,
-      );
-    } else {
-      assert.ok(
-        instruction.includes('<<<SLE-OUTPUT>>>') && instruction.includes('<<<END-SLE-OUTPUT>>>'),
-        `produce step '${step.id}' must teach the multi-turn <<<SLE-OUTPUT>>> delimiters`,
-      );
-      assert.ok(
-        instruction.includes('declared output artifact path'),
-        `produce step '${step.id}' must tie the transport to the declared output artifact path`,
-      );
-      assert.ok(
-        !instruction.includes('<!-- SLE-OUTPUT'),
-        `produce step '${step.id}' must NOT teach the single-turn preamble format (mixing the two shapes made a real model emit the wrong one)`,
-      );
-    }
+    assert.ok(
+      !instruction.includes('<<<SLE-OUTPUT>>>') && !instruction.includes('<<<END-SLE-OUTPUT>>>'),
+      `step '${step.id}' instruction must not teach the multi-turn delimiter format — transport syntax belongs to src/transport, not methodology`,
+    );
+    assert.ok(
+      !instruction.includes('<!-- SLE-OUTPUT'),
+      `step '${step.id}' instruction must not teach the single-turn preamble format — transport syntax belongs to src/transport, not methodology`,
+    );
+    assert.ok(
+      !/OUTPUT FORMAT \(mandatory/.test(instruction),
+      `step '${step.id}' instruction must not contain the OUTPUT FORMAT contract — it is injected by the transport at execution time`,
+    );
   }
+});
+
+test('D.3d regression (D.3d.5): the textual transport teaches exactly one shape per execution path, with the verdict only for reviews', () => {
+  const transport = new TextualSleOutputTransport();
+
+  const produce = transport.formatInstruction({ role: 'explorer', requiresReviewVerdict: false, execution: 'multi-turn' });
+  assert.ok(produce.includes('<<<SLE-OUTPUT>>>') && produce.includes('<<<END-SLE-OUTPUT>>>'), 'multi-turn teaching carries the delimiters');
+  assert.ok(!produce.includes('<!-- SLE-OUTPUT'), 'multi-turn teaching must NOT carry the preamble shape (mixing made a real model emit the wrong one)');
+  assert.ok(produce.includes('declared output artifact path'), 'multi-turn teaching ties the transport to the declared output artifact path');
+
+  const review = transport.formatInstruction({ role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' });
+  assert.ok(review.includes('<!-- SLE-OUTPUT'), 'single-turn review teaching carries the preamble shape');
+  assert.ok(review.includes("'verdict: pass' or 'verdict: fail'"), 'single-turn review teaching requires the verdict declaration');
+  assert.ok(!review.includes('<<<SLE-OUTPUT>>>'), 'single-turn review teaching must NOT carry the delimiter shape');
+
+  const singleProduce = transport.formatInstruction({ role: 'explorer', requiresReviewVerdict: false, execution: 'single-turn' });
+  assert.ok(singleProduce.includes('<!-- SLE-OUTPUT'), 'single-turn produce teaching carries the preamble shape (matching parseAgentOutput)');
+  assert.ok(!singleProduce.includes("'verdict: pass' or 'verdict: fail'"), 'single-turn produce teaching does not demand a verdict');
 });
 
 test('D.3d regression (live-provider failure): the declared output artifact path is rendered into the task text, and only when declared', async () => {

@@ -10,6 +10,14 @@ import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
 import { toSafeRelativePath } from './path-safety.js';
 import { AgentLoop } from './agent-loop.js';
+import {
+  type ResultTransport,
+  type StepResult,
+} from './transport/step-result.js';
+import {
+  resolveResultTransport,
+  stepResultFromSingleTurnParse,
+} from './transport/textual-sle-output.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -214,15 +222,21 @@ export interface AgentRunnerConfig {
   model: string;
   temperature?: number;
   max_tokens?: number;
+  // D.3d.5 commit 1 — result transport override (tests, future structured
+  // adapters). Defaults to the textual SLE-OUTPUT fallback transport; see
+  // transport/step-result.ts for the seam contract.
+  resultTransport?: ResultTransport;
 }
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
 
 export class AgentRunner {
   private fs: typeof import('fs').promises;
+  // D.3d.5 commit 1 — the resolved result transport (serialization seam).
+  private resultTransport: ResultTransport;
 
   constructor(
     private contextManager: ContextManager,
@@ -237,6 +251,7 @@ export class AgentRunner {
     private artifactRepository?: ArtifactRepository,
   ) {
     this.fs = fsModule ?? nodeFsPromises;
+    this.resultTransport = resolveResultTransport(llmProvider, runnerConfig.resultTransport);
   }
 
   async run(role: AgentRole, ctx: StepRunContext): Promise<AgentRunResult> {
@@ -285,6 +300,9 @@ export class AgentRunner {
           nodeId,
           runArtifacts: this.runArtifacts,
           fsModule: this.fs,
+          // D.3d.5 commit 1 — the loop delegates serialization (syntax
+          // teaching, extraction, bounded format repair) to the transport.
+          resultTransport: this.resultTransport,
         }
       );
 
@@ -312,6 +330,18 @@ export class AgentRunner {
 
     } else {
       // Single-turn fallback (original logic)
+      // D.3d.5 commit 1 — transport syntax is taught BY THE TRANSPORT,
+      // injected here (never by workflow methodology text). The single-turn
+      // path parses the preamble shape, so the teaching names the preamble
+      // shape — teaching must match the parser that consumes the reply.
+      const userContent =
+        buildUserMessage(context) +
+        '\n\n' +
+        this.resultTransport.formatInstruction({
+          role,
+          requiresReviewVerdict: ctx.requiresReviewVerdict === true,
+          execution: 'single-turn',
+        });
       const params: LLMCompletionParams = {
         model: this.runnerConfig.model,
         messages: [
@@ -319,7 +349,7 @@ export class AgentRunner {
             role: 'system',
             content: context.system_prompt || 'You are a helpful software engineering assistant.',
           },
-          { role: 'user', content: buildUserMessage(context) },
+          { role: 'user', content: userContent },
         ],
         temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
         max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
@@ -345,8 +375,14 @@ export class AgentRunner {
 
       try {
         const fullParsed = parseAgentOutput(llmResult.content, role);
-        parsed = fullParsed;
-        reviewVerdictRaw = fullParsed.preamble?.verdict;
+        // D.3d.5 commit 1 — map into the canonical StepResult (artifacts +
+        // optional review verdict). The route token below is LEGACY, read
+        // only to feed the interim D.3c1a allowlist gate; it is not part of
+        // StepResult and commit 3 replaces it with deterministic derivation
+        // from validated gap classifications.
+        const stepResult: StepResult = stepResultFromSingleTurnParse(fullParsed);
+        parsed = { sections: stepResult.artifacts };
+        reviewVerdictRaw = stepResult.review?.verdict ?? fullParsed.preamble?.verdict;
         reviewRouteRaw = fullParsed.preamble?.route;
       } catch (err) {
         return {

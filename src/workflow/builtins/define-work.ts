@@ -9,8 +9,6 @@ import {
   HUMAN_DECISION_PREPARE_CONTRACT,
   HUMAN_DECISION_APPLY_CONTRACT,
   EXPLORATION_NEED_CONTRACT,
-  PRODUCE_OUTPUT_FORMAT_CONTRACT,
-  REVIEW_OUTPUT_FORMAT_CONTRACT,
 } from '../methodology/definition-readiness.js';
 
 // define-work (D.3b1, closure-fixed in D.3b1.1; D.3c1b wires all four gap
@@ -107,7 +105,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'on exhaustive reading fails the step just as surely as never reading at all. When the ' +
         'Objective leaves a scope question genuinely undecided, record it as an UNKNOWN fact ' +
         'in the ledger — never settle it yourself as a non-goal or a prefer constraint.\n\n' +
-        `${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+        ``,
       outputArtifact: {
         type: 'definition',
         ref: 'definition:{objectiveId}',
@@ -128,7 +126,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n${REFINE_DEFINITION_SCOPE}` +
         '\n\nInspect only repository reality that materially affects this bounded scope: ' +
         'once the gap\'s answer is found, stop reading and produce the revised artifact.' +
-        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -163,7 +161,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
-        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       // The physical materialized path, not the semantic ref: ContextManager
       // resolves inputArtifactRefs against the filesystem, it does not query
       // ArtifactRepository for the semantic 'definition:{objectiveId}' ref.
@@ -189,7 +187,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${DEFER_APPLICATION_CONTRACT}` +
-        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -221,7 +219,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'HUMAN_DECISION, or EXPLORE_AS_WORK instead.\n\n' +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
-        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {
         type: 'definition-readiness',
@@ -242,7 +240,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
-      instruction: HUMAN_DECISION_PREPARE_CONTRACT + `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+      instruction: HUMAN_DECISION_PREPARE_CONTRACT,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -268,7 +266,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       includeObjectiveContext: true,
       includeDecisionContext: true,
       instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${HUMAN_DECISION_APPLY_CONTRACT}` +
-        `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',
@@ -298,7 +296,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'chained within this same WorkflowRun for as many real human decisions as remain.\n\n' +
         'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
-        `\n\n${REVIEW_OUTPUT_FORMAT_CONTRACT}`,
+        `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {
         type: 'definition-readiness',
@@ -320,7 +318,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
       agentRole: 'explorer',
       includeWorkItemContext: true,
       includeObjectiveContext: true,
-      instruction: EXPLORATION_NEED_CONTRACT + `\n\n${PRODUCE_OUTPUT_FORMAT_CONTRACT}`,
+      instruction: EXPLORATION_NEED_CONTRACT,
       inputArtifactRefs: [
         '.sle/work/{workItemId}/definition.md',
         '.sle/work/{workItemId}/readiness.md',

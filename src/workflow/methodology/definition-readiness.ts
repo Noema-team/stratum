@@ -113,60 +113,17 @@ scope. If all seven dimensions pass, the verdict is pass. A refinement round mus
 by a genuine, named gap — never by polish; manufacturing definition process for an already-
 sufficient intent is a failure of this rubric, not diligence.`;
 
-// ─── Output transport contract (D.3d) ──────────────────────────────────────────
+// ─── Output transport (D.3d.5) ────────────────────────────────────────────────
 //
-// The contracts above describe artifact CONTENT; these two describe the exact
-// WIRE FORMAT a step's reply must use so AgentRunner/AgentLoop can physically
-// consume it. AgentRunner parses two different shapes: produce steps run
-// through the multi-turn AgentLoop (output-parser.ts: <<<SLE-OUTPUT>>>
-// delimiters with '### <path>' sections), while review steps are forced
-// single-turn (agent-runner.ts: an '<!-- SLE-OUTPUT' YAML preamble with
-// '## <path>' body headers). Neither shape was ever taught by any prompt —
-// Layer A's scripted provider had always emitted them by construction, so
-// the D.3d live-provider qualification was the first thing able to catch the
-// gap: a real model produced sensible methodology content but never emitted
-// the delimiters. They are taught as TWO separate, per-step-kind contracts —
-// composing both into one instruction made a real model mix the shapes
-// (it emitted the preamble inside a tool conversation, which cannot parse).
-// Composed into define-work's step instructions (builtins/define-work.ts).
-export const PRODUCE_OUTPUT_FORMAT_CONTRACT = `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
-End your final message with the artifact wrapped in exactly these literal delimiters, as a
-single '### <path>' section whose path is the declared output artifact path named in the task:
-
-<<<SLE-OUTPUT>>>
-### .sle/work/<workItemId>/<artifact>.md
-<the full artifact content>
-<<<END-SLE-OUTPUT>>>
-
-- Use the declared output artifact path exactly as named in the task — never a path you
-  invented, and never more than one artifact section.
-- The delimiters are literal structural requirements: a reply without them cannot be parsed
-  and fails the step regardless of content quality. Never reply in prose alone, in any other
-  comment or preamble style, or with any wrapper other than these exact delimiters.`;
-
-export const REVIEW_OUTPUT_FORMAT_CONTRACT = `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
-Begin your reply with an HTML-comment YAML preamble, then give the readiness Artifact body
-under a '## <path>' header matching the declared output artifact path named in the task:
-
-<!-- SLE-OUTPUT
-role: explorer
-node: <this step's id, shown in Current State above>
-artifacts:
-  - id: readiness
-    path: .sle/work/<workItemId>/readiness.md
-verdict: pass
--->
-
-## .sle/work/<workItemId>/readiness.md
-
-<the full readiness Artifact content>
-
-- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line —
-  plus a 'route: <token>' line chosen from the routing contract above when, and only when,
-  the verdict is fail.
-- The preamble comment and the '## <path>' header are literal structural requirements: a
-  reply without them cannot be parsed and fails the step regardless of content quality.`;
-
+// The D.3d-era OUTPUT FORMAT contracts (PRODUCE_OUTPUT_FORMAT_CONTRACT /
+// REVIEW_OUTPUT_FORMAT_CONTRACT) used to be composed into define-work's
+// step instructions from here — methodology owned transport syntax. D.3d.5
+// commit 1 moved transport ownership to the execution layer:
+// src/transport/textual-sle-output.ts now owns the wire shapes, their
+// teaching, extraction, and bounded format repair, and injects the teaching
+// at execution time. Methodology text must never teach transport syntax
+// again — a step instruction answers "what does the artifact mean", never
+// "how must the reply be serialized".
 // ─── Gap classification (D.3a §3) ──────────────────────────────────────────────
 //
 // All four classifications now have a dedicated resolution path wired in

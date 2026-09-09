@@ -2,9 +2,16 @@ import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
 import type { AgentRole } from './types.js';
 import type { RunArtifactManager } from './run-artifacts.js';
-import { parseWithRetry } from './output-parser.js';
 import { handleToolCall, AGENT_TOOLS, listGitTrackedFiles, type ToolName, type TrackedFilesLister } from './tools.js';
 import type { ParsedOutput } from './output-parser.js';
+import {
+  type ResultTransport,
+  type StepResult,
+  type TransportContext,
+  MAX_FORMAT_REPAIRS,
+  TransportParseError,
+} from './transport/step-result.js';
+import { resolveResultTransport } from './transport/textual-sle-output.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +78,11 @@ export interface AgentLoopOptions {
   // tests inject a synthetic tracked-file list instead of requiring a real
   // git repository.
   listTrackedFiles?: TrackedFilesLister;
+  // D.3d.5 commit 1 — the result transport owns serialization: syntax
+  // teaching, extraction, and bounded format repair. Defaults to the
+  // textual SLE-OUTPUT fallback (the only transport any current provider
+  // genuinely has); structured adapters plug in here.
+  resultTransport?: ResultTransport;
 }
 
 export interface AgentLoopResult {
@@ -78,6 +90,11 @@ export interface AgentLoopResult {
   parsedOutput?: ParsedOutput;
   turns_taken: number;
   tokens_used: number;
+  // D.3d.5 commit 1 — bounded format-repair attempts, tracked separately
+  // from ordinary turns so diagnostics never imply a repair happened when
+  // only ordinary tool/answer turns occurred (the pre-D.3d.5 "after N turn(s)"
+  // message did exactly that for the GPT-OSS failure).
+  format_repairs: number;
   error?: string;
   rawText?: string;
 }
@@ -86,18 +103,29 @@ export interface AgentLoopResult {
 
 export class AgentLoop {
   private fs: typeof nodeFsPromises;
+  // D.3d.5 commit 1 — result transport (serialization ownership seam).
+  private transport: ResultTransport;
+  private transportCtx: TransportContext;
 
   constructor(
     private provider: IMultiTurnProvider,
     private opts: AgentLoopOptions
   ) {
     this.fs = opts.fsModule ?? nodeFsPromises;
+    this.transport = resolveResultTransport(provider, opts.resultTransport);
+    this.transportCtx = { role: opts.role, requiresReviewVerdict: false, execution: 'multi-turn' };
   }
 
   async run(system: string, userMessage: string): Promise<AgentLoopResult> {
-    const messages: MultiTurnMessage[] = [{ role: 'user', content: userMessage }];
+    // D.3d.5 commit 1 — transport syntax is taught BY THE TRANSPORT, injected
+    // here, never by workflow methodology text. Appended once, up front.
+    const transportInstruction = this.transport.formatInstruction(this.transportCtx);
+    const messages: MultiTurnMessage[] = [
+      { role: 'user', content: `${userMessage}\n\n${transportInstruction}` },
+    ];
     let totalTokens = 0;
     let turns = 0;
+    let formatRepairs = 0;
     const toolCallLog: Array<{ tool: string; path: string; turn: number }> = [];
 
     // D.3b1 — the tracked-file set is computed once per run (not once per
@@ -106,6 +134,14 @@ export class AgentLoop {
     const trackedFiles = new Set(
       await (this.opts.listTrackedFiles ?? listGitTrackedFiles)(this.opts.projectRoot),
     );
+
+    const fail = (error: string): AgentLoopResult => ({
+      success: false,
+      turns_taken: turns,
+      tokens_used: totalTokens,
+      format_repairs: formatRepairs,
+      error,
+    });
 
     while (turns < MAX_AGENT_TURNS) {
       turns++;
@@ -119,23 +155,13 @@ export class AgentLoop {
           tools: AGENT_TOOLS,
         });
       } catch (err) {
-        return {
-          success: false,
-          turns_taken: turns,
-          tokens_used: totalTokens,
-          error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       totalTokens += result.tokens_used;
 
       if (result.stop_reason === 'max_tokens') {
-        return {
-          success: false,
-          turns_taken: turns,
-          tokens_used: totalTokens,
-          error: 'Agent exhausted max_tokens without producing SLE-OUTPUT',
-        };
+        return fail('Agent exhausted max_tokens without producing SLE-OUTPUT');
       }
 
       if (result.stop_reason === 'tool_use') {
@@ -165,45 +191,33 @@ export class AgentLoop {
         continue;
       }
 
-      // stop_reason === 'end_turn': look for SLE-OUTPUT in text
-      if (!result.text.includes('<<<SLE-OUTPUT>>>')) {
-        return {
-          success: false,
-          turns_taken: turns,
-          tokens_used: totalTokens,
-          error: `Agent produced stop_reason='end_turn' without SLE-OUTPUT after ${turns} turn(s)`,
-        };
-      }
-
-      // Parse output with one retry on ParseError
-      let parsedOutput: ParsedOutput;
+      // stop_reason === 'end_turn' — the transport owns turning the reply
+      // into a StepResult, INCLUDING classifying non-compliance ('absent'
+      // vs 'malformed'). The loop never inspects raw syntax itself.
+      // D.3d.5 commit 1: a reply with NO result block at all now enters the
+      // SAME bounded format-repair path as a malformed block (previously
+      // absence failed immediately — the GPT-OSS failure mode — with
+      // diagnostics that overstated the repair effort).
+      let stepResult: StepResult;
       try {
-        parsedOutput = await parseWithRetry(
-          result.text,
-          this.opts.role,
-          async (reason) => {
-            const repairMsg = `The previous output was not parseable. Reason: ${reason}\nPlease reformat your response using the exact SLE-OUTPUT block structure.`;
-            const retryResult = await this.provider.completeMultiTurn({
-              model: this.opts.model,
-              system,
-              messages: [
-                ...messages,
-                { role: 'user', content: repairMsg },
-              ],
-              max_tokens: this.opts.max_tokens ?? 4096,
-              tools: AGENT_TOOLS,
-            });
-            totalTokens += retryResult.tokens_used;
-            return retryResult.text;
-          }
-        );
+        stepResult = this.transport.extractProduce(result.text, this.transportCtx);
       } catch (err) {
-        return {
-          success: false,
-          turns_taken: turns,
-          tokens_used: totalTokens,
-          error: `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        if (!(err instanceof TransportParseError)) {
+          return fail(`Output parsing failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (formatRepairs >= MAX_FORMAT_REPAIRS) {
+          return fail(
+            (err.kind === 'absent'
+              ? 'Agent ended its turn without emitting the required SLE-OUTPUT block'
+              : 'SLE-OUTPUT block was malformed') +
+              ` and format repair is exhausted ` +
+              `(${turns} ordinary turn(s), ${formatRepairs} format-repair attempt(s)): ${err.reason}`,
+          );
+        }
+        formatRepairs++;
+        messages.push({ role: 'assistant', content: result.text });
+        messages.push({ role: 'user', content: this.transport.repairInstruction(err.kind, err.reason) });
+        continue;
       }
 
       // Write turn metadata to run artifacts
@@ -211,19 +225,17 @@ export class AgentLoop {
 
       return {
         success: true,
-        parsedOutput,
+        // Backward-compatible shape for AgentRunner: artifacts + (never
+        // present on this path) warnings.
+        parsedOutput: { sections: stepResult.artifacts, warnings: [] },
         turns_taken: turns,
         tokens_used: totalTokens,
+        format_repairs: formatRepairs,
         rawText: result.text,
       };
     }
 
-    return {
-      success: false,
-      turns_taken: MAX_AGENT_TURNS,
-      tokens_used: totalTokens,
-      error: `Agent did not produce SLE-OUTPUT within ${MAX_AGENT_TURNS} turns`,
-    };
+    return fail(`Agent did not produce SLE-OUTPUT within ${MAX_AGENT_TURNS} turns`);
   }
 
   private async writeTurnMetadata(
