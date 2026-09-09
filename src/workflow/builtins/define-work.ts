@@ -159,7 +159,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         // reading any document at runtime.
         `${DEFINITION_CONTRACT}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
-        'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
+        'Declare your verdict as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
         `\n\n`,
       // The physical materialized path, not the semantic ref: ContextManager
@@ -217,7 +217,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'DEFERRED (no longer an actionable gap — DEFER was never blocking) or it was ' +
         'misclassified and belongs to CAN_RESOLVE, ' +
         'HUMAN_DECISION, or EXPLORE_AS_WORK instead.\n\n' +
-        'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
+        'Declare your verdict as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
         `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
@@ -294,7 +294,7 @@ export const DEFINE_WORK: WorkflowDefinition = {
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'A further HUMAN_DECISION gap routes `human` again — one checkpoint per question, ' +
         'chained within this same WorkflowRun for as many real human decisions as remain.\n\n' +
-        'Declare your verdict in the SLE-OUTPUT preamble as `verdict: pass` only if all ' +
+        'Declare your verdict as `verdict: pass` only if all ' +
         'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
         `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],

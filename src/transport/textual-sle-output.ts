@@ -151,10 +151,17 @@ function parseBuilderSections(body: string): Array<{ path: string; content: stri
 // ─── Teaching generation (metadata-driven — no workflow-specific examples) ────
 
 function multiTurnFormatInstruction(ctx: TransportContext): string {
+  // The single-artifact restriction is the STEP's output contract, not a
+  // transport-wide law: impose it only when the step actually declares one
+  // expected artifact; teach generically otherwise.
+  const singleArtifact = ctx.expectedArtifacts === 1 || (ctx.expectedArtifacts === undefined && ctx.declaredOutputPath !== undefined);
   const examplePath = ctx.declaredOutputPath ?? '.sle/work/<workItemId>/<artifact>.md';
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
-End your final message with the artifact wrapped in exactly these literal delimiters, as a
-single '### <path>' section whose path is the declared output artifact path named in the task:
+End your final message with the artifact wrapped in exactly these literal delimiters, as ${
+    singleArtifact
+      ? `a single '### <path>' section whose path is the declared output artifact path named in the task:`
+      : `one '### <path>' section per declared output artifact, each with its own declared path:`
+  }
 
 ${SLE_OPEN}
 ### ${examplePath}
@@ -162,7 +169,7 @@ ${SLE_OPEN}
 ${SLE_CLOSE}
 
 - Use the declared output artifact path exactly as named in the task — never a path you
-  invented, and never more than one artifact section.
+  invented.${singleArtifact ? '\n- Never emit more than one artifact section.' : ''}
 - The delimiters are literal structural requirements: a reply without them cannot be parsed
   and fails the step regardless of content quality. Never reply in prose alone, in any other
   comment or preamble style, or with any wrapper other than these exact delimiters.`;
@@ -254,18 +261,25 @@ export class TextualSleOutputTransport implements ResultTransport {
     };
   }
 
-  repairInstruction(kind: 'absent' | 'malformed', reason?: string): string {
+  repairInstruction(ctx: TransportContext, kind: 'absent' | 'malformed', reason?: string): string {
+    // Both kinds teach the representation the ACTIVE execution path parses —
+    // never cross-teach (a single-turn preamble reply must not be repaired
+    // with multi-turn delimiter instructions, or vice versa).
+    const shape = ctx.execution === 'multi-turn'
+      ? ` (${SLE_OPEN} ... ${SLE_CLOSE} around a '### <path>' section)`
+      : ` (an '${SLE_PREAMBLE_MARK} ... -->' HTML-comment YAML preamble followed by a '## <path>' body header)`;
     if (kind === 'absent') {
       return (
         'Your reply did not contain the required machine-readable output block, so it cannot be ' +
-        'consumed. Re-emit your reply with the artifact wrapped in the exact literal delimiters ' +
-        `taught in the OUTPUT FORMAT instructions (${SLE_OPEN} ... ${SLE_CLOSE} around a '### <path>' ` +
-        'section). No prose, comment style, or other wrapper can be parsed — only the exact delimiters.'
+        'consumed. Re-emit your reply with the artifact wrapped in the exact structure taught in ' +
+        `the OUTPUT FORMAT instructions${shape}. ` +
+        'No prose, comment style, or other wrapper can be parsed.'
       );
     }
     return (
       `The previous output was not parseable. Reason: ${reason}\n` +
-      'Please reformat your response using the exact SLE-OUTPUT block structure.'
+      'Please reformat your response following the OUTPUT FORMAT instructions exactly' +
+      `${shape}.`
     );
   }
 }

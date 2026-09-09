@@ -218,10 +218,13 @@ that.`;
 
 // D.3c1b — the definition-readiness-review output contract: the readiness
 // Artifact stays the authoritative record of why the Definition is or is
-// not ready, and the preamble's `route: <token>` (agent-runner.ts) is only
-// the machine control token WorkflowEngine maps through the review step's
+// not ready, and the legacy `route: <token>` migration token (carried by
+// the textual transport only; see src/transport/textual-sle-output.ts,
+// extractLegacyReviewRoute) is only the interim control token
+// WorkflowEngine maps through the review step's
 // own on_fail_routes (engine.ts) — never a substitute for the reasoning,
-// which belongs in the Artifact body. `routes` names exactly the tokens
+// which belongs in the Artifact body. D.3d.5 commit 3 replaces it with
+// deterministic route derivation. `routes` names exactly the tokens
 // THIS review step declares (its on_fail_routes keys) — a review step must
 // never be told about a route it cannot actually take; see
 // builtins/define-work.ts, where definition-readiness-review declares all
@@ -288,7 +291,7 @@ classified DEFER whose fact is not yet recorded as DEFERRED — each with at lea
 Never classify cheap repository inspection as EXPLORE_AS_WORK — see the CAN_RESOLVE/
 EXPLORE_AS_WORK dividing line above.
 
-This step may declare exactly one route token in the preamble's \`route:\` field, chosen from:
+This step declares exactly one route token, chosen from:
 ${routeLines}
 
 When more than one classification is present among the current gaps this verdict must resolve,

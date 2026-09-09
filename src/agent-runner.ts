@@ -11,6 +11,10 @@ import { toSafeRelativePath } from './path-safety.js';
 import { AgentLoop } from './agent-loop.js';
 import {
   type ResultTransport,
+  type StepResult,
+  TransportParseError,
+  repairDecision,
+  formatRepairExhaustedDiagnostic,
 } from './transport/step-result.js';
 import {
   extractLegacyReviewRoute,
@@ -42,11 +46,13 @@ export interface AgentRunResult {
   error?: string;
   // D.3b0 — the semantic review verdict, set only when ctx.requiresReviewVerdict
   // was true AND execution succeeded with a valid `verdict: pass | fail` in
-  // the preamble. See the requiresReviewVerdict handling in run() below.
+  // the transport-extracted StepResult. See run() below.
   reviewVerdict?: 'pass' | 'fail';
   // D.3c1a — the validated route token, set only when reviewVerdict is
-  // 'fail' AND ctx.on_fail_routes was declared AND the preamble's `route:`
-  // matched one of its keys exactly. See the route-gate in run() below.
+  // 'fail' AND ctx.on_fail_routes was declared AND the legacy textual
+  // `route:` token matched one of its keys exactly. SOLE sanctioned
+  // migration exception: parsed by the transport (extractLegacyReviewRoute),
+  // removed when commit 3 derives routes deterministically.
   reviewRoute?: string;
   // D.3d.5 commit 1 — bounded format-repair attempts on this step's
   // multi-turn execution, tracked separately from turns_taken (which counts
@@ -173,11 +179,10 @@ export class AgentRunner {
     // D.3d.5 commit 1 — bounded format-repair attempts (multi-turn only).
     let formatRepairs: number | undefined;
     let rawPath = '';
-    // D.3b0 — the raw `verdict` string from the SLE-OUTPUT preamble, when one
-    // exists. Only the single-turn path below has a preamble/verdict concept
-    // at all — the multi-turn AgentLoop path (agent-loop.ts) parses a
-    // different delimiter format with no preamble, so this stays undefined
-    // there. Validated against ctx.requiresReviewVerdict after both branches.
+    // D.3b0 — the review verdict from the transport's StepResult (review
+    // is set only when the reply declared a valid 'pass' | 'fail'). Set on
+    // either execution path; validated against ctx.requiresReviewVerdict
+    // after both branches.
     let reviewVerdictRaw: string | undefined;
     // D.3c1a — same story for the optional bounded-routing token.
     let reviewRouteRaw: string | undefined;
@@ -187,12 +192,12 @@ export class AgentRunner {
     // Check if the provider supports native multi-turn execution (DDR-030 integration).
     // D.3b1 — a step that opted into requiresReviewVerdict is deliberately
     // forced onto the single-turn path even when the provider supports
-    // multi-turn: AgentLoop's output format (agent-loop.ts/output-parser.ts)
-    // has no preamble/verdict concept at all, so it cannot carry
-    // `verdict: pass | fail`. Forcing single-turn here — rather than letting
-    // AgentLoop run and then failing the D.3b0 verdict gate below — keeps a
-    // semantic review deterministic without weakening or redesigning
-    // AgentLoop's protocol.
+    // multi-turn: REVIEW EXECUTION POLICY (D.3d.5 closure wording) — reviews
+    // currently run single-turn by EXECUTION POLICY / migration behavior,
+    // NOT because of a transport limitation: since D.3d.5, StepResult can
+    // carry `review.verdict` on any path. Whether reviews should eventually
+    // run multi-turn (with tool access) is a separate, evidence-gated
+    // decision — deliberately out of scope for D.3.
     const isMultiTurn =
       !ctx.requiresReviewVerdict &&
       typeof (this.llmProvider as any).completeMultiTurn === 'function';
@@ -213,6 +218,12 @@ export class AgentRunner {
           // D.3d.5 commit 1 — the loop delegates serialization (syntax
           // teaching, extraction, bounded format repair) to the transport.
           resultTransport: this.resultTransport,
+          // D.3d.5 closure — real execution metadata on this path too:
+          // the multi-turn transport must never fall back to generic
+          // placeholders when the step declares an actual output artifact.
+          declaredArtifactId: ctx.outputArtifact?.type,
+          declaredOutputPath: ctx.outputArtifact?.path,
+          expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
         }
       );
 
@@ -254,62 +265,109 @@ export class AgentRunner {
         nodeId,
         declaredArtifactId: ctx.outputArtifact?.type,
         declaredOutputPath: ctx.outputArtifact?.path,
+        expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
       };
       const userContent =
         buildUserMessage(context) +
         '\n\n' +
         this.resultTransport.formatInstruction(transportCtx);
-      const params: LLMCompletionParams = {
-        model: this.runnerConfig.model,
-        messages: [
-          {
-            role: 'system',
-            content: context.system_prompt || 'You are a helpful software engineering assistant.',
-          },
-          { role: 'user', content: userContent },
-        ],
-        temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
-        max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
-      };
+      const baseMessages: LLMCompletionParams['messages'] = [
+        {
+          role: 'system',
+          content: context.system_prompt || 'You are a helpful software engineering assistant.',
+        },
+      ];
 
-      let llmResult;
-      try {
-        llmResult = await this.llmProvider.complete(params);
-      } catch (err) {
-        rawPath = await this.writeRaw(ctx, nodeId, '');
-        return {
-          success: false,
-          artifacts_written: [],
-          tokens_used: 0,
-          duration_ms: Date.now() - start,
-          raw_output_path: rawPath,
-          error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
-        };
+      // D.3d.5 closure — the single-turn path now receives the SAME bounded
+      // format-repair policy as the multi-turn loop (shared repairDecision +
+      // diagnostic; budget NOT raised). Repair mechanics differ (a fresh
+      // completion carrying the transport's repair instruction plus the
+      // previous non-compliant reply), the policy does not.
+      let providerCalls = 0;
+      formatRepairs = 0;
+      let repairMessage = '';
+      let raw = '';
+      let stepResult: StepResult | undefined;
+      let transportError: string | undefined;
+
+      for (;;) {
+        let llmResult;
+        try {
+          llmResult = await this.llmProvider.complete({
+            model: this.runnerConfig.model,
+            messages:
+              providerCalls === 0
+                ? [...baseMessages, { role: 'user', content: userContent }]
+                : [
+                    ...baseMessages,
+                    {
+                      role: 'user',
+                      content:
+                        repairMessage +
+                        '\n\nYour previous reply, which could not be parsed, was:\n\n' +
+                        raw,
+                    },
+                  ],
+            temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+            max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+          });
+        } catch (err) {
+          rawPath = await this.writeRaw(ctx, nodeId, '');
+          return {
+            success: false,
+            artifacts_written: [],
+            tokens_used: 0,
+            duration_ms: Date.now() - start,
+            raw_output_path: rawPath,
+            error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+
+        providerCalls++;
+        tokensUsed += llmResult.tokens_used;
+        raw = llmResult.content;
+
+        try {
+          // D.3d.5 commit 1 (review amendment) — extraction is transport-owned:
+          // the runner never parses raw replies itself. The route token below
+          // is LEGACY, read only to feed the interim D.3c1a allowlist gate; it
+          // is not part of StepResult and commit 3 replaces it with
+          // deterministic derivation from validated gap classifications.
+          stepResult = this.resultTransport.extractSingleTurn(raw, transportCtx);
+          break;
+        } catch (err) {
+          if (!(err instanceof TransportParseError)) {
+            transportError = `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`;
+            break;
+          }
+          if (repairDecision(formatRepairs).action === 'fail-closed') {
+            transportError = formatRepairExhaustedDiagnostic(err, providerCalls, formatRepairs);
+            break;
+          }
+          formatRepairs++;
+          repairMessage = this.resultTransport.repairInstruction(transportCtx, err.kind, err.reason);
+        }
       }
 
-      tokensUsed = llmResult.tokens_used;
-      rawPath = await this.writeRaw(ctx, nodeId, llmResult.content);
-
-      try {
-        // D.3d.5 commit 1 (review amendment) — extraction is transport-owned:
-        // the runner never parses raw replies itself. The route token below
-        // is LEGACY, read only to feed the interim D.3c1a allowlist gate; it
-        // is not part of StepResult and commit 3 replaces it with
-        // deterministic derivation from validated gap classifications.
-        const stepResult = this.resultTransport.extractSingleTurn(llmResult.content, transportCtx);
-        parsed = { sections: stepResult.artifacts };
-        reviewVerdictRaw = stepResult.review?.verdict;
-        reviewRouteRaw = extractLegacyReviewRoute(llmResult.content);
-      } catch (err) {
+      if (transportError || !stepResult) {
+        rawPath = await this.writeRaw(ctx, nodeId, raw);
         return {
           success: false,
           artifacts_written: [],
           tokens_used: tokensUsed,
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
-          error: `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`,
+          ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
+          error: transportError ?? 'Step produced no result',
         };
       }
+
+      // Raw output is written on success too (as before D.3d.5) — the raw
+      // reply remains the debugging record regardless of parse outcome.
+      rawPath = await this.writeRaw(ctx, nodeId, raw);
+      parsed = { sections: stepResult.artifacts };
+      reviewVerdictRaw = stepResult.review?.verdict;
+      reviewRouteRaw = extractLegacyReviewRoute(raw);
     }
 
     const fail = (error: string): AgentRunResult => ({
@@ -336,7 +394,7 @@ export class AgentRunner {
     if (ctx.requiresReviewVerdict) {
       if (reviewVerdictRaw !== 'pass' && reviewVerdictRaw !== 'fail') {
         return fail(
-          `Step requires a review verdict but the preamble declared '${reviewVerdictRaw ?? 'none'}' (expected 'pass' or 'fail')`,
+          `Step requires a review verdict but the reply declared '${reviewVerdictRaw ?? 'none'}' (expected 'pass' or 'fail')`,
         );
       }
       reviewVerdict = reviewVerdictRaw;
@@ -349,13 +407,13 @@ export class AgentRunner {
     // invalid verdict above: fail closed, before any output is written, so
     // no artifact/control routing can ever occur from an invalid route.
     // 'pass' never requires (or validates) a route — on_pass stays
-    // authoritative regardless of what the preamble happens to contain.
+    // authoritative regardless of what the reply happens to contain.
     let reviewRoute: string | undefined;
     if (reviewVerdict === 'fail' && ctx.on_fail_routes) {
       const allowedRoutes = Object.keys(ctx.on_fail_routes);
       if (!reviewRouteRaw || !allowedRoutes.includes(reviewRouteRaw)) {
         return fail(
-          `Review step requires a route (one of: ${allowedRoutes.join(', ')}) but the preamble declared '${reviewRouteRaw ?? 'none'}'`,
+          `Review step requires a route (one of: ${allowedRoutes.join(', ')}) but the reply declared '${reviewRouteRaw ?? 'none'}'`,
         );
       }
       reviewRoute = reviewRouteRaw;

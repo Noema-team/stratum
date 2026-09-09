@@ -64,7 +64,7 @@ function makeLoop(provider: IMultiTurnProvider, opts: Partial<Parameters<typeof 
     workflowRunId: 'r',
     iteration: 1,
     nodeId: 'n',
-    runArtifacts: { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+    runArtifacts: { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
     ...opts,
   });
 }
@@ -185,10 +185,11 @@ test('D.3d.5.1: repair exhaustion on absent result block fails closed with hones
 
   assert.equal(result.success, false);
   assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS);
-  assert.ok(result.error?.includes('without emitting the required SLE-OUTPUT block'), result.error);
-  // Diagnostics distinguish ordinary turns from repair attempts — the
-  // pre-D.3d.5 message ("after N turn(s)") conflated them.
-  assert.ok(/\d+ ordinary turn\(s\)/.test(result.error!), 'error counts ordinary turns');
+  // Shared diagnostic wording — counters are literally accurate:
+  // N provider turn(s) counts ALL invocations (repairs included),
+  // M format-repair attempt(s) counts repair-prompted invocations only.
+  assert.ok(result.error?.includes('carried no recognizable result block and format repair is exhausted'), result.error);
+  assert.ok(/\d+ provider turn\(s\)/.test(result.error!), 'error counts provider turns');
   assert.ok(/\d+ format-repair attempt\(s\)/.test(result.error!), 'error counts repair attempts separately');
 });
 
@@ -218,7 +219,8 @@ test('D.3d.5.1: repair exhaustion on malformed block fails closed with honest di
 
   assert.equal(result.success, false);
   assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS);
-  assert.ok(result.error?.includes('malformed and format repair is exhausted'), result.error);
+  assert.ok(result.error?.includes('carried a malformed result block and format repair is exhausted'), result.error);
+  assert.ok(/\d+ provider turn\(s\)/.test(result.error!));
   assert.ok(/\d+ format-repair attempt\(s\)/.test(result.error!));
 });
 
@@ -243,7 +245,7 @@ test('D.3d.5.1: AgentRunner injects the transport teaching into the single-turn 
       cm,
       provider as never,
       root,
-      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
       { model: 'test' } satisfies Partial<AgentRunnerConfig> as AgentRunnerConfig,
     );
     const result = await runner.run('explorer', {
@@ -278,13 +280,13 @@ test('D.3d.5.1: AgentRunner resolves its transport through the seam, honoring an
       cm,
       { async complete() { return { content: '', tokens_used: 0 }; } } as never,
       root,
-      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
       { model: 'test', resultTransport: override } as AgentRunnerConfig,
     );
     const resolved = (runner as unknown as { resultTransport: ResultTransport }).resultTransport;
     assert.equal(resolved, override, 'an explicit transport override always wins');
     assert.equal(
-      (new AgentRunner(cm, { async complete() { return { content: '', tokens_used: 0 }; } } as never, root, { updateNodeStatus: async () => {} } as unknown as RunArtifactManager, { model: 'test' }) as unknown as { resultTransport: ResultTransport }).resultTransport.name,
+      (new AgentRunner(cm, { async complete() { return { content: '', tokens_used: 0 }; } } as never, root, { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager, { model: 'test' }) as unknown as { resultTransport: ResultTransport }).resultTransport.name,
       'textual-sle-output',
       'without an override the textual fallback is resolved',
     );
@@ -319,7 +321,7 @@ test('D.3d.5.1: a structured transport serves a REVIEW step end to end — the r
       cm,
       provider as never,
       root,
-      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
       { model: 'test', resultTransport: new JsonStepResultTransport() },
     );
     const result = await runner.run('explorer', {
@@ -355,7 +357,7 @@ test('D.3d.5.1: the legacy textual path still serves a REVIEW step (migration be
       cm,
       provider as never,
       root,
-      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
       { model: 'test' },
     );
     const result = await runner.run('explorer', {
@@ -396,7 +398,7 @@ test('D.3d.5.1: single-turn teaching is generated from actual step metadata (rol
       cm,
       provider as never,
       root,
-      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
       { model: 'test' },
     );
     const result = await runner.run('explorer', {
@@ -418,4 +420,175 @@ test('D.3d.5.1: single-turn teaching is generated from actual step metadata (rol
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ─── Closure: symmetric bounded repair across execution paths ────────────────
+
+const SINGLE_CTX: TransportContext = { role: 'explorer', requiresReviewVerdict: false, execution: 'single-turn', nodeId: 'probe', declaredArtifactId: 'probe', declaredOutputPath: '.sle/work/w/probe.md', expectedArtifacts: 1 };
+
+test('D.3d.5.1c: single-turn ABSENT output receives bounded repair and can still succeed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c1-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const replies = [
+      'Plain prose, no block.',
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nAfter repair.',
+    ];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return { content: replies[Math.min(requests.length - 1, replies.length - 1)], tokens_used: 4 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.format_repairs, 1, 'exactly one bounded repair attempt');
+    assert.equal(requests.length, 2, 'repair issued exactly one additional provider call');
+    // The repair message teaches the SINGLE-TURN representation and carries
+    // the previous non-compliant reply for context.
+    const repairMsg = requests[1].messages.at(-1)!.content as string;
+    assert.ok(repairMsg.includes('not parseable'), 'names the parse reason');
+    assert.ok(repairMsg.includes('<!-- SLE-OUTPUT'), 'single-turn repair teaches the preamble shape');
+    assert.ok(!repairMsg.includes('<<<SLE-OUTPUT>>>'), 'single-turn repair must NOT teach the multi-turn delimiters');
+    assert.ok(repairMsg.includes('Plain prose, no block.'), 'the previous reply is included for context');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: single-turn MALFORMED output receives bounded repair and can still succeed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c2-'));
+  try {
+    const replies = [
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\n-->\n\nno artifacts list', // preamble missing artifacts → parse error
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nRepaired body.',
+    ];
+    const provider = {
+      async complete() {
+        return { content: replies.shift() ?? 'garbage', tokens_used: 4 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.format_repairs, 1);
+    assert.ok((result as { format_repairs?: number }).format_repairs === 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: single-turn repair exhaustion fails closed with the shared precise diagnostic', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c3-'));
+  try {
+    const provider = {
+      async complete() { return { content: 'Eternal prose, never a block.', tokens_used: 4 }; },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, false);
+    assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS, 'budget NOT raised for single-turn');
+    assert.ok(result.error?.includes('carried a malformed result block and format repair is exhausted'), result.error);
+    assert.ok(result.error?.includes('2 provider turn(s), 1 format-repair attempt(s)'), result.error);
+    assert.ok(result.raw_output_path.length > 0, 'raw output still written on exhaustion');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: multi-turn repair teaching matches the multi-turn representation (no cross-teaching)', async () => {
+  const t = new TextualSleOutputTransport();
+  const mtRepair = t.repairInstruction({ ...PRODUCE_CTX }, 'absent');
+  assert.ok(mtRepair.includes('<<<SLE-OUTPUT>>>'), 'multi-turn repair teaches delimiters');
+  assert.ok(!mtRepair.includes('<!-- SLE-OUTPUT'), 'multi-turn repair must NOT teach the preamble shape');
+  const stRepair = t.repairInstruction(SINGLE_CTX, 'absent');
+  assert.ok(stRepair.includes('<!-- SLE-OUTPUT'), 'single-turn repair teaches the preamble');
+  assert.ok(!stRepair.includes('<<<SLE-OUTPUT>>>'), 'single-turn repair must NOT teach the delimiters');
+});
+
+// ─── Closure: multi-turn gets real execution metadata ────────────────────────
+
+test('D.3d.5.1c: the multi-turn loop teaches from the step\'s REAL declared output path, not a generic placeholder', async () => {
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn(params) {
+      return endTurn(sleBlock('.sle/work/wi-9/definition.md', '# Real path run'));
+    },
+  };
+  const loop = new AgentLoop(provider, {
+    model: 'test',
+    projectRoot: mkdtempSync(join(tmpdir(), 'd3d5-c5-')),
+    role: 'explorer',
+    workflowRunId: 'r',
+    iteration: 1,
+    nodeId: 'synthesize-definition',
+    runArtifacts: { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+    declaredArtifactId: 'definition',
+    declaredOutputPath: '.sle/work/wi-9/definition.md',
+    expectedArtifacts: 1,
+  });
+  const seen: MultiTurnParams[] = [];
+  const orig = provider.completeMultiTurn.bind(provider);
+  (provider as { completeMultiTurn: typeof orig }).completeMultiTurn = async (params) => {
+    seen.push(params);
+    return orig(params);
+  };
+  const result = await loop.run('System', 'Produce.');
+  assert.equal(result.success, true, result.error);
+  const firstUser = seen[0].messages[0].content as string;
+  assert.ok(firstUser.includes('### .sle/work/wi-9/definition.md'), 'teaching renders the actual declared path');
+  assert.ok(!firstUser.includes('workItemId'), 'no generic placeholder when real metadata exists');
+  assert.ok(firstUser.includes('Never emit more than one artifact section'), 'single-declared-artifact step gets the single-artifact restriction');
+});
+
+// ─── Closure: artifact cardinality reflects the executing step ───────────────
+
+test('D.3d.5.1c: the one-artifact restriction is NOT a transport-wide law', () => {
+  const t = new TextualSleOutputTransport();
+  const constrained = t.formatInstruction({
+    role: 'explorer', requiresReviewVerdict: false, execution: 'multi-turn',
+    nodeId: 'synthesize-definition', declaredArtifactId: 'definition',
+    declaredOutputPath: '.sle/work/w/definition.md', expectedArtifacts: 1,
+  });
+  assert.ok(constrained.includes('Never emit more than one artifact section'), 'a single-declared-artifact step requires exactly that artifact');
+
+  const unconstrained = t.formatInstruction({
+    role: 'builder', requiresReviewVerdict: false, execution: 'multi-turn',
+    nodeId: 'implement', expectedArtifacts: undefined,
+  });
+  assert.ok(
+    !unconstrained.includes('Never emit more than one artifact section'),
+    'a multi-artifact-compatible execution must not have a false one-artifact restriction taught',
+  );
+  assert.ok(unconstrained.includes("one '### <path>' section per declared output artifact"), 'multi-artifact teaching asks for one section per declared artifact');
 });

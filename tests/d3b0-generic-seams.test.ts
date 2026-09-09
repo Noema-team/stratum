@@ -277,7 +277,11 @@ test('D.3b0: an output-parsing failure (malformed preamble) is an execution fail
   const result = await runner.run('explorer', ctxFor('readiness-review', { requiresReviewVerdict: true }));
 
   assert.equal(result.success, false);
-  assert.match(result.error ?? '', /Output parsing failed/);
+  // D.3d.5 closure — the non-compliant single-turn reply gets the same
+  // bounded format repair as multi-turn, then fails closed. It is still an
+  // EXECUTION failure (never a semantic verdict), so reviewVerdict stays
+  // undefined and no routing can occur.
+  assert.match(result.error ?? '', /carried a malformed result block and format repair is exhausted/);
   assert.equal(result.reviewVerdict, undefined);
 });
 

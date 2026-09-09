@@ -56,7 +56,7 @@ export interface WorkflowStep {
   // requiresReviewVerdict review step authorizes for a semantic `verdict:
   // fail`, each mapping a workflow-declared token to its own target step +
   // iteration behavior. Only meaningful together with requiresReviewVerdict
-  // — see the SLE-OUTPUT preamble's `route: <token>` (agent-runner.ts) and
+  // — see the legacy textual route token (src/transport/textual-sle-output.ts,
   // WorkflowEngine.executeReview, which maps the token through this table
   // (never the reverse — the model supplies a token, never a step id).
   // A review step that leaves this unset keeps exactly today's single
@@ -95,7 +95,7 @@ export interface WorkflowStep {
   // WorkflowEngine.executeReview preserves its legacy behavior exactly
   // (execution success routes on_pass, execution failure routes on_fail).
   // With it set, only a successful execution that also produced a parsed
-  // `verdict: pass | fail` in the SLE-OUTPUT preamble (see agent-runner.ts)
+  // a valid `verdict: pass | fail` in the transport-extracted StepResult
   // is treated as a semantic judgment; anything else (transport/parse/write
   // failure, or a missing/invalid verdict) halts instead of being routed
   // through on_fail/on_pass as if it were one.
@@ -278,8 +278,9 @@ export interface StepRunOutcome {
   // Absent for every non-opted-in step and for a failed/legacy execution.
   reviewVerdict?: 'pass' | 'fail';
   // D.3c1a — the validated route token, set only when reviewVerdict is
-  // 'fail' AND the step declared on_fail_routes AND the model's preamble
-  // supplied a token AgentRunner found among that step's declared keys
+  // 'fail' AND the step declared on_fail_routes AND the legacy textual
+  // route token (sanctioned D.3d.5 migration exception) was found among that
+  // step's declared keys
   // (see agent-runner.ts). Absent whenever on_fail_routes is not declared,
   // regardless of verdict — WorkflowEngine.executeReview still re-validates
   // this token against step.on_fail_routes itself before routing.
