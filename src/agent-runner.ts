@@ -1,7 +1,6 @@
 import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
 import { createHash, randomUUID } from 'node:crypto';
-import yaml from 'js-yaml';
 import type { AgentRole, AssembledContext } from './types.js';
 import type { ContextManager } from './context-manager.js';
 import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
@@ -12,11 +11,24 @@ import { toSafeRelativePath } from './path-safety.js';
 import { AgentLoop } from './agent-loop.js';
 import {
   type ResultTransport,
-  type StepResult,
 } from './transport/step-result.js';
 import {
+  extractLegacyReviewRoute,
   resolveResultTransport,
-  stepResultFromSingleTurnParse,
+} from './transport/textual-sle-output.js';
+
+// D.3d.5 commit 1 — the single-turn preamble parser (parseAgentOutput +
+// SLEOutputPreamble/ParsedSingleTurnOutput types) MOVED to the transport
+// layer (src/transport/textual-sle-output.ts), which now owns ALL raw-result
+// extraction for both execution paths. Re-exported here for backward
+// compatibility with existing tests/importers; AgentRunner itself consumes
+// ONLY StepResult — it never sees YAML preambles, HTML comments, or
+// delimiters.
+export {
+  parseAgentOutput,
+  extractLegacyReviewRoute,
+  type SLEOutputPreamble,
+  type ParsedSingleTurnOutput,
 } from './transport/textual-sle-output.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -36,27 +48,11 @@ export interface AgentRunResult {
   // 'fail' AND ctx.on_fail_routes was declared AND the preamble's `route:`
   // matched one of its keys exactly. See the route-gate in run() below.
   reviewRoute?: string;
-}
-
-export interface SLEOutputPreamble {
-  role: string;
-  node: string;
-  artifacts: Array<{ id: string; path: string }>;
-  // D.3b0 — optional semantic review verdict. Only meaningful (and only
-  // validated) when the invoking step declares requiresReviewVerdict; loose
-  // string type here because this is straight off yaml.load() before any
-  // validation — see the verdict check in AgentRunner.run().
-  verdict?: string;
-  // D.3c1a — optional bounded-routing token. Only meaningful (and only
-  // validated) when verdict: fail AND the invoking step declares
-  // on_fail_routes; loose string type here for the same reason as verdict
-  // above — see the route-gate in AgentRunner.run().
-  route?: string;
-}
-
-export interface ParsedOutput {
-  preamble: SLEOutputPreamble;
-  sections: Array<{ path: string; content: string }>;
+  // D.3d.5 commit 1 — bounded format-repair attempts on this step's
+  // multi-turn execution, tracked separately from turns_taken (which counts
+  // every provider call). Precise semantics: turns_taken = all provider
+  // calls; format_repairs = repair prompts issued for non-compliant replies.
+  format_repairs?: number;
 }
 
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
@@ -128,94 +124,6 @@ export function buildUserMessage(context: AssembledContext): string {
   return parts.join('\n');
 }
 
-// ─── Output parsing ───────────────────────────────────────────────────────────
-
-export function parseAgentOutput(raw: string, role: AgentRole): ParsedOutput {
-  const preambleMatch = raw.match(/<!--\s*SLE-OUTPUT([\s\S]*?)-->/);
-  if (!preambleMatch) {
-    throw new Error('Missing SLE-OUTPUT preamble comment');
-  }
-
-  const preamble = yaml.load(preambleMatch[1].trim()) as SLEOutputPreamble;
-  if (!preamble?.artifacts || !Array.isArray(preamble.artifacts)) {
-    throw new Error('SLE-OUTPUT preamble missing artifacts list');
-  }
-
-  const afterPreamble = raw.slice(raw.indexOf('-->') + 3).trim();
-  const sections =
-    role === 'builder'
-      ? parseBuilderSections(afterPreamble)
-      : parseStandardSections(afterPreamble, preamble);
-
-  return { preamble, sections };
-}
-
-function parseStandardSections(
-  body: string,
-  preamble: SLEOutputPreamble
-): Array<{ path: string; content: string }> {
-  const rawSections = body.split(/\n---+\n/);
-  const results: Array<{ path: string; content: string }> = [];
-
-  for (const raw of rawSections) {
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-
-    const lines = trimmed.split('\n');
-    const headerMatch = lines[0].trim().match(/^##\s+(.+)$/);
-    if (!headerMatch) continue;
-
-    const headerPath = headerMatch[1].trim();
-    const artifact = preamble.artifacts.find(
-      (a) => a.path === headerPath || a.path.endsWith(headerPath) || headerPath.endsWith(a.path)
-    );
-    if (!artifact) continue;
-
-    results.push({ path: artifact.path, content: lines.slice(1).join('\n').trim() });
-  }
-
-  // Fallback: positional matching when headers don't match declared paths
-  if (results.length === 0 && preamble.artifacts.length > 0) {
-    const nonEmpty = rawSections.filter((s) => s.trim());
-    for (let i = 0; i < Math.min(nonEmpty.length, preamble.artifacts.length); i++) {
-      const lines = nonEmpty[i].trim().split('\n');
-      const skip = lines[0].trim().startsWith('#') ? 1 : 0;
-      results.push({
-        path: preamble.artifacts[i].path,
-        content: lines.slice(skip).join('\n').trim(),
-      });
-    }
-  }
-
-  return results;
-}
-
-function parseBuilderSections(body: string): Array<{ path: string; content: string }> {
-  const results: Array<{ path: string; content: string }> = [];
-  const fileHeaderRegex = /^## File:\s+(.+)$/gm;
-  const matches: Array<{ filePath: string; headerStart: number; contentStart: number }> = [];
-
-  let m: RegExpExecArray | null;
-  while ((m = fileHeaderRegex.exec(body)) !== null) {
-    matches.push({
-      filePath: m[1].trim(),
-      headerStart: m.index,
-      contentStart: m.index + m[0].length,
-    });
-  }
-
-  for (let i = 0; i < matches.length; i++) {
-    const { filePath, contentStart } = matches[i];
-    const nextStart = i + 1 < matches.length ? matches[i + 1].headerStart : body.length;
-    const rawBlock = body.slice(contentStart, nextStart).trim();
-
-    const fenceMatch = rawBlock.match(/^```(?:\w+)?\n([\s\S]*?)\n?```\s*$/);
-    results.push({ path: filePath, content: fenceMatch ? fenceMatch[1] : rawBlock });
-  }
-
-  return results;
-}
-
 // ─── AgentRunner ──────────────────────────────────────────────────────────────
 
 export interface AgentRunnerConfig {
@@ -262,6 +170,8 @@ export class AgentRunner {
 
     let parsed: { sections: Array<{ path: string; content: string }> };
     let tokensUsed = 0;
+    // D.3d.5 commit 1 — bounded format-repair attempts (multi-turn only).
+    let formatRepairs: number | undefined;
     let rawPath = '';
     // D.3b0 — the raw `verdict` string from the SLE-OUTPUT preamble, when one
     // exists. Only the single-turn path below has a preamble/verdict concept
@@ -325,23 +235,30 @@ export class AgentRunner {
       }
 
       parsed = loopResult.parsedOutput!;
+      formatRepairs = loopResult.format_repairs;
       // Write the final text as raw output (always, even on multi-turn success)
       rawPath = await this.writeRaw(ctx, nodeId, loopResult.rawText || '');
 
     } else {
       // Single-turn fallback (original logic)
-      // D.3d.5 commit 1 — transport syntax is taught BY THE TRANSPORT,
-      // injected here (never by workflow methodology text). The single-turn
-      // path parses the preamble shape, so the teaching names the preamble
-      // shape — teaching must match the parser that consumes the reply.
+      // D.3d.5 commit 1 — ALL raw-result handling is transport-owned on this
+      // path too: the transport teaches the wire shape (generated from this
+      // step's actual metadata) AND performs the extraction. AgentRunner
+      // consumes only StepResult and cannot tell which representation the
+      // provider used — a structured/native transport drops in without any
+      // change here.
+      const transportCtx = {
+        role,
+        requiresReviewVerdict: ctx.requiresReviewVerdict === true,
+        execution: 'single-turn' as const,
+        nodeId,
+        declaredArtifactId: ctx.outputArtifact?.type,
+        declaredOutputPath: ctx.outputArtifact?.path,
+      };
       const userContent =
         buildUserMessage(context) +
         '\n\n' +
-        this.resultTransport.formatInstruction({
-          role,
-          requiresReviewVerdict: ctx.requiresReviewVerdict === true,
-          execution: 'single-turn',
-        });
+        this.resultTransport.formatInstruction(transportCtx);
       const params: LLMCompletionParams = {
         model: this.runnerConfig.model,
         messages: [
@@ -374,16 +291,15 @@ export class AgentRunner {
       rawPath = await this.writeRaw(ctx, nodeId, llmResult.content);
 
       try {
-        const fullParsed = parseAgentOutput(llmResult.content, role);
-        // D.3d.5 commit 1 — map into the canonical StepResult (artifacts +
-        // optional review verdict). The route token below is LEGACY, read
-        // only to feed the interim D.3c1a allowlist gate; it is not part of
-        // StepResult and commit 3 replaces it with deterministic derivation
-        // from validated gap classifications.
-        const stepResult: StepResult = stepResultFromSingleTurnParse(fullParsed);
+        // D.3d.5 commit 1 (review amendment) — extraction is transport-owned:
+        // the runner never parses raw replies itself. The route token below
+        // is LEGACY, read only to feed the interim D.3c1a allowlist gate; it
+        // is not part of StepResult and commit 3 replaces it with
+        // deterministic derivation from validated gap classifications.
+        const stepResult = this.resultTransport.extractSingleTurn(llmResult.content, transportCtx);
         parsed = { sections: stepResult.artifacts };
-        reviewVerdictRaw = stepResult.review?.verdict ?? fullParsed.preamble?.verdict;
-        reviewRouteRaw = fullParsed.preamble?.route;
+        reviewVerdictRaw = stepResult.review?.verdict;
+        reviewRouteRaw = extractLegacyReviewRoute(llmResult.content);
       } catch (err) {
         return {
           success: false,
@@ -539,6 +455,7 @@ export class AgentRunner {
       raw_output_path: rawPath,
       reviewVerdict,
       reviewRoute,
+      ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
     };
   }
 

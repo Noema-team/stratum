@@ -42,7 +42,6 @@ import {
   TextualSleOutputTransport,
   extractLegacyReviewRoute,
   resolveResultTransport,
-  stepResultFromSingleTurnParse,
 } from '../src/transport/textual-sle-output.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,15 +70,22 @@ function makeLoop(provider: IMultiTurnProvider, opts: Partial<Parameters<typeof 
 }
 
 // A minimal real-shaped structured transport — stands in for a future
-// provider-native structured-output adapter. It accepts a raw reply that is
-// a JSON StepResult. No provider capability is faked: this object exists to
-// prove the SEAM carries a non-textual StepResult end to end.
+// provider-native structured-output adapter. It accepts raw replies that
+// are JSON StepResults, on BOTH execution paths. No provider capability is
+// faked: this object exists to prove the SEAM carries a non-textual
+// StepResult end to end, including single-turn review.
 class JsonStepResultTransport implements ResultTransport {
   readonly name = 'json-step-result';
   formatInstruction(): string {
     return 'Reply with a single JSON object: {"artifacts":[{"path":"...","content":"..."}]}';
   }
   extractProduce(raw: string): StepResult {
+    return this.parse(raw);
+  }
+  extractSingleTurn(raw: string): StepResult {
+    return this.parse(raw);
+  }
+  private parse(raw: string): StepResult {
     try {
       const obj = JSON.parse(raw) as StepResult;
       if (!Array.isArray(obj.artifacts)) throw new Error('missing artifacts');
@@ -96,16 +102,18 @@ class JsonStepResultTransport implements ResultTransport {
 // ─── Canonical contract ───────────────────────────────────────────────────────
 
 test('D.3d.5.1: the canonical StepResult carries no route — the legacy route token stays outside the contract', () => {
-  const parsed = {
-    preamble: { role: 'explorer', node: 'review', artifacts: [{ id: 'readiness', path: '.sle/work/w/readiness.md' }], verdict: 'fail', route: 'human' },
-    sections: [{ path: '.sle/work/w/readiness.md', content: 'body' }],
-  };
-  const stepResult = stepResultFromSingleTurnParse(parsed);
+  const t = new TextualSleOutputTransport();
+  const raw =
+    '<!-- SLE-OUTPUT\n' +
+    'role: explorer\nnode: review\n' +
+    'artifacts:\n  - id: readiness\n    path: .sle/work/w/readiness.md\n' +
+    'verdict: fail\nroute: human\n-->\n\n## .sle/work/w/readiness.md\n\nbody';
+  const stepResult = t.extractSingleTurn(raw, { role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' });
   assert.deepEqual(Object.keys(stepResult).sort(), ['artifacts', 'review'], 'StepResult has exactly artifacts and (optionally) review');
   assert.equal(stepResult.review?.verdict, 'fail');
   assert.equal((stepResult as Record<string, unknown>)['route'], undefined, 'route must never appear on StepResult');
   // The legacy token is still extractable for the interim allowlist gate…
-  assert.equal(extractLegacyReviewRoute('<!-- SLE-OUTPUT\nverdict: fail\nroute: human\n-->'), 'human');
+  assert.equal(extractLegacyReviewRoute(raw), 'human');
   // …and only via the deprecated migration helper, never via the transport contract.
   assert.equal(resolveResultTransport(undefined).name, 'textual-sle-output', 'default transport is the textual fallback');
 });
@@ -281,6 +289,132 @@ test('D.3d.5.1: AgentRunner resolves its transport through the seam, honoring an
       'without an override the textual fallback is resolved',
     );
     void validateOutputPath; // reference import (path-safety regression net stays hot)
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Total extraction ownership: single-turn review through the seam ─────────
+
+test('D.3d.5.1: a structured transport serves a REVIEW step end to end — the runner never touches the legacy preamble parser', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-review-'));
+  try {
+    // A provider whose review reply is a JSON StepResult with a fail verdict.
+    // Only the injected transport can read it; if AgentRunner still parsed
+    // the legacy HTML/YAML preamble internally, this run would fail with
+    // "Missing SLE-OUTPUT preamble comment".
+    const provider = {
+      async complete() {
+        return {
+          content: JSON.stringify({
+            artifacts: [{ path: '.sle/work/w/readiness.md', content: 'Readiness body' }],
+            review: { verdict: 'fail' },
+          }),
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', resultTransport: new JsonStepResultTransport() },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'definition-readiness-review',
+      iteration: 1, revision: 0, goal: 'review', projectRoot: root,
+      instruction: 'Review the definition.',
+      requiresReviewVerdict: true,
+      outputArtifact: { type: 'definition-readiness', ref: 'dr:1', path: '.sle/work/w/readiness.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.reviewVerdict, 'fail', 'the structured review verdict flows through the canonical contract');
+    assert.equal(result.reviewRoute, undefined, 'no legacy route token exists in a structured reply');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1: the legacy textual path still serves a REVIEW step (migration behavior unchanged)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-review2-'));
+  try {
+    const provider = {
+      async complete() {
+        return {
+          content:
+            '<!-- SLE-OUTPUT\nrole: explorer\nnode: definition-readiness-review\nartifacts:\n  - id: readiness\n    path: .sle/work/w/readiness.md\nverdict: fail\nroute: refine\n-->\n\n## .sle/work/w/readiness.md\n\nReadiness body',
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'definition-readiness-review',
+      iteration: 1, revision: 0, goal: 'review', projectRoot: root,
+      instruction: 'Review the definition.',
+      requiresReviewVerdict: true,
+      on_fail_routes: { refine: { target_step_id: 'refine-definition' } },
+      outputArtifact: { type: 'definition-readiness', ref: 'dr:1', path: '.sle/work/w/readiness.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.reviewVerdict, 'fail');
+    assert.equal(result.reviewRoute, 'refine', 'the legacy route token still flows through the interim gate');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Metadata-driven teaching: no workflow-specific assumptions ──────────────
+
+test('D.3d.5.1: single-turn teaching is generated from actual step metadata (role, node, artifact id/path)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-meta-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return {
+          content:
+            '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nProbe body.',
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root,
+      instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    const userMsg = requests[0].messages.find((m) => m.role === 'user')!;
+    // Generated from THIS step's metadata — nothing define-work-specific:
+    assert.ok(userMsg.content.includes('role: explorer'), 'teaching renders the actual role');
+    assert.ok(userMsg.content.includes('node: probe'), 'teaching renders the actual node id');
+    assert.ok(userMsg.content.includes('id: probe'), 'teaching renders the actual artifact id');
+    assert.ok(userMsg.content.includes('path: .sle/work/w/probe.md'), 'teaching renders the actual declared path');
+    assert.ok(!userMsg.content.includes('readiness'), 'no workflow-specific artifact names leak into teaching');
+    assert.ok(!userMsg.content.includes('workItemId'), 'no placeholder leaks when real metadata exists');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

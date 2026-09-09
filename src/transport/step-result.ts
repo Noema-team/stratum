@@ -52,6 +52,14 @@ export interface TransportContext {
   requiresReviewVerdict: boolean;
   /** Which execution path will parse the reply — each path has its own wire shape. */
   execution: 'multi-turn' | 'single-turn';
+  // ─── Actual step metadata (D.3d.5 review amendment: teaching is generated
+  // ─── from this, never from workflow-specific hardcoded examples) ───────────
+  /** The executing step's id — rendered into preamble teaching as `node:`. */
+  nodeId?: string;
+  /** The declared output artifact's semantic id (StepKinds-declared `type`). */
+  declaredArtifactId?: string;
+  /** The declared output artifact's physical path — rendered into teaching. */
+  declaredOutputPath?: string;
 }
 
 /** Raised when a raw reply cannot be converted into a StepResult. */
@@ -92,6 +100,13 @@ export interface ResultTransport {
   formatInstruction(ctx: TransportContext): string;
   /** Convert a multi-turn produce reply into a StepResult. Throws TransportParseError. */
   extractProduce(raw: string, ctx: TransportContext): StepResult;
+  /**
+   * Convert a single-turn reply (review or legacy single-turn produce) into
+   * a StepResult. Throws TransportParseError. The runner consumes ONLY this
+   * — it never parses raw replies itself, so a structured/native transport
+   * can replace the wire format without touching the runner.
+   */
+  extractSingleTurn(raw: string, ctx: TransportContext): StepResult;
   /**
    * The bounded format-repair prompt for a non-compliant reply.
    * `kind: 'absent'` — the reply carried no recognizable result block at all;

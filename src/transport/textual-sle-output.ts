@@ -1,29 +1,32 @@
 // D.3d.5 commit 1 — the textual SLE-OUTPUT fallback transport.
 //
-// This module OWNS the two textual wire shapes that workflow methodology
-// used to teach (moved verbatim in spirit from the former
-// PRODUCE_OUTPUT_FORMAT_CONTRACT / REVIEW_OUTPUT_FORMAT_CONTRACT):
+// This module OWNS every textual wire shape the execution layer consumes:
 //
 //   multi-turn produce:   <<<SLE-OUTPUT>>> / '### <path>' sections /
-//                         <<<END-SLE-OUTPUT>>>   (parsed by output-parser.ts)
+//                         <<<END-SLE-OUTPUT>>>   (parseAgentOutputV3)
 //   single-turn produce:  '<!-- SLE-OUTPUT' YAML preamble + '## <path>'
-//                         headers                  (parsed by agent-runner.ts)
+//                         headers                  (parseAgentOutput)
 //   single-turn review:   same preamble shape, plus the `verdict:` line
 //                         (and, during migration only, the legacy `route:`
 //                         token — see extractLegacyReviewRoute)
 //
-// The multi-turn and single-turn shapes must never be taught to the same
-// step — mixing them made a real model emit the wrong one (D.3d Layer B,
-// first live failure) — so formatInstruction selects by
-// TransportContext.execution and adds the verdict requirement only for
-// review steps.
+// D.3d.5 review amendment: ownership must be TOTAL. AgentRunner consumes
+// ONLY StepResult — it never sees (or knows about) YAML preambles, HTML
+// comments, or delimiters. All raw-result extraction for both execution
+// paths lives here, so a future structured/native transport can replace
+// the wire format without touching the runner, the loop, or any workflow.
 //
-// Extraction delegates to the existing parsers, so commit 1 changes
-// transport OWNERSHIP, not the accepted syntax — semantic workflow behavior
-// is unchanged.
+// Teaching is generated from ACTUAL step metadata (role, node id, declared
+// artifact id/path) — no workflow-specific examples are hardcoded. Adding
+// workflow #40 must not require touching this file.
+//
+// The shapes must never be taught to the same step — mixing them made a
+// real model emit the wrong one (D.3d Layer B, first live failure) — so
+// formatInstruction selects by TransportContext.execution and adds the
+// verdict requirement only for review steps.
+import yaml from 'js-yaml';
+import type { AgentRole } from '../types.js';
 import { parseAgentOutputV3, ParseError } from '../output-parser.js';
-import type { ParsedOutput } from '../output-parser.js';
-import type { SLEOutputPreamble } from '../agent-runner.js';
 import {
   type ResultTransport,
   type StepResult,
@@ -35,12 +38,126 @@ export const SLE_OPEN = '<<<SLE-OUTPUT>>>';
 export const SLE_CLOSE = '<<<END-SLE-OUTPUT>>>';
 export const SLE_PREAMBLE_MARK = '<!-- SLE-OUTPUT';
 
-const MULTI_TURN_FORMAT_INSTRUCTION = `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+// ─── Single-turn preamble parser (moved verbatim from agent-runner.ts; the
+// ─── parser and the wire shape it accepts belong to the same owner) ──────────
+
+export interface SLEOutputPreamble {
+  role: string;
+  node: string;
+  artifacts: Array<{ id: string; path: string }>;
+  // D.3b0 — optional semantic review verdict. Only meaningful (and only
+  // validated) when the invoking step declares requiresReviewVerdict; loose
+  // string type here because this is straight off yaml.load() before any
+  // validation — see the verdict gate in AgentRunner.run().
+  verdict?: string;
+  // D.3c1a — optional bounded-routing token. Legacy during D.3d.5 migration:
+  // never part of the canonical StepResult; read only via
+  // extractLegacyReviewRoute to feed the interim allowlist gate until
+  // commit 3 derives the route deterministically.
+  route?: string;
+}
+
+export interface ParsedSingleTurnOutput {
+  preamble: SLEOutputPreamble;
+  sections: Array<{ path: string; content: string }>;
+}
+
+export function parseAgentOutput(raw: string, role: AgentRole): ParsedSingleTurnOutput {
+  const preambleMatch = raw.match(/<!--\s*SLE-OUTPUT([\s\S]*?)-->/);
+  if (!preambleMatch) {
+    throw new Error('Missing SLE-OUTPUT preamble comment');
+  }
+
+  const preamble = yaml.load(preambleMatch[1].trim()) as SLEOutputPreamble;
+  if (!preamble?.artifacts || !Array.isArray(preamble.artifacts)) {
+    throw new Error('SLE-OUTPUT preamble missing artifacts list');
+  }
+
+  const afterPreamble = raw.slice(raw.indexOf('-->') + 3).trim();
+  const sections =
+    role === 'builder'
+      ? parseBuilderSections(afterPreamble)
+      : parseStandardSections(afterPreamble, preamble);
+
+  return { preamble, sections };
+}
+
+function parseStandardSections(
+  body: string,
+  preamble: SLEOutputPreamble
+): Array<{ path: string; content: string }> {
+  const rawSections = body.split(/\n---+\n/);
+  const results: Array<{ path: string; content: string }> = [];
+
+  for (const raw of rawSections) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+
+    const lines = trimmed.split('\n');
+    const headerMatch = lines[0].trim().match(/^##\s+(.+)$/);
+    if (!headerMatch) continue;
+
+    const headerPath = headerMatch[1].trim();
+    const artifact = preamble.artifacts.find(
+      (a) => a.path === headerPath || a.path.endsWith(headerPath) || headerPath.endsWith(a.path)
+    );
+    if (!artifact) continue;
+
+    results.push({ path: artifact.path, content: lines.slice(1).join('\n').trim() });
+  }
+
+  // Fallback: positional matching when headers don't match declared paths
+  if (results.length === 0 && preamble.artifacts.length > 0) {
+    const nonEmpty = rawSections.filter((s) => s.trim());
+    for (let i = 0; i < Math.min(nonEmpty.length, preamble.artifacts.length); i++) {
+      const lines = nonEmpty[i].trim().split('\n');
+      const skip = lines[0].trim().startsWith('#') ? 1 : 0;
+      results.push({
+        path: preamble.artifacts[i].path,
+        content: lines.slice(skip).join('\n').trim(),
+      });
+    }
+  }
+
+  return results;
+}
+
+function parseBuilderSections(body: string): Array<{ path: string; content: string }> {
+  const results: Array<{ path: string; content: string }> = [];
+  const fileHeaderRegex = /^## File:\s+(.+)$/gm;
+  const matches: Array<{ filePath: string; headerStart: number; contentStart: number }> = [];
+
+  let m: RegExpExecArray | null;
+  while ((m = fileHeaderRegex.exec(body)) !== null) {
+    matches.push({
+      filePath: m[1].trim(),
+      headerStart: m.index,
+      contentStart: m.index + m[0].length,
+    });
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const { filePath, contentStart } = matches[i];
+    const nextStart = i + 1 < matches.length ? matches[i + 1].headerStart : body.length;
+    const rawBlock = body.slice(contentStart, nextStart).trim();
+
+    const fenceMatch = rawBlock.match(/^```(?:\w+)?\n([\s\S]*?)\n?```\s*$/);
+    results.push({ path: filePath, content: fenceMatch ? fenceMatch[1] : rawBlock });
+  }
+
+  return results;
+}
+
+// ─── Teaching generation (metadata-driven — no workflow-specific examples) ────
+
+function multiTurnFormatInstruction(ctx: TransportContext): string {
+  const examplePath = ctx.declaredOutputPath ?? '.sle/work/<workItemId>/<artifact>.md';
+  return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 End your final message with the artifact wrapped in exactly these literal delimiters, as a
 single '### <path>' section whose path is the declared output artifact path named in the task:
 
 ${SLE_OPEN}
-### .sle/work/<workItemId>/<artifact>.md
+### ${examplePath}
 <the full artifact content>
 ${SLE_CLOSE}
 
@@ -49,39 +166,52 @@ ${SLE_CLOSE}
 - The delimiters are literal structural requirements: a reply without them cannot be parsed
   and fails the step regardless of content quality. Never reply in prose alone, in any other
   comment or preamble style, or with any wrapper other than these exact delimiters.`;
+}
 
-function singleTurnFormatInstruction(requiresReviewVerdict: boolean): string {
+function singleTurnFormatInstruction(ctx: TransportContext): string {
+  const roleLine = `role: ${ctx.role}`;
+  const nodeLine = `node: ${ctx.nodeId ?? '<this step\'s id, shown in Current State above>'}`;
+  const artifactId = ctx.declaredArtifactId ?? 'artifact';
+  const artifactPath = ctx.declaredOutputPath ?? '.sle/work/<workItemId>/<artifact>.md';
+  const verdictBlock = ctx.requiresReviewVerdict
+    ? `verdict: pass
+-->
+`
+    : `-->
+`;
+  const verdictRequirement = ctx.requiresReviewVerdict
+    ? `
+- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line —
+  plus a 'route: <token>' line chosen from the routing contract above when, and only when,
+  the verdict is fail.`
+    : '';
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 Begin your reply with an HTML-comment YAML preamble, then give the artifact body under a
 '## <path>' header matching the declared output artifact path named in the task:
 
 ${SLE_PREAMBLE_MARK}
-role: explorer
-node: <this step's id, shown in Current State above>
+${roleLine}
+${nodeLine}
 artifacts:
-  - id: readiness
-    path: .sle/work/<workItemId>/readiness.md
-${requiresReviewVerdict ? 'verdict: pass\n-->\n' : '-->'}
-## .sle/work/<workItemId>/readiness.md
+  - id: ${artifactId}
+    path: ${artifactPath}
+${verdictBlock}
+## ${artifactPath}
 
-<the full artifact content>${
-    requiresReviewVerdict
-      ? `\n\n- The preamble must carry 'verdict: pass' or 'verdict: fail' — never omit the verdict line —
-  plus a 'route: <token>' line chosen from the routing contract above when, and only when,
-  the verdict is fail.`
-      : ''
-  }
+<the full artifact content>${verdictRequirement}
 
 - The preamble comment and the '## <path>' header are literal structural requirements: a
   reply without them cannot be parsed and fails the step regardless of content quality.`;
 }
 
+// ─── The transport ────────────────────────────────────────────────────────────
+
 export class TextualSleOutputTransport implements ResultTransport {
   readonly name = 'textual-sle-output';
 
   formatInstruction(ctx: TransportContext): string {
-    if (ctx.execution === 'multi-turn') return MULTI_TURN_FORMAT_INSTRUCTION;
-    return singleTurnFormatInstruction(ctx.requiresReviewVerdict);
+    if (ctx.execution === 'multi-turn') return multiTurnFormatInstruction(ctx);
+    return singleTurnFormatInstruction(ctx);
   }
 
   extractProduce(raw: string, ctx: TransportContext): StepResult {
@@ -93,16 +223,35 @@ export class TextualSleOutputTransport implements ResultTransport {
         'absent',
       );
     }
-    let parsed: ParsedOutput;
+    let sections: Array<{ path: string; content: string }>;
     try {
-      parsed = parseAgentOutputV3(raw, ctx.role);
+      sections = parseAgentOutputV3(raw, ctx.role).sections;
     } catch (err) {
       if (err instanceof ParseError) {
         throw new TransportParseError(err.message, raw, err.message, 'malformed');
       }
       throw err;
     }
-    return { artifacts: parsed.sections.map((s) => ({ path: s.path, content: s.content })) };
+    return { artifacts: sections };
+  }
+
+  extractSingleTurn(raw: string, ctx: TransportContext): StepResult {
+    let parsed: ParsedSingleTurnOutput;
+    try {
+      parsed = parseAgentOutput(raw, ctx.role);
+    } catch (err) {
+      throw new TransportParseError(
+        err instanceof Error ? err.message : String(err),
+        raw,
+        err instanceof Error ? err.message : String(err),
+        'malformed',
+      );
+    }
+    const verdict = parsed.preamble.verdict;
+    return {
+      artifacts: parsed.sections,
+      ...(verdict === 'pass' || verdict === 'fail' ? { review: { verdict } } : {}),
+    };
   }
 
   repairInstruction(kind: 'absent' | 'malformed', reason?: string): string {
@@ -121,24 +270,6 @@ export class TextualSleOutputTransport implements ResultTransport {
   }
 }
 
-// ─── Runner-side single-turn mapping ──────────────────────────────────────────
-//
-// agent-runner.ts performs the actual preamble parse (parseAgentOutput — it
-// lives there to avoid a runtime import cycle) and maps the result into the
-// canonical StepResult through this pure function. Type-only import above:
-// no runtime cycle edge.
-
-export function stepResultFromSingleTurnParse(parsed: {
-  preamble?: SLEOutputPreamble;
-  sections: Array<{ path: string; content: string }>;
-}): StepResult {
-  const verdict = parsed.preamble?.verdict;
-  return {
-    artifacts: parsed.sections,
-    ...(verdict === 'pass' || verdict === 'fail' ? { review: { verdict } } : {}),
-  };
-}
-
 // ─── Legacy route extraction (DEPRECATED — removed in commit 3) ──────────────
 //
 // D.3d.5 amendment: `route` must cease being model authority. Until commit 3
@@ -146,8 +277,7 @@ export function stepResultFromSingleTurnParse(parsed: {
 // the legacy textual `route:` token still flows through the existing
 // D.3c1a allowlist gate UNCHANGED so semantic workflow behavior does not
 // move in this commit. It is deliberately NOT part of StepResult; the
-// runner keeps reading it off the parsed preamble only to feed the interim
-// gate, and this helper exists for that migration window.
+// runner reads it via this deprecated helper only to feed the interim gate.
 
 export function extractLegacyReviewRoute(raw: string): string | undefined {
   const match = raw.match(/<!--\s*SLE-OUTPUT([\s\S]*?)-->/);
