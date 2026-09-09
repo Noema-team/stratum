@@ -25,10 +25,15 @@ import {
   parseDefinition,
   validateDefinition,
   validateDefinitionArtifactText,
+  createDefinitionInputValidator,
   DefinitionParseError,
   DEFINITION_SCHEMA_VERSION,
   type CanonicalDefinition,
 } from '../src/workflow/methodology/definition-artifact.js';
+import { DecisionRepository } from '../src/storage/repositories.js';
+import { openDatabase } from '../src/storage/database.js';
+import type Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { AgentRunner } from '../src/agent-runner.js';
 import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
 import { WorkflowEngine, DEFINE_WORK } from '../src/workflow/index.js';
@@ -121,6 +126,82 @@ test('D.3d.5.2: unsupported schemaVersion fails closed', () => {
     assert.ok(err instanceof DefinitionParseError);
     assert.equal((err as DefinitionParseError).code, 'SCHEMA_VERSION_UNSUPPORTED');
   }
+});
+
+test('D.3d.5.2: every optional canonical section is structurally validated on parse (no silent casts)', () => {
+  const fm = (section: string) =>
+    `---\nschemaVersion: 1\ngoal: "g"\nfacts: []\n${section}\n---\nbody`;
+  const malformed: Array<[string, string]> = [
+    ['constraints not an array', 'constraints: { description: "x" }'],
+    ['constraints entry not a mapping', 'constraints:\n  - "be careful"'],
+    ['constraint without description', 'constraints:\n  - { type: "must" }'],
+    ['constraint with invalid type', 'constraints:\n  - { description: "x", type: "maybe" }'],
+    ['requirements not an array', 'requirements: "ship it"'],
+    ['requirement not a string', 'requirements:\n  - { text: "ship it" }'],
+    ['nonGoals not an array', 'nonGoals: 42'],
+    ['nonGoal not a string', 'nonGoals:\n  - [1, 2]'],
+    ['acceptance not an array', 'acceptance: "works"'],
+    ['acceptance entry not a mapping', 'acceptance:\n  - "two players can join"'],
+    ['acceptance without description', 'acceptance:\n  - { met: false }'],
+    ['acceptance met not boolean', 'acceptance:\n  - { description: "joins", met: "no" }'],
+  ];
+  for (const [label, section] of malformed) {
+    try {
+      parseDefinition(fm(section));
+      assert.fail(`expected SHAPE_INVALID for ${label}`);
+    } catch (err) {
+      assert.ok(err instanceof DefinitionParseError, label);
+      assert.equal((err as DefinitionParseError).code, 'SHAPE_INVALID', label);
+    }
+  }
+});
+
+test('D.3d.5.2: fact scalar fields refuse non-scalar YAML values', () => {
+  const cases: Array<[string, string]> = [
+    ['status as array', '  - {"id":"F1","statement":"s","status":["KNOWN"],"source":"human"}'],
+    ['source as object', '  - {"id":"F1","statement":"s","status":"KNOWN","source":{"a":1}}'],
+    ['status as null', '  - {"id":"F1","statement":"s","status":null,"source":"human"}'],
+    ['kind as number', '  - {"id":"F1","statement":"s","status":"KNOWN","source":"human","kind":7}'],
+    ['decisionRef as array', '  - {"id":"F1","statement":"s","status":"DECIDED","source":"decision","decisionRef":["d1"]}'],
+    ['evidenceRef as object', '  - {"id":"F1","statement":"s","status":"KNOWN","source":"repository","evidenceRef":{"path":"x"}}'],
+  ];
+  for (const [label, factLine] of cases) {
+    try {
+      parseDefinition(`---\nschemaVersion: 1\ngoal: "g"\nfacts:\n${factLine}\n---\nbody`);
+      assert.fail(`expected SHAPE_INVALID for ${label}`);
+    } catch (err) {
+      assert.ok(err instanceof DefinitionParseError, label);
+      assert.equal((err as DefinitionParseError).code, 'SHAPE_INVALID', label);
+    }
+  }
+});
+
+test('D.3d.5.2: a fully populated canonical Definition parses into exactly typed sections', () => {
+  const { definition } = parseDefinition([
+    '---',
+    'schemaVersion: 1',
+    '"goal": "Full"',
+    'facts:',
+    '  - {"id":"F1","statement":"Repo claim.","status":"KNOWN","source":"repository","kind":"repository-claim","evidenceRef":"src/x.ts"}',
+    '  - {"id":"F2","statement":"Decided.","status":"DECIDED","source":"decision","decisionRef":"d-1"}',
+    'constraints:',
+    '  - {"description":"No new entities","type":"must_not"}',
+    '  - {"description":"Keep p95 under 200ms","type":"must"}',
+    'requirements:',
+    '  - "Two players can join"',
+    'nonGoals:',
+    '  - "Matchmaking"',
+    'acceptance:',
+    '  - {"description":"Two players can join"}',
+    '  - {"description":"Session survives reconnect","met":false}',
+    '---',
+  ].join('\n'));
+  assert.equal(definition.constraints?.length, 2);
+  assert.equal(definition.requirements?.[0], 'Two players can join');
+  assert.equal(definition.nonGoals?.[0], 'Matchmaking');
+  assert.equal(definition.acceptance?.[1].met, false);
+  assert.equal(definition.facts[0].evidenceRef, 'src/x.ts');
+  assert.equal(definition.facts[1].decisionRef, 'd-1');
 });
 
 // ─── Facts ───────────────────────────────────────────────────────────────────
@@ -369,4 +450,185 @@ test('D.3d.5.2: no new workflow concept — the gate reuses the existing refine 
   }
   const kinds = new Set(DEFINE_WORK.steps.map((s) => s.kind));
   assert.ok(![...kinds].some((k) => /valid/i.test(k)), 'no VALIDATE step kind was introduced');
+});
+
+// ─── Production Decision resolution (Blocker 2) ──────────────────────────────
+//
+// DECIDED provenance must resolve against REAL control-plane state through
+// the SAME registered-validator path production uses — not just the pure
+// validator's {decisionExists} option. These tests construct the validator
+// exactly the way the composition root does
+// (createDefinitionInputValidator over a real DecisionRepository) and run
+// the full define-work workflow through the deterministic gate.
+
+function makeDecision(id: string, workItemId: string): Parameters<DecisionRepository['save']>[0] {
+  return {
+    id,
+    projectId: 'proj-fix',
+    workItemId,
+    type: 'checkpoint',
+    subjectRef: { workItemId },
+    title: 'Decide transport',
+    summary: 'Which transport the increment uses.',
+    options: [{ id: 'opt-1', label: 'WebSocket' }],
+    recommendedOptionId: 'opt-1',
+    impact: 'medium',
+    reversibility: 'easy',
+    urgency: 'normal',
+    status: 'resolved',
+    resolution: { selectedOptionId: 'opt-1', rationale: 'bounded increment', resolvedAt: new Date().toISOString() },
+  };
+}
+
+function decidedFactDefinition(decisionRef: string): string {
+  return [
+    '---',
+    'schemaVersion: 1',
+    '"goal": "Decided provenance gate"',
+    'facts:',
+    `  - {"id":"F1","statement":"WebSocket transport.","status":"DECIDED","source":"decision","decisionRef":"${decisionRef}"}`,
+    '---',
+  ].join('\n');
+}
+
+function productionValidatorFixture(): { findDecision: (ref: string) => { workItemId?: string } | undefined; close: () => void } {
+  const dbPath = join(tmpdir(), `d3d5-dec-${randomUUID()}.db`);
+  const db: Database.Database = openDatabase(dbPath);
+  // Seed the control-plane rows the Decisions' foreign keys require.
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)").run('ws-fix', 'fixture', now);
+  db.prepare("INSERT INTO projects (id, workspace_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+    .run('proj-fix', 'ws-fix', 'Fixture Project', now, now);
+  db.prepare(
+    "INSERT INTO work_items (id, project_id, title, goal, workflow_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'define-work', 'backlog', ?, ?)",
+  ).run('wi-own', 'proj-fix', 'Own item', 'Own goal', now, now);
+  db.prepare(
+    "INSERT INTO work_items (id, project_id, title, goal, workflow_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'define-work', 'backlog', ?, ?)",
+  ).run('wi-other', 'proj-fix', 'Other item', 'Other goal', now, now);
+
+  const repo = new DecisionRepository(db);
+  const ownedId = 'dec-real-owned';
+  const otherId = 'dec-real-foreign';
+  repo.save(makeDecision(ownedId, 'wi-own'));
+  repo.save(makeDecision(otherId, 'wi-other'));
+  // The exact closure the composition root builds (application.ts).
+  const findDecision = (ref: string) => {
+    const d = repo.findById(ref);
+    return d ? { workItemId: d.workItemId } : undefined;
+  };
+  return { repo, findDecision, close: () => db.close() };
+}
+
+test('D.3d.5.2: a DECIDED fact referencing a REAL work-item Decision passes the production gate and reaches semantic review', async () => {
+  const { findDecision, close } = productionValidatorFixture();
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-dec-ok-'));
+  try {
+    const definitionPath = '.sle/work/wi-own/definition.md';
+    const readinessPath = '.sle/work/wi-own/readiness.md';
+    const provider = new SequenceLLMProvider([
+      sleOutput(decidedFactDefinition('dec-real-owned'), definitionPath),
+      readinessOutput('pass', 'Semantic review passed.', readinessPath),
+    ]);
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const agentRunner = new AgentRunner(
+      cm, provider, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', inputValidators: { definition: createDefinitionInputValidator({ findDecision }) } },
+      undefined, undefined,
+    );
+    const engine = new WorkflowEngine({
+      stepRunner: new AgentStepRunner(agentRunner),
+      mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as never,
+      runArtifacts: { updateNodeStatus: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as never,
+      projectRoot: root,
+    }, { onCheckpoint: async () => 'approve' });
+
+    const result = await engine.run('define-work', 'run-dec-ok', 'Decided provenance gate', undefined, 'wi-own', undefined, undefined, 'obj-dec');
+    assert.equal(result.status, 'complete', result.error);
+    // Exactly two LLM calls: synthesize + semantic review. No gate rejection.
+    assert.equal(provider.calls.length, 2);
+    const finalReadiness = readFileSync(join(root, readinessPath), 'utf-8');
+    assert.ok(finalReadiness.includes('Semantic review passed.'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    close();
+  }
+});
+
+test('D.3d.5.2: a DECIDED fact referencing an INVENTED Decision is rejected by the production gate — reviewer skipped, refine informed', async () => {
+  const { findDecision, close } = productionValidatorFixture();
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-dec-bad-'));
+  try {
+    const definitionPath = '.sle/work/wi-own/definition.md';
+    const readinessPath = '.sle/work/wi-own/readiness.md';
+    const provider = new SequenceLLMProvider([
+      sleOutput(decidedFactDefinition('dec-invented-0000'), definitionPath),
+      // Refine must not merely repeat the invented reference.
+      sleOutput(decidedFactDefinition('dec-real-owned'), definitionPath),
+      readinessOutput('pass', 'Semantic review passed after correction.', readinessPath),
+    ]);
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const agentRunner = new AgentRunner(
+      cm, provider, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', inputValidators: { definition: createDefinitionInputValidator({ findDecision }) } },
+      undefined, undefined,
+    );
+    const engine = new WorkflowEngine({
+      stepRunner: new AgentStepRunner(agentRunner),
+      mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as never,
+      runArtifacts: { updateNodeStatus: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as never,
+      projectRoot: root,
+    }, { onCheckpoint: async () => 'approve' });
+
+    const result = await engine.run('define-work', 'run-dec-bad', 'Decided provenance gate', undefined, 'wi-own', undefined, undefined, 'obj-dec');
+    assert.equal(result.status, 'complete', result.error);
+
+    // call #1 synthesize, call #2 refine (reviewer SKIPPED), call #3 review.
+    assert.equal(provider.calls.length, 3, `expected synthesize→refine→review, got ${provider.calls.length}`);
+    const refineContext = provider.calls[1].messages.find((m) => m.role === 'user')!.content;
+    assert.ok(refineContext.includes('DECISION_REF_UNRESOLVED'), 'the invented reference surfaces as a deterministic defect');
+    assert.ok(refineContext.includes('dec-invented-0000'), 'the defect names the unresolved reference');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    close();
+  }
+});
+
+test('D.3d.5.2: a REAL Decision owned by a DIFFERENT work item is rejected — borrowed authority fails deterministically', async () => {
+  const { findDecision, close } = productionValidatorFixture();
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-dec-own-'));
+  try {
+    const definitionPath = '.sle/work/wi-own/definition.md';
+    const readinessPath = '.sle/work/wi-own/readiness.md';
+    const provider = new SequenceLLMProvider([
+      sleOutput(decidedFactDefinition('dec-real-foreign'), definitionPath),
+      sleOutput(decidedFactDefinition('dec-real-owned'), definitionPath),
+      readinessOutput('pass', 'Semantic review passed after correction.', readinessPath),
+    ]);
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const agentRunner = new AgentRunner(
+      cm, provider, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', inputValidators: { definition: createDefinitionInputValidator({ findDecision }) } },
+      undefined, undefined,
+    );
+    const engine = new WorkflowEngine({
+      stepRunner: new AgentStepRunner(agentRunner),
+      mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as never,
+      runArtifacts: { updateNodeStatus: async () => {}, createRunDir: async () => {}, createManifest: async () => {} } as never,
+      projectRoot: root,
+    }, { onCheckpoint: async () => 'approve' });
+
+    const result = await engine.run('define-work', 'run-dec-own', 'Decided provenance gate', undefined, 'wi-own', undefined, undefined, 'obj-dec');
+    assert.equal(result.status, 'complete', result.error);
+
+    assert.equal(provider.calls.length, 3, `expected synthesize→refine→review, got ${provider.calls.length}`);
+    const refineContext = provider.calls[1].messages.find((m) => m.role === 'user')!.content;
+    assert.ok(refineContext.includes('DECISION_REF_UNRESOLVED'), 'a foreign work item\'s Decision does not resolve for this one');
+    assert.ok(refineContext.includes('dec-real-foreign'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    close();
+  }
 });

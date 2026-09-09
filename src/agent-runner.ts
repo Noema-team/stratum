@@ -152,10 +152,14 @@ export interface AgentRunnerConfig {
 /**
  * D.3d.5 commit 2 — the generic input-validator contract. Deliberately
  * shape-agnostic: the validator decides what the artifact must look like;
- * the runner only knows accept/reject + structured defects.
+ * the runner only knows accept/reject + structured defects. The optional
+ * second parameter carries the run context the runner generically knows
+ * (the step's work item) so a validator can resolve references against the
+ * right control-plane scope — the runner never interprets it.
  */
 export type InputValidator = (
   artifactText: string,
+  context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
 const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators'>> = {
@@ -620,7 +624,7 @@ export class AgentRunner {
         artifacts_written: written.artifacts_written,
       };
     }
-    const outcome = validator(artifactText);
+    const outcome = validator(artifactText, { workItemId: ctx.workItemId });
     if (outcome.ok) return null; // valid — semantic readiness review proceeds normally
     // Deterministic rejection: verdict 'fail' routed to refine (CAN_RESOLVE).
     // 'refine' must be one of the step's OWN declared route keys — the same

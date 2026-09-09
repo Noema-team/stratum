@@ -160,18 +160,117 @@ export function parseDefinition(artifactText: string): ParsedDefinitionArtifact 
     if (typeof fact.statement !== 'string' || fact.statement.trim() === '') {
       throw new DefinitionParseError('SHAPE_INVALID', `fact '${String(fact.id)}' must carry a non-empty string "statement"`);
     }
+    // Scalar type integrity for the epistemic fields: a successful parse must
+    // never cast an array/object/null into a typed scalar. Enum MEMBERSHIP
+    // stays with validateDefinition — parsing owns structure, validation owns
+    // the declared vocabularies.
+    if (typeof fact.status !== 'string') {
+      throw new DefinitionParseError('SHAPE_INVALID', `fact '${fact.id}' must carry a string "status"`);
+    }
+    if (typeof fact.source !== 'string') {
+      throw new DefinitionParseError('SHAPE_INVALID', `fact '${fact.id}' must carry a string "source"`);
+    }
+    if (fact.kind !== undefined && typeof fact.kind !== 'string') {
+      throw new DefinitionParseError('SHAPE_INVALID', `fact '${fact.id}' "kind" must be a string when present`);
+    }
+    if (fact.decisionRef !== undefined && typeof fact.decisionRef !== 'string') {
+      throw new DefinitionParseError('SHAPE_INVALID', `fact '${fact.id}' "decisionRef" must be a string when present`);
+    }
+    if (fact.evidenceRef !== undefined && typeof fact.evidenceRef !== 'string') {
+      throw new DefinitionParseError('SHAPE_INVALID', `fact '${fact.id}' "evidenceRef" must be a string when present`);
+    }
   }
-  // Sections beyond the canonical minimum are left to semantic review — the
-  // parser claims no authority over their prose.
+  // Optional canonical sections: structural type integrity only. The parser
+  // claims NO authority over their content (whether a requirement is good,
+  // whether acceptance is sufficient — semantic review's territory).
+  const constraints: CanonicalConstraint[] = [];
+  if (obj.constraints !== undefined) {
+    if (!Array.isArray(obj.constraints)) {
+      throw new DefinitionParseError('SHAPE_INVALID', '"constraints" must be an array when present');
+    }
+    for (const c of obj.constraints) {
+      if (c === null || typeof c !== 'object' || Array.isArray(c)) {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every constraints entry must be a mapping');
+      }
+      const entry = c as Record<string, unknown>;
+      if (typeof entry.description !== 'string' || entry.description.trim() === '') {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every constraint must carry a non-empty string "description"');
+      }
+      if (
+        typeof entry.type !== 'string' ||
+        !['must', 'must_not', 'prefer', 'prefer_not'].includes(entry.type)
+      ) {
+        throw new DefinitionParseError(
+          'SHAPE_INVALID',
+          `constraint '${String(entry.description)}' must carry "type" must|must_not|prefer|prefer_not`,
+        );
+      }
+      constraints.push({ description: entry.description, type: entry.type as CanonicalConstraint['type'] });
+    }
+  }
+  const requirements: string[] = [];
+  if (obj.requirements !== undefined) {
+    if (!Array.isArray(obj.requirements)) {
+      throw new DefinitionParseError('SHAPE_INVALID', '"requirements" must be an array when present');
+    }
+    for (const r of obj.requirements) {
+      if (typeof r !== 'string' || r.trim() === '') {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every requirement must be a non-empty string');
+      }
+      requirements.push(r);
+    }
+  }
+  const nonGoals: string[] = [];
+  if (obj.nonGoals !== undefined) {
+    if (!Array.isArray(obj.nonGoals)) {
+      throw new DefinitionParseError('SHAPE_INVALID', '"nonGoals" must be an array when present');
+    }
+    for (const n of obj.nonGoals) {
+      if (typeof n !== 'string' || n.trim() === '') {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every nonGoal must be a non-empty string');
+      }
+      nonGoals.push(n);
+    }
+  }
+  const acceptance: CanonicalAcceptanceCriterion[] = [];
+  if (obj.acceptance !== undefined) {
+    if (!Array.isArray(obj.acceptance)) {
+      throw new DefinitionParseError('SHAPE_INVALID', '"acceptance" must be an array when present');
+    }
+    for (const a of obj.acceptance) {
+      if (a === null || typeof a !== 'object' || Array.isArray(a)) {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every acceptance entry must be a mapping');
+      }
+      const entry = a as Record<string, unknown>;
+      if (typeof entry.description !== 'string' || entry.description.trim() === '') {
+        throw new DefinitionParseError('SHAPE_INVALID', 'every acceptance criterion must carry a non-empty string "description"');
+      }
+      if (entry.met !== undefined && typeof entry.met !== 'boolean') {
+        throw new DefinitionParseError('SHAPE_INVALID', `acceptance criterion '${String(entry.description)}' "met" must be a boolean when present`);
+      }
+      acceptance.push(entry.met === undefined ? { description: entry.description } : { description: entry.description, met: entry.met });
+    }
+  }
   return {
     definition: {
       schemaVersion: DEFINITION_SCHEMA_VERSION,
       goal: obj.goal,
-      facts: obj.facts as CanonicalFact[],
-      constraints: obj.constraints as CanonicalDefinition['constraints'],
-      requirements: obj.requirements as CanonicalDefinition['requirements'],
-      nonGoals: obj.nonGoals as CanonicalDefinition['nonGoals'],
-      acceptance: obj.acceptance as CanonicalDefinition['acceptance'],
+      facts: obj.facts.map((f) => {
+        const fact = f as Record<string, unknown>;
+        return {
+          id: fact.id,
+          statement: fact.statement,
+          status: fact.status,
+          source: fact.source,
+          ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
+          ...(fact.decisionRef !== undefined ? { decisionRef: fact.decisionRef } : {}),
+          ...(fact.evidenceRef !== undefined ? { evidenceRef: fact.evidenceRef } : {}),
+        } as CanonicalFact;
+      }),
+      ...(obj.constraints !== undefined ? { constraints } : {}),
+      ...(obj.requirements !== undefined ? { requirements } : {}),
+      ...(obj.nonGoals !== undefined ? { nonGoals } : {}),
+      ...(obj.acceptance !== undefined ? { acceptance } : {}),
     },
     body: match[2] ?? '',
   };
@@ -337,20 +436,82 @@ export interface InputValidationFailure {
 }
 
 /**
+ * Context the deterministic gate passes alongside the artifact text (what
+ * the runner generically knows about the step's run). Optional and
+ * deliberately tiny: ownership checks that need more context would be a
+ * scope widening, reported before attempting.
+ */
+export interface DefinitionValidatorContext {
+  workItemId?: string;
+}
+
+/**
+ * Storage-free view of what the methodology needs to know about a Decision:
+ * that it exists and which work item owns it. The composition root maps the
+ * real DecisionRepository onto this — the methodology never imports storage
+ * or repository code.
+ */
+export interface DecisionOwnership {
+  workItemId?: string;
+}
+
+export interface DefinitionInputValidatorDeps {
+  /**
+   * Real Decision lookup for DECIDED provenance. When provided, a decisionRef
+   * must resolve AND — when the gate supplies a workItemId context — belong
+   * to that same work item, so a model cannot borrow authority from an
+   * unrelated Decision elsewhere in the control plane.
+   */
+  findDecision?: (decisionRef: string) => DecisionOwnership | undefined;
+}
+
+/**
  * Parse + validate a Definition artifact's text in one call — the shape the
  * AgentRunner input-validator registry consumes. Parse failures are surfaced
  * as structured defects too (the refine agent needs the parse diagnosis),
  * with the canonical parse-error codes.
+ *
+ * The pure validator stays pure: storage access arrives ONLY through the
+ * injected findDecision closure built at the composition root.
  */
-export function validateDefinitionArtifactText(artifactText: string): { ok: true } | { ok: false; failure: InputValidationFailure } {
-  try {
-    const { definition } = parseDefinition(artifactText);
-    const result = validateDefinition(definition);
-    return result.valid ? { ok: true } : { ok: false, failure: { defects: result.defects } };
-  } catch (err) {
-    if (err instanceof DefinitionParseError) {
-      return { ok: false, failure: { defects: [{ code: err.code, message: err.message }] } };
+export function createDefinitionInputValidator(
+  deps: DefinitionInputValidatorDeps = {},
+): (artifactText: string, context?: DefinitionValidatorContext) => { ok: true } | { ok: false; failure: InputValidationFailure } {
+  return (artifactText, context) => {
+    try {
+      const { definition } = parseDefinition(artifactText);
+      const result = validateDefinition(definition, {
+        ...(deps.findDecision
+          ? {
+              decisionExists: (decisionRef: string) => {
+                const decision = deps.findDecision!(decisionRef);
+                if (decision === undefined) return false;
+                // Ownership: a Decision from a DIFFERENT work item is not
+                // authority for this one (same control-plane linkage the
+                // Decision itself carries — no new authority model).
+                if (context?.workItemId !== undefined && decision.workItemId !== context.workItemId) {
+                  return false;
+                }
+                return true;
+              },
+            }
+          : {}),
+      });
+      return result.valid ? { ok: true } : { ok: false, failure: { defects: result.defects } };
+    } catch (err) {
+      if (err instanceof DefinitionParseError) {
+        return { ok: false, failure: { defects: [{ code: err.code, message: err.message }] } };
+      }
+      throw err;
     }
-    throw err;
-  }
+  };
 }
+
+/**
+ * Existence-only validator (no Decision lookup): identical to the production
+ * validator created with `createDefinitionInputValidator()` and no deps.
+ * Production MUST use the composition-root-created instance with a real
+ * resolver — a DECIDED fact referencing an invented Decision must fail the
+ * actual gate, not just the pure validator.
+ */
+export const validateDefinitionArtifactText = createDefinitionInputValidator();

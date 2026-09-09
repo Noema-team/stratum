@@ -14,12 +14,12 @@ import { openDatabase } from './storage/database.js';
 import { WorkService } from './services/work-service.js';
 import { EvidenceService } from './services/evidence-service.js';
 import { ResumeService } from './services/resume-service.js';
-import { WorkflowRunRepository, ArtifactRepository } from './storage/repositories.js';
+import { WorkflowRunRepository, ArtifactRepository, DecisionRepository } from './storage/repositories.js';
 
 import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
 import { AgentStepRunner } from './execution/agent-step-runner.js';
-import { validateDefinitionArtifactText } from './workflow/methodology/definition-artifact.js';
+import { createDefinitionInputValidator } from './workflow/methodology/definition-artifact.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -161,6 +161,12 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   // d1a-declarative-contract-spike.md). Zero callers before D.1b.
   const artifactRepository = new ArtifactRepository(db);
 
+  // D.3d.5 commit 2 — Decision authority lookup for the deterministic
+  // Definition gate: a DECIDED fact's decisionRef must resolve to a real
+  // control-plane Decision owned by the same work item. Injected as a
+  // storage-free closure so the methodology-owned validator stays pure.
+  const decisionRepository = new DecisionRepository(db);
+
   // ── LLM provider (reads settings file; falls back gracefully) ─────────────
   const { provider: llmProvider, model: resolvedModel, maxTokens: resolvedMaxTokens } = resolveLLMProvider(projectRoot);
 
@@ -168,6 +174,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   const contextManager = new ContextManager(projectRoot);
   const agentRunner = buildAgentRunner(
     contextManager, llmProvider, projectRoot, runArtifacts, resolvedModel, artifactRepository, resolvedMaxTokens,
+    decisionRepository,
   );
   const agentStepRunner = new AgentStepRunner(agentRunner);
 
@@ -317,6 +324,7 @@ export function buildAgentRunner(
   resolvedModel: string,
   artifactRepository: ArtifactRepository,
   maxTokens: number,
+  decisionRepository?: DecisionRepository,
 ): AgentRunner {
   return new AgentRunner(
     contextManager, llmProvider, projectRoot, runArtifacts,
@@ -325,8 +333,22 @@ export function buildAgentRunner(
       max_tokens: maxTokens,
       // D.3d.5 commit 2 — the composition root wires the methodology-owned
       // deterministic validators into the runner's generic registry. The
-      // runner itself never learns what a Definition is.
-      inputValidators: { definition: validateDefinitionArtifactText },
+      // runner itself never learns what a Definition is. When a
+      // DecisionRepository is available, the validator resolves DECIDED
+      // provenance against real control-plane Decisions owned by the same
+      // work item — invented or borrowed authority fails deterministically.
+      inputValidators: {
+        definition: createDefinitionInputValidator({
+          ...(decisionRepository
+            ? {
+                findDecision: (decisionRef: string) => {
+                  const decision = decisionRepository.findById(decisionRef);
+                  return decision ? { workItemId: decision.workItemId } : undefined;
+                },
+              }
+            : {}),
+        }),
+      },
     }, undefined, artifactRepository,
   );
 }
