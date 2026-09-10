@@ -166,6 +166,15 @@ export const GAP_CLASSIFICATION_PRECEDENCE = ['CAN_RESOLVE', 'DEFER', 'HUMAN_DEC
 
 export type GapClassification = (typeof GAP_CLASSIFICATION_PRECEDENCE)[number];
 
+// D.3d.5 commit 3 — single membership test derived from the precedence
+// table (the ONE source of truth for the classification vocabulary).
+// Structural enum integrity, used by the canonical readiness parser and
+// the deterministic route deriver — never a judgment about whether a
+// chosen classification is CORRECT (that stays with semantic review).
+export function isGapClassification(value: unknown): value is GapClassification {
+  return typeof value === 'string' && (GAP_CLASSIFICATION_PRECEDENCE as readonly string[]).includes(value);
+}
+
 // Maps each D.3c1b route token (the allowlisted keys of define-work's
 // on_fail_routes — see builtins/define-work.ts) to the classification it
 // exists to resolve. Never consulted by WorkflowEngine or AgentRunner —

@@ -118,7 +118,59 @@ test('D.3d.5.3: derivation is constrained to the routes the step declares', () =
 test('D.3d.5.3: an invalid classification fails closed — no default route exists', () => {
   const derived = deriveReviewRoute([gap('SOUNDS_BAD')], ['refine', 'defer', 'human', 'explore']);
   assert.equal(derived.ok, false);
-  if (!derived.ok) assert.match(derived.error, /none carries a valid classification/);
+  if (!derived.ok) assert.match(derived.error, /SOUNDS_BAD/);
+});
+
+test('D.3d.5.3: an artifact containing ONLY an invalid classification fails closed at parse', () => {
+  try {
+    parseReadinessArtifact(artifact(
+      '  - {"target":"f","description":"d","classification":"MADE_UP_CLASS","reason":"r"}',
+    ));
+    assert.fail('expected ReadinessParseError');
+  } catch (err) {
+    assert.ok(err instanceof ReadinessParseError);
+    assert.equal((err as ReadinessParseError).code, 'SHAPE_INVALID');
+    assert.match((err as ReadinessParseError).message, /MADE_UP_CLASS/);
+  }
+  // And through the composition the deriver registers (parse + derive).
+  const viaDeriver = createReviewRouteDeriver()(artifact(
+    '  - {"target":"f","description":"d","classification":"MADE_UP_CLASS","reason":"r"}',
+  ), ['refine', 'defer', 'human', 'explore']);
+  assert.equal(viaDeriver.ok, false);
+  if (!viaDeriver.ok) assert.match(viaDeriver.error, /MADE_UP_CLASS/);
+});
+
+test('D.3d.5.3: a MIXED artifact (valid + invalid classification) fails closed and cannot derive a route', () => {
+  // The critical case: precedence must never silently route on the valid
+  // entry while ignoring the malformed one beside it.
+  const mixed = artifact(
+    '  - {"target":"fact-ok","description":"d","classification":"CAN_RESOLVE","reason":"r"}\n' +
+    '  - {"target":"fact-bad","description":"d","classification":"MADE_UP_CLASS","reason":"r"}',
+  );
+  try {
+    parseReadinessArtifact(mixed);
+    assert.fail('expected ReadinessParseError for the mixed artifact');
+  } catch (err) {
+    assert.ok(err instanceof ReadinessParseError);
+    assert.equal((err as ReadinessParseError).code, 'SHAPE_INVALID');
+    assert.match((err as ReadinessParseError).message, /MADE_UP_CLASS/);
+  }
+  const viaDeriver = createReviewRouteDeriver()(mixed, ['refine', 'defer', 'human', 'explore']);
+  assert.equal(viaDeriver.ok, false, 'a mixed artifact must never yield a route');
+  if (!viaDeriver.ok) assert.match(viaDeriver.error, /MADE_UP_CLASS/);
+});
+
+test('D.3d.5.3: normal multi-gap precedence remains unchanged (all classifications valid)', () => {
+  const derived = deriveReviewRoute(
+    [gap('HUMAN_DECISION'), gap('EXPLORE_AS_WORK'), gap('DEFER')],
+    ['refine', 'defer', 'human', 'explore'],
+  );
+  assert.deepEqual(derived, { ok: true, route: 'defer' });
+  const parses = parseReadinessArtifact(artifact(
+    '  - {"target":"a","description":"d","classification":"HUMAN_DECISION","reason":"r"}\n' +
+    '  - {"target":"b","description":"d","classification":"DEFER","reason":"r"}',
+  ));
+  assert.equal(parses.readiness.gaps.length, 2);
 });
 
 test('D.3d.5.3: a fail verdict with NO classifiable gap fails closed', () => {

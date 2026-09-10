@@ -22,6 +22,7 @@
 import yaml from 'js-yaml';
 import {
   GAP_CLASSIFICATION_PRECEDENCE,
+  isGapClassification,
   ROUTE_TOKEN_FOR_CLASSIFICATION,
   type GapClassification,
 } from './definition-readiness.js';
@@ -115,6 +116,19 @@ export function parseReadinessArtifact(artifactText: string): ParsedReadinessArt
     if (gap.closure !== undefined && typeof gap.closure !== 'string') {
       throw new ReadinessParseError('SHAPE_INVALID', `gap '${String(gap.target)}' "closure" must be a string when present`);
     }
+    // Structural enum integrity at parse time: EVERY gap's classification
+    // must be a member of GAP_CLASSIFICATION_PRECEDENCE — including gaps
+    // that sit next to valid ones. Without this, a mixed artifact
+    // (CAN_RESOLVE + MADE_UP_CLASS) would parse, and precedence would
+    // silently route on the valid entry while ignoring the malformed one.
+    // Membership is mechanical; correctness of the chosen classification
+    // is NOT judged here.
+    if (!isGapClassification(gap.classification)) {
+      throw new ReadinessParseError(
+        'SHAPE_INVALID',
+        `gap '${String(gap.target)}' classification ${JSON.stringify(gap.classification)} is not one of: ${GAP_CLASSIFICATION_PRECEDENCE.join(', ')}`,
+      );
+    }
     gaps.push({
       target: gap.target as string,
       description: gap.description as string,
@@ -145,6 +159,17 @@ export function deriveReviewRoute(
   gaps: ReadonlyArray<Pick<ReadinessGap, 'classification'>>,
   declaredRoutes: readonly string[],
 ): ReviewRouteDerivation {
+  // Defense in depth: the canonical parser already guarantees membership,
+  // but a caller bypassing the parser must not be able to smuggle an
+  // unknown classification through precedence search (which would silently
+  // ignore it). Anything unclassifiable fails closed.
+  const unknown = gaps.find((g) => !isGapClassification(g.classification));
+  if (unknown !== undefined) {
+    return {
+      ok: false,
+      error: `gap classification ${JSON.stringify(unknown.classification)} is not one of: ${GAP_CLASSIFICATION_PRECEDENCE.join(', ')}`,
+    };
+  }
   for (const classification of GAP_CLASSIFICATION_PRECEDENCE) {
     if (!gaps.some((g) => g.classification === classification)) continue;
     const route = ROUTE_TOKEN_FOR_CLASSIFICATION[classification];
