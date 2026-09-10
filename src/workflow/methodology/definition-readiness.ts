@@ -223,7 +223,23 @@ exists), classified into exactly one bucket:
    epistemic status: authoritative product/domain intent may be KNOWN (source: human), while
    an assertion about repository reality is not KNOWN merely because the Objective states it
    and still requires repository or investigation evidence first. It needs no question, no
-   invented behavior, and no non-goal either way. Reserving human attention for choices that
+   invented behavior, and no non-goal either way.
+   D.3d.5 — the authority rule, made explicit. A choice being user-visible or affecting
+   runtime behavior does NOT by itself make it HUMAN_DECISION. Once the Objective already
+   authorizes a behavior, relationship, or outcome, ordinary reversible design and
+   implementation choices required to instantiate that authorized intent may be resolved
+   by the agent as CAN_RESOLVE: adopt a reasonable explicit default, record it ASSUMED
+   (with its rationale) in the ledger, never silently. The converse is part of the rule:
+   do not escalate merely because several reasonable implementations are possible —
+   engineering and design latitude inside already-authorized intent is not itself a human
+   product decision. The conceptual test: the human has already authorized WHAT the product
+   should do; a remaining choice that is a reasonable, reversible HOW is CAN_RESOLVE, while
+   a remaining choice that changes WHAT is being authorized — establishing or altering
+   product intent, genuinely undecided scope, a materially new user-facing policy or
+   commitment, a materially different product tradeoff, accepted product or business risk,
+   or something costly/irreversible — is HUMAN_DECISION. This rule never licenses passing a
+   chosen default off as known fact: the default is recorded honestly as ASSUMED with its
+   rationale, exactly as above. Reserving human attention for choices that
    genuinely need it is part of this classification's discipline.
 - DEFER — the gap is real but does not block the bounded scope being defined now. DEFER is
   for items already understood to lie outside the candidate bounded scope (clearly later-phase
