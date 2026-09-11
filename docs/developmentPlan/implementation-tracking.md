@@ -1,7 +1,15 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-06-16
+**Updated:** 2026-09-11
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
+
+> **Current work pointer (2026-09-11):** the D.3 line postdates this table (see
+> `docs/developmentPlan/d3a…d3d*` history) and is not tracked below. The active execution
+> plan is [d34-output-contracts.md](d34-output-contracts.md) (DDR-034 output contracts,
+> C1–C7); the frozen architecture decision is
+> [DDR-034](../decisions/ddr-034-models-propose-stratum-materializes.md). This file's
+> phase table below is historical as of 2026-06-16 and has not been comprehensively
+> modernized.
 
 ---
 
