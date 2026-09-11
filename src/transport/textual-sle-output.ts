@@ -286,7 +286,11 @@ export class TextualSleOutputTransport implements ResultTransport {
       }
       throw err;
     }
-    return { artifacts: sections };
+    // D.34 C1 — the textual fallback is a BYTES transport: it always yields
+    // the materialized kind. A proposal-kind result can only come from a
+    // transport that actually negotiated a semantic channel (C5's
+    // submit_result / C6's completeStructured).
+    return { kind: 'materialized', artifacts: sections };
   }
 
   extractSingleTurn(raw: string, ctx: TransportContext): StepResult {
@@ -314,6 +318,7 @@ export class TextualSleOutputTransport implements ResultTransport {
     }
     const verdict = parsed.preamble.verdict;
     return {
+      kind: 'materialized',
       artifacts: parsed.sections,
       ...(verdict === 'pass' || verdict === 'fail' ? { review: { verdict } } : {}),
     };

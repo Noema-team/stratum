@@ -22,7 +22,8 @@
     "better-sqlite3": "^13.0.3",
     "js-yaml": "^4.1.0",
     "ws": "^8.21.0",
-    "zod": "^3.22.0"
+    "zod": "^3.22.0",
+    "zod-to-json-schema": "3.25.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
