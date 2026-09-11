@@ -180,6 +180,17 @@ export interface ContractDefect {
   ref?: string;                 // factId / gap target / path into the proposal
 }
 
+export interface SchemaAnnotations {
+  /** Prose about the payload as a whole (intent, judgment guidance). Declares no fields. */
+  readonly root?: string;
+  /**
+   * Path-keyed notes (JSON-Pointer-style paths into the generated projection,
+   * e.g. "/facts", "/facts/items/status"). Every key is MECHANICALLY validated
+   * against the projection — an unresolvable key fails the build.
+   */
+  readonly fields?: Readonly<Record<string, string>>;
+}
+
 export interface OutputContract<T> {
   /** Matches DeclaredOutputArtifact.type (StepKinds `type`). */
   readonly id: string;
@@ -192,11 +203,11 @@ export interface OutputContract<T> {
   readonly modelSchema: z.ZodType<T>;
 
   /**
-   * Optional human/model-facing prose (rationale, examples) layered OVER the
-   * generated projection. NEVER an independent field/constraint definition.
-   * Conformance-tested: every field named here must exist in the projection.
+   * Structured teaching annotations layered OVER the generated projection —
+   * never an independent field/constraint definition. `fields` keys are
+   * conformance-tested against the projection (see below); `root` is prose.
    */
-  readonly schemaNotes?: string;
+  readonly schemaAnnotations?: SchemaAnnotations;
 
   /** Context-aware mechanical validation beyond the schema. Absent = schema is enough. */
   readonly validate?(
@@ -225,7 +236,7 @@ export interface OutputContract<T> {
 place a field, type, or constraint is declared. `contracts.ts` owns a pinned projection
 adapter — `toJsonSchema(modelSchema)` wrapping a pinned conversion dependency
 (`zod-to-json-schema` is acceptable; the repo is on Zod 3.22) — and a teaching renderer,
-`renderSchemaTeaching(contract)` = generated projection + `schemaNotes`. Both are
+`renderSchemaTeaching(contract)` = generated projection + structured `schemaAnnotations`. Both are
 consumed verbatim by transports via `TransportContext` (`resultSchemaJson` for
 submit-result/native transports, `resultSchemaText` for textual teaching). Constraints:
 
@@ -234,9 +245,19 @@ submit-result/native transports, `resultSchemaText` for textual teaching). Const
   optionality); anything outside the subset is a review event, not a workaround.
 - Conversion behavior is pinned by golden tests (schema in → projection bytes out);
   adapter/dependency bumps regenerate goldens in the same commit.
-- Textual teaching may *annotate* (explain, exemplify) but must not introduce fields,
-  constraints, or types absent from `modelSchema`; a conformance test fails the build if
-  it does.
+- Annotations are STRUCTURED: a conformance test resolves every `schemaAnnotations.fields`
+  key against the generated projection and fails the build on an unresolvable key.
+  `root` prose never declares fields. Free-form teaching text cannot smuggle a schema in.
+
+**Projection fidelity (explicit).** Arbitrary Zod refinements do not necessarily project
+faithfully to JSON Schema. Therefore: provider-facing schemas use only
+**projection-safe structural constraints** wherever possible; **Zod decode is always the
+runtime authority**; any constraint not faithfully representable in the generated
+projection (e.g. the non-empty-after-trim refinements, or the DECIDED↔decisionRef
+pairing) remains fully enforced — at decode/validate — and its violation is a
+producer-result defect handled by the bounded result-repair seam (§5.3); and **no
+hand-maintained mirror schema** is introduced to close fidelity gaps. The projection is
+a teaching artifact; decode is the contract.
 
 ### 5.2 `StepResult` — a discriminated union, not an ambiguous optional
 
@@ -246,16 +267,17 @@ kind per reply:
 
 ```ts
 // src/transport/step-result.ts — replaces the current interface shape
-export interface StepProposal {
-  contractId: string;      // = OutputContract.id, from TransportContext.declaredArtifactId
-  value: unknown;          // decoded+validated by the runner through the registry contract
-}
 
 /**
  * The logical step result. Exactly one kind is ever present:
  *  - 'materialized' — legacy path: canonical artifact bytes (non-contract roles),
  *    plus the legacy preamble verdict. Byte-for-byte today's behavior.
- *  - 'proposal'     — semantic path: a payload for a registered OutputContract.
+ *  - 'proposal'     — semantic path: a raw payload for the workflow-declared
+ *    output contract. Deliberately carries NO contract identity: the provider,
+ *    the model, and the transport never choose or declare which semantic
+ *    contract applies. Identity is workflow-authoritative end to end —
+ *    WorkflowStep.outputArtifact.type → outputContracts[type] → decode value —
+ *    so there is no second identity source that can drift from the declaration.
  * A transport can never emit both; the compiler enforces what the runner dispatches on.
  */
 export type StepResult =
@@ -266,7 +288,7 @@ export type StepResult =
     }
   | {
       kind: 'proposal';
-      proposal: StepProposal;
+      value: unknown;
     };
 ```
 
@@ -283,7 +305,7 @@ verbatim and never learn what a Definition is):
 
 ```ts
 /** Generated by the runner from the resolved contract (see §5.1). Absent = legacy. */
-resultSchemaText?: string;                  // teaching text: projection + schemaNotes
+resultSchemaText?: string;                  // teaching text: projection + structured annotations
 resultSchemaJson?: Record<string, unknown>; // generated projection, for tool/native transports
 ```
 
@@ -297,10 +319,13 @@ outputContracts?: Record<string, OutputContract<never>>;
 Resolution rule, fully generic (no `if (definition)` anywhere) — dispatch on **result
 kind + registered contract**:
 
-1. Step declares `outputArtifact.type`; runner looks up `outputContracts[type]`.
-2. Transport returns `kind: 'proposal'` → **contract path required**: a contract must be
-   registered for `proposal.contractId` (else fail closed — authoring error).
-   `modelSchema.safeParse` → `validate?` → `reviewVerdict?`/`deriveRoute?` →
+1. Step declares `outputArtifact.type`; runner looks up `outputContracts[type]`. This
+   lookup — the workflow's own declaration — is the **only** contract resolution in the
+   system. A transport that produces a proposal for a step whose type has no registered
+   contract is an authoring/negotiation error (fail closed); a transport never names a
+   contract itself.
+2. Transport returns `kind: 'proposal'` → **contract path**: `modelSchema.safeParse(value)`
+   → `validate?` → `reviewVerdict?`/`deriveRoute?` →
    `materialize` → existing path-canonicalization, role-ceiling, write, and provenance
    pipeline (agent-runner.ts:499-583, unchanged).
 3. Transport returns `kind: 'materialized'` → legacy byte path, byte-for-byte today's
@@ -323,8 +348,8 @@ rules (agent-runner.ts:620-626):
 
 | Layer | Question | Mechanism | Failure shape |
 |---|---|---|---|
-| **Decode** | *Is this structurally a `T`?* | `modelSchema.safeParse` (zod) | schema diagnostics → transport repair prompt (bounded) |
-| **Validate** | *Does this typed `T` satisfy the methodology's deterministic invariants?* | `validate?(value, ctx)` — plain code over `T` | structured `ContractDefect[]` → repair prompt (bounded), same defect wording the refine path consumes |
+| **Decode** | *Is this structurally a `T`?* | `modelSchema.safeParse` (zod) | producer-result defect → in-step **result repair** (bounded, below) |
+| **Validate** | *Does this typed `T` satisfy the methodology's deterministic invariants?* | `validate?(value, ctx)` — plain code over `T` | structured `ContractDefect[]` → in-step **result repair** (bounded, below), same defect wording the refine path consumes |
 
 `validateDefinition` keeps its structured defects and its authority-resolution semantics
 (`findDecision` closure injected at the composition root) — it is **wrapped, verbatim, as
@@ -332,22 +357,80 @@ the contract's `validate`**; it is never buried inside zod refinements, where
 methodology rules would degrade into anonymous schema errors and Decision-resolution
 context would have no place to live.
 
-Decode/validate failures enter the **existing bounded format-repair machinery**
-(`MAX_FORMAT_REPAIRS`, `repairDecision`, same diagnostic shape — step-result.ts:141-168)
-with the schema/defect text as the repair reason. Exhaustion fails closed exactly as
-today.
+#### The result-repair seam (explicit design — NOT the existing `TransportParseError` loop)
+
+An honest statement of today's mechanics: on the multi-turn path, `AgentLoop` owns the
+repair conversation **only while `ResultTransport.extractProduce()` is failing**. Once
+extraction succeeds, the loop returns to `AgentRunner` and the conversation is closed —
+there is no continuation seam past that boundary. Contract decode/validate happens after
+it, on the runner side. The same is true on the single-turn path's transport-repair loop.
+So "decode/validate failures enter the existing repair machinery" would be false as
+things stand. C1 adds an explicit, generic seam:
+
+```ts
+// src/workflow/contracts.ts — generic shape; no methodology types reach the loop
+export type ResultAcceptor =
+  (value: unknown) => { ok: true } | { ok: false; repairInstruction: string };
+
+// AgentLoopOptions (multi-turn) — additive, OPTIONAL; absent for legacy/materialized
+// steps, whose behavior is unchanged. The single-turn path invokes the same acceptor
+// type inside the runner's own post-extract stage.
+acceptResult?: ResultAcceptor;
+```
+
+- **Composition.** The runner builds the acceptor when (and only when) the step's
+  declared `outputArtifact.type` has a registered contract and the negotiated transport
+  produces proposals. The acceptor runs decode then validate and renders either a
+  schema-diagnostics instruction or a structured-defect instruction. AgentLoop receives
+  a plain function and imports neither contracts nor methodology — the loop's
+  knowledge is exactly "call it; on `{ok:false}` continue the conversation with the
+  given instruction, budget permitting."
+- **Multi-turn continuation.** After extraction yields `kind: 'proposal'`, the loop
+  invokes `acceptResult(value)` BEFORE returning. On rejection with budget remaining,
+  the conversation continues with the protocol-correct continuation for the active
+  channel: on a `submit_result` tool channel, the loop answers the tool call with a
+  `tool_result` recording the rejection ("result rejected: <reason>") and lets the
+  model re-submit; on a textual-envelope proposal, the loop appends the assistant reply
+  plus a user turn carrying `repairInstruction` — the same mechanics as today's format
+  repair. On exhaustion (or absent acceptor behavior unchanged), the step fails with a
+  diagnostic that names the layer.
+- **Single-turn continuation.** The runner's post-extract stage invokes the same
+  acceptor; on rejection with budget remaining it issues another completion carrying
+  the repair instruction, mirroring the existing transport-repair mechanics on that
+  path.
+- **Budgets and metadata stay distinct.** `MAX_FORMAT_REPAIRS = 1` is unchanged (envelope
+  syntax). A new `MAX_RESULT_REPAIRS = 1` governs contract decode/validate. The two are
+  tracked separately — `format_repairs` and `result_repairs` in `AgentRunResult` /
+  `AgentLoopResult` / run metadata — and diagnostics name the layer ("reply carried a
+  malformed result block…" vs "submitted result rejected by output contract `<type>`
+  …"). Raising either budget requires screening evidence, not preference.
+- **Producer-result defect semantics (explicit decision).** Decode/validate defects are
+  producer-result defects. They are corrected through one bounded in-step result-repair
+  attempt; they **do not consume a workflow refinement iteration** (`max_iterations`
+  and route semantics untouched); exhaustion fails the step **closed before any write**
+  — no artifact bytes, no provenance record. This changes today's behavior
+  deliberately: an invalid produced Definition is no longer written and caught by the
+  *next* review's input gate. After migration the deterministic input gate's live role
+  narrows to what it is uniquely needed for — the load path (disk-resumed,
+  human-edited, cross-run artifacts) and defense-in-depth on legacy steps — because
+  system-materialized bytes are valid by construction. The authority split is
+  preserved end to end: mechanical producer defects → bounded in-step result repair;
+  semantic gaps → review → refine (the capped workflow loop, unchanged).
 
 ### 5.4 Dependency direction
 
 ```text
 src/workflow/methodology/*   →  owns semantic types, zod schemas (the single schema
                                 authority), validators, renderers, contracts   (meaning)
-src/workflow/contracts.ts    →  owns OutputContract<T>, StepProposal, the pinned
+src/workflow/contracts.ts    →  owns OutputContract<T>, the ResultAcceptor type, the pinned
                                 schema-projection adapter (shape of the seam)
 src/transport/*              →  owns wire envelopes; consumes generated schema
                                 projections verbatim
 src/agent-runner.ts          →  owns orchestration, gates, materialization invocation,
-                                writes, provenance (generic — registry lookups only)
+                                writes, provenance (generic — registry lookups only);
+                                composes the ResultAcceptor from the resolved contract
+src/agent-loop.ts            →  receives a PLAIN acceptor callback — it never imports
+                                contracts, methodology, or the runner
 src/application.ts           →  owns composition: contract instances, closures (findDecision)
 src/workflow/engine.ts       →  UNCHANGED, UNAWARE
 ```
@@ -441,7 +524,9 @@ the semantic payload — one judgment, one encoding.
 
 ```text
 model → ReadinessProposal payload
-  → zod decode (mechanical; repairable, bounded)
+  → zod decode + contract validate (producer-result defects: one bounded in-step
+    result repair via the §5.3 seam — never a workflow iteration; exhaustion fails
+    the step closed before write)
   → reviewVerdict hook → existing verdict gate (agent-runner.ts:449-457, unchanged)
   → deriveRoute over typed gaps → existing allowlist gate (agent-runner.ts:476-497, unchanged)
   → materialize readiness.md (system bytes)
@@ -491,14 +576,17 @@ export interface DefinitionProposal {
 
 - `modelSchema`: zod over `DefinitionProposal` (status/source/kind enums at the schema
   layer; non-empty-after-trim via `.refine`, never silent `.trim()` transforms — content
-  is normalized, never cleaned).
+  is normalized, never cleaned). The refine is decode-authoritative and deliberately
+  NOT projected (§5.1 projection fidelity): the generated JSON Schema teaches the field,
+  decode enforces the discipline, and a violation is a result-repairable producer
+  defect.
 - `validate`: wraps the existing `validateDefinition` (definition-artifact.ts:329-430)
   **verbatim, as a plain function over `T` — never expressed as zod refinements**. It
   already consumes `CanonicalDefinition`; the proposal maps onto it 1:1, and its
   structured defect codes plus authority resolution (`findDecision` closure injected at
   the composition root, application.ts:342-355) are preserved exactly. Defects feed the
-  bounded repair loop with the same structured-defect wording the refine path already
-  consumes.
+  result-repair seam (§5.3) with the same structured-defect wording the refine path
+  already consumes.
 - `materialize`: renders front matter (`schemaVersion: 1` injected; field order
   `schemaVersion, goal, facts, constraints, requirements, nonGoals, acceptance`) +
   `bodyMarkdown`, byte-compatible with `parseDefinition`.
@@ -515,7 +603,7 @@ Multi-turn investigation (AgentLoop read tools) is orthogonal and unchanged —
 What the methodology prompts stop teaching: the entire mechanical serialization block of
 `DEFINITION_CONTRACT` (exact YAML shape, `---` delimiters, `schemaVersion: 1`,
 quoting/structure rules — definition-readiness.ts:28-60) moves into the **generated
-schema projection** (`renderSchemaTeaching`: projection bytes + `schemaNotes`) — no
+schema projection** (`renderSchemaTeaching`: projection bytes + structured `schemaAnnotations`) — no
 hand-maintained textual schema. The prompt keeps the *epistemic* contract: ledger rules,
 status/source semantics, provenance discipline. Prompt tokens go down; the projection
 becomes the single serialization teacher, in whichever representation the negotiated
@@ -549,10 +637,12 @@ attribution (§13).
 - Tool definition generated from the contract's schema projection —
   `resultSchemaJson`, produced by the pinned adapter from `modelSchema` and
   runner-injected via TransportContext; the transport stays schema-agnostic.
-- Loop handling: on a `submit_result` tool_use, the loop extracts the payload into a
-  `kind: 'proposal'` result and ends the step (the model may still have spent earlier turns
-  on read-only investigation). Missing/invalid payloads route through the same bounded
-  repair machinery as today's envelope failures.
+- Loop handling: on a `submit_result` tool_use, the loop invokes the §5.3 result-repair
+  seam before returning (the model may still have spent earlier turns on read-only
+  investigation). A missing payload is a transport defect (format-repair machinery); a
+  payload rejected by decode/validate is a producer-result defect (result-repair seam —
+  delivered as a `tool_result` recording the rejection, and the model re-submits).
+  Exhaustion of either budget fails the step closed.
 
 ### 9.3 `completeMultiTurn` is a vehicle, not the destination
 
@@ -688,10 +778,10 @@ instead of a model entrance exam.
 | # | Commit | Contents | Acceptance |
 |---|---|---|---|
 | D.34-0 | **Cross-run failure audit** — ✅ complete | Classify every recorded screening failure; evidence-only, from persisted eval reports + git-anchored windows | `docs/developmentPlan/d34-failure-audit.md` — 65 runs, 6 models, 6 classes; cited in §2.2 |
-| C1 | Contract seam | `contracts.ts` types + pinned schema-projection adapter skeleton; `StepResult` discriminated union (`materialized` \| `proposal`); `outputContracts` registry; generic contract path + fail-closed authoring errors in agent-runner; TransportContext schema projections | No contracts registered → zero behavior change; full existing suite green; union enforced at compile time |
-| C2 | Readiness codec | `ReadinessProposal`, zod schema (single authority), generated projection + golden projection tests, `schemaNotes`, `renderReadiness` (invariants §10), readiness contract with `reviewVerdict`/`deriveRoute` hooks | Golden-byte + round-trip + stability + projection-conformance tests green |
-| C3 | Readiness wiring | Register contract at composition root; review steps on contract path; textual transport teaches the generated projection for proposal steps; prompt slimming (verdict + serialization mechanics out) | define-work review runs textual end-to-end; route gate consumes typed gaps (parse-back deleted on this path) |
-| C4 | Definition codec + wiring | `DefinitionProposal`, schema, `validateDefinition` wrapper (plain function, not refinements), renderer, goldens; produce steps on contract path; defect text feeds bounded repair | Same as C2/C3, plus DECIDED-referral resolution via composition-root closure |
+| C1 | Contract seam | `contracts.ts` types + pinned schema-projection adapter skeleton; `StepResult` discriminated union (`materialized` \| `proposal`, no contract identity); `outputContracts` registry; generic contract path + fail-closed authoring errors in agent-runner; **`ResultAcceptor` continuation seam wired into both execution paths** (loop takes a plain callback; zero methodology imports); separate `result_repairs` counter + `MAX_RESULT_REPAIRS = 1`; TransportContext schema projections | No contracts registered → zero behavior change; full existing suite green; union enforced at compile time; acceptor inactive without a registered contract |
+| C2 | Readiness codec | `ReadinessProposal`, zod schema (single authority), generated projection + golden projection tests, structured `schemaAnnotations` (+ key-conformance test), `renderReadiness` (invariants §10), readiness contract with `reviewVerdict`/`deriveRoute` hooks | Golden-byte + round-trip + stability + projection-conformance tests green |
+| C3 | Readiness wiring | Register contract at composition root; review steps on contract path (acceptor active); textual transport teaches the generated projection for proposal steps; prompt slimming (verdict + serialization mechanics out) | define-work review runs textual end-to-end; route gate consumes typed gaps (parse-back deleted on this path); a decode-defect run demonstrates in-step result repair with `result_repairs=1` and no iteration consumed |
+| C4 | Definition codec + wiring | `DefinitionProposal`, schema, `validateDefinition` wrapper (plain function, not refinements), renderer, goldens; produce steps on contract path (acceptor active); defect text feeds result repair | Same as C2/C3, plus DECIDED-referral resolution via composition-root closure |
 | C5 | submit_result transport | Tool-channel transport on `completeMultiTurn` (produce steps); tool schema from `resultSchemaJson`; negotiation order in `resolveResultTransport` extended; run metadata records negotiated transport | Multi-turn produce with read tools + submission on both OpenRouter and Anthropic paths |
 | C6 | Provider structured capability (optional sequencing) | `completeStructured` capability + review-step structured channel | Capability-probed; textual fallback intact everywhere |
 | C7 | Harness split | Four-tier scoring in scripts/eval-define-work.ts; **persist failing artifacts + raw node-outputs for failed steps** (audit finding F6) | Tier report emitted per run; SER/TRANSPORT failures auditable from artifacts |
@@ -708,6 +798,8 @@ channel without touching contracts or methodology.
   same parsers. Pre-migration artifacts must load unchanged.
 - D.3d.5 fail-closed machinery: `TransportParseError` taxonomy, `MAX_FORMAT_REPAIRS`,
   `repairDecision`, exhaustion diagnostics, input-validation gate, `writeGateRejection`.
+  Repair budgets: `MAX_FORMAT_REPAIRS = 1` stays; the new `MAX_RESULT_REPAIRS` starts at
+  1 — raising either requires screening evidence, and the two counters remain separate.
 - Path safety, role ceilings (`ROLE_OUTPUT_PATHS`), append-only policy, provenance/hash
   schema in ArtifactRepository.
 - Route derivation semantics: `GAP_CLASSIFICATION_PRECEDENCE` order and the allowlist
@@ -744,11 +836,20 @@ channel without touching contracts or methodology.
 11. **Single schema authority**: no hand-maintained JSON Schema or textual field list
     exists anywhere in the contract path; every provider-facing schema artifact is the
     output of the pinned adapter applied to `modelSchema` (verified by golden projection
-    tests), and the schemaNotes conformance test fails the build if teaching text names
-    anything absent from the projection.
-12. **StepResult is a closed union**: the compiler rejects any transport or runner code
-    path that could observe both a materialized result and a proposal for one reply;
-    a proposal arriving with no registered contract fails closed (mutation test).
+    tests), and the annotation conformance test fails the build if any
+    `schemaAnnotations.fields` key does not resolve against the generated projection.
+12. **StepResult is a closed union with no contract identity**: the compiler rejects any
+    transport or runner code path that could observe both a materialized result and a
+    proposal for one reply; a proposal arriving for a step whose type has no registered
+    contract fails closed (mutation test); no transport-side field names a contract.
+13. **Result-repair seam**: contract decode/validate rejection continues the SAME
+    conversation on the multi-turn path (tool_result rejection on the submit_result
+    channel; assistant+repair-instruction turns on the textual channel) and re-issues
+    the completion on the single-turn path; `result_repairs` is tracked separately from
+    `format_repairs`; a repaired result consumes zero workflow iterations (verified:
+    `iterationsUsed` unchanged across a result-repair run); exhaustion fails the step
+    closed with no artifact bytes and no provenance record; `AgentLoop` imports neither
+    contracts nor methodology (verified by import graph).
 
 ## Resolved OQ decisions (2026-09-11 review)
 
@@ -767,6 +868,28 @@ The following were resolved during DDR review; see also §Open questions:
   answers "does this `T` satisfy deterministic methodology invariants?".
   `validateDefinition` is wrapped verbatim as plain code, never buried in zod
   refinements; its structured defects and authority-resolution semantics are preserved.
+
+### Review round 2 (2026-09-11, pre-merge architecture fixes)
+
+- **No contract identity in the transport result.** `StepResult`'s proposal kind carries
+  only `value`. Contract resolution is solely
+  `WorkflowStep.outputArtifact.type → outputContracts[type] → decode value`; the
+  provider/model/transport never chooses or declares which semantic contract applies.
+  One identity source — the workflow declaration — no drift.
+- **Producer-result defects get a real continuation seam.** Contract decode/validate
+  defects are corrected through ONE bounded in-step result-repair attempt
+  (`MAX_RESULT_REPAIRS = 1`, tracked as `result_repairs` separately from
+  `format_repairs`), never a workflow refinement iteration; exhaustion fails the step
+  closed before write. The seam is a generic `ResultAcceptor` callback composed by the
+  runner and passed to both execution paths; `AgentLoop` imports neither contracts nor
+  methodology. The previously claimed "existing repair machinery" route was not real on
+  the multi-turn path — §5.3 now designs the seam explicitly instead.
+- **Structured schema annotations + explicit projection fidelity.** `schemaNotes: string`
+  replaced by `schemaAnnotations` (`root` prose + path-keyed `fields`, keys mechanically
+  validated against the generated projection). Provider-facing schemas use only
+  projection-safe structural constraints where possible; Zod decode is always
+  authoritative; constraints that do not project faithfully remain enforced at
+  decode/validate and are result-repairable; no hand-maintained mirror schema.
 
 ## Open questions
 
