@@ -192,8 +192,18 @@ export interface SchemaAnnotations {
 }
 
 export interface OutputContract<T> {
-  /** Matches DeclaredOutputArtifact.type (StepKinds `type`). */
-  readonly id: string;
+  /**
+   * NO self-declared identity — deliberately no `id` field. A contract's
+   * identity is exclusively the trusted registry key selected by the
+   * workflow's own declaration:
+   *
+   *   WorkflowStep.outputArtifact.type → outputContracts[type] → this contract
+   *
+   * An `id` field would allow contradictory configuration
+   * (outputContracts["definition"] = { id: "definition-readiness", … }) to be
+   * representable; without one it is unrepresentable. Diagnostics use the
+   * registry key (the declared artifact type).
+   */
 
   /**
    * THE single canonical semantic shape the model is responsible for.
@@ -232,8 +242,13 @@ export interface OutputContract<T> {
 }
 ```
 
-**Schema authority (one schema, generated projections).** `modelSchema` is the only
-place a field, type, or constraint is declared. `contracts.ts` owns a pinned projection
+**Schema authority (one schema, generated projections).** `modelSchema` is the single
+authority for the **structural model-facing schema**: fields, structural types,
+optionality, and projection-safe structural constraints. Methodology invariants that
+require cross-field or runtime authority checks (DECIDED↔decisionRef pairing,
+provenance resolution) belong **exclusively to `validate()`** — constraints therefore
+exist in two places by design, split by kind, never duplicated.
+`contracts.ts` owns a pinned projection
 adapter — `toJsonSchema(modelSchema)` wrapping a pinned conversion dependency
 (`zod-to-json-schema` is acceptable; the repo is on Zod 3.22) — and a teaching renderer,
 `renderSchemaTeaching(contract)` = generated projection + structured `schemaAnnotations`. Both are
@@ -323,7 +338,10 @@ kind + registered contract**:
    lookup — the workflow's own declaration — is the **only** contract resolution in the
    system. A transport that produces a proposal for a step whose type has no registered
    contract is an authoring/negotiation error (fail closed); a transport never names a
-   contract itself.
+   contract itself. **`OutputContract` has no self-declared identity (`id` was
+   deliberately removed): its identity IS the registry key selected by the workflow
+   declaration, so contradictory configuration (`outputContracts["definition"]` holding
+   a contract claiming to be `"definition-readiness"`) is unrepresentable.**
 2. Transport returns `kind: 'proposal'` → **contract path**: `modelSchema.safeParse(value)`
    → `validate?` → `reviewVerdict?`/`deriveRoute?` →
    `materialize` → existing path-canonicalization, role-ceiling, write, and provenance
@@ -838,10 +856,12 @@ channel without touching contracts or methodology.
     output of the pinned adapter applied to `modelSchema` (verified by golden projection
     tests), and the annotation conformance test fails the build if any
     `schemaAnnotations.fields` key does not resolve against the generated projection.
-12. **StepResult is a closed union with no contract identity**: the compiler rejects any
+12. **No self-declared contract identity anywhere**: `StepResult`'s proposal kind
+    carries only `value`; `OutputContract` declares no `id`; the compiler rejects any
     transport or runner code path that could observe both a materialized result and a
     proposal for one reply; a proposal arriving for a step whose type has no registered
-    contract fails closed (mutation test); no transport-side field names a contract.
+    contract fails closed (mutation test). Contract identity exists exactly once — the
+    registry key selected by the workflow declaration.
 13. **Result-repair seam**: contract decode/validate rejection continues the SAME
     conversation on the multi-turn path (tool_result rejection on the submit_result
     channel; assistant+repair-instruction turns on the textual channel) and re-issues
