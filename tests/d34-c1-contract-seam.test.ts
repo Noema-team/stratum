@@ -61,18 +61,37 @@ const SAMPLE_SCHEMA = z.object({
   closure: z.string().optional(),
 });
 
-test('D.34.C1: toJsonSchema is a generated, deterministic, self-contained projection', () => {
+test('D.34.C1: toJsonSchema is a generated, deterministic, self-contained projection — GOLDEN-PINNED', () => {
   const a = toJsonSchema(SAMPLE_SCHEMA);
   const b = toJsonSchema(SAMPLE_SCHEMA);
   assert.deepEqual(a, b, 'projection must be deterministic');
-  assert.equal(a['$schema'], 'http://json-schema.org/draft-07/schema#');
-  assert.equal((a['properties'] as Record<string, unknown>)['goal'], (a['properties'] as Record<string, unknown>)['goal']);
-  // $refStrategy 'none' — fully inlined, self-contained (no $ref/$defs).
-  assert.equal(a['$defs'], undefined);
-  const facts = (a['properties'] as Record<string, unknown>)['facts'] as Record<string, unknown>;
-  assert.equal(facts['type'], 'array');
-  const enumValues = (((facts['items'] as Record<string, unknown>)['properties'] as Record<string, unknown>)['status'] as Record<string, unknown>)['enum'];
-  assert.deepEqual(enumValues, ['KNOWN', 'ASSUMED']);
+  // C1 review fix — the ENTIRE generated projection is pinned. This is the
+  // golden: a zod-to-json-schema bump or adapter-option change that alters
+  // provider-facing schemas in ANY way fails here and requires regenerating
+  // this fixture in the same commit (DDR-034 §5.1). Do not weaken to
+  // field-by-field assertions.
+  assert.deepEqual(a, {
+    type: 'object',
+    properties: {
+      goal: { type: 'string' },
+      facts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            status: { type: 'string', enum: ['KNOWN', 'ASSUMED'] },
+          },
+          required: ['id', 'status'],
+          additionalProperties: false,
+        },
+      },
+      closure: { type: 'string' },
+    },
+    required: ['goal', 'facts'],
+    additionalProperties: false,
+    $schema: 'http://json-schema.org/draft-07/schema#',
+  });
 });
 
 test('D.34.C1: schema annotation keys are mechanically validated against the projection', () => {
@@ -145,15 +164,17 @@ class ProposalTransport implements ResultTransport {
   }
 }
 
-/** Materialized-bytes transport for the rule-4 negotiation test. */
+/** Materialized-bytes transport for the rule-4 negotiation test. Emits the
+ *  step's DECLARED path (a bytes transport mirrors what the textual fallback
+ *  does — sections carry the declared output path). */
 class MaterializedTransport implements ResultTransport {
   readonly name = 'materialized';
   formatInstruction(): string { return 'emit bytes'; }
-  extractProduce(): StepResult {
-    return { kind: 'materialized', artifacts: [{ path: '.sle/work/w/x.md', content: 'bytes' }] };
+  extractProduce(_raw: string, ctx: TransportContext): StepResult {
+    return { kind: 'materialized', artifacts: [{ path: ctx.declaredOutputPath ?? '.sle/work/w/x.md', content: 'bytes' }] };
   }
-  extractSingleTurn(): StepResult {
-    return { kind: 'materialized', artifacts: [{ path: '.sle/work/w/x.md', content: 'bytes' }] };
+  extractSingleTurn(_raw: string, ctx: TransportContext): StepResult {
+    return { kind: 'materialized', artifacts: [{ path: ctx.declaredOutputPath ?? '.sle/work/w/x.md', content: 'bytes' }] };
   }
   repairInstruction(): string { return 'emit bytes'; }
 }
@@ -263,7 +284,8 @@ test('D.34.C1: an accepted proposal is materialized by the system at the declare
   });
   const result = await h.runner.run('explorer', makeCtx());
   assert.equal(result.success, true, result.error);
-  assert.equal(result.result_repairs, 0);
+  // C1 review fix — zero repairs are not externally visible.
+  assert.equal('result_repairs' in result, false, 'no result_repairs key when no repair occurred');
   const writtenPath = join(h.root, '.sle/work/w/test-artifact.md');
   assert.equal(h.written[writtenPath], 'goal: Ship the widget\n', 'canonical bytes are SYSTEM-rendered from the proposal');
   assert.equal(h.artifacts.saved.length, 1);
@@ -318,6 +340,46 @@ test('D.34.C1: result-repair exhaustion fails closed BEFORE write — no artifac
   assert.equal(result.artifacts_written.length, 0);
   assert.deepEqual(Object.keys(h.written), [], 'no artifact bytes may be written');
   assert.equal(h.artifacts.saved.length, 0, 'no provenance may be recorded');
+});
+
+// ─── Fail-closed authoring / negotiation errors ───────────────────────────────
+
+test('D.34.C1 (review fix): a legacy run with an empty registry has exactly the pre-C1 observable shape', async () => {
+  const h = makeRunner(['<!-- SLE-OUTPUT\nrole: explorer\nnode: n\nartifacts:\n  - id: x\n    path: .sle/work/w/x.md\n-->\n\n## .sle/work/w/x.md\n\nlegacy bytes'], {
+    transport: new MaterializedTransport(),
+    // no contracts — the zero-behavior-change configuration
+  });
+  const result = await h.runner.run('explorer', makeCtx());
+  assert.equal(result.success, true, result.error);
+  // result_repairs must not exist at all — not even as a zero.
+  assert.equal('result_repairs' in result, false, 'legacy runs must not gain a result_repairs key');
+  assert.deepEqual(
+    Object.keys(result).sort(),
+    ['artifacts_written', 'duration_ms', 'format_repairs', 'raw_output_path', 'reviewRoute', 'reviewVerdict', 'success', 'tokens_used'],
+    'observable shape is byte-for-byte the pre-C1 legacy shape (reviewVerdict/reviewRoute present as undefined, exactly as before)',
+  );
+});
+
+test('D.34.C1 (review fix): adversarial artifact type names on an empty registry are UNREGISTERED, never phantom contracts', async () => {
+  for (const adversarial of ['toString', 'constructor', '__proto__']) {
+    const h = makeRunner(['irrelevant materialized bytes'], {
+      transport: new MaterializedTransport(),
+      // registry deliberately EMPTY — Object.prototype members must not resolve
+    });
+    const result = await h.runner.run('explorer', makeCtx({ outputArtifact: { type: adversarial, ref: 'x', path: '.sle/work/w/x.md' } }));
+    assert.equal(result.success, true, `${adversarial}: legacy path must run unchanged (error: ${result.error})`);
+    assert.equal('result_repairs' in result, false, `${adversarial}: must not enter the contract path`);
+    assert.equal(h.artifacts.saved.length, 1, `${adversarial}: legacy write+provenance pipeline intact`);
+  }
+});
+
+test('D.34.C1 (review fix): an own registry entry is honored even for an Object.prototype member name', async () => {
+  const h = makeRunner([JSON.stringify({ goal: 'G' })], {
+    contracts: { toString: SIMPLE_CONTRACT },
+  });
+  const result = await h.runner.run('explorer', makeCtx({ outputArtifact: { type: 'toString', ref: 'x:{o}', path: '.sle/work/w/x.md' } }));
+  assert.equal(result.success, true, result.error);
+  assert.equal(h.written[join(h.root, '.sle/work/w/x.md')], 'goal: G\n', 'an OWN property is a genuine registration');
 });
 
 // ─── Fail-closed authoring / negotiation errors ───────────────────────────────

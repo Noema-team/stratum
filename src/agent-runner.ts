@@ -247,9 +247,18 @@ export class AgentRunner {
     // 0.5. D.34 C1 — output-contract resolution + fail-closed authoring
     // checks, BEFORE any LLM call. The registry key is the workflow's own
     // declaration; no transport, provider, or model ever names a contract.
+    // Own-property semantics are mandatory: DeclaredOutputArtifact.type is
+    // an unrestricted string, and a plain-object registry would otherwise
+    // resolve inherited Object.prototype members ('toString', '__proto__',
+    // 'constructor', …) into a phantom contract path. A key that is not an
+    // OWN property of the registry is unregistered — full stop.
     const artifactType = ctx.outputArtifact?.type;
     const contract: OutputContract<unknown> | undefined =
-      artifactType !== undefined ? this.runnerConfig.outputContracts?.[artifactType] : undefined;
+      artifactType !== undefined &&
+      this.runnerConfig.outputContracts !== undefined &&
+      Object.hasOwn(this.runnerConfig.outputContracts, artifactType)
+        ? this.runnerConfig.outputContracts[artifactType]
+        : undefined;
     const contractPath = contract !== undefined;
     if (contractPath) {
       if (ctx.requiresReviewVerdict && !contract.reviewVerdict) {
@@ -804,7 +813,11 @@ export class AgentRunner {
       reviewVerdict,
       reviewRoute,
       ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
-      ...(resultRepairs !== undefined ? { result_repairs: resultRepairs } : {}),
+      // C1 review fix — result_repairs is externally visible only when an
+      // actual result repair occurred (which is only possible on the
+      // contract path). A legacy run's observable shape is byte-for-byte
+      // its pre-C1 form: no zero-count result_repairs key.
+      ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
     };
   }
 
