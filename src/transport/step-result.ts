@@ -31,6 +31,18 @@
 // (D.3d.5 commit 3; src/workflow/methodology/readiness-artifact.ts). The
 // reply never declares a route: a model-emitted `route:` token is ignored
 // by the transport and carries no authority anywhere.
+//
+// D.34 C1 — StepResult is a DISCRIMINATED UNION, not a bag of optionals.
+// Exactly one kind is ever present:
+//   - 'materialized' — legacy path: canonical artifact bytes (non-contract
+//     roles), plus the legacy preamble verdict. Byte-for-byte the pre-D.34
+//     behavior for every existing transport.
+//   - 'proposal'     — semantic path: a raw payload for the step's declared
+//     output contract. Deliberately carries NO contract identity: the
+//     provider, the model, and the transport never choose or declare which
+//     semantic contract applies. Resolution is exclusively
+//     WorkflowStep.outputArtifact.type → outputContracts[type] → decode
+//     value (AgentRunner). A transport can never emit both kinds.
 import type { AgentRole } from '../types.js';
 
 export interface StepResultArtifact {
@@ -42,10 +54,16 @@ export interface StepReviewProposal {
   verdict: 'pass' | 'fail';
 }
 
-export interface StepResult {
-  artifacts: StepResultArtifact[];
-  review?: StepReviewProposal;
-}
+export type StepResult =
+  | {
+      kind: 'materialized';
+      artifacts: StepResultArtifact[];
+      review?: StepReviewProposal;
+    }
+  | {
+      kind: 'proposal';
+      value: unknown;
+    };
 
 export interface TransportContext {
   role: AgentRole;
@@ -71,6 +89,15 @@ export interface TransportContext {
    * Absent = unconstrained/unknown — teach generically, restrict nothing.
    */
   expectedArtifacts?: number;
+  // ─── D.34 C1 — runner-generated schema projections (see
+  // ─── src/workflow/contracts.ts). Populated ONLY when the step's declared
+  // ─── outputArtifact.type has a registered output contract; absent =
+  // ─── legacy path. Transports consume these verbatim and never learn what
+  // ─── a Definition is.
+  /** Teaching text: generated projection + structured annotations. */
+  resultSchemaText?: string;
+  /** Generated JSON Schema projection, for submit-result/native transports. */
+  resultSchemaJson?: Record<string, unknown>;
 }
 
 /** Raised when a raw reply cannot be converted into a StepResult. */
@@ -145,6 +172,58 @@ export function repairDecision(
   attemptsSoFar: number,
 ): { action: 'repair' } | { action: 'fail-closed' } {
   return attemptsSoFar >= MAX_FORMAT_REPAIRS ? { action: 'fail-closed' } : { action: 'repair' };
+}
+
+// ─── D.34 C1 — RESULT repair policy (contract decode/validate), deliberately
+// ─── separate from FORMAT repair (envelope syntax). One policy, two layers:
+//
+//   transport syntax defect  → format repair (MAX_FORMAT_REPAIRS, above)
+//   typed proposal defect    → result repair (MAX_RESULT_REPAIRS, below)
+//   semantic readiness gap   → workflow refine (NOT a repair; unchanged)
+//
+// A result repair continues the SAME conversation (multi-turn) or re-issues
+// the completion (single-turn) via the runner-composed ResultAcceptor — see
+// src/workflow/contracts.ts and DDR-034 §5.3. It NEVER consumes a workflow
+// refinement iteration, and exhaustion fails the step closed BEFORE any
+// artifact bytes or provenance are written.
+
+/** At most MAX_RESULT_REPAIRS result-repair attempts per step execution. Do not raise. */
+export const MAX_RESULT_REPAIRS = 1;
+
+export function resultRepairDecision(
+  attemptsSoFar: number,
+): { action: 'repair' } | { action: 'fail-closed' } {
+  return attemptsSoFar >= MAX_RESULT_REPAIRS ? { action: 'fail-closed' } : { action: 'repair' };
+}
+
+/**
+ * The exact fail-closed diagnostic for result-repair exhaustion. Names the
+ * LAYER ("result repair", not "format repair") and the declared artifact
+ * type — the registry key, the only contract identity in the system.
+ */
+export function resultRepairExhaustedDiagnostic(
+  artifactType: string,
+  reason: string,
+  providerCalls: number,
+  repairAttempts: number,
+): string {
+  return (
+    `Submitted result was rejected by output contract '${artifactType}' and result repair is exhausted ` +
+    `(${providerCalls} provider turn(s), ${repairAttempts} result-repair attempt(s)): ${reason}`
+  );
+}
+
+/**
+ * The exact fail-closed diagnostic for a negotiation error: a transport
+ * produced a result kind this step cannot consume (proposal with no
+ * registered contract, or materialized bytes where a contract is
+ * registered). Authoring/negotiation error — fail closed.
+ */
+export function resultKindNegotiationDiagnostic(artifactType: string, problem: string): string {
+  return (
+    `Output-contract negotiation error for declared artifact '${artifactType}': ${problem} ` +
+    `(fail closed — contract identity is the workflow declaration alone)`
+  );
 }
 
 /**

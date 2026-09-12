@@ -15,10 +15,22 @@ import {
   TransportParseError,
   repairDecision,
   formatRepairExhaustedDiagnostic,
+  resultRepairDecision,
+  resultRepairExhaustedDiagnostic,
+  resultKindNegotiationDiagnostic,
 } from './transport/step-result.js';
 import {
   resolveResultTransport,
 } from './transport/textual-sle-output.js';
+import {
+  type OutputContract,
+  type OutputContractRegistry,
+  type ResultAcceptor,
+  type OutputContractContext,
+  createResultAcceptor,
+  renderSchemaTeaching,
+  toJsonSchema,
+} from './workflow/contracts.js';
 
 // D.3d.5 commit 1 — the single-turn preamble parser (parseAgentOutput +
 // SLEOutputPreamble/ParsedSingleTurnOutput types) MOVED to the transport
@@ -61,6 +73,11 @@ export interface AgentRunResult {
   // every provider call). Precise semantics: turns_taken = all provider
   // calls; format_repairs = repair prompts issued for non-compliant replies.
   format_repairs?: number;
+  // D.34 C1 — contract decode/validate repair attempts, tracked SEPARATELY
+  // from format_repairs (repair taxonomy: format repair / result repair /
+  // workflow refine). A result repair never consumes a workflow refinement
+  // iteration; exhaustion fails the step closed before any write.
+  result_repairs?: number;
 }
 
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
@@ -161,6 +178,14 @@ export interface AgentRunnerConfig {
     artifactText: string,
     declaredRoutes: readonly string[],
   ) => { ok: true; route: string } | { ok: false; error: string };
+  // D.34 C1 — the output-contract registry (DDR-034 §5.3), keyed by the
+  // workflow's OWN declaration (WorkflowStep.outputArtifact.type). The
+  // composition root wires methodology-owned contracts; the runner is
+  // generic. Contract identity exists exactly once — this registry key. A
+  // step whose type has no entry here runs the legacy materialized-bytes
+  // path, byte-for-byte unchanged. (Typed as unknown rather than never:
+  // the runner treats T opaquely through the acceptor/hooks.)
+  outputContracts?: OutputContractRegistry;
 }
 
 /**
@@ -176,7 +201,7 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -219,6 +244,53 @@ export class AgentRunner {
       if (gateResult !== null) return gateResult;
     }
 
+    // 0.5. D.34 C1 — output-contract resolution + fail-closed authoring
+    // checks, BEFORE any LLM call. The registry key is the workflow's own
+    // declaration; no transport, provider, or model ever names a contract.
+    // Own-property semantics are mandatory: DeclaredOutputArtifact.type is
+    // an unrestricted string, and a plain-object registry would otherwise
+    // resolve inherited Object.prototype members ('toString', '__proto__',
+    // 'constructor', …) into a phantom contract path. A key that is not an
+    // OWN property of the registry is unregistered — full stop.
+    const artifactType = ctx.outputArtifact?.type;
+    const contract: OutputContract<unknown> | undefined =
+      artifactType !== undefined &&
+      this.runnerConfig.outputContracts !== undefined &&
+      Object.hasOwn(this.runnerConfig.outputContracts, artifactType)
+        ? this.runnerConfig.outputContracts[artifactType]
+        : undefined;
+    const contractPath = contract !== undefined;
+    if (contractPath) {
+      if (ctx.requiresReviewVerdict && !contract.reviewVerdict) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: '',
+          error: `Step declares requiresReviewVerdict but the output contract for '${artifactType}' provides no reviewVerdict — authoring error (fail closed, no LLM call)`,
+        };
+      }
+      if (ctx.on_fail_routes && !contract.deriveRoute) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: '',
+          error: `Step declares fail routes (${Object.keys(ctx.on_fail_routes).join(', ')}) but the output contract for '${artifactType}' provides no deriveRoute — authoring error (fail closed, no LLM call)`,
+        };
+      }
+    }
+    // The acceptor gates a proposal INSIDE the executing loop (multi-turn
+    // continuation / single-turn re-issue) — decode + validate against the
+    // resolved contract. Built only on the contract path; absent otherwise,
+    // leaving legacy steps byte-for-byte unchanged.
+    let acceptor: ResultAcceptor | undefined;
+    if (contract) {
+      acceptor = createResultAcceptor(contract, { workItemId: ctx.workItemId } satisfies OutputContractContext, artifactType!);
+    }
+
     // 1. Assemble context
     const context = await this.contextManager.assemble(role, ctx);
 
@@ -226,12 +298,19 @@ export class AgentRunner {
     let tokensUsed = 0;
     // D.3d.5 commit 1 — bounded format-repair attempts (multi-turn only).
     let formatRepairs: number | undefined;
+    // D.34 C1 — contract decode/validate repair attempts (both paths).
+    let resultRepairs: number | undefined;
     let rawPath = '';
     // D.3b0 — the review verdict from the transport's StepResult (review
     // is set only when the reply declared a valid 'pass' | 'fail'). Set on
     // either execution path; validated against ctx.requiresReviewVerdict
-    // after both branches.
+    // after both branches. On the contract path it comes from the
+    // contract's reviewVerdict hook — the semantic payload is the only
+    // place the verdict lives (never the transport preamble).
     let reviewVerdictRaw: string | undefined;
+    // D.34 C1 — the decoded contract value, kept for the deterministic
+    // route-derivation hook (typed gaps in — no artifact parse-back).
+    let contractValue: unknown;
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
@@ -270,6 +349,15 @@ export class AgentRunner {
           declaredArtifactId: ctx.outputArtifact?.type,
           declaredOutputPath: ctx.outputArtifact?.path,
           expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
+          // D.34 C1 — schema projections + the result-repair seam. Both are
+          // absent on the legacy path, leaving it byte-for-byte unchanged.
+          ...(contract
+            ? {
+                acceptResult: acceptor,
+                resultSchemaText: renderSchemaTeaching(contract),
+                resultSchemaJson: toJsonSchema(contract.modelSchema),
+              }
+            : {}),
         }
       );
 
@@ -278,6 +366,8 @@ export class AgentRunner {
 
       const loopResult = await loop.run(systemPrompt, userMessage);
       tokensUsed = loopResult.tokens_used;
+      formatRepairs = loopResult.format_repairs;
+      resultRepairs = loopResult.result_repairs;
 
       if (!loopResult.success) {
         rawPath = await this.writeRaw(ctx, nodeId, '');
@@ -287,14 +377,54 @@ export class AgentRunner {
           tokens_used: tokensUsed,
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
+          ...(loopResult.format_repairs > 0 ? { format_repairs: loopResult.format_repairs } : {}),
+          ...(loopResult.result_repairs > 0 ? { result_repairs: loopResult.result_repairs } : {}),
           error: loopResult.error,
         };
       }
 
-      parsed = loopResult.parsedOutput!;
-      formatRepairs = loopResult.format_repairs;
       // Write the final text as raw output (always, even on multi-turn success)
       rawPath = await this.writeRaw(ctx, nodeId, loopResult.rawText || '');
+
+      if (loopResult.proposal) {
+        // D.34 C1 — contract path: the acceptor gated the proposal inside
+        // the loop; decode again here (deterministic, cheap) for the typed
+        // value, then materialize. The transport never declared a contract —
+        // the workflow's registry lookup already fixed it.
+        const processed = this.processContractResult(contract!, loopResult.proposal.value, ctx);
+        if (!processed.ok) {
+          return {
+            success: false,
+            artifacts_written: [],
+            tokens_used: tokensUsed,
+            duration_ms: Date.now() - start,
+            raw_output_path: rawPath,
+            ...(resultRepairs && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+            error: processed.error,
+          };
+        }
+        parsed = { sections: processed.sections };
+        reviewVerdictRaw = processed.verdict;
+        contractValue = processed.typed;
+      } else {
+        if (contractPath) {
+          // Rule 4 (DDR-034 §5.3): a step whose type has a registered
+          // contract must never receive materialized bytes — the contract
+          // path cannot be silently bypassed by a stale transport.
+          return {
+            success: false,
+            artifacts_written: [],
+            tokens_used: tokensUsed,
+            duration_ms: Date.now() - start,
+            raw_output_path: rawPath,
+            error: resultKindNegotiationDiagnostic(
+              artifactType!,
+              'the transport produced materialized bytes where an output contract is registered',
+            ),
+          };
+        }
+        parsed = loopResult.parsedOutput!;
+      }
 
     } else {
       // Single-turn fallback (original logic)
@@ -312,6 +442,13 @@ export class AgentRunner {
         declaredArtifactId: ctx.outputArtifact?.type,
         declaredOutputPath: ctx.outputArtifact?.path,
         expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
+        // D.34 C1 — runner-generated projections; absent on the legacy path.
+        ...(contract
+          ? {
+              resultSchemaText: renderSchemaTeaching(contract),
+              resultSchemaJson: toJsonSchema(contract.modelSchema),
+            }
+          : {}),
       };
       const userContent =
         buildUserMessage(context) +
@@ -337,6 +474,7 @@ export class AgentRunner {
       // provider exception on a repair call must not erase earlier evidence.
       let providerCalls = 0;
       formatRepairs = 0;
+      resultRepairs = 0;
       let repairMessage = '';
       let raw = '';
       let stepResult: StepResult | undefined;
@@ -388,6 +526,48 @@ export class AgentRunner {
           }
           formatRepairs++;
           repairMessage = this.resultTransport.repairInstruction(transportCtx, err.kind, err.reason);
+          continue;
+        }
+
+        // D.34 C1 — the result-repair seam, single-turn mechanics (DDR-034
+        // §5.3): a proposal is gated by the acceptor INSIDE the loop, so a
+        // decode/validate defect re-issues the completion carrying the
+        // acceptor's repair instruction — the same continuation mechanics
+        // this loop already uses for format repair, but on its own budget
+        // and counter, never consuming a workflow iteration. Exhaustion
+        // fails the step closed BEFORE anything is written.
+        if (stepResult.kind === 'proposal') {
+          if (!acceptor) {
+            transportError = resultKindNegotiationDiagnostic(
+              artifactType!,
+              'the transport produced a semantic proposal but no output contract is registered for the declared type',
+            );
+            break;
+          }
+          const acceptance = acceptor(stepResult.value);
+          if (!acceptance.ok) {
+            if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+              transportError = resultRepairExhaustedDiagnostic(
+                artifactType!,
+                acceptance.repairInstruction,
+                providerCalls,
+                resultRepairs,
+              );
+              break;
+            }
+            resultRepairs++;
+            repairMessage = acceptance.repairInstruction;
+            stepResult = undefined; // loop re-issues with the repair message appended
+            continue;
+          }
+        } else if (contractPath) {
+          // Rule 4 (DDR-034 §5.3): contract registered, materialized bytes
+          // produced — a stale/negotiation-broken transport. Fail closed.
+          transportError = resultKindNegotiationDiagnostic(
+            artifactType!,
+            'the transport produced materialized bytes where an output contract is registered',
+          );
+          break;
         }
       }
 
@@ -402,6 +582,7 @@ export class AgentRunner {
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
           ...(formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
+          ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
           error: providerError,
         };
       }
@@ -415,6 +596,7 @@ export class AgentRunner {
           duration_ms: Date.now() - start,
           raw_output_path: rawPath,
           ...(formatRepairs !== undefined && formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
+          ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
           error: transportError ?? 'Step produced no result',
         };
       }
@@ -422,8 +604,29 @@ export class AgentRunner {
       // Raw output is written on success too (as before D.3d.5) — the raw
       // reply remains the debugging record regardless of parse outcome.
       rawPath = await this.writeRaw(ctx, nodeId, raw);
-      parsed = { sections: stepResult.artifacts };
-      reviewVerdictRaw = stepResult.review?.verdict;
+      if (stepResult.kind === 'materialized') {
+        parsed = { sections: stepResult.artifacts };
+        reviewVerdictRaw = stepResult.review?.verdict;
+      } else {
+        // D.34 C1 — contract path: the acceptor gated the proposal inside
+        // the loop; decode again here (deterministic, cheap) for the typed
+        // value, then materialize canonical bytes.
+        const processed = this.processContractResult(contract!, stepResult.value, ctx);
+        if (!processed.ok) {
+          return {
+            success: false,
+            artifacts_written: [],
+            tokens_used: tokensUsed,
+            duration_ms: Date.now() - start,
+            raw_output_path: rawPath,
+            ...(resultRepairs && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+            error: processed.error,
+          };
+        }
+        parsed = { sections: processed.sections };
+        reviewVerdictRaw = processed.verdict;
+        contractValue = processed.typed;
+      }
     }
 
     const fail = (error: string): AgentRunResult => ({
@@ -432,6 +635,8 @@ export class AgentRunner {
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
       raw_output_path: rawPath,
+      ...(formatRepairs !== undefined && formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
+      ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
       error,
     });
 
@@ -475,7 +680,24 @@ export class AgentRunner {
     let reviewRoute: string | undefined;
     if (reviewVerdict === 'fail' && ctx.on_fail_routes) {
       const allowedRoutes = Object.keys(ctx.on_fail_routes);
-      if (this.runnerConfig.deriveReviewRoute) {
+      if (contractPath) {
+        // D.34 C1 — the contract path derives the route from TYPED values
+        // (the contract's deriveRoute hook over the decoded proposal): no
+        // artifact parse-back. Absence of the hook already failed closed as
+        // an authoring error before the LLM call; this is defense in depth.
+        if (!contract!.deriveRoute) {
+          return fail(
+            `Review step requires a derivable route (one of: ${allowedRoutes.join(', ')}) but the output contract for '${artifactType}' provides no deriveRoute — authoring error (fail closed)`,
+          );
+        }
+        const derived = contract!.deriveRoute(contractValue, allowedRoutes);
+        if (!derived.ok || !allowedRoutes.includes(derived.route)) {
+          return fail(
+            `Review step requires a derivable route (one of: ${allowedRoutes.join(', ')}) but the produced proposal does not determine one: ${derived.ok ? `derived '${derived.route}' is not declared` : derived.error}`,
+          );
+        }
+        reviewRoute = derived.route;
+      } else if (this.runnerConfig.deriveReviewRoute) {
         const artifactText = parsed.sections.find(
           (s) => !ctx.outputArtifact || s.path === ctx.outputArtifact.path,
         )?.content ?? parsed.sections[0]?.content ?? '';
@@ -591,6 +813,53 @@ export class AgentRunner {
       reviewVerdict,
       reviewRoute,
       ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
+      // C1 review fix — result_repairs is externally visible only when an
+      // actual result repair occurred (which is only possible on the
+      // contract path). A legacy run's observable shape is byte-for-byte
+      // its pre-C1 form: no zero-count result_repairs key.
+      ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+    };
+  }
+
+  /**
+   * D.34 C1 — contract-path post-processing of an ACCEPTED proposal (the
+   * acceptor has already gated decode+validate inside the executing loop).
+   * Decodes again — deterministic and cheap — for the typed value, then
+   * materializes canonical artifact bytes at the DECLARED path. The model
+   * never authored bytes, paths, or schema versions; this is where Stratum
+   * does (DDR-034 §5.3). The returned sections flow into the SAME
+   * canonicalization / role-ceiling / write / provenance pipeline as the
+   * legacy path.
+   */
+  private processContractResult(
+    contract: OutputContract<unknown>,
+    value: unknown,
+    ctx: StepRunContext,
+  ): { ok: true; sections: Array<{ path: string; content: string }>; verdict?: string; typed: unknown } | { ok: false; error: string } {
+    if (!ctx.outputArtifact) {
+      return { ok: false, error: 'Contract path requires a declared outputArtifact — authoring error' };
+    }
+    const redecoded = contract.modelSchema.safeParse(value);
+    if (!redecoded.success) {
+      // Defense in depth: the acceptor approved this value inside the loop.
+      // A failure here means non-deterministic decode — fail closed.
+      return {
+        ok: false,
+        error: `Accepted proposal failed re-decode against the '${ctx.outputArtifact.type}' contract — non-deterministic decode (fail closed)`,
+      };
+    }
+    let content: string;
+    try {
+      content = contract.materialize(redecoded.data, { workItemId: ctx.workItemId });
+    } catch (err) {
+      return { ok: false, error: `Materialization failed for '${ctx.outputArtifact.type}': ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const verdict = contract.reviewVerdict?.(redecoded.data);
+    return {
+      ok: true,
+      sections: [{ path: ctx.outputArtifact.path, content }],
+      ...(verdict !== undefined ? { verdict } : {}),
+      typed: redecoded.data,
     };
   }
 

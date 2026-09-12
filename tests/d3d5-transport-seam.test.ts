@@ -87,9 +87,17 @@ class JsonStepResultTransport implements ResultTransport {
   }
   private parse(raw: string): StepResult {
     try {
-      const obj = JSON.parse(raw) as StepResult;
+      const obj = JSON.parse(raw) as { artifacts?: unknown; review?: { verdict?: string } };
       if (!Array.isArray(obj.artifacts)) throw new Error('missing artifacts');
-      return obj;
+      // D.34 C1 — a bytes transport yields the materialized kind.
+      const stepResult: StepResult = {
+        kind: 'materialized',
+        artifacts: obj.artifacts as Array<{ path: string; content: string }>,
+      };
+      if (obj.review?.verdict === 'pass' || obj.review?.verdict === 'fail') {
+        stepResult.review = { verdict: obj.review.verdict };
+      }
+      return stepResult;
     } catch (err) {
       throw new TransportParseError('invalid JSON StepResult', raw, (err as Error).message);
     }
@@ -109,8 +117,11 @@ test('D.3d.5.1: the canonical StepResult carries no route — the model token st
     'artifacts:\n  - id: readiness\n    path: .sle/work/w/readiness.md\n' +
     'verdict: fail\nroute: human\n-->\n\n## .sle/work/w/readiness.md\n\nbody';
   const stepResult = t.extractSingleTurn(raw, { role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' });
-  assert.deepEqual(Object.keys(stepResult).sort(), ['artifacts', 'review'], 'StepResult has exactly artifacts and (optionally) review');
-  assert.equal(stepResult.review?.verdict, 'fail');
+  // D.34 C1 — StepResult is a discriminated union: the textual transport
+  // yields kind 'materialized' with exactly artifacts and (optionally) review.
+  assert.equal(stepResult.kind, 'materialized');
+  assert.deepEqual(Object.keys(stepResult).sort(), ['artifacts', 'kind', 'review'], 'materialized StepResult has exactly kind, artifacts and (optionally) review');
+  assert.equal(stepResult.kind === 'materialized' ? stepResult.review?.verdict : undefined, 'fail');
   assert.equal((stepResult as Record<string, unknown>)['route'], undefined, 'route must never appear on StepResult');
   // D.3d.5 commit 3 — the model-declared token is simply ignored: the
   // transport neither extracts nor surfaces it, and no migration helper

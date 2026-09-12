@@ -11,6 +11,8 @@ import {
   TransportParseError,
   repairDecision,
   formatRepairExhaustedDiagnostic,
+  resultRepairDecision,
+  resultRepairExhaustedDiagnostic,
 } from './transport/step-result.js';
 import { resolveResultTransport } from './transport/textual-sle-output.js';
 
@@ -93,11 +95,28 @@ export interface AgentLoopOptions {
   // textual SLE-OUTPUT fallback (the only transport any current provider
   // genuinely has); structured adapters plug in here.
   resultTransport?: ResultTransport;
+  // D.34 C1 — the generic result-acceptance callback (DDR-034 §5.3),
+  // composed by the AgentRunner from the step's declared output contract.
+  // Deliberately a PLAIN structural type: this loop never imports contracts,
+  // methodology, or the runner — its knowledge is exactly "call it; on
+  // { ok: false } continue the conversation with the given instruction,
+  // budget permitting (MAX_RESULT_REPAIRS)." Absent for legacy/materialized
+  // steps, whose behavior is unchanged.
+  acceptResult?: (value: unknown) => { ok: true } | { ok: false; repairInstruction: string };
+  // D.34 C1 — runner-generated schema projections (from the step's declared
+  // output contract), surfaced to the transport via TransportContext.
+  // Absent = legacy path. Transports consume them verbatim.
+  resultSchemaText?: string;
+  resultSchemaJson?: Record<string, unknown>;
 }
 
 export interface AgentLoopResult {
   success: boolean;
   parsedOutput?: ParsedOutput;
+  // D.34 C1 — set instead of parsedOutput when the transport produced a
+  // semantic proposal (kind 'proposal') that the result acceptor approved.
+  // The runner decodes it against the workflow-declared contract.
+  proposal?: { value: unknown };
   turns_taken: number;
   tokens_used: number;
   // D.3d.5 commit 1 — bounded format-repair attempts, tracked separately
@@ -107,6 +126,11 @@ export interface AgentLoopResult {
   // loop (INCLUDING repair-prompted ones); format_repairs = provider
   // invocations initiated specifically by a transport-format repair prompt.
   format_repairs: number;
+  // D.34 C1 — contract decode/validate repair attempts, tracked separately
+  // from format repairs (the repair taxonomy has three layers: format
+  // repair / result repair / workflow refine). A result repair NEVER
+  // consumes a workflow refinement iteration.
+  result_repairs: number;
   error?: string;
   rawText?: string;
 }
@@ -135,6 +159,9 @@ export class AgentLoop {
       declaredArtifactId: opts.declaredArtifactId,
       declaredOutputPath: opts.declaredOutputPath,
       expectedArtifacts: opts.expectedArtifacts,
+      // D.34 C1 — runner-generated projections; absent on the legacy path.
+      ...(opts.resultSchemaText !== undefined ? { resultSchemaText: opts.resultSchemaText } : {}),
+      ...(opts.resultSchemaJson !== undefined ? { resultSchemaJson: opts.resultSchemaJson } : {}),
     };
   }
 
@@ -148,6 +175,9 @@ export class AgentLoop {
     let totalTokens = 0;
     let turns = 0;
     let formatRepairs = 0;
+    // D.34 C1 — contract decode/validate repair attempts (separate budget
+    // and counter from format repairs; never a workflow iteration).
+    let resultRepairs = 0;
     const toolCallLog: Array<{ tool: string; path: string; turn: number }> = [];
 
     // D.3b1 — the tracked-file set is computed once per run (not once per
@@ -162,6 +192,7 @@ export class AgentLoop {
       turns_taken: turns,
       tokens_used: totalTokens,
       format_repairs: formatRepairs,
+      result_repairs: resultRepairs,
       error,
     });
 
@@ -238,9 +269,54 @@ export class AgentLoop {
         continue;
       }
 
+      // D.34 C1 — the result-repair seam (DDR-034 §5.3). A proposal-kind
+      // result is gated by the runner-composed acceptor INSIDE this loop, so
+      // a decode/validate defect continues the SAME conversation (textual
+      // channel: assistant reply + user repair instruction, mirroring format
+      // repair; a submit-result channel — C5 — will answer with a
+      // tool_result rejection instead). Exhaustion fails the step closed
+      // BEFORE anything is written; it never consumes a workflow iteration.
+      if (stepResult.kind === 'proposal') {
+        if (!this.opts.acceptResult) {
+          return fail(
+            `Transport produced a semantic proposal for declared artifact '${this.opts.declaredArtifactId ?? '(undeclared)'}' but no result acceptor is registered — authoring/negotiation error (fail closed)`,
+          );
+        }
+        const acceptance = this.opts.acceptResult(stepResult.value);
+        if (!acceptance.ok) {
+          if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+            return fail(
+              resultRepairExhaustedDiagnostic(
+                this.opts.declaredArtifactId ?? '(undeclared)',
+                acceptance.repairInstruction,
+                turns,
+                resultRepairs,
+              ),
+            );
+          }
+          resultRepairs++;
+          messages.push({ role: 'assistant', content: result.text });
+          messages.push({ role: 'user', content: acceptance.repairInstruction });
+          continue;
+        }
+      }
+
       // Write turn metadata to run artifacts
       await this.writeTurnMetadata(turns, toolCallLog);
 
+      // D.34 C1 — kind-split return: a proposal replaces parsedOutput; the
+      // runner decodes it against the workflow-declared contract.
+      if (stepResult.kind === 'proposal') {
+        return {
+          success: true,
+          proposal: { value: stepResult.value },
+          turns_taken: turns,
+          tokens_used: totalTokens,
+          format_repairs: formatRepairs,
+          result_repairs: resultRepairs,
+          rawText: result.text,
+        };
+      }
       return {
         success: true,
         // Backward-compatible shape for AgentRunner: artifacts + (never
@@ -249,6 +325,7 @@ export class AgentLoop {
         turns_taken: turns,
         tokens_used: totalTokens,
         format_repairs: formatRepairs,
+        result_repairs: resultRepairs,
         rawText: result.text,
       };
     }
