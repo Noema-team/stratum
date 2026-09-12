@@ -30,6 +30,7 @@ import {
 } from './readiness-artifact.js';
 import { GAP_CLASSIFICATION_PRECEDENCE } from './definition-readiness.js';
 import {
+  type ContractDefect,
   type OutputContract,
   type OutputContractContext,
 } from '../contracts.js';
@@ -164,6 +165,60 @@ export function readinessProposalFromPersisted(
   };
 }
 
+// ─── Deterministic methodology invariants (the C1 second validation layer) ────
+//
+// C2 review correction: the initial DDR sketch assumed "nothing else is
+// mechanical" about the readiness proposal — implementation-time discovery
+// showed the EXISTING methodology (READINESS_ROUTE_CONTRACT) already
+// establishes cross-field invariants that zod's structural layer must NOT
+// own. They are deterministic and belong exactly here — plain code over the
+// decoded proposal, structured defects, never zod refinements
+// (docs/developmentPlan/d34-output-contracts.md, C2 correction note):
+//
+//   READINESS_ROUTE_CONTRACT: "On verdict: fail … every blocking gap … each
+//   with at least these fields: … closure: what resolving it (or, for DEFER,
+//   recording the DEFERRED transition) would require."
+//   "On verdict: pass, the front matter carries gaps: [] (or names no
+//   unresolved gap)."
+//
+// Violations are producer-result defects: one bounded in-step result repair
+// (MAX_RESULT_REPAIRS), never a workflow iteration; exhaustion fails closed
+// before write.
+
+export function validateReadinessProposal(proposal: ReadinessProposal): readonly ContractDefect[] {
+  const defects: ContractDefect[] = [];
+  if (proposal.verdict === 'pass' && proposal.gaps.length > 0) {
+    defects.push({
+      code: 'PASS_WITH_GAPS',
+      message:
+        `verdict 'pass' carries ${proposal.gaps.length} gap(s) — a pass means no unresolved gaps ` +
+        `(the methodology requires gaps: [] on pass); either fail with classified gaps or revise the judgment`,
+    });
+  }
+  if (proposal.verdict === 'fail' && proposal.gaps.length === 0) {
+    defects.push({
+      code: 'FAIL_WITHOUT_GAPS',
+      message:
+        "verdict 'fail' carries no gaps — a failing review must classify at least one gap " +
+        '(CAN_RESOLVE, DEFER, HUMAN_DECISION, or EXPLORE_AS_WORK)',
+    });
+  }
+  if (proposal.verdict === 'fail') {
+    proposal.gaps.forEach((gap, index) => {
+      if (gap.closure === undefined) {
+        defects.push({
+          code: 'GAP_CLOSURE_MISSING',
+          ref: gap.target,
+          message:
+            `gap '${gap.target}' (entry ${index + 1}) has no closure — on a fail verdict EVERY gap must state ` +
+            'what resolving it (or, for DEFER, recording the DEFERRED transition) requires',
+        });
+      }
+    });
+  }
+  return defects;
+}
+
 // ─── The contract (hooks + renderer) ──────────────────────────────────────────
 
 /**
@@ -180,14 +235,22 @@ export const READINESS_OUTPUT_CONTRACT: OutputContract<ReadinessProposal> = {
       'The system serializes the artifact itself — never emit YAML, front ' +
       'matter, paths, or schemaVersion.',
     fields: {
-      '/verdict': "'pass' only if all seven rubric dimensions pass — otherwise 'fail'.",
-      '/gaps': 'Every gap blocking or awaiting its dedicated path, in semantic order.',
+      '/verdict':
+        "'pass' ONLY with zero gaps (gaps: []); 'fail' requires at least one classified gap. " +
+        "'pass' only if all seven rubric dimensions pass.",
+      '/gaps': 'On a fail verdict: every gap keeping the verdict from pass, in semantic order.',
       '/gaps/items/classification':
         'Exactly one of CAN_RESOLVE, DEFER, HUMAN_DECISION, EXPLORE_AS_WORK.',
       '/gaps/items/closure':
-        'What closing the gap requires; required for DEFER transitions, optional otherwise.',
+        'Required for every failing gap; for DEFER, describe what recording the DEFERRED transition requires.',
     },
   },
+
+  // C2 review correction — see validateReadinessProposal above: the
+  // pre-existing cross-field methodology rules are enforced here, in plain
+  // code over the decoded proposal (never zod refinements, never the
+  // renderer, never route derivation).
+  validate: validateReadinessProposal,
 
   reviewVerdict: (proposal) => proposal.verdict,
 

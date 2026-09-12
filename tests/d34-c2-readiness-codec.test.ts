@@ -28,6 +28,7 @@ import {
   READINESS_PROPOSAL_SCHEMA,
   renderReadiness,
   readinessProposalFromPersisted,
+  validateReadinessProposal,
   type ReadinessProposal,
 } from '../src/workflow/methodology/readiness-contract.js';
 import { parseReadinessArtifact } from '../src/workflow/methodology/readiness-artifact.js';
@@ -47,6 +48,7 @@ const FAIL_PROPOSAL: ReadinessProposal = {
       description: 'Networking latency claim is unverified',
       classification: 'CAN_RESOLVE',
       reason: 'Repository inspection can confirm it.',
+      closure: 'Inspect the repository and mark F3 KNOWN.',
     },
     {
       target: 'F7',
@@ -77,6 +79,7 @@ gaps:
     description: Networking latency claim is unverified
     classification: CAN_RESOLVE
     reason: Repository inspection can confirm it.
+    closure: Inspect the repository and mark F3 KNOWN.
   - target: F7
     description: Cross-platform scope undecided
     classification: HUMAN_DECISION
@@ -221,7 +224,51 @@ test('D.34.C2 HOOKS: reviewVerdict comes from the proposal; deriveRoute delegate
   assert.equal(passDerived?.ok, false, 'a pass carries no route — fail closed if derivation is demanded');
 });
 
-// ─── Seam integration (C1 acceptor composed over this contract) ──────────────
+// ─── Methodology invariants (C2 review correction — validate layer) ──────────
+
+test('D.34.C2 VALIDATE: the three methodology-forbidden combinations are deterministic defects', () => {
+  // The existing READINESS_ROUTE_CONTRACT forbids these; zod is structural
+  // and must not own the cross-field rule — validate() does.
+  const passWithGaps = validateReadinessProposal({
+    verdict: 'pass',
+    gaps: [{ target: 'F1', description: 'd', classification: 'CAN_RESOLVE', reason: 'r', closure: 'c' }],
+    bodyMarkdown: '',
+  });
+  assert.deepEqual(passWithGaps.map((d) => d.code), ['PASS_WITH_GAPS']);
+
+  const failWithoutGaps = validateReadinessProposal({ verdict: 'fail', gaps: [], bodyMarkdown: '' });
+  assert.deepEqual(failWithoutGaps.map((d) => d.code), ['FAIL_WITHOUT_GAPS']);
+
+  const closureMissing = validateReadinessProposal({
+    verdict: 'fail',
+    gaps: [
+      { target: 'F1', description: 'd', classification: 'DEFER', reason: 'r', closure: 'record DEFERRED' },
+      { target: 'F2', description: 'd', classification: 'CAN_RESOLVE', reason: 'r' },
+    ],
+    bodyMarkdown: '',
+  });
+  assert.deepEqual(closureMissing.map((d) => d.code), ['GAP_CLOSURE_MISSING']);
+  assert.equal(closureMissing[0].ref, 'F2', 'the defect names the offending gap target');
+
+  // The valid combinations remain clean.
+  assert.deepEqual(validateReadinessProposal(FAIL_PROPOSAL), []);
+  assert.deepEqual(validateReadinessProposal(PASS_EMPTY), []);
+  assert.deepEqual(validateReadinessProposal(PASS_BODY), []);
+});
+
+test('D.34.C2 VALIDATE: the dangerous case — pass + non-empty gaps — can never pass the verdict gate', () => {
+  // The reason this correction exists: without validate, a pass-with-gaps
+  // proposal would sail through reviewVerdict as 'pass' and its unresolved
+  // gaps would never participate in route derivation.
+  const acceptor = createResultAcceptor(READINESS_OUTPUT_CONTRACT, {}, 'definition-readiness');
+  const result = acceptor({
+    verdict: 'pass',
+    gaps: [{ target: 'F1', description: 'd', classification: 'HUMAN_DECISION', reason: 'r', closure: 'c' }],
+    bodyMarkdown: '',
+  });
+  assert.equal(result.ok, false, 'an internally contradictory readiness judgment is a producer-result defect');
+  if (!result.ok) assert.match(result.repairInstruction, /PASS_WITH_GAPS/);
+});
 
 test('D.34.C2 SEAM: the acceptor rejects malformed payloads with a result-repair instruction naming the contract', () => {
   const acceptor = createResultAcceptor(READINESS_OUTPUT_CONTRACT, { workItemId: 'w' }, 'definition-readiness');
@@ -231,9 +278,16 @@ test('D.34.C2 SEAM: the acceptor rejects malformed payloads with a result-repair
     assert.match(bad.repairInstruction, /output contract for 'definition-readiness'/);
     assert.match(bad.repairInstruction, /Re-submit the complete corrected result/);
   }
-  const good = acceptor({
+  const methodologyInvalid = acceptor({
     verdict: 'fail',
     gaps: [{ target: 'F1', description: 'd', classification: 'CAN_RESOLVE', reason: 'r' }],
+    bodyMarkdown: 'body',
+  });
+  assert.equal(methodologyInvalid.ok, false, 'structurally valid but methodology-invalid → validate layer rejects');
+  if (!methodologyInvalid.ok) assert.match(methodologyInvalid.repairInstruction, /GAP_CLOSURE_MISSING/);
+  const good = acceptor({
+    verdict: 'fail',
+    gaps: [{ target: 'F1', description: 'd', classification: 'CAN_RESOLVE', reason: 'r', closure: 'c' }],
     bodyMarkdown: 'body',
   });
   assert.deepEqual(good, { ok: true });
