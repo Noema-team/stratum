@@ -1,6 +1,7 @@
 import type { WorkflowDefinition } from '../types.js';
 import {
   DEFINITION_CONTRACT,
+  DEFINITION_CONTRACT_FOR_REVIEW,
   READINESS_RUBRIC,
   GAP_CLASSIFICATION,
   REFINE_DEFINITION_SCOPE,
@@ -160,19 +161,22 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Evaluate the current Definition against the readiness rubric for the candidate ' +
         'bounded scope it defines.\n\n' +
-        // D.3d.3 — every readiness-review step receives the SAME Definition
-        // contract the drafter received. The rubric's consistency and
-        // risky-assumptions dimensions (and the epistemic discipline the
-        // live qualification exposed: a Definition whose fact ledger omits
-        // or weakens authoritative supplied facts must fail review, not
-        // pass) are only judgeable against the contract that defines what
-        // KNOWN/ASSUMED/UNKNOWN mean and where status may live. The review
-        // step is single-turn, so this contract cannot be recovered by
+        // D.3d.3 — every readiness-review step receives the Definition
+        // contract's EPISTEMIC rules (D.34 C3 split: the reviewer judges the
+        // canonical Definition on disk; it never authors Definition bytes,
+        // so the serialization shape is not in its prompt — C4 moves that
+        // half into the drafter's schema projection). The rubric's
+        // consistency and risky-assumptions dimensions (and the epistemic
+        // discipline the live qualification exposed: a Definition whose fact
+        // ledger omits or weakens authoritative supplied facts must fail
+        // review, not pass) are only judgeable against the rules that define
+        // what KNOWN/ASSUMED/UNKNOWN mean and where status may live. The
+        // review step is single-turn, so these rules cannot be recovered by
         // reading any document at runtime.
-        `${DEFINITION_CONTRACT}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
+        `${DEFINITION_CONTRACT_FOR_REVIEW}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
-        'Declare your verdict as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        'Set the proposal verdict to "pass" only if all ' +
+        'seven dimensions pass; otherwise "fail". The system serializes the readiness artifact itself — your reply is the semantic payload only.' +
         `\n\n`,
       // The physical materialized path, not the semantic ref: ContextManager
       // resolves inputArtifactRefs against the filesystem, it does not query
@@ -225,16 +229,17 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Evaluate the current Definition against the readiness rubric for the candidate ' +
         'bounded scope it defines.\n\n' +
-        // D.3d.3 — same contract as the drafter (see definition-readiness-review).
-        `${DEFINITION_CONTRACT}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
+        // D.3d.3 — same epistemic rules as the first review step (see
+        // definition-readiness-review; D.34 C3 split).
+        `${DEFINITION_CONTRACT_FOR_REVIEW}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'A residual DEFER gap here means apply-deferred-gaps failed to perform its declared ' +
         'job — never leave a DEFER classification standing here; either its fact is now ' +
         'DEFERRED (no longer an actionable gap — DEFER was never blocking) or it was ' +
         'misclassified and belongs to CAN_RESOLVE, ' +
         'HUMAN_DECISION, or EXPLORE_AS_WORK instead.\n\n' +
-        'Declare your verdict as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        'Set the proposal verdict to "pass" only if all ' +
+        'seven dimensions pass; otherwise "fail". The system serializes the readiness artifact itself — your reply is the semantic payload only.' +
         `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {
@@ -309,13 +314,14 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Evaluate the current Definition against the readiness rubric for the candidate ' +
         'bounded scope it defines.\n\n' +
-        // D.3d.3 — same contract as the drafter (see definition-readiness-review).
-        `${DEFINITION_CONTRACT}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
+        // D.3d.3 — same epistemic rules as the first review step (see
+        // definition-readiness-review; D.34 C3 split).
+        `${DEFINITION_CONTRACT_FOR_REVIEW}\n\n${READINESS_RUBRIC}\n\n${GAP_CLASSIFICATION}\n\n` +
         `${READINESS_ROUTE_CONTRACT(['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'])}\n\n` +
         'A further HUMAN_DECISION gap routes `human` again — one checkpoint per question, ' +
         'chained within this same WorkflowRun for as many real human decisions as remain.\n\n' +
-        'Declare your verdict as `verdict: pass` only if all ' +
-        'seven dimensions pass, otherwise `verdict: fail` — never omit the verdict line.' +
+        'Set the proposal verdict to "pass" only if all ' +
+        'seven dimensions pass; otherwise "fail". The system serializes the readiness artifact itself — your reply is the semantic payload only.' +
         `\n\n`,
       inputArtifactRefs: ['.sle/work/{workItemId}/definition.md'],
       outputArtifact: {

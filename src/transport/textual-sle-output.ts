@@ -221,6 +221,56 @@ ${SLE_CLOSE}
   comment or preamble style, or with any wrapper other than these exact delimiters.`;
 }
 
+// D.34 C3 — proposal mode. When the runner injects resultSchemaText (the
+// step's declared output contract teaches the payload), the textual channel
+// carries the SEMANTIC PROPOSAL as pure JSON — no preamble envelope, no
+// '## <path>' sections, no verdict line, no artifact bytes. The system
+// serializes the artifact itself (DDR-034 §7.2: verdict and payload are one
+// encoding; the model authors no mechanical state).
+function proposalFormatInstruction(ctx: TransportContext): string {
+  return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+Reply with a SINGLE JSON object and NOTHING else — no prose, no Markdown code fences, no YAML,
+no front matter, no delimiters, no file paths, and no verdict line outside the JSON. The
+system serializes the artifact itself; your entire reply is the semantic payload, matching
+exactly this shape:
+
+${ctx.resultSchemaText}
+
+- Every field shown is required unless explicitly optional.
+- The reply must be valid JSON and nothing else: it will be parsed mechanically, and the
+  artifact bytes are produced by the system from it.`;
+}
+
+/** Pull the outermost JSON object out of a reply that may have stray prose
+ *  or Markdown fencing around it (models fence JSON despite instructions). */
+function extractJsonPayload(raw: string): unknown {
+  const trimmed = raw.trim();
+  let candidate = trimmed;
+  const fence = trimmed.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/);
+  if (fence) candidate = fence[1].trim();
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new TransportParseError(
+      'Reply contained no JSON object',
+      raw,
+      'the reply contained no JSON object (proposal replies must be a single JSON object)',
+      'absent',
+    );
+  }
+  const slice = candidate.slice(start, end + 1);
+  try {
+    return JSON.parse(slice);
+  } catch (err) {
+    throw new TransportParseError(
+      'Reply was not valid JSON',
+      raw,
+      `the JSON payload could not be parsed: ${err instanceof Error ? err.message : String(err)}`,
+      'malformed',
+    );
+  }
+}
+
 function singleTurnFormatInstruction(ctx: TransportContext): string {
   const roleLine = `role: ${ctx.role}`;
   const nodeLine = `node: ${ctx.nodeId ?? '<this step\'s id, shown in Current State above>'}`;
@@ -265,6 +315,9 @@ export class TextualSleOutputTransport implements ResultTransport {
 
   formatInstruction(ctx: TransportContext): string {
     if (ctx.execution === 'multi-turn') return multiTurnFormatInstruction(ctx);
+    // D.34 C3 — a step whose declared contract taught the proposal schema
+    // gets proposal-mode teaching: the reply IS the JSON payload.
+    if (ctx.resultSchemaText !== undefined) return proposalFormatInstruction(ctx);
     return singleTurnFormatInstruction(ctx);
   }
 
@@ -294,6 +347,12 @@ export class TextualSleOutputTransport implements ResultTransport {
   }
 
   extractSingleTurn(raw: string, ctx: TransportContext): StepResult {
+    // D.34 C3 — proposal mode: the runner injected a schema (the step has a
+    // registered output contract), so the reply is the semantic payload as
+    // JSON. No preamble envelope is taught or parsed on this path.
+    if (ctx.resultSchemaText !== undefined) {
+      return { kind: 'proposal', value: extractJsonPayload(raw) };
+    }
     // D.3d.5 closure — preserve the absent-vs-malformed taxonomy on THIS
     // path too (matching extractProduce): no preamble marker at all is
     // 'absent'; a preamble that exists but cannot be parsed is 'malformed'.
@@ -325,6 +384,16 @@ export class TextualSleOutputTransport implements ResultTransport {
   }
 
   repairInstruction(ctx: TransportContext, kind: 'absent' | 'malformed', reason?: string): string {
+    // D.34 C3 — proposal mode: the defect is about the JSON payload, not the
+    // envelope; teach the payload shape again, never the legacy envelope.
+    if (ctx.resultSchemaText !== undefined) {
+      return (
+        `Your reply could not be consumed (${kind}). Reason: ${reason ?? 'no valid JSON payload'}\n` +
+        'Reply again with a SINGLE valid JSON object exactly in the RESULT SHAPE taught above — ' +
+        'no prose, no code fences, no YAML, no front matter, no paths. The system serializes ' +
+        'the artifact itself from your payload.'
+      );
+    }
     // Both kinds teach the representation the ACTIVE execution path parses —
     // never cross-teach (a single-turn preamble reply must not be repaired
     // with multi-turn delimiter instructions, or vice versa).
