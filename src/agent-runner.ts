@@ -342,7 +342,13 @@ export class AgentRunner {
           fsModule: this.fs,
           // D.3d.5 commit 1 — the loop delegates serialization (syntax
           // teaching, extraction, bounded format repair) to the transport.
-          resultTransport: this.resultTransport,
+          // D.34 C5 — ONLY an explicitly configured override is forwarded:
+          // forwarding the runner's resolved default would outrank the
+          // loop's negotiation and pin every multi-turn contract step to
+          // the textual channel. Without an explicit override, the loop
+          // negotiates (submit-result for schema-carrying steps on
+          // multi-turn-capable providers; textual everywhere else).
+          ...(this.runnerConfig.resultTransport ? { resultTransport: this.resultTransport } : {}),
           // D.3d.5 closure — real execution metadata on this path too:
           // the multi-turn transport must never fall back to generic
           // placeholders when the step declares an actual output artifact.

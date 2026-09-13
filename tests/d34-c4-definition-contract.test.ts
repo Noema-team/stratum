@@ -44,6 +44,7 @@ import {
   validateSchemaAnnotations,
 } from '../src/workflow/contracts.js';
 import { TextualSleOutputTransport, SLE_OPEN, SLE_CLOSE } from '../src/transport/textual-sle-output.js';
+import { AgentRunner } from '../src/agent-runner.js';
 import { buildAgentRunner } from '../src/application.js';
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
 import type { ContextManager } from '../src/context-manager.js';
@@ -632,26 +633,51 @@ test('D.34.C4 E2E single-turn: result-repair exhaustion fails closed before writ
   assert.equal(existsSync(join(h.root, '.sle/work/w/definition.md')), false, 'no bytes written');
 });
 
-test('D.34.C4 E2E MULTI-TURN (gate regression): Definition produce on a completeMultiTurn provider submits the proposal and Stratum materializes', async () => {
+// D.34 C5 note — the NEGOTIATED multi-turn wire for contract steps is now
+// the submit-result channel (covered exhaustively by the C5 suite). These
+// two tests pin the multi-turn TEXTUAL PROPOSAL FALLBACK (DDR-034 §6: the
+// textual channel remains intact everywhere) via an explicit transport
+// override — the same delimited wire C4 introduced, exercised end to end.
+function makeTextualFallbackHarness(replies: string[]) {
+  const root = mkdtempSync(join(tmpdir(), 'd34-c4-mtfallback-'));
+  const provider = new MultiTurnProvider(replies);
+  const artifacts = new RecordingArtifacts();
+  const runner = new AgentRunner(
+    new ScriptedContextManager(),
+    provider,
+    root,
+    { writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+    {
+      model: 'test-model',
+      outputContracts: { definition: CONTRACT },
+      resultTransport: new TextualSleOutputTransport(),
+    },
+    undefined,
+    artifacts,
+  );
+  return { runner, provider, artifacts, root };
+}
+
+test('D.34.C4 E2E MULTI-TURN (textual fallback): delimited proposal → SYSTEM-rendered bytes', async () => {
   const turn1 = `I inspected the repository.\n${SLE_OPEN}\n${JSON.stringify({
     goal: 'Ship the widget',
     facts: [{ id: 'F1', statement: 'It must ship.', status: 'KNOWN', source: 'human' }],
     bodyMarkdown: 'Notes.',
   })}\n${SLE_CLOSE}`;
-  const h = makeMultiTurnHarness([turn1]);
+  const h = makeTextualFallbackHarness([turn1]);
   const result = await h.runner.run('explorer', synthesizeCtx(h.root));
   assert.equal(result.success, true, result.error);
   const written = readFileSync(join(h.root, '.sle/work/w/definition.md'), 'utf-8');
   assert.equal(
     written,
     renderDefinition(DEFINITION_PROPOSAL_SCHEMA.parse(JSON.parse(turn1.match(/\{[\s\S]*\}/)![0]))),
-    'multi-turn proposal → SYSTEM-rendered canonical bytes',
+    'multi-turn textual proposal → SYSTEM-rendered canonical bytes',
   );
   assert.ok(h.provider.calls[0].messages, 'multi-turn provider used (not the single-turn fallback)');
   assert.equal(h.artifacts.saved.length, 1, 'provenance recorded');
 });
 
-test('D.34.C4 E2E MULTI-TURN: result repair continues the conversation; exhaustion fails closed', async () => {
+test('D.34.C4 E2E MULTI-TURN (textual fallback): result repair continues the conversation; exhaustion fails closed', async () => {
   const badObj = JSON.stringify({
     goal: 'Ship the widget',
     facts: [{ id: 'F1', statement: 'Decided.', status: 'DECIDED', source: 'decision' }],
@@ -662,7 +688,7 @@ test('D.34.C4 E2E MULTI-TURN: result repair continues the conversation; exhausti
     facts: [{ id: 'F1', statement: 'Decided.', status: 'DECIDED', source: 'decision', decisionRef: 'D-1' }],
     bodyMarkdown: '',
   });
-  const repair = makeMultiTurnHarness([
+  const repair = makeTextualFallbackHarness([
     `${SLE_OPEN}\n${badObj}\n${SLE_CLOSE}`,
     `${SLE_OPEN}\n${goodObj}\n${SLE_CLOSE}`,
   ]);
@@ -671,7 +697,7 @@ test('D.34.C4 E2E MULTI-TURN: result repair continues the conversation; exhausti
   assert.equal(ok.result_repairs, 1);
   assert.match((repair.provider.calls[1] as any).messages.at(-1).content, /DECISION_REF_MISSING/, 'same conversation continued');
 
-  const exhaust = makeMultiTurnHarness([
+  const exhaust = makeTextualFallbackHarness([
     `${SLE_OPEN}\n${badObj}\n${SLE_CLOSE}`,
     `${SLE_OPEN}\n${badObj}\n${SLE_CLOSE}`,
   ]);
