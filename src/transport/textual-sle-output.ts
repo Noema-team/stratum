@@ -221,6 +221,32 @@ ${SLE_CLOSE}
   comment or preamble style, or with any wrapper other than these exact delimiters.`;
 }
 
+// D.34 C4 — proposal mode on the MULTI-TURN textual path. A step whose
+// declared contract taught the payload submits its semantic result through
+// the SAME delimiters (they remain the loop's structural compliance signal)
+// with a SINGLE JSON object inside — no '### <path>' section, no artifact
+// bytes, no paths. The system serializes the artifact itself (DDR-034 §7).
+// This is the explicit safe proposal path that keeps a registered contract
+// working on multi-turn-capable providers instead of failing closed.
+function multiTurnProposalFormatInstruction(ctx: TransportContext): string {
+  return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+End your final message with your complete semantic result wrapped in exactly these literal
+delimiters — a SINGLE JSON object and nothing else inside them:
+
+${SLE_OPEN}
+{"the complete result as one JSON object matching the RESULT SHAPE below"}
+${SLE_CLOSE}
+
+${ctx.resultSchemaText}
+
+- The delimiters are literal structural requirements: a reply without them cannot be parsed
+  and fails the step regardless of content quality.
+- Inside the delimiters: valid JSON only — no prose, no Markdown, no YAML, no front matter,
+  no file paths, no '###' section, no verdict line.
+- Every field shown in the shape is required unless explicitly optional. The system
+  serializes the artifact itself; the JSON payload is your entire result.`;
+}
+
 // D.34 C3 — proposal mode. When the runner injects resultSchemaText (the
 // step's declared output contract teaches the payload), the textual channel
 // carries the SEMANTIC PROPOSAL as pure JSON — no preamble envelope, no
@@ -242,8 +268,11 @@ ${ctx.resultSchemaText}
 }
 
 /** Pull the outermost JSON object out of a reply that may have stray prose
- *  or Markdown fencing around it (models fence JSON despite instructions). */
-function extractJsonPayload(raw: string): unknown {
+ *  or Markdown fencing around it (models fence JSON despite instructions).
+ *  `noJsonKind` classifies a reply/block with no JSON object at all:
+ *  'absent' when the whole single-turn reply carries no payload, 'malformed'
+ *  when a delimited block WAS present but contains no JSON (D.34 C4). */
+function extractJsonPayload(raw: string, noJsonKind: 'absent' | 'malformed' = 'absent'): unknown {
   const trimmed = raw.trim();
   let candidate = trimmed;
   const fence = trimmed.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/);
@@ -255,7 +284,7 @@ function extractJsonPayload(raw: string): unknown {
       'Reply contained no JSON object',
       raw,
       'the reply contained no JSON object (proposal replies must be a single JSON object)',
-      'absent',
+      noJsonKind,
     );
   }
   const slice = candidate.slice(start, end + 1);
@@ -269,6 +298,52 @@ function extractJsonPayload(raw: string): unknown {
       'malformed',
     );
   }
+}
+
+// D.34 C4 — multi-turn proposal extraction: the delimiters are required (the
+// loop's structural compliance signal), the payload between them must be a
+// single JSON object. Absent-vs-malformed taxonomy preserved end to end:
+// no opening delimiter → 'absent'; delimiters present but unclosed, or a
+// payload that is not parseable JSON → 'malformed'.
+//
+// D.34 C4 review closure — CARDINALITY is fail-closed: exactly ONE opening
+// delimiter and exactly ONE corresponding closing delimiter. Multiple
+// proposal blocks in one reply are competing semantic results; this channel
+// drives deterministic validation and canonical system state, so the
+// transport must never arbitrarily select one — they are 'malformed' and
+// enter the existing bounded format repair. (Minimum invariant for this
+// temporary textual channel; C5's submit_result replaces it.)
+function extractDelimitedJsonPayload(raw: string): unknown {
+  const open = raw.indexOf(SLE_OPEN);
+  if (open === -1) {
+    throw new TransportParseError(
+      `Missing ${SLE_OPEN} delimiter`,
+      raw,
+      'the reply contained no SLE-OUTPUT block',
+      'absent',
+    );
+  }
+  const closeIdx = raw.indexOf(SLE_CLOSE, open);
+  if (closeIdx === -1) {
+    throw new TransportParseError(
+      `Missing ${SLE_CLOSE} delimiter`,
+      raw,
+      'the SLE-OUTPUT block was opened but never closed',
+      'malformed',
+    );
+  }
+  const secondOpen = raw.indexOf(SLE_OPEN, open + SLE_OPEN.length);
+  const secondClose = raw.indexOf(SLE_CLOSE, closeIdx + SLE_CLOSE.length);
+  if (secondOpen !== -1 || secondClose !== -1) {
+    throw new TransportParseError(
+      'Multiple SLE-OUTPUT result blocks in one reply',
+      raw,
+      'the reply carried more than one result block — a proposal reply must carry EXACTLY ONE ' +
+        'SLE-OUTPUT block containing one JSON object; competing results cannot be resolved by the transport',
+      'malformed',
+    );
+  }
+  return extractJsonPayload(raw.slice(open + SLE_OPEN.length, closeIdx), 'malformed');
 }
 
 function singleTurnFormatInstruction(ctx: TransportContext): string {
@@ -314,14 +389,29 @@ export class TextualSleOutputTransport implements ResultTransport {
   readonly name = 'textual-sle-output';
 
   formatInstruction(ctx: TransportContext): string {
+    // D.34 C3/C4 — a step whose declared contract taught the proposal schema
+    // gets proposal-mode teaching: the reply carries the semantic payload as
+    // a single JSON object, in whichever envelope the ACTIVE execution path
+    // parses (multi-turn: the SLE-OUTPUT delimiters; single-turn: none).
+    if (ctx.resultSchemaText !== undefined) {
+      return ctx.execution === 'multi-turn'
+        ? multiTurnProposalFormatInstruction(ctx)
+        : proposalFormatInstruction(ctx);
+    }
     if (ctx.execution === 'multi-turn') return multiTurnFormatInstruction(ctx);
-    // D.34 C3 — a step whose declared contract taught the proposal schema
-    // gets proposal-mode teaching: the reply IS the JSON payload.
-    if (ctx.resultSchemaText !== undefined) return proposalFormatInstruction(ctx);
     return singleTurnFormatInstruction(ctx);
   }
 
   extractProduce(raw: string, ctx: TransportContext): StepResult {
+    // D.34 C4 — proposal mode on the multi-turn path: the runner injected a
+    // schema (the step has a registered output contract), so the delimited
+    // payload is the semantic proposal. Without this, a registered contract
+    // on a multi-turn-capable provider would fail closed against legacy
+    // materialized bytes (C1 rule 4) — the contract must work on BOTH
+    // current execution paths.
+    if (ctx.resultSchemaText !== undefined) {
+      return { kind: 'proposal', value: extractDelimitedJsonPayload(raw) };
+    }
     if (!raw.includes(SLE_OPEN)) {
       throw new TransportParseError(
         `Missing ${SLE_OPEN} delimiter`,
@@ -339,10 +429,10 @@ export class TextualSleOutputTransport implements ResultTransport {
       }
       throw err;
     }
-    // D.34 C1 — the textual fallback is a BYTES transport: it always yields
-    // the materialized kind. A proposal-kind result can only come from a
-    // transport that actually negotiated a semantic channel (C5's
-    // submit_result / C6's completeStructured).
+    // D.34 C1 — the textual fallback is a BYTES transport on the legacy
+    // path: it yields the materialized kind. A proposal-kind result can
+    // only come from a negotiated semantic channel (the schema-injected
+    // paths above, or C5's submit_result / C6's completeStructured).
     return { kind: 'materialized', artifacts: sections };
   }
 
@@ -384,9 +474,21 @@ export class TextualSleOutputTransport implements ResultTransport {
   }
 
   repairInstruction(ctx: TransportContext, kind: 'absent' | 'malformed', reason?: string): string {
-    // D.34 C3 — proposal mode: the defect is about the JSON payload, not the
-    // envelope; teach the payload shape again, never the legacy envelope.
+    // D.34 C3/C4 — proposal mode: the defect is about the JSON payload, not
+    // the envelope; teach the payload shape again, in the envelope the
+    // ACTIVE execution path parses (multi-turn keeps the delimiters,
+    // single-turn has none). Never cross-teach.
     if (ctx.resultSchemaText !== undefined) {
+      if (ctx.execution === 'multi-turn') {
+        return (
+          `Your reply could not be consumed (${kind}). Reason: ${reason ?? 'no valid JSON payload'}\n` +
+          'Reply again with your complete result as a SINGLE valid JSON object wrapped in the ' +
+          `exact ${SLE_OPEN} ... ${SLE_CLOSE} delimiters — valid JSON and nothing else inside, ` +
+          'exactly in the RESULT SHAPE taught above. No prose, no code fences, no YAML, no ' +
+          'front matter, no paths, no section headers. The system serializes the artifact ' +
+          'itself from your payload.'
+        );
+      }
       return (
         `Your reply could not be consumed (${kind}). Reason: ${reason ?? 'no valid JSON payload'}\n` +
         'Reply again with a SINGLE valid JSON object exactly in the RESULT SHAPE taught above — ' +
