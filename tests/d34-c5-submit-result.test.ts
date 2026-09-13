@@ -121,13 +121,48 @@ test('D.34.C5 TOOL: submission extraction — none/single/object/stringified', (
   const submit = { type: 'tool_use', id: 't2', name: SUBMIT_RESULT_TOOL_NAME, input: VALID_PROPOSAL };
   const one = t.extractToolSubmission([submit], CTX);
   assert.deepEqual(one, { kind: 'proposal', value: VALID_PROPOSAL });
-  const mixed = t.extractToolSubmission([readTurn[0], submit], CTX);
-  assert.equal(mixed?.kind, 'proposal', 'mixed turn still yields the submission');
   const stringified = t.extractToolSubmission(
     [{ type: 'tool_use', id: 't3', name: SUBMIT_RESULT_TOOL_NAME, input: JSON.stringify(VALID_PROPOSAL) }],
     CTX,
   );
   assert.deepEqual(stringified, { kind: 'proposal', value: VALID_PROPOSAL }, 'stringified payload tolerated');
+});
+
+// D.34 C5 review closure — submit_result is TERMINAL and EXCLUSIVE for its
+// turn: a turn that both requests more information and declares the final
+// authoritative result is contradictory; a proposal that becomes canonical
+// state must never be accepted while a co-declared investigation request is
+// silently ignored (the loop would return success before the read ever ran).
+test('D.34.C5 TOOL: a mixed read+submission turn fails closed as malformed', () => {
+  const t = new SubmitResultTransport();
+  const mixed = [
+    { type: 'tool_use', id: 'r1', name: 'read_file', input: { path: 'x' } },
+    { type: 'tool_use', id: 's1', name: SUBMIT_RESULT_TOOL_NAME, input: VALID_PROPOSAL },
+  ];
+  let caught: any;
+  try {
+    (t as any).extractToolSubmission(mixed, CTX);
+  } catch (e) {
+    caught = e;
+  }
+  assert.ok(caught, 'read + valid submission must NOT be accepted');
+  assert.equal(caught.name, 'TransportParseError');
+  assert.equal(caught.kind, 'malformed');
+  assert.match(caught.reason, /investigate with read tools on EARLIER turns, then call submit_result alone/);
+  const threeWay = [
+    { type: 'tool_use', id: 'r1', name: 'list_directory', input: { path: '.' } },
+    { type: 'tool_use', id: 'r2', name: 'read_file', input: { path: 'y' } },
+    { type: 'tool_use', id: 's1', name: SUBMIT_RESULT_TOOL_NAME, input: VALID_PROPOSAL },
+  ];
+  let caught2: any;
+  try {
+    (t as any).extractToolSubmission(threeWay, CTX);
+  } catch (e) {
+    caught2 = e;
+  }
+  assert.ok(caught2, 'even with two reads, the submission turn stays fail-closed');
+  assert.equal(caught2.name, 'TransportParseError');
+  assert.equal(caught2.kind, 'malformed');
 });
 
 test('D.34.C5 TOOL: fail-closed cardinality — multiple submissions are malformed, never selected among', () => {
@@ -313,17 +348,24 @@ test('D.34.C5 E2E: multiple submissions in one turn → malformed → bounded re
   assert.equal(readFileSync(join(h.root, '.sle/work/w/definition.md'), 'utf-8'), renderDefinition(VALID_PROPOSAL));
 });
 
-test('D.34.C5 E2E: mixed turn (read + invalid submission) answers every tool_use, then succeeds', async () => {
+test('D.34.C5 E2E: mixed read+submission turn fails closed → format repair → sole submission succeeds', async () => {
+  // The co-declared read request is NEVER silently ignored: the turn is
+  // malformed (terminal-exclusivity rule), both tool_uses are answered, and
+  // no result is accepted from that turn; the model then submits alone.
   const h = makeHarness([
-    { stop_reason: 'tool_use', tool_uses: [{ id: 'r1', name: 'read_file', input: { path: 'x' } }, submit(INVALID_PROPOSAL, 's1')] },
+    { stop_reason: 'tool_use', tool_uses: [{ id: 'r1', name: 'read_file', input: { path: 'x' } }, submit(VALID_PROPOSAL, 's1')] },
     { stop_reason: 'tool_use', tool_uses: [submit(VALID_PROPOSAL, 's2')] },
   ]);
   const result = await h.runner.run('explorer', synthesizeCtx(h.root));
   assert.equal(result.success, true, result.error);
-  assert.equal(result.result_repairs, 1);
-  const msgs = h.provider.multiTurnCalls[1].messages as Array<{ role: string; content: Array<{ type: string; tool_use_id: string }> }>;
-  const answered = (msgs.at(-1) as any).content.map((b: any) => b.tool_use_id).sort();
-  assert.deepEqual(answered, ['r1', 's1'], 'read tool and rejected submission both answered');
+  assert.equal(result.format_repairs, 1, 'the mixed turn took the FORMAT repair budget');
+  assert.equal(result.result_repairs, undefined, 'no result repair — nothing was rejected, nothing was accepted from that turn');
+  const msgs = h.provider.multiTurnCalls[1].messages as Array<{ role: string; content: Array<{ type: string; tool_use_id: string; content: string }> }>;
+  const blocks = (msgs.at(-1) as any).content;
+  assert.deepEqual(blocks.map((b: any) => b.tool_use_id).sort(), ['r1', 's1'], 'every tool_use answered');
+  assert.match(blocks[0].content, /investigate with read tools on EARLIER turns/, 'terminal-exclusivity reason delivered');
+  // Nothing was materialized from the mixed turn — only the sole submission counts.
+  assert.equal(readFileSync(join(h.root, '.sle/work/w/definition.md'), 'utf-8'), renderDefinition(VALID_PROPOSAL));
 });
 
 test('D.34.C5 E2E: a legacy (no-contract) step on the SAME runner — no submission tool, textual bytes intact', async () => {
