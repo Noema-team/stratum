@@ -59,7 +59,15 @@ export interface MultiTurnParams {
   system: string;
   messages: MultiTurnMessage[];
   max_tokens: number;
-  tools: typeof AGENT_TOOLS;
+  // D.34 C5 — widened from `typeof AGENT_TOOLS` to a structural readonly
+  // array: the transport may add the result-submission tool (derived from
+  // the step's contract projection) alongside the read tools. Providers map
+  // these onto their own wire formats.
+  tools: ReadonlyArray<{
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+  }>;
 }
 
 export interface IMultiTurnProvider {
@@ -148,7 +156,6 @@ export class AgentLoop {
     private opts: AgentLoopOptions
   ) {
     this.fs = opts.fsModule ?? nodeFsPromises;
-    this.transport = resolveResultTransport(provider, opts.resultTransport);
     // D.3d.5 commit 1 (closure) — full real metadata on the multi-turn path,
     // mirroring the single-turn context the runner builds.
     this.transportCtx = {
@@ -163,6 +170,13 @@ export class AgentLoop {
       ...(opts.resultSchemaText !== undefined ? { resultSchemaText: opts.resultSchemaText } : {}),
       ...(opts.resultSchemaJson !== undefined ? { resultSchemaJson: opts.resultSchemaJson } : {}),
     };
+    // D.3d.5 commit 1 — result transport (serialization ownership seam).
+    // D.34 C5 — negotiation: a schema-carrying step (registered output
+    // contract) on this genuinely multi-turn path negotiates the
+    // submit-result tool channel; everything else stays textual.
+    this.transport = resolveResultTransport(provider, opts.resultTransport, {
+      resultSchemaJson: opts.resultSchemaJson,
+    });
   }
 
   async run(system: string, userMessage: string): Promise<AgentLoopResult> {
@@ -187,6 +201,11 @@ export class AgentLoop {
       await (this.opts.listTrackedFiles ?? listGitTrackedFiles)(this.opts.projectRoot),
     );
 
+    // D.34 C5 — the tools offered this turn: the read tools, plus the
+    // result-submission tool when the negotiated transport provides one
+    // (schema-carrying contract steps). Absent on every legacy path.
+    const submissionTool = this.transport.resultSubmissionTool?.(this.transportCtx);
+    const tools = submissionTool ? [...AGENT_TOOLS, submissionTool] : [...AGENT_TOOLS];
     const fail = (error: string): AgentLoopResult => ({
       success: false,
       turns_taken: turns,
@@ -205,7 +224,7 @@ export class AgentLoop {
           system,
           messages: [...messages], // snapshot to avoid reference aliasing
           max_tokens: this.opts.max_tokens ?? 4096,
-          tools: AGENT_TOOLS,
+          tools,
         });
       } catch (err) {
         return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -218,6 +237,83 @@ export class AgentLoop {
       }
 
       if (result.stop_reason === 'tool_use') {
+        // D.34 C5 — evaluate a result submission FIRST (the negotiated tool
+        // channel). The transport returns undefined for a plain read-tool
+        // turn (ordinary handling proceeds below), a proposal for exactly
+        // one submit call, or a TransportParseError for a malformed
+        // submission turn (e.g. cardinality > 1 — the C4 fail-closed rule
+        // on this channel too).
+        if (this.transport.extractToolSubmission) {
+          let submission: StepResult | undefined;
+          try {
+            submission = this.transport.extractToolSubmission(result.tool_uses, this.transportCtx);
+          } catch (err) {
+            if (!(err instanceof TransportParseError)) {
+              return fail(`Output parsing failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            // Malformed submission turn: the tool protocol requires EVERY
+            // tool_use to be answered, so each gets the repair instruction
+            // as its tool_result, then the bounded format-repair budget
+            // applies (shared policy — never a workflow iteration).
+            if (repairDecision(formatRepairs).action === 'fail-closed') {
+              return fail(formatRepairExhaustedDiagnostic(err, turns, formatRepairs));
+            }
+            formatRepairs++;
+            messages.push({ role: 'assistant', content: result.tool_uses });
+            messages.push({
+              role: 'user',
+              content: result.tool_uses.map((tu) => ({
+                type: 'tool_result' as const,
+                tool_use_id: tu.id,
+                content: this.transport.repairInstruction(this.transportCtx, err.kind, err.reason),
+              })),
+            });
+            continue;
+          }
+          if (submission !== undefined && submission.kind === 'proposal') {
+            if (!this.opts.acceptResult) {
+              return fail(
+                `Transport produced a semantic proposal for declared artifact '${this.opts.declaredArtifactId ?? '(undeclared)'}' but no result acceptor is registered — authoring/negotiation error (fail closed)`,
+              );
+            }
+            // D.34 C1 — the same runner-composed acceptor gates the
+            // proposal; the ONLY difference from the textual channel is
+            // the delivery of a rejection: a tool_result payload on this
+            // channel (same conversation, same budget, same instruction).
+            const acceptance = this.opts.acceptResult(submission.value);
+            if (!acceptance.ok) {
+              if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+                return fail(
+                  resultRepairExhaustedDiagnostic(
+                    this.opts.declaredArtifactId ?? '(undeclared)',
+                    acceptance.repairInstruction,
+                    turns,
+                    resultRepairs,
+                  ),
+                );
+              }
+              resultRepairs++;
+              messages.push({ role: 'assistant', content: result.tool_uses });
+              messages.push({
+                role: 'user',
+                content: result.tool_uses.map((tu) =>
+                  this.transport.toolRejectionTurn!(tu.id, acceptance.repairInstruction),
+                ),
+              });
+              continue;
+            }
+            await this.writeTurnMetadata(turns, toolCallLog);
+            return {
+              success: true,
+              proposal: { value: submission.value },
+              turns_taken: turns,
+              tokens_used: totalTokens,
+              format_repairs: formatRepairs,
+              result_repairs: resultRepairs,
+              rawText: result.text,
+            };
+          }
+        }
         // Append assistant tool_use turn, then handle tools and append results
         messages.push({ role: 'assistant', content: result.tool_uses });
         const resultBlocks: ToolResultBlock[] = [];
@@ -347,7 +443,9 @@ export class AgentLoop {
       await this.fs.mkdir(path.join(this.opts.projectRoot, metaDir), { recursive: true });
       await this.fs.writeFile(
         absMetaPath,
-        JSON.stringify({ node_id: nodeId, turns_taken, tool_calls }, null, 2),
+        // D.34 C5 — the negotiated result transport is part of the run
+        // record: which wire actually carried the semantic result.
+        JSON.stringify({ node_id: nodeId, result_transport: this.transport.name, turns_taken, tool_calls }, null, 2),
         'utf-8'
       );
       await runArtifacts.updateNodeStatus(workflowRunId, iteration, nodeId, {
