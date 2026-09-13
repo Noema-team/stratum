@@ -100,6 +100,39 @@ export interface TransportContext {
   resultSchemaJson?: Record<string, unknown>;
 }
 
+// ─── D.34 C5 — the submit-result (tool) channel ───────────────────────────────
+//
+// Structural types for the tool wire, declared HERE (not imported from
+// agent-loop.ts) so the transport layer stays dependency-free: the loop's
+// ToolUseBlock/ToolResultBlock are structurally identical and flow through
+// these without a cast. One tool name is reserved system-wide for semantic
+// result submission — the model can never choose or declare a contract, it
+// can only submit into the tool the runner derived from the workflow's own
+// declaration.
+export const SUBMIT_RESULT_TOOL_NAME = 'submit_result';
+
+/** A tool definition as the providers consume it (AGENT_TOOLS-shaped). */
+export interface ResultToolDef {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** Minimal structural view of an assistant tool_use block. */
+export interface TransportToolUse {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+/** Minimal structural view of a tool_result reply block. */
+export interface TransportToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+}
+
 /** Raised when a raw reply cannot be converted into a StepResult. */
 export class TransportParseError extends Error {
   constructor(
@@ -155,6 +188,41 @@ export interface ResultTransport {
    * block existed but could not be parsed (reason given).
    */
   repairInstruction(ctx: TransportContext, kind: 'absent' | 'malformed', reason?: string): string;
+
+  // ─── D.34 C5 — optional submit-result (tool) channel ────────────────────────
+  //
+  // A transport that negotiated the tool channel implements these; the
+  // textual fallback does not, and every call site guards with `?.` — the
+  // loop's knowledge stays exactly "ask the transport". The C5 gate holds
+  // by construction: these methods change ONLY how the semantic proposal
+  // travels and how a rejection is delivered — decoding, validation,
+  // materialization, routing, provenance, and repair budgets are all
+  // upstream/downstream of the transport and are not consulted here.
+
+  /**
+   * The result-submission tool this transport adds to the multi-turn tool
+   * list, with its input schema derived from TransportContext.resultSchemaJson
+   * (the workflow-declared contract's generated projection). Return
+   * undefined when no schema is present — never invent one.
+   */
+  resultSubmissionTool?(ctx: TransportContext): ResultToolDef | undefined;
+
+  /**
+   * Evaluate an assistant tool_use turn for a result submission. Returns
+   * a StepResult when the turn IS a submission (exactly one submit tool
+   * call — cardinality beyond one is a malformed TransportParseError),
+   * undefined when the turn carries no submission (a plain read-tool turn —
+   * the loop's ordinary tool handling proceeds), or throws
+   * TransportParseError for a malformed submission turn.
+   */
+  extractToolSubmission?(toolUses: readonly TransportToolUse[], ctx: TransportContext): StepResult | undefined;
+
+  /**
+   * The tool_result block that answers a REJECTED submission — the repair
+   * instruction is delivered as the tool's result payload, continuing the
+   * same conversation through the tool channel.
+   */
+  toolRejectionTurn?(toolUseId: string, repairInstruction: string): TransportToolResultBlock;
 }
 
 // ─── Shared bounded-repair policy (D.3d.5 closure: symmetric by construction) ─

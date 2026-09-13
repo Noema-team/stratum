@@ -34,6 +34,7 @@ import {
   type TransportContext,
   TransportParseError,
 } from './step-result.js';
+import { SubmitResultTransport } from './submit-result-transport.js';
 
 export const SLE_OPEN = '<<<SLE-OUTPUT>>>';
 export const SLE_CLOSE = '<<<END-SLE-OUTPUT>>>';
@@ -269,10 +270,9 @@ ${ctx.resultSchemaText}
 
 /** Pull the outermost JSON object out of a reply that may have stray prose
  *  or Markdown fencing around it (models fence JSON despite instructions).
- *  `noJsonKind` classifies a reply/block with no JSON object at all:
- *  'absent' when the whole single-turn reply carries no payload, 'malformed'
- *  when a delimited block WAS present but contains no JSON (D.34 C4). */
-function extractJsonPayload(raw: string, noJsonKind: 'absent' | 'malformed' = 'absent'): unknown {
+ *  Shared with the submit-result transport (C5), which applies the same
+ *  tolerance to a stringified tool input. */
+export function extractJsonPayload(raw: string, noJsonKind: 'absent' | 'malformed' = 'absent'): unknown {
   const trimmed = raw.trim();
   let candidate = trimmed;
   const fence = trimmed.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/);
@@ -523,14 +523,38 @@ export class TextualSleOutputTransport implements ResultTransport {
 // Single wiring point for the D.3d.5 capability order:
 //   1. provider-native structured output (no current provider implements it —
 //      probing for a capability Stratum cannot genuinely use would fake support);
-//   2. submit-result/tool-call mechanism (same status);
-//   3. textual SLE-OUTPUT fallback (implemented — today's transport for every
-//      provider).
+//   2. submit-result/tool-call mechanism (D.34 C5 — implemented for
+//      multi-turn contract steps);
+//   3. textual SLE-OUTPUT fallback (implemented — every other path).
 // Future adapters plug in HERE, keyed on a provider capability probe, not on
 // workflow configuration. An explicit transport override (tests, future
 // structured adapters) always wins.
-export function resolveResultTransport(_provider: unknown, override?: ResultTransport): ResultTransport {
+export interface TransportNegotiation {
+  /**
+   * The step's generated result schema (present only when the step's
+   * declared outputArtifact.type has a registered output contract). The
+   * submit-result channel is negotiated ONLY for schema-carrying steps —
+   * legacy steps keep the textual bytes transport byte-for-byte.
+   */
+  resultSchemaJson?: Record<string, unknown>;
+}
+
+export function resolveResultTransport(
+  _provider: unknown,
+  override?: ResultTransport,
+  negotiation?: TransportNegotiation,
+): ResultTransport {
   if (override) return override;
+  // D.34 C5 — a schema-carrying step on a provider that genuinely runs the
+  // multi-turn tool loop gets the submit-result channel (capability probe:
+  // same `completeMultiTurn` presence check AgentRunner itself uses — never
+  // a faked capability). Everything else stays on the textual fallback.
+  if (
+    negotiation?.resultSchemaJson !== undefined &&
+    typeof (_provider as { completeMultiTurn?: unknown } | null)?.completeMultiTurn === 'function'
+  ) {
+    return new SubmitResultTransport();
+  }
   return new TextualSleOutputTransport();
 }
 
