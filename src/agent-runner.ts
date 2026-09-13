@@ -450,7 +450,15 @@ export class AgentRunner {
       // byte-for-byte. This slots into the existing single-turn execution
       // policy (reviews stay single-turn); produce steps keep the C5
       // multi-turn negotiation — this seam never reopens multi-turn review.
+      //
+      // C6 review closure 1 — the channel is REVIEW-ONLY by INVARIANT, not
+      // by coincidence of today's capability sets: a structured-only
+      // provider must not silently turn Definition produce steps into
+      // native-structured single-shots (losing read-tool investigation).
+      // Produce steps reach structured output only through the C5
+      // negotiation on the multi-turn loop, which needs completeMultiTurn.
       const useStructured =
+        ctx.requiresReviewVerdict === true &&
         contract !== undefined &&
         typeof (this.llmProvider as { completeStructured?: unknown }).completeStructured === 'function';
       const transportCtx = {
@@ -531,6 +539,9 @@ export class AgentRunner {
                       { role: 'user' as const, content: repairMessage },
                     ],
               max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+              // C6 review closure 3 — the SAME sampling configuration the
+              // textual wire gets; switching wires must not change it.
+              temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
               schema: transportCtx.resultSchemaJson!,
               schemaName: ctx.outputArtifact?.type,
             });

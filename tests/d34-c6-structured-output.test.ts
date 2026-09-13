@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildAgentRunner } from '../src/application.js';
+import { AgentRunner } from '../src/agent-runner.js';
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
 import type { IStructuredProvider, StructuredCompletionParams, StructuredCompletionResult } from '../src/llm-provider.js';
 import type { ContextManager } from '../src/context-manager.js';
@@ -31,6 +32,7 @@ import type { ArtifactRepository } from '../src/storage/repositories.js';
 import { DynamicLLMProvider, OpenAICompatibleStructuredProvider } from '../src/llm-provider.js';
 import { AnthropicSDKProvider, type AnthropicClientLike } from '../src/anthropic-provider.js';
 import { toJsonSchema } from '../src/workflow/contracts.js';
+import { validateDefinitionArtifactText } from '../src/workflow/methodology/definition-artifact.js';
 import { READINESS_OUTPUT_CONTRACT, renderReadiness, type ReadinessProposal } from '../src/workflow/methodology/readiness-contract.js';
 import { SUBMIT_RESULT_TOOL_NAME } from '../src/transport/step-result.js';
 
@@ -351,6 +353,136 @@ test('D.34.C6 CAPABILITY: DynamicLLMProvider syncs completeStructured honestly a
   assert.equal(typeof (dyn as { completeStructured?: unknown }).completeStructured, 'function', 'and restored');
 });
 
+// ─── C6 review closures ───────────────────────────────────────────────────────
+
+// Closure 1 — structured is REVIEW-ONLY by INVARIANT: a structured-only
+// provider (no completeMultiTurn) must NOT run a Definition produce step
+// through the structured channel; the C4 textual single-turn proposal path
+// stays the produce fallback.
+test('D.34.C6 CLOSURE 1: a structured-only provider runs Definition produce on the TEXTUAL path', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd34-c6-c1-'));
+  const provider = new ReviewProvider(true, [{ hijacked: true }]);
+  const artifacts = new RecordingArtifacts();
+  const runner = buildAgentRunner(
+    new ScriptedContextManager(),
+    provider,
+    root,
+    { writeNodeOutput: async () => {}, updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
+    'test-model',
+    artifacts,
+    4096,
+  );
+  const ctx = {
+    workflowRunId: 'r', workflowId: 'define-work', stepId: 'synthesize-definition',
+    iteration: 1, revision: 0, goal: 'g',
+    projectRoot: root, role: 'explorer',
+    outputArtifact: { type: 'definition', ref: 'definition:{objectiveId}', path: '.sle/work/w/definition.md' },
+  } as unknown as StepRunContext;
+  // The C4 textual single-turn proposal wire (pure JSON reply).
+  provider.textualReplies.push(JSON.stringify({
+    goal: 'Ship the widget',
+    facts: [{ id: 'F1', statement: 'It must ship.', status: 'KNOWN', source: 'human' }],
+    bodyMarkdown: '',
+  }));
+  const result = await runner.run('explorer', ctx);
+  assert.equal(result.success, true, result.error);
+  assert.equal(provider.structuredCalls.length, 0, 'completeStructured NOT called for a produce step — by invariant');
+  assert.equal(provider.completeCalls.length, 1, 'the C4 textual proposal channel handled the produce step');
+  assert.match(readFileSync(join(root, '.sle/work/w/definition.md'), 'utf-8'), /^---\nschemaVersion: 1\n/, 'renderer bytes');
+});
+
+// Closure 2 — response-side cardinality is authoritative on the Anthropic
+// structured wire: 0 → fail, 1 → accept, 2 → fail.
+test('D.34.C6 CLOSURE 2: Anthropic structured extraction enforces EXACTLY ONE result tool block', async () => {
+  const schema = toJsonSchema(READINESS_OUTPUT_CONTRACT.modelSchema);
+  const makeClient = (content: unknown[]) => ({
+    messages: { create: async () => ({ stop_reason: 'tool_use', content, usage: { input_tokens: 1, output_tokens: 1 } } as never) },
+  });
+  const block = { type: 'tool_use', id: 'a', name: 'definition-readiness', input: structuredCopy(FAIL_PROPOSAL) };
+  const second = { type: 'tool_use', id: 'b', name: 'definition-readiness', input: { verdict: 'pass', gaps: [], bodyMarkdown: '' } };
+
+  const one = new AnthropicSDKProvider('k', { client: makeClient([block]) as unknown as AnthropicClientLike, defaultModel: 'm' });
+  const ok = await one.completeStructured({ model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10, schema, schemaName: 'definition-readiness' });
+  assert.deepEqual(ok.value, structuredCopy(FAIL_PROPOSAL), 'exactly one block → accepted');
+
+  const zero = new AnthropicSDKProvider('k', { client: makeClient([{ type: 'text', text: 'prose' }]) as unknown as AnthropicClientLike, defaultModel: 'm' });
+  await assert.rejects(
+    () => zero.completeStructured({ model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10, schema, schemaName: 'definition-readiness' }),
+    /returned 0 result tool blocks; expected exactly one/,
+  );
+
+  const two = new AnthropicSDKProvider('k', { client: makeClient([block, second]) as unknown as AnthropicClientLike, defaultModel: 'm' });
+  await assert.rejects(
+    () => two.completeStructured({ model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10, schema, schemaName: 'definition-readiness' }),
+    /returned 2 result tool blocks; expected exactly one/,
+    'competing semantic results fail closed — never the first one selected',
+  );
+
+  // The API layer was ASKED not to emit parallel calls (response-side check above stays authoritative).
+  const captured: Array<any> = [];
+  const capClient: AnthropicClientLike = {
+    messages: { create: async (params) => { captured.push(params); return { stop_reason: 'tool_use', content: [block], usage: {} } as never; } },
+  };
+  await new AnthropicSDKProvider('k', { client: capClient, defaultModel: 'm' }).completeStructured({
+    model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10, schema, schemaName: 'definition-readiness',
+  });
+  assert.equal((captured[0].tool_choice as any).disable_parallel_tool_use, true);
+});
+
+// Closure 3 — sampling parity: the structured wire forwards the SAME
+// temperature the textual wire gets, on both provider request shapes.
+test('D.34.C6 CLOSURE 3: temperature parity — runner → params → both provider wires', async () => {
+  // Runner side: a non-default runnerConfig temperature reaches completeStructured.
+  const root = mkdtempSync(join(tmpdir(), 'd34-c6-c3-'));
+  mkdirSync(join(root, '.sle/work/w'), { recursive: true });
+  writeFileSync(join(root, '.sle/work/w/definition.md'), VALID_DEFINITION, 'utf-8');
+  const provider = new ReviewProvider(true, [structuredCopy(FAIL_PROPOSAL)]);
+  const runner = new AgentRunner(
+    new ScriptedContextManager(),
+    provider,
+    root,
+    { writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+    { model: 'test-model', temperature: 0.2, outputContracts: { 'definition-readiness': READINESS_OUTPUT_CONTRACT }, inputValidators: { definition: validateDefinitionArtifactText } },
+    undefined,
+    new RecordingArtifacts(),
+  );
+  const result = await runner.run('explorer', reviewCtx(root));
+  assert.equal(result.success, true, result.error);
+  assert.equal(provider.structuredCalls[0].temperature, 0.2, 'the runner passes its configured temperature, not silence');
+
+  // OpenAI wire: body.temperature carries it.
+  process.env.SLE_LLM_API_KEY = process.env.SLE_LLM_API_KEY || 'test-key';
+  const captured: Array<any> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    captured.push(JSON.parse(init.body));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '{}', } }], usage: {} }) } as never;
+  }) as never;
+  try {
+    const oai = new OpenAICompatibleStructuredProvider({
+      provider: 'openrouter', base_url: 'https://openrouter.ai/api/v1', model: 'm', api_key_env: 'SLE_LLM_API_KEY',
+    });
+    await oai.completeStructured({
+      model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10,
+      schema: {}, schemaName: 'definition-readiness', temperature: 0.2,
+    });
+    assert.equal(captured[0].temperature, 0.2, 'OpenAI wire forwards temperature');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Anthropic wire: messages.create carries it.
+  const anthropicCaptured: Array<any> = [];
+  const aClient: AnthropicClientLike = {
+    messages: { create: async (params) => { anthropicCaptured.push(params); return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'a', name: 'definition-readiness', input: {} }], usage: {} } as never; } },
+  };
+  await new AnthropicSDKProvider('k', { client: aClient, defaultModel: 'm' }).completeStructured({
+    model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10,
+    schema: {}, schemaName: 'definition-readiness', temperature: 0.2,
+  });
+  assert.equal(anthropicCaptured[0].temperature, 0.2, 'Anthropic wire forwards temperature');
+});
+
 // ─── Provider wire shapes ─────────────────────────────────────────────────────
 
 test('D.34.C6 WIRE (OpenAI/OpenRouter): response_format json_schema strict carries the projection', async () => {
@@ -409,7 +541,7 @@ test('D.34.C6 WIRE (Anthropic): forced single-tool extraction — input IS the v
     schema, schemaName: 'definition-readiness',
   });
   const call = captured[0];
-  assert.deepEqual(call.tool_choice, { type: 'tool', name: 'definition-readiness' }, 'choice FORCED — not a tool loop');
+  assert.deepEqual(call.tool_choice, { type: 'tool', name: 'definition-readiness', disable_parallel_tool_use: true }, 'choice FORCED — not a tool loop; parallel emission disabled at the API layer');
   assert.equal(call.tools.length, 1);
   assert.deepEqual(call.tools[0].input_schema, schema);
   assert.deepEqual(out.value, structuredCopy(FAIL_PROPOSAL));
@@ -421,7 +553,7 @@ test('D.34.C6 WIRE (Anthropic): forced single-tool extraction — input IS the v
   const strict = new AnthropicSDKProvider('k', { client: emptyClient, defaultModel: 'm' });
   await assert.rejects(
     () => strict.completeStructured({ model: 'm', messages: [{ role: 'user', content: 'x' }], max_tokens: 10, schema }),
-    /no tool block despite a forced tool choice/,
-    'prose from a forced structured call fails closed',
+    /returned 0 result tool blocks; expected exactly one/,
+    'prose from a forced structured call fails closed (zero-block cardinality)',
   );
 });

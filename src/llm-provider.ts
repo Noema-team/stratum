@@ -49,6 +49,14 @@ export interface StructuredCompletionParams {
   schema: Record<string, unknown>;
   /** Optional tool/schema name surfaced to the provider API. */
   schemaName?: string;
+  /**
+   * C6 review closure 3 — sampling parity: the structured wire must not
+   * silently change the model's sampling configuration relative to the
+   * textual wire. The runner passes the SAME value it passes to complete()
+   * (runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature), and both
+   * native providers forward it on the wire.
+   */
+  temperature?: number;
 }
 
 export interface StructuredCompletionResult {
@@ -247,6 +255,7 @@ export class OpenAICompatibleStructuredProvider extends OpenAICompatibleMultiTur
         model,
         messages,
         max_tokens: params.max_tokens,
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
         response_format: {
           type: 'json_schema',
           json_schema: {

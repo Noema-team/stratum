@@ -202,20 +202,35 @@ export class AnthropicSDKProvider implements ILLMProvider, IMultiTurnProvider, I
             input_schema: params.schema as Anthropic.Tool.InputSchema,
           },
         ],
-        tool_choice: { type: 'tool', name: toolName },
+        tool_choice: {
+          type: 'tool',
+          name: toolName,
+          // C6 review closure 2 — ask the API not to emit parallel calls.
+          // Response-side cardinality below remains the authoritative
+          // invariant (the C4/C5 rule: competing semantic results fail
+          // closed, never arbitrarily selected).
+          disable_parallel_tool_use: true,
+        },
+        // C6 review closure 3 — sampling parity with the textual wire.
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
       } as Anthropic.MessageCreateParamsNonStreaming);
     } catch (err) {
       throw this.mapError(err);
     }
 
-    const toolUse = message.content.find(
+    // C6 review closure 2 — EXACTLY ONE structured result: zero blocks
+    // violated the forced-choice contract; two or more are competing
+    // semantic results. Either way fail closed — the transport layer never
+    // selects among candidates on a channel that becomes canonical state.
+    const toolUses = message.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === toolName,
     );
-    if (!toolUse) {
-      // A forced-tool call that returns no tool block violated the API
-      // contract — fail closed, never guess from prose.
-      throw new Error('Structured completion returned no tool block despite a forced tool choice');
+    if (toolUses.length !== 1) {
+      throw new Error(
+        `Structured completion returned ${toolUses.length} result tool blocks; expected exactly one`,
+      );
     }
+    const toolUse = toolUses[0];
     const tokensUsed =
       (message.usage?.input_tokens ?? 0) + (message.usage?.output_tokens ?? 0);
     return { value: toolUse.input, tokens_used: tokensUsed, duration_ms: Date.now() - start };
