@@ -21,6 +21,55 @@ export interface ILLMProvider {
   complete(params: LLMCompletionParams): Promise<LLMCompletionResult>;
 }
 
+// ─── D.34 C6 — the native structured-output capability ────────────────────────
+//
+// A provider implements completeStructured ONLY when it can genuinely
+// constrain a completion to a JSON Schema natively (no textual envelope,
+// no tool loop): OpenAI-wire endpoints via response_format json_schema,
+// Anthropic via a forced single-tool extraction call. Presence of the
+// method is the capability probe — the same structural duck-typing
+// AgentRunner uses for completeMultiTurn; a provider that lacks the
+// capability leaves the method genuinely absent (DynamicLLMProvider syncs
+// it exactly like multi-turn), so fallback is by CAPABILITY, never by
+// provider name.
+//
+// C6 boundary: the structured channel slots into the EXISTING execution
+// policy — review steps run single-turn, and this is their capability-1
+// wire. Produce steps keep the C5 negotiation (submit_result on the
+// multi-turn loop); this seam never reopens multi-turn review.
+
+export interface StructuredCompletionParams {
+  model: string;
+  system?: string;
+  /** Conversation turns (system handled separately). Repair re-issues
+   *  carry the previous assistant turn + the repair instruction. */
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  max_tokens: number;
+  /** THE generated projection from the step's registered output contract. */
+  schema: Record<string, unknown>;
+  /** Optional tool/schema name surfaced to the provider API. */
+  schemaName?: string;
+  /**
+   * C6 review closure 3 — sampling parity: the structured wire must not
+   * silently change the model's sampling configuration relative to the
+   * textual wire. The runner passes the SAME value it passes to complete()
+   * (runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature), and both
+   * native providers forward it on the wire.
+   */
+  temperature?: number;
+}
+
+export interface StructuredCompletionResult {
+  /** The provider's parsed structured value (already an object). */
+  value: unknown;
+  tokens_used: number;
+  duration_ms: number;
+}
+
+export interface IStructuredProvider {
+  completeStructured(params: StructuredCompletionParams): Promise<StructuredCompletionResult>;
+}
+
 export const LLMCompletionParamsSchema = z.object({
   model: z.string().min(1),
   messages: z.array(
@@ -183,6 +232,65 @@ function parseToolArguments(raw: string): unknown {
   }
 }
 
+// ─── D.34 C6 — native structured output on the OpenAI wire ────────────────────
+//
+// response_format json_schema (strict) is OpenAI's and OpenRouter's genuine
+// constrained-decoding mechanism for tool-calling-capable models. Kept as a
+// separate class on the SAME opt-in discipline as the multi-turn provider:
+// only the 'openrouter' case opts in; plain openai_compatible/glm endpoints
+// are not assumed to support it (fallback by capability — they simply lack
+// completeStructured).
+export class OpenAICompatibleStructuredProvider extends OpenAICompatibleMultiTurnProvider implements IStructuredProvider {
+  async completeStructured(params: StructuredCompletionParams): Promise<StructuredCompletionResult> {
+    const start = Date.now();
+    const model = params.model || this.defaultModel;
+    const messages: Array<Record<string, string>> = [];
+    if (params.system) messages.push({ role: 'system', content: params.system });
+    for (const m of params.messages) messages.push({ role: m.role, content: m.content });
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: params.max_tokens,
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: params.schemaName ?? 'result',
+            strict: true,
+            schema: params.schema,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'unknown error');
+      throw new Error(`LLM API request failed: ${response.status} ${response.statusText} — ${errorBody}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string | null } }>;
+      usage?: { total_tokens: number };
+    };
+    const content = data.choices?.[0]?.message?.content ?? '';
+    let value: unknown;
+    try {
+      value = JSON.parse(content);
+    } catch (err) {
+      // Native structured output must be schema-shaped JSON; a provider that
+      // returns prose violated its own capability contract — fail closed.
+      throw new Error(
+        `Structured completion returned non-JSON content: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { value, tokens_used: data.usage?.total_tokens ?? 0, duration_ms: Date.now() - start };
+  }
+}
+
 // Converts AgentLoop's provider-agnostic MultiTurnMessage[] (Anthropic-
 // content-block-shaped: one assistant message carrying an array of
 // tool_use blocks, one user message carrying an array of tool_result
@@ -333,6 +441,10 @@ function supportsMultiTurn(provider: ILLMProvider): provider is ILLMProvider & I
 export class DynamicLLMProvider implements ILLMProvider {
   private activeProvider: ILLMProvider;
   completeMultiTurn?: (params: MultiTurnParams) => Promise<MultiTurnResult>;
+  // D.34 C6 — synced exactly like multi-turn: the structured-output
+  // capability is genuinely present only when the wrapped provider
+  // implements it, so capability probing stays honest across provider swaps.
+  completeStructured?: (params: import('./llm-provider.js').StructuredCompletionParams) => Promise<import('./llm-provider.js').StructuredCompletionResult>;
 
   constructor(initialProvider: ILLMProvider) {
     this.activeProvider = initialProvider;
@@ -359,7 +471,17 @@ export class DynamicLLMProvider implements ILLMProvider {
     } else {
       delete this.completeMultiTurn;
     }
+    if (supportsStructured(this.activeProvider)) {
+      const provider = this.activeProvider;
+      this.completeStructured = (params) => provider.completeStructured(params);
+    } else {
+      delete this.completeStructured;
+    }
   }
+}
+
+function supportsStructured(provider: ILLMProvider): provider is ILLMProvider & IStructuredProvider {
+  return typeof (provider as Partial<IStructuredProvider>).completeStructured === 'function';
 }
 
 // D.3b1.2 — AgentLLMConfig.base_url's pre-existing convention (see the old
@@ -432,7 +554,11 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
       // format for tool-capable models, so it gets real multi-turn
       // capability (OpenAICompatibleMultiTurnProvider above), unlike
       // openai_compatible/glm above which stay single-turn-only.
-      return new OpenAICompatibleMultiTurnProvider(orConfig);
+      // D.34 C6 — it also genuinely supports response_format json_schema
+      // (strict), so the structured-output capability rides along; absence
+      // of that capability on other providers keeps the textual review
+      // fallback as the honest default (probing is by capability).
+      return new OpenAICompatibleStructuredProvider(orConfig);
     }
     default:
       throw new Error(`Unknown LLM provider: ${(config as { provider: string }).provider}`);
