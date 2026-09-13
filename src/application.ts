@@ -21,6 +21,7 @@ import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
 import { AgentStepRunner } from './execution/agent-step-runner.js';
 import { createDefinitionInputValidator } from './workflow/methodology/definition-artifact.js';
 import { createReviewRouteDeriver } from './workflow/methodology/readiness-artifact.js';
+import { READINESS_OUTPUT_CONTRACT } from './workflow/methodology/readiness-contract.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -355,6 +356,20 @@ export function buildAgentRunner(
       // classifications (GAP_CLASSIFICATION_PRECEDENCE). Same seam shape as
       // the validators — the runner stays generic, methodology owns meaning.
       deriveReviewRoute: createReviewRouteDeriver(),
+      // D.34 C3 — the readiness review steps are on the OUTPUT-CONTRACT
+      // path (DDR-034 §7): the reviewer returns a semantic proposal
+      // (verdict + typed gaps + body); Stratum decodes, validates the
+      // methodology invariants, derives the route from TYPED gaps, and
+      // materializes the canonical readiness artifact itself. The registry
+      // key is the workflow's own declaration ('definition-readiness' —
+      // define-work's review steps' outputArtifact.type). Definition steps
+      // stay on the legacy bytes path until C4 registers their contract.
+      // deriveReviewRoute above remains for the legacy path (and load-path
+      // route derivation); on the contract path the contract's own typed
+      // deriver takes precedence.
+      outputContracts: {
+        'definition-readiness': READINESS_OUTPUT_CONTRACT,
+      },
     }, undefined, artifactRepository,
   );
 }

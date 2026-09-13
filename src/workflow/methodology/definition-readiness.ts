@@ -25,6 +25,40 @@
 
 // ─── Fact ledger + Definition content shape (D.3a §1) ─────────────────────────
 
+// D.34 C3 — the epistemic ledger rules, split out so the readiness reviewer
+// receives them WITHOUT the Definition serialization shape: the reviewer
+// judges the canonical Definition already on disk and never authors
+// Definition bytes. The drafter's contract below composes this text
+// verbatim — its prompt is byte-identical to the pre-C3 prompt (C4 will
+// move the serialization half into the generated schema projection).
+export const DEFINITION_EPISTEMIC_RULES = `Fact ledger rules:
+- Every fact relevant to the goal is one entry { id, statement, status, source } in the ledger.
+  Epistemic status exists exactly once, in the ledger — never duplicated as a property of a
+  requirement, constraint, or risk entry; those may reference a fact by id, no more.
+- status is exactly one of:
+  - KNOWN — verified, backed by something checkable (repository content, an artifact, an
+    existing test, an authoritative human statement). Not a belief; a fact.
+  - ASSUMED — a working belief adopted so drafting can proceed, explicitly not verified. Every
+    ASSUMED fact is a candidate for the readiness rubric's risky-assumptions check.
+  - UNKNOWN — an acknowledged gap with no answer and no working assumption.
+  - DECIDED — was UNKNOWN or ASSUMED, escalated as a HUMAN_DECISION gap, resolved by a recorded
+    Decision. Carries a reference to that Decision; source becomes 'decision'.
+  - DEFERRED — a real, acknowledged gap explicitly not required to be resolved for the
+    candidate bounded scope currently being defined. This is what lets a Definition be ready
+    for a narrow scope while still carrying open facts about the wider Objective.
+- source records where the fact came from: human, repository, artifact, investigation, or
+  decision. A human's stated product requirement can be KNOWN (source: human) with no code
+  read at all. A human's *assertion about repository reality* is not automatically an observed
+  fact — it starts ASSUMED, source: human, until something with source: repository or
+  source: investigation actually confirms it. Mark a fact KNOWN with source: repository only
+  after actually inspecting the relevant file(s) with an available repository-read tool, never
+  because it seems probably true.
+- kind is the OPTIONAL explicit epistemic classification: 'product-intent' for what the human
+  wants, 'repository-claim' for an assertion about how the repository already behaves. The
+  deterministic validator enforces one rule from it mechanically — a repository-claim may not
+  be KNOWN on source: human alone — and leaves every other judgment to review. Use it when
+  the distinction is clear to you; it is never a substitute for honest status.`;
+
 export const DEFINITION_CONTRACT = `A Definition artifact has TWO parts: a YAML front matter block (canonical,
 machine-read — Stratum validates it deterministically BEFORE readiness review, and an
 invalid one is sent back to you with structured defects) and a Markdown body (the human
@@ -56,33 +90,16 @@ acceptance:
 The Markdown body AFTER the front matter carries the genuinely human-facing content:
 design thinking, named risks, tradeoffs, rationale. It must not restate the ledger.
 
-Fact ledger rules:
-- Every fact relevant to the goal is one entry { id, statement, status, source } in the ledger.
-  Epistemic status exists exactly once, in the ledger — never duplicated as a property of a
-  requirement, constraint, or risk entry; those may reference a fact by id, no more.
-- status is exactly one of:
-  - KNOWN — verified, backed by something checkable (repository content, an artifact, an
-    existing test, an authoritative human statement). Not a belief; a fact.
-  - ASSUMED — a working belief adopted so drafting can proceed, explicitly not verified. Every
-    ASSUMED fact is a candidate for the readiness rubric's risky-assumptions check.
-  - UNKNOWN — an acknowledged gap with no answer and no working assumption.
-  - DECIDED — was UNKNOWN or ASSUMED, escalated as a HUMAN_DECISION gap, resolved by a recorded
-    Decision. Carries a reference to that Decision; source becomes 'decision'.
-  - DEFERRED — a real, acknowledged gap explicitly not required to be resolved for the
-    candidate bounded scope currently being defined. This is what lets a Definition be ready
-    for a narrow scope while still carrying open facts about the wider Objective.
-- source records where the fact came from: human, repository, artifact, investigation, or
-  decision. A human's stated product requirement can be KNOWN (source: human) with no code
-  read at all. A human's *assertion about repository reality* is not automatically an observed
-  fact — it starts ASSUMED, source: human, until something with source: repository or
-  source: investigation actually confirms it. Mark a fact KNOWN with source: repository only
-  after actually inspecting the relevant file(s) with an available repository-read tool, never
-  because it seems probably true.
-- kind is the OPTIONAL explicit epistemic classification: 'product-intent' for what the human
-  wants, 'repository-claim' for an assertion about how the repository already behaves. The
-  deterministic validator enforces one rule from it mechanically — a repository-claim may not
-  be KNOWN on source: human alone — and leaves every other judgment to review. Use it when
-  the distinction is clear to you; it is never a substitute for honest status.`;
+${DEFINITION_EPISTEMIC_RULES}`;
+
+// D.34 C3 — the reviewer-facing subset: epistemic rules only. Judgment
+// content unchanged; serialization shape absent (the reviewer's reply is a
+// semantic proposal, and the Definition bytes already exist on disk).
+export const DEFINITION_CONTRACT_FOR_REVIEW = `The Definition you are judging already exists in canonical form — the system
+serializes any revised artifact, so judge its content, not its serialization.
+Its fact ledger must obey these rules:
+
+${DEFINITION_EPISTEMIC_RULES}`;
 
 // ─── Readiness rubric (D.3a §2) ────────────────────────────────────────────────
 
@@ -315,7 +332,7 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
       'the required ledger bookkeeping — the gap is already non-blocking, but the Definition ' +
       'is not eligible for `verdict: pass` until that scope decision is explicitly recorded as ' +
       '`status: DEFERRED`. A fact still classified DEFER but still ASSUMED/UNKNOWN in the ' +
-      'ledger is not eligible for `pass`; classify it DEFER in the readiness front matter so ' +
+      'ledger is not eligible for `pass`; classify it DEFER among the proposal\'s gaps so ' +
       'apply-deferred-gaps can record the transition.'
     : '';
   const exploreFinalization = routes.includes('EXPLORE_AS_WORK')
@@ -327,20 +344,23 @@ export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): 
       'in the fact ledger. An EXPLORE_AS_WORK fact still ASSUMED/UNKNOWN in the ledger is not ' +
       'eligible for `pass` — arguing it "does not block" or is "an implementation choice" ' +
       'without recorded evidence or a recorded decision is exactly the silent resolution this ' +
-      'classification forbids; classify it EXPLORE_AS_WORK in the readiness front matter so ' +
+      'classification forbids; classify it EXPLORE_AS_WORK among the proposal\'s gaps so ' +
       'record-exploration-need can isolate it as bounded work.'
     : '';
-  return `On \`verdict: fail\`, the readiness Artifact's canonical YAML front matter must classify every
+  // D.34 C3 — the mechanical serialization framing ("canonical YAML front
+  // matter", the field-shape list) is gone: the payload schema teaches the
+  // shape, and the system serializes the artifact. The METHODOLOGY is
+  // unchanged in meaning: what must be classified, with what reason and
+  // closure semantics, precedence, pass eligibility, never-declared routes.
+  return `On a \`fail\` verdict, the proposal's gaps must classify every
 gap keeping this verdict from \`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or
-EXPLORE_AS_WORK) and every gap classified DEFER whose fact is not yet recorded as DEFERRED —
-each with at least these fields:
-- target: the fact id (or an explicit missing-area identifier, when no fact entry exists yet)
-- description
-- classification: one of ${GAP_CLASSIFICATION_PRECEDENCE.join(', ')}
-- reason for that classification
-- closure: what resolving it (or, for DEFER, recording the DEFERRED transition) would require
+EXPLORE_AS_WORK) and every gap classified DEFER whose fact is not yet recorded as DEFERRED.
+Each gap names its target — the fact id, or an explicit missing-area identifier when no fact
+entry exists yet — describes the gap, classifies it, gives the reason for that classification,
+and states its closure: what resolving it (or, for DEFER, recording the DEFERRED transition)
+would require.
 
-The front matter is the authoritative gap record; explain and argue in the Markdown body —
+The gap list is the authoritative gap record; explain and argue in the body prose —
 never duplicate the ledger there.
 
 Never classify cheap repository inspection as EXPLORE_AS_WORK — see the CAN_RESOLVE/
@@ -355,7 +375,7 @@ precedence decides — cheap/direct/autonomous closure before human escalation o
 exploration:
 ${precedenceLines}
 
-On \`verdict: pass\`, the front matter carries \`gaps: []\` (or names no unresolved gap).${deferFinalization}${exploreFinalization}`;
+On a \`pass\` verdict, the proposal carries zero gaps — never an unresolved one.${deferFinalization}${exploreFinalization}`;
 }
 
 // D.3c1b — apply-deferred-gaps: converts every gap the readiness Artifact
