@@ -46,6 +46,12 @@ export interface RecordedStep {
   reviewRoute?: string;
   artifactsWritten: string[];
   error?: string;
+  // D.34 C7 — repair-counter evidence (agent-runner surfaces these only when
+  // > 0). Part of the run evidence the C7 diagnosis and the persisted report
+  // consume: a transport-tier diagnosis is checkable against the actual
+  // repair attempts, not just the error string.
+  formatRepairs?: number;
+  resultRepairs?: number;
 }
 
 export class RecordingStepRunner implements StepRunner {
@@ -61,6 +67,8 @@ export class RecordingStepRunner implements StepRunner {
       reviewRoute: result.reviewRoute,
       artifactsWritten: result.artifacts_written,
       error: result.error,
+      ...(result.format_repairs !== undefined ? { formatRepairs: result.format_repairs } : {}),
+      ...(result.result_repairs !== undefined ? { resultRepairs: result.result_repairs } : {}),
     });
     return result;
   }
@@ -413,6 +421,9 @@ export function runOracle(trace: DefineWorkTrace): OracleResult {
     case 'early': return oracleEarly(trace);
     case 'partial': return oraclePartial(trace);
     case 'mature': return oracleMature(trace);
+    // 'decision-gate' is a harness-only wiring scenario — it exercises no oracle.
+    case 'decision-gate':
+      throw new Error('no oracle for the decision-gate harness scenario');
   }
 }
 

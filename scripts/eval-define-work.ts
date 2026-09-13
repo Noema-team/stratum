@@ -40,6 +40,7 @@ import {
   driveDefineWorkRun, runOracle,
   type DefineWorkTrace, type ScenarioId, type OracleResult,
 } from '../tests/fixtures/d3d/harness.js';
+import { diagnoseRun, deploymentVerdict, type RunDiagnosis, type DeploymentEvidence } from '../tests/fixtures/d3d/diagnosis.js';
 
 interface ScenarioDef {
   scenarioId: ScenarioId;
@@ -133,6 +134,11 @@ interface ScenarioReport {
   finalDefinitionHash: string | null;
   finalReadinessHash: string | null;
   oracle: OracleResult;
+  // D.34 C7 — the deterministic four-tier diagnosis derived from THIS run's
+  // recorded evidence (tier + evidence lines). Pure function of the trace +
+  // oracle; a human can re-derive it from report.json alone, and from the
+  // persisted run evidence for failures.
+  diagnosis: RunDiagnosis;
   overall: 'PASS' | 'FAIL' | 'ERROR';
   errorMessage?: string;
 }
@@ -176,12 +182,19 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
         finalStatus: 'halted', finalStepId: null, iterationsUsed: 0, steps: [], decisions: [],
         artifacts: [], definitionText: '', readinessText: null, explorationNeedText: null,
         toolUseRoundTrips: 0, noExtraWorkItemsCreated: true,
+        error: errorMessage,
       };
     }
 
     const oracle = errorMessage
       ? { scenarioId: scenario.scenarioId, checks: [{ name: 'run completed without throwing', pass: false, detail: errorMessage }], pass: false }
       : runOracle(trace);
+
+    const overall: 'PASS' | 'FAIL' | 'ERROR' = errorMessage ? 'ERROR' : (oracle.pass ? 'PASS' : 'FAIL');
+    // D.34 C7 — the deterministic diagnosis, computed BEFORE any persistence
+    // so the report and the evidence describe the same judgment.
+    const diagnosis = diagnoseRun(trace, oracle);
+    const overallValue = overall;
 
     // Persist the final artifacts (not the JSON report) so a human can read
     // the actual Definition/readiness/exploration-need text this run
@@ -192,6 +205,26 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
     if (trace.definitionText) await fs.writeFile(path.join(scenarioOutDir, 'definition.md'), trace.definitionText, 'utf-8');
     if (trace.readinessText) await fs.writeFile(path.join(scenarioOutDir, 'readiness.md'), trace.readinessText, 'utf-8');
     if (trace.explorationNeedText) await fs.writeFile(path.join(scenarioOutDir, 'exploration-need.md'), trace.explorationNeedText, 'utf-8');
+
+    // D.34 C7 (audit finding F6) — a FAILING run must remain independently
+    // inspectable after the run: copy the run's raw node-outputs and loop
+    // metadata (.sle/runs/<runId>) and the generated work artifacts
+    // (.sle/work) out of the fixture root BEFORE it is deleted, so the
+    // diagnosis in report.json can be verified by hand against what the
+    // model actually said and produced. Passing runs stay lean (report +
+    // final artifacts only).
+    if (overallValue !== 'PASS') {
+      const evidenceDir = path.join(scenarioOutDir, 'run-evidence');
+      await fs.mkdir(evidenceDir, { recursive: true });
+      const runsDir = path.join(root, '.sle', 'runs', trace.workflowRunId);
+      if (trace.workflowRunId && existsSync(runsDir)) {
+        await fs.cp(runsDir, path.join(evidenceDir, 'runs', trace.workflowRunId), { recursive: true });
+      }
+      const workDir = path.join(root, '.sle', 'work');
+      if (existsSync(workDir)) {
+        await fs.cp(workDir, path.join(evidenceDir, 'work'), { recursive: true });
+      }
+    }
 
     const report: ScenarioReport = {
       scenarioId: scenario.scenarioId,
@@ -212,7 +245,8 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
       finalDefinitionHash: trace.definitionText ? sha256(trace.definitionText) : null,
       finalReadinessHash: trace.readinessText ? sha256(trace.readinessText) : null,
       oracle,
-      overall: errorMessage ? 'ERROR' : (oracle.pass ? 'PASS' : 'FAIL'),
+      diagnosis,
+      overall: overallValue,
       errorMessage,
     };
     return report;
@@ -227,17 +261,42 @@ function renderSummary(reports: ScenarioReport[]): string {
   lines.push('');
   lines.push(`Provider: ${reports[0]?.provider ?? '(unknown)'}   Model: ${reports[0]?.model ?? '(unknown)'}`);
   lines.push('');
-  lines.push('| Scenario | Iterations | Decisions | Exploration | Outcome |');
-  lines.push('| -------- | ---------: | --------: | ----------: | ------- |');
+  // D.34 C7 — four-tier report: per-run diagnosis (SEM / TRANSPORT / CONV)
+  // plus the series DEPLOY verdict.
+  lines.push('| Scenario | Iterations | Decisions | Exploration | Outcome | Diagnosis |');
+  lines.push('| -------- | ---------: | --------: | ----------: | ------- | --------- |');
   for (const r of reports) {
-    lines.push(`| ${r.scenarioId} | ${r.iterationsUsed} | ${r.decisionsRequested.length} | ${r.explorationArtifactPresent ? 1 : 0} | ${r.overall} |`);
+    lines.push(`| ${r.scenarioId} | ${r.iterationsUsed} | ${r.decisionsRequested.length} | ${r.explorationArtifactPresent ? 1 : 0} | ${r.overall} | ${r.diagnosis.tier ?? '—'} |`);
+  }
+  lines.push('');
+  const deploy = deploymentVerdict(reports.map((r): DeploymentEvidence => ({
+    scenarioId: r.scenarioId,
+    passed: r.overall === 'PASS',
+    iterationsUsed: r.iterationsUsed,
+    diagnosisTier: r.diagnosis.tier,
+  })));
+  lines.push(`## Deployment qualification (series verdict): ${deploy.qualified ? 'QUALIFIED' : 'NOT QUALIFIED'}`);
+  for (const reason of deploy.reasons) lines.push(`- ${reason}`);
+  if (deploy.qualified) {
+    lines.push('- every run passed its oracle — reliable enough to consider for unattended use');
   }
   lines.push('');
   for (const r of reports) {
-    lines.push(`## ${r.scenarioId} — ${r.overall}`);
+    lines.push(`## ${r.scenarioId} — ${r.overall}${r.diagnosis.tier ? ` (${r.diagnosis.tier})` : ''}`);
     if (r.errorMessage) {
       lines.push(`Run error: ${r.errorMessage}`);
-    } else {
+    }
+    if (r.diagnosis.tier !== null) {
+      lines.push('');
+      lines.push(`**Diagnosis: ${r.diagnosis.tier}** — deterministic (diagnoseRun over this run's recorded evidence):`);
+      for (const d of r.diagnosis.details) lines.push(`- ${d}`);
+      if (r.overall !== 'PASS') {
+        lines.push('');
+        lines.push('Run evidence persisted under `run-evidence/` (raw node-outputs + generated artifacts) — verify this diagnosis by hand.');
+      }
+    }
+    if (!r.errorMessage) {
+      lines.push('');
       for (const c of r.oracle.checks) {
         lines.push(`- [${c.pass ? 'x' : ' '}] ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
       }

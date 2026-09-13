@@ -296,6 +296,13 @@ export interface StepRunOutcome {
   // regardless of verdict — WorkflowEngine.executeReview still re-validates
   // this token against step.on_fail_routes itself before routing.
   reviewRoute?: string;
+  // D.34 — the bounded repair counters AgentRunner surfaces when > 0
+  // (format repair = transport syntax; result repair = contract
+  // decode/validate). Part of the outcome's observable evidence; the eval
+  // harness records them so a transport-tier diagnosis is checkable against
+  // the actual repair attempts. WorkflowEngine never reads these.
+  format_repairs?: number;
+  result_repairs?: number;
 }
 
 export interface StepRunner {
