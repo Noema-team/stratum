@@ -22,6 +22,7 @@ import { AgentStepRunner } from './execution/agent-step-runner.js';
 import { createDefinitionInputValidator } from './workflow/methodology/definition-artifact.js';
 import { createReviewRouteDeriver } from './workflow/methodology/readiness-artifact.js';
 import { READINESS_OUTPUT_CONTRACT } from './workflow/methodology/readiness-contract.js';
+import { createDefinitionOutputContract } from './workflow/methodology/definition-contract.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -328,6 +329,16 @@ export function buildAgentRunner(
   maxTokens: number,
   decisionRepository?: DecisionRepository,
 ): AgentRunner {
+  // D.34 C4 — the DECIDED-provenance resolver, built once and baked into
+  // BOTH seams that need it: the deterministic input gate (validator) and
+  // the Definition output contract's mechanical validation. One authority,
+  // one closure, two consumers.
+  const findDecision = decisionRepository
+    ? (decisionRef: string) => {
+        const decision = decisionRepository.findById(decisionRef);
+        return decision ? { workItemId: decision.workItemId } : undefined;
+      }
+    : undefined;
   return new AgentRunner(
     contextManager, llmProvider, projectRoot, runArtifacts,
     {
@@ -339,16 +350,12 @@ export function buildAgentRunner(
       // DecisionRepository is available, the validator resolves DECIDED
       // provenance against real control-plane Decisions owned by the same
       // work item — invented or borrowed authority fails deterministically.
+      // D.34 C4 — the SAME closure is baked into the Definition output
+      // contract, so the contract path's mechanical validation resolves
+      // DECIDED provenance against exactly the same authority as the gate.
       inputValidators: {
         definition: createDefinitionInputValidator({
-          ...(decisionRepository
-            ? {
-                findDecision: (decisionRef: string) => {
-                  const decision = decisionRepository.findById(decisionRef);
-                  return decision ? { workItemId: decision.workItemId } : undefined;
-                },
-              }
-            : {}),
+          ...(decisionRepository ? { findDecision } : {}),
         }),
       },
       // D.3d.5 commit 3 — review routes are NEVER model-authored: derived
@@ -356,19 +363,19 @@ export function buildAgentRunner(
       // classifications (GAP_CLASSIFICATION_PRECEDENCE). Same seam shape as
       // the validators — the runner stays generic, methodology owns meaning.
       deriveReviewRoute: createReviewRouteDeriver(),
-      // D.34 C3 — the readiness review steps are on the OUTPUT-CONTRACT
-      // path (DDR-034 §7): the reviewer returns a semantic proposal
-      // (verdict + typed gaps + body); Stratum decodes, validates the
-      // methodology invariants, derives the route from TYPED gaps, and
-      // materializes the canonical readiness artifact itself. The registry
-      // key is the workflow's own declaration ('definition-readiness' —
-      // define-work's review steps' outputArtifact.type). Definition steps
-      // stay on the legacy bytes path until C4 registers their contract.
+      // D.34 C3/C4 — the define-work steps are on the OUTPUT-CONTRACT path
+      // (DDR-034 §7): reviews return a semantic proposal (verdict + typed
+      // gaps + body); Definition produce steps return the Definition's
+      // semantic content (goal + fact ledger + … + body). Stratum decodes,
+      // validates the methodology invariants, and materializes the canonical
+      // artifact bytes itself. The registry keys are the workflow's OWN
+      // declarations (define-work's outputArtifact.type values).
       // deriveReviewRoute above remains for the legacy path (and load-path
       // route derivation); on the contract path the contract's own typed
       // deriver takes precedence.
       outputContracts: {
         'definition-readiness': READINESS_OUTPUT_CONTRACT,
+        definition: createDefinitionOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
       },
     }, undefined, artifactRepository,
   );

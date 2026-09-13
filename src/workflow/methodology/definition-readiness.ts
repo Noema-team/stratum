@@ -29,8 +29,7 @@
 // receives them WITHOUT the Definition serialization shape: the reviewer
 // judges the canonical Definition already on disk and never authors
 // Definition bytes. The drafter's contract below composes this text
-// verbatim — its prompt is byte-identical to the pre-C3 prompt (C4 will
-// move the serialization half into the generated schema projection).
+// verbatim.
 export const DEFINITION_EPISTEMIC_RULES = `Fact ledger rules:
 - Every fact relevant to the goal is one entry { id, statement, status, source } in the ledger.
   Epistemic status exists exactly once, in the ledger — never duplicated as a property of a
@@ -59,36 +58,34 @@ export const DEFINITION_EPISTEMIC_RULES = `Fact ledger rules:
   be KNOWN on source: human alone — and leaves every other judgment to review. Use it when
   the distinction is clear to you; it is never a substitute for honest status.`;
 
-export const DEFINITION_CONTRACT = `A Definition artifact has TWO parts: a YAML front matter block (canonical,
-machine-read — Stratum validates it deterministically BEFORE readiness review, and an
-invalid one is sent back to you with structured defects) and a Markdown body (the human
-explanation). The front matter is the authoritative representation: never duplicate its
-state in the body.
+// D.34 C4 — the drafter's contract, representation-neutral: the YAML shape
+// block is GONE — the exact serialization is taught by the Definition
+// output contract's generated projection + schema annotations (DDR-034
+// §8.3, src/workflow/methodology/definition-contract.ts), because the
+// model no longer authors artifact bytes at all: it submits the semantic
+// payload and Stratum serializes it. Every SEMANTIC element of the old
+// contract is preserved: the two-part structure (canonical state =
+// authoritative, body = human explanation), the deterministic gate
+// (invalid → structured defects), each section's meaning, the constraint
+// type vocabulary, and the epistemic ledger rules verbatim below.
+export const DEFINITION_CONTRACT = `A Definition artifact has TWO parts: a canonical, machine-read state (Stratum
+validates it deterministically BEFORE readiness review — an invalid one is
+sent back to you with structured defects) and a Markdown body (the human
+explanation). The canonical state is the authoritative representation: never
+duplicate its content in the body. You author the SEMANTIC content only —
+the system serializes the artifact itself from your proposal.
 
-The front matter must have exactly this shape:
----
-schemaVersion: 1
-goal: "<the single outcome being defined — one concrete statement>"
-facts:
-  - id: F1
-    statement: "<the fact>"
-    status: KNOWN              # KNOWN | ASSUMED | UNKNOWN | DECIDED | DEFERRED
-    source: human              # human | repository | artifact | investigation | decision
-    kind: product-intent       # OPTIONAL: product-intent | repository-claim (see provenance rules below)
-    decisionRef: "<decision id>" # REQUIRED exactly when status is DECIDED
-requirements:
-  - "<concrete behavioral expectation the goal implies>"
-constraints:
-  - description: "<boundary the work must respect>"
-    type: must                 # must | must_not | prefer | prefer_not
-nonGoals:
-  - "<what this Definition explicitly excludes>"
-acceptance:
-  - description: "<criterion sufficient to know the work is done>"
----
+The canonical state carries:
+- goal — the single outcome being defined: one concrete statement.
+- facts — the fact ledger, governed by the rules below.
+- requirements — concrete behavioral expectations the goal implies.
+- constraints — boundaries the work must respect, each typed exactly one of
+  must | must_not | prefer | prefer_not.
+- nonGoals — what this Definition explicitly excludes.
+- acceptance — criteria each sufficient to know the work is done.
 
-The Markdown body AFTER the front matter carries the genuinely human-facing content:
-design thinking, named risks, tradeoffs, rationale. It must not restate the ledger.
+The body carries the genuinely human-facing content: design thinking, named
+risks, tradeoffs, rationale. It must not restate the ledger.
 
 ${DEFINITION_EPISTEMIC_RULES}`;
 

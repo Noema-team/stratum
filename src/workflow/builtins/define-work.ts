@@ -97,8 +97,11 @@ export const DEFINE_WORK: WorkflowDefinition = {
       instruction:
         'Draft Definition v1 for this Objective: a goal, constraints, requirements, ' +
         'non-goals, design notes, risks, an acceptance model, and a fact ledger — ' +
-        'as ONE canonical Definition artifact (front matter + body, exactly as the ' +
-        'contract below specifies).\n\n' +
+        // D.34 C4 — the model authors the SEMANTIC content; Stratum serializes
+        // the canonical artifact (DDR-034). The exact shape is taught by the
+        // output contract's schema projection, injected at execution time.
+        'as ONE Definition — canonical state plus human-facing body — submitting its ' +
+        'complete semantic payload exactly as the contract below specifies.\n\n' +
         `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n` +
         'If a repository-inspection tool is available, use it to verify factual claims ' +
         'about this repository directly before marking any fact KNOWN with source: repository. ' +
@@ -127,12 +130,15 @@ export const DEFINE_WORK: WorkflowDefinition = {
         'readiness artifact).\n\n' +
         // D.3d.5 commit 2 — deterministic validator defects arrive through
         // the same readiness artifact: mechanical, fix exactly as stated.
+        // D.34 C4 — "re-submit the Definition" is representation-neutral:
+        // the model submits the corrected semantic payload; Stratum
+        // serializes the artifact.
         'If that artifact carries a "Definition validator defects" section, the ' +
         'Definition was rejected by deterministic validation before review. Those ' +
         'defects are mechanical (duplicate/invalid ledger entries, missing decision ' +
         'references, provenance conflicts): correct them exactly as stated — they are ' +
-        'not requests for editorial judgment — and re-emit the complete canonical ' +
-        'Definition artifact.\n\n' +
+        'not requests for editorial judgment — and re-submit the complete corrected ' +
+        'Definition.\n\n' +
         `${DEFINITION_CONTRACT}\n\n${GAP_CLASSIFICATION}\n\n${REFINE_DEFINITION_SCOPE}` +
         '\n\nInspect only repository reality that materially affects this bounded scope: ' +
         'once the gap\'s answer is found, stop reading and produce the revised artifact.',

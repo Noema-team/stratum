@@ -966,8 +966,10 @@ export class AgentRunner {
       'verdict: fail (route: refine)',
       '',
       'The Definition Artifact was rejected by deterministic validation BEFORE semantic review.',
-      'These are mechanical contract defects: fix them exactly, in the Definition front matter,',
-      'and re-emit the full canonical Definition artifact.',
+      // D.34 C4 — representation-neutral repair ask: the model re-submits the
+      // corrected semantic payload; Stratum serializes the artifact.
+      'These are mechanical contract defects: fix them exactly as stated and re-submit',
+      'the complete corrected Definition.',
       '',
       '## Definition validator defects',
       '',

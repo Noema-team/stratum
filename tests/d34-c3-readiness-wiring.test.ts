@@ -70,8 +70,14 @@ test('D.34.C3 PROMPTS: READINESS_ROUTE_CONTRACT is proposal-framed, methodology 
   assert.ok(text.includes('Stratum derives the next step deterministically'), 'route authority rule kept');
 });
 
-test('D.34.C3 PROMPTS: the Definition (produce-path) contract is UNTOUCHED — C4 has not run', () => {
-  assert.ok(DEFINITION_CONTRACT.includes('front matter'), 'definition serialization teaching remains until C4');
+test('D.34.C4 MOVED: the Definition (produce-path) contract carries meaning, not serialization', () => {
+  // C4 moved the YAML shape block into the Definition contract's generated
+  // projection (DDR-034 §8.3). The SEMANTIC contract must remain intact.
+  assert.ok(!DEFINITION_CONTRACT.includes('schemaVersion: 1'), 'serialization teaching moved to the projection');
+  assert.ok(!DEFINITION_CONTRACT.includes('front matter'), 'no front-matter mechanics in the drafter prompt');
+  assert.ok(DEFINITION_CONTRACT.includes('Fact ledger rules:'), 'epistemic rules kept verbatim');
+  assert.ok(DEFINITION_CONTRACT.includes('must | must_not | prefer | prefer_not'), 'constraint vocabulary kept');
+  assert.ok(DEFINITION_CONTRACT.includes('It must not restate the ledger'), 'body rule kept');
 });
 
 // ─── Transport proposal mode ──────────────────────────────────────────────────
@@ -256,29 +262,39 @@ test('D.34.C3 E2E: result-repair exhaustion fails closed before write/provenance
   assert.equal(existsSync(join(h.root, '.sle/work/w/readiness.md')), false, 'no readiness bytes written');
 });
 
-test('D.34.C3 E2E: a Definition (produce) step on the SAME runner stays on the legacy bytes path', async () => {
+// D.34 C4 update — a Definition produce step is NOW on the contract path
+// (C4 registered the contract; that flip is C4's acceptance evidence). The
+// invariant this test preserves for C3 is: a produce step whose declared
+// type has NO registered contract stays on the legacy bytes path, byte-for-
+// byte, on the SAME runner — the multi-turn-delimited legacy reply flows
+// through unchanged. (decision-request is such a type in define-work.)
+test('D.34.C3 E2E: a produce step with NO registered contract stays on the legacy bytes path', async () => {
   const legacyReply = [
     '<!-- SLE-OUTPUT',
     'role: explorer',
-    'node: synthesize-definition',
+    'node: prepare-human-decision',
     'artifacts:',
-    '  - id: definition',
-    '    path: .sle/work/w/definition.md',
+    '  - id: decision-request',
+    '    path: .sle/work/w/decision-request.json',
     '-->',
     '',
-    '## .sle/work/w/definition.md',
+    '## .sle/work/w/decision-request.json',
     '',
-    VALID_DEFINITION,
+    '{"type":"human_decision","title":"T","summary":"S","options":[]}',
   ].join('\n');
   const h = makeHarness([legacyReply]);
   const ctx: StepRunContext = {
-    workflowRunId: 'run-1', workflowId: 'define-work', stepId: 'synthesize-definition',
-    iteration: 1, revision: 0, goal: 'g', projectRoot: '/proj', role: 'explorer',
-    outputArtifact: { type: 'definition', ref: 'definition:{objectiveId}', path: '.sle/work/w/definition.md' },
+    workflowRunId: 'run-1', workflowId: 'define-work', stepId: 'prepare-human-decision',
+    iteration: 1, revision: 0, goal: 'g', projectRoot: h.root, role: 'explorer',
+    outputArtifact: { type: 'decision-request', ref: 'dr:{objectiveId}', path: '.sle/work/w/decision-request.json' },
   } as StepRunContext;
   const result = await h.runner.run('explorer', ctx);
   assert.equal(result.success, true, result.error);
   assert.equal('result_repairs' in result, false, 'legacy path observable shape unchanged');
-  assert.equal(readFileSync(join(h.root, '.sle/work/w/definition.md'), 'utf-8'), VALID_DEFINITION, 'model-authored bytes flow through unchanged (C4 pending)');
-  assert.deepEqual(h.artifacts.saved.map((s) => s.ref), ['definition:{objectiveId}']);
+  assert.equal(
+    readFileSync(join(h.root, '.sle/work/w/decision-request.json'), 'utf-8'),
+    '{"type":"human_decision","title":"T","summary":"S","options":[]}',
+    'model-authored bytes flow through unchanged',
+  );
+  assert.deepEqual(h.artifacts.saved.map((s) => s.ref), ['dr:{objectiveId}']);
 });
