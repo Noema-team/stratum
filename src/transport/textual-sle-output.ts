@@ -305,6 +305,14 @@ function extractJsonPayload(raw: string, noJsonKind: 'absent' | 'malformed' = 'a
 // single JSON object. Absent-vs-malformed taxonomy preserved end to end:
 // no opening delimiter → 'absent'; delimiters present but unclosed, or a
 // payload that is not parseable JSON → 'malformed'.
+//
+// D.34 C4 review closure — CARDINALITY is fail-closed: exactly ONE opening
+// delimiter and exactly ONE corresponding closing delimiter. Multiple
+// proposal blocks in one reply are competing semantic results; this channel
+// drives deterministic validation and canonical system state, so the
+// transport must never arbitrarily select one — they are 'malformed' and
+// enter the existing bounded format repair. (Minimum invariant for this
+// temporary textual channel; C5's submit_result replaces it.)
 function extractDelimitedJsonPayload(raw: string): unknown {
   const open = raw.indexOf(SLE_OPEN);
   if (open === -1) {
@@ -321,6 +329,17 @@ function extractDelimitedJsonPayload(raw: string): unknown {
       `Missing ${SLE_CLOSE} delimiter`,
       raw,
       'the SLE-OUTPUT block was opened but never closed',
+      'malformed',
+    );
+  }
+  const secondOpen = raw.indexOf(SLE_OPEN, open + SLE_OPEN.length);
+  const secondClose = raw.indexOf(SLE_CLOSE, closeIdx + SLE_CLOSE.length);
+  if (secondOpen !== -1 || secondClose !== -1) {
+    throw new TransportParseError(
+      'Multiple SLE-OUTPUT result blocks in one reply',
+      raw,
+      'the reply carried more than one result block — a proposal reply must carry EXACTLY ONE ' +
+        'SLE-OUTPUT block containing one JSON object; competing results cannot be resolved by the transport',
       'malformed',
     );
   }

@@ -296,6 +296,67 @@ test('D.34.C4 PROJECTION: annotation keys resolve; enums and strictness project'
   assert.equal(projection.properties.schemaVersion, undefined);
 });
 
+// D.34 C4 review closure 1 — the ENTIRE generated provider-facing JSON
+// Schema is golden-pinned (the C2 rule: "as C2/C3" means the full freeze,
+// not sampled assertions). This projection IS the runtime protocol taught
+// to every producing model; dependency/adapter/schema changes require
+// regenerating this golden and reviewing the complete diff (DDR-034 §5.1).
+test('D.34.C4 GOLDEN PROJECTION: the generated JSON Schema is pinned in full', () => {
+  assert.deepEqual(toJsonSchema(DEFINITION_PROPOSAL_SCHEMA), {
+    type: 'object',
+    properties: {
+      goal: { type: 'string' },
+      facts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            statement: { type: 'string' },
+            status: { type: 'string', enum: ['KNOWN', 'ASSUMED', 'UNKNOWN', 'DECIDED', 'DEFERRED'] },
+            source: { type: 'string', enum: ['human', 'repository', 'artifact', 'investigation', 'decision'] },
+            kind: { type: 'string', enum: ['product-intent', 'repository-claim'] },
+            decisionRef: { type: 'string' },
+            evidenceRef: { type: 'string' },
+          },
+          required: ['id', 'statement', 'status', 'source'],
+          additionalProperties: false,
+        },
+      },
+      constraints: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            description: { type: 'string' },
+            type: { type: 'string', enum: ['must', 'must_not', 'prefer', 'prefer_not'] },
+          },
+          required: ['description', 'type'],
+          additionalProperties: false,
+        },
+      },
+      requirements: { type: 'array', items: { type: 'string' } },
+      nonGoals: { type: 'array', items: { type: 'string' } },
+      acceptance: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            description: { type: 'string' },
+            met: { type: 'boolean' },
+          },
+          required: ['description'],
+          additionalProperties: false,
+        },
+      },
+      bodyMarkdown: { type: 'string' },
+    },
+    required: ['goal', 'facts', 'bodyMarkdown'],
+    additionalProperties: false,
+    $schema: 'http://json-schema.org/draft-07/schema#',
+  });
+});
+
 test('D.34.C4 DECODE AUTHORITY: unknown fields and blank-trim refinements are decode defects (never projected)', () => {
   const r1 = DEFINITION_PROPOSAL_SCHEMA.safeParse({ ...baseValid(), schemaVersion: 1 });
   assert.equal(r1.success, false, 'schemaVersion is system-injected, not proposed');
@@ -362,6 +423,38 @@ test('D.34.C4 MT TRANSPORT: delimited JSON extracts as a proposal-kind result', 
     () => t.extractProduce(`${SLE_OPEN}\nno json\n${SLE_CLOSE}`, MT_CTX),
     (e: Error) => e.name === 'TransportParseError' && (e as any).kind === 'malformed',
   );
+});
+
+// D.34 C4 review closure 2 — CARDINALITY is fail-closed: exactly one
+// proposal block per reply. Competing semantic results must never be
+// silently resolved by the transport (this channel feeds deterministic
+// validation and canonical state); multiple blocks are malformed and take
+// the existing bounded format repair.
+test('D.34.C4 MT TRANSPORT: multiple proposal blocks fail closed as malformed', () => {
+  const t = new TextualSleOutputTransport();
+  const block = (goal: string) => `${SLE_OPEN}\n${JSON.stringify({ goal, facts: [], bodyMarkdown: '' })}\n${SLE_CLOSE}`;
+  const twoBlocks = `${block('first')}\n\nCorrection:\n\n${block('second')}`;
+  assert.throws(
+    () => t.extractProduce(twoBlocks, MT_CTX),
+    (e: Error) =>
+      e.name === 'TransportParseError' &&
+      (e as any).kind === 'malformed' &&
+      /more than one result block/.test((e as any).reason),
+    'two complete blocks → malformed',
+  );
+  assert.throws(
+    () => t.extractProduce(`${block('first')}\n\n${SLE_OPEN}\n{"goal":`, MT_CTX),
+    (e: Error) => e.name === 'TransportParseError' && (e as any).kind === 'malformed',
+    'trailing opened-but-unclosed second block → malformed',
+  );
+  assert.throws(
+    () => t.extractProduce(`${block('first')}\n${SLE_CLOSE}`, MT_CTX),
+    (e: Error) => e.name === 'TransportParseError' && (e as any).kind === 'malformed',
+    'a second closing delimiter → malformed',
+  );
+  // Exactly one block still parses (control).
+  const one = t.extractProduce(block('only'), MT_CTX);
+  assert.deepEqual(one, { kind: 'proposal', value: { goal: 'only', facts: [], bodyMarkdown: '' } });
 });
 
 test('D.34.C4 MT TRANSPORT: repair instructions are mode-correct on both executions', () => {
