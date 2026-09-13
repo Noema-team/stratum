@@ -1,6 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from './llm-provider.js';
-import type { MultiTurnParams, MultiTurnResult, IMultiTurnProvider } from './agent-loop.js';
+import type {
+  ILLMProvider,
+  LLMCompletionParams,
+  LLMCompletionResult,
+  IStructuredProvider,
+  StructuredCompletionParams,
+  StructuredCompletionResult,
+} from './llm-provider.js';
+import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult } from './agent-loop.js';
 
 // ─── Error types ──────────────────────────────────────────────────────────────
 
@@ -25,7 +32,7 @@ export interface AnthropicClientLike {
 
 // ─── AnthropicSDKProvider ─────────────────────────────────────────────────────
 
-export class AnthropicSDKProvider implements ILLMProvider, IMultiTurnProvider {
+export class AnthropicSDKProvider implements ILLMProvider, IMultiTurnProvider, IStructuredProvider {
   private client: AnthropicClientLike;
   private defaultModel: string;
 
@@ -165,6 +172,53 @@ export class AnthropicSDKProvider implements ILLMProvider, IMultiTurnProvider {
       tool_uses: toolUses,
       tokens_used: tokensUsed,
     };
+  }
+
+  // ─── D.34 C6 — native structured output (the API's genuine extraction
+  // ─── mechanism: ONE tool whose input schema IS the projection, with the
+  // ─── tool choice FORCED — a single-shot constrained call, never a tool
+  // ─── loop, and never the multi-turn review question reopened) ──────────────
+  async completeStructured(params: StructuredCompletionParams): Promise<StructuredCompletionResult> {
+    const start = Date.now();
+    const model = params.model || this.defaultModel;
+    const toolName = params.schemaName ?? 'result';
+    const systemText = params.system ?? '';
+    const messagesParam: Anthropic.MessageParam[] = params.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    let message: Anthropic.Message;
+    try {
+      message = await this.client.messages.create({
+        model,
+        max_tokens: params.max_tokens,
+        ...(systemText ? { system: [{ type: 'text', text: systemText }] } : {}),
+        messages: messagesParam,
+        tools: [
+          {
+            name: toolName,
+            description: 'Submit the structured result. The input schema is authoritative.',
+            input_schema: params.schema as Anthropic.Tool.InputSchema,
+          },
+        ],
+        tool_choice: { type: 'tool', name: toolName },
+      } as Anthropic.MessageCreateParamsNonStreaming);
+    } catch (err) {
+      throw this.mapError(err);
+    }
+
+    const toolUse = message.content.find(
+      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === toolName,
+    );
+    if (!toolUse) {
+      // A forced-tool call that returns no tool block violated the API
+      // contract — fail closed, never guess from prose.
+      throw new Error('Structured completion returned no tool block despite a forced tool choice');
+    }
+    const tokensUsed =
+      (message.usage?.input_tokens ?? 0) + (message.usage?.output_tokens ?? 0);
+    return { value: toolUse.input, tokens_used: tokensUsed, duration_ms: Date.now() - start };
   }
 
   private mapError(err: unknown): LLMProviderError {

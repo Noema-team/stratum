@@ -440,6 +440,19 @@ export class AgentRunner {
       // consumes only StepResult and cannot tell which representation the
       // provider used — a structured/native transport drops in without any
       // change here.
+      //
+      // D.34 C6 — NATIVE STRUCTURED OUTPUT, the capability-1 wire for this
+      // path: a schema-carrying step (registered contract) on a provider
+      // that GENUINELY implements completeStructured skips envelope syntax
+      // entirely — the provider enforces the projected schema and returns
+      // the semantic value. Fallback is by CAPABILITY, never provider name:
+      // a provider without the method keeps the textual proposal channel
+      // byte-for-byte. This slots into the existing single-turn execution
+      // policy (reviews stay single-turn); produce steps keep the C5
+      // multi-turn negotiation — this seam never reopens multi-turn review.
+      const useStructured =
+        contract !== undefined &&
+        typeof (this.llmProvider as { completeStructured?: unknown }).completeStructured === 'function';
       const transportCtx = {
         role,
         requiresReviewVerdict: ctx.requiresReviewVerdict === true,
@@ -459,7 +472,14 @@ export class AgentRunner {
       const userContent =
         buildUserMessage(context) +
         '\n\n' +
-        this.resultTransport.formatInstruction(transportCtx);
+        // D.34 C6 — the structured wire carries semantics, never envelope
+        // syntax: the schema TEXT (the contract's field-meaning annotations)
+        // rides in the message, while the shape itself is enforced by the
+        // provider API from the projection. The textual path keeps the
+        // transport's teaching, byte-for-byte unchanged.
+        (useStructured
+          ? transportCtx.resultSchemaText!
+          : this.resultTransport.formatInstruction(transportCtx));
       const baseMessages: LLMCompletionParams['messages'] = [
         {
           role: 'system',
@@ -488,51 +508,87 @@ export class AgentRunner {
       let providerError: string | undefined;
 
       while (providerError === undefined && transportError === undefined && stepResult === undefined) {
-        let llmResult;
-        try {
-          llmResult = await this.llmProvider.complete({
-            model: this.runnerConfig.model,
-            messages:
-              providerCalls === 0
-                ? [...baseMessages, { role: 'user', content: userContent }]
-                : [
-                    ...baseMessages,
-                    { role: 'user', content: userContent },
-                    // the previous non-compliant reply, AS an assistant turn
-                    { role: 'assistant', content: raw },
-                    { role: 'user', content: repairMessage },
-                  ],
-            temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
-            max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
-          });
-        } catch (err) {
-          providerError = `LLM call failed: ${err instanceof Error ? err.message : String(err)}`;
-          break;
-        }
-
-        providerCalls++;
-        tokensUsed += llmResult.tokens_used;
-        raw = llmResult.content;
-
-        try {
-          // D.3d.5 commit 1 (review amendment) — extraction is transport-owned:
-          // the runner never parses raw replies itself. The route token below
-          // is LEGACY, read only to feed the interim D.3c1a allowlist gate; it
-          // is not part of StepResult and commit 3 replaces it with
-          // deterministic derivation from validated gap classifications.
-          stepResult = this.resultTransport.extractSingleTurn(raw, transportCtx);
-        } catch (err) {
-          if (!(err instanceof TransportParseError)) {
-            transportError = `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`;
+        if (useStructured) {
+          // D.34 C6 — the structured wire: one call, the value IS the
+          // semantic proposal (no envelope, no extraction, no format
+          // repair). A result repair re-issues the SAME conversation shape
+          // (assistant raw + user repair instruction) through the same
+          // constrained call — identical budget, identical counter. A
+          // provider returning non-JSON violates its own capability
+          // contract and fails closed via the providerError path.
+          try {
+            const structured = await (
+              this.llmProvider as unknown as import('./llm-provider.js').IStructuredProvider
+            ).completeStructured({
+              model: this.runnerConfig.model,
+              system: baseMessages[0].content,
+              messages:
+                providerCalls === 0
+                  ? [{ role: 'user' as const, content: userContent }]
+                  : [
+                      { role: 'user' as const, content: userContent },
+                      { role: 'assistant' as const, content: raw },
+                      { role: 'user' as const, content: repairMessage },
+                    ],
+              max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+              schema: transportCtx.resultSchemaJson!,
+              schemaName: ctx.outputArtifact?.type,
+            });
+            providerCalls++;
+            tokensUsed += structured.tokens_used;
+            raw = JSON.stringify(structured.value);
+            stepResult = { kind: 'proposal', value: structured.value };
+          } catch (err) {
+            providerError = `LLM call failed: ${err instanceof Error ? err.message : String(err)}`;
             break;
           }
-          if (repairDecision(formatRepairs).action === 'fail-closed') {
-            transportError = formatRepairExhaustedDiagnostic(err, providerCalls, formatRepairs);
+        } else {
+          let llmResult;
+          try {
+            llmResult = await this.llmProvider.complete({
+              model: this.runnerConfig.model,
+              messages:
+                providerCalls === 0
+                  ? [...baseMessages, { role: 'user', content: userContent }]
+                  : [
+                      ...baseMessages,
+                      { role: 'user', content: userContent },
+                      // the previous non-compliant reply, AS an assistant turn
+                      { role: 'assistant', content: raw },
+                      { role: 'user', content: repairMessage },
+                    ],
+              temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+              max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+            });
+          } catch (err) {
+            providerError = `LLM call failed: ${err instanceof Error ? err.message : String(err)}`;
             break;
           }
-          formatRepairs++;
-          repairMessage = this.resultTransport.repairInstruction(transportCtx, err.kind, err.reason);
-          continue;
+
+          providerCalls++;
+          tokensUsed += llmResult.tokens_used;
+          raw = llmResult.content;
+
+          try {
+            // D.3d.5 commit 1 (review amendment) — extraction is transport-owned:
+            // the runner never parses raw replies itself. The route token below
+            // is LEGACY, read only to feed the interim D.3c1a allowlist gate; it
+            // is not part of StepResult and commit 3 replaces it with
+            // deterministic derivation from validated gap classifications.
+            stepResult = this.resultTransport.extractSingleTurn(raw, transportCtx);
+          } catch (err) {
+            if (!(err instanceof TransportParseError)) {
+              transportError = `Output parsing failed: ${err instanceof Error ? err.message : String(err)}`;
+              break;
+            }
+            if (repairDecision(formatRepairs).action === 'fail-closed') {
+              transportError = formatRepairExhaustedDiagnostic(err, providerCalls, formatRepairs);
+              break;
+            }
+            formatRepairs++;
+            repairMessage = this.resultTransport.repairInstruction(transportCtx, err.kind, err.reason);
+            continue;
+          }
         }
 
         // D.34 C1 — the result-repair seam, single-turn mechanics (DDR-034
