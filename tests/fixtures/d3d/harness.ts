@@ -14,6 +14,7 @@ import { strict as assert } from 'node:assert';
 
 import { ContextManager, DEFAULT_CONFIG } from '../../../src/context-manager.js';
 import { AgentRunner } from '../../../src/agent-runner.js';
+import { RunArtifactManager } from '../../../src/run-artifacts.js';
 import { createDefinitionInputValidator, parseDefinition, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
 import { createReviewRouteDeriver } from '../../../src/workflow/methodology/readiness-artifact.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
@@ -540,11 +541,15 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
 
   const provider = new RecordingProvider(rawProvider);
   const cm = new ContextManager(root, DEFAULT_CONFIG);
-  const runArtifactsStub = {
-    async writeNodeOutput() {}, async updateNodeStatus() {}, async createRunDir() {}, async createManifest() {},
-  } as any;
+  // D.34 C7 review closure — a REAL RunArtifactManager, not a no-op stub:
+  // AgentRunner's raw node-outputs (.sle/runs/<run>/<iteration>/node-outputs/)
+  // are the primary evidence a failed qualification run exists to preserve —
+  // the no-op stub discarded them, which made the C7 run-evidence claim
+  // stronger than the implementation. The engine's run-dir creation also
+  // becomes real (legacy observability, not control-plane state).
+  const runArtifacts = new RunArtifactManager({ projectRoot: root });
   const agentRunner = new AgentRunner(
-    cm, provider, root, runArtifactsStub,
+    cm, provider, root, runArtifacts,
     {
       model: opts.model ?? 'test', max_tokens: opts.maxTokens,
       // D.3d.5 commit 2 — Layer A/Layer B run the same deterministic
@@ -559,7 +564,7 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
   const engineDeps: WorkflowEngineDeps = {
     stepRunner: recordingStepRunner,
     mapManager: { read: async () => ({ artifacts: [] }), update: async () => {} } as any,
-    runArtifacts: runArtifactsStub,
+    runArtifacts,
     projectRoot: root,
     workflowRunRepository: new WorkflowRunRepository(db),
   };

@@ -41,6 +41,7 @@ import {
   type DefineWorkTrace, type ScenarioId, type OracleResult,
 } from '../tests/fixtures/d3d/harness.js';
 import { diagnoseRun, deploymentVerdict, type RunDiagnosis, type DeploymentEvidence } from '../tests/fixtures/d3d/diagnosis.js';
+import { persistRunEvidence } from '../tests/fixtures/d3d/evidence.js';
 
 interface ScenarioDef {
   scenarioId: ScenarioId;
@@ -122,7 +123,12 @@ interface ScenarioReport {
   runId: string;
   objective: { title: string; description: string };
   iterationsUsed: number;
-  stepTrace: Array<{ stepId: string; success: boolean; reviewVerdict?: string; reviewRoute?: string; error?: string }>;
+  stepTrace: Array<{
+    stepId: string; success: boolean; reviewVerdict?: string; reviewRoute?: string; error?: string;
+    // D.34 C7 review closure — the repair counters ride on the recorded
+    // steps; the report must surface them, not drop them.
+    formatRepairs?: number; resultRepairs?: number;
+  }>;
   decisionsRequested: Array<{
     title: string; summary: string;
     options: Array<{ id: string; label: string; description?: string }>;
@@ -211,18 +217,14 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
     // metadata (.sle/runs/<runId>) and the generated work artifacts
     // (.sle/work) out of the fixture root BEFORE it is deleted, so the
     // diagnosis in report.json can be verified by hand against what the
-    // model actually said and produced. Passing runs stay lean (report +
-    // final artifacts only).
+    // model actually said and produced. When the run id was LOST (the run
+    // threw before completion), ALL of .sle/runs is preserved so pre-throw
+    // evidence from the real run is not missed. Passing runs stay lean
+    // (report + final artifacts only).
     if (overallValue !== 'PASS') {
-      const evidenceDir = path.join(scenarioOutDir, 'run-evidence');
-      await fs.mkdir(evidenceDir, { recursive: true });
-      const runsDir = path.join(root, '.sle', 'runs', trace.workflowRunId);
-      if (trace.workflowRunId && existsSync(runsDir)) {
-        await fs.cp(runsDir, path.join(evidenceDir, 'runs', trace.workflowRunId), { recursive: true });
-      }
-      const workDir = path.join(root, '.sle', 'work');
-      if (existsSync(workDir)) {
-        await fs.cp(workDir, path.join(evidenceDir, 'work'), { recursive: true });
+      const evidence = await persistRunEvidence(root, path.join(scenarioOutDir, 'run-evidence'), trace.workflowRunId);
+      if (evidence.copied.length > 0) {
+        process.stdout.write(`  -> run evidence preserved: ${evidence.copied.join(', ')}\n`);
       }
     }
 
@@ -235,6 +237,8 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
       iterationsUsed: trace.iterationsUsed,
       stepTrace: trace.steps.map((s) => ({
         stepId: s.stepId, success: s.success, reviewVerdict: s.reviewVerdict, reviewRoute: s.reviewRoute, error: s.error,
+        ...(s.formatRepairs !== undefined ? { formatRepairs: s.formatRepairs } : {}),
+        ...(s.resultRepairs !== undefined ? { resultRepairs: s.resultRepairs } : {}),
       })),
       decisionsRequested: trace.decisions.map((d) => ({
         title: d.title, summary: d.summary, options: d.options, selectedOptionId: d.selectedOptionId,
