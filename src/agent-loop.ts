@@ -263,18 +263,20 @@ export class AgentLoop {
         return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // E3a — bounded observation of THIS turn (names and lengths only).
+      // E3a — bounded observation of THIS turn (names and byte lengths only;
+      // Buffer.byteLength so multi-byte payloads count real bytes, not
+      // UTF-16 code units).
       lastObservation = {
         result_transport: this.transport.name,
         turns_taken: turns,
         format_repairs: formatRepairs,
         result_repairs: resultRepairs,
         stop_reason: result.stop_reason,
-        text_length: (result.text ?? '').length,
+        text_length: Buffer.byteLength(result.text ?? '', 'utf8'),
         tool_calls: [...toolCallLog],
         tool_uses: (result.tool_uses ?? []).map((tu) => ({
           name: tu.name,
-          argument_bytes: JSON.stringify(tu.input ?? {}).length,
+          argument_bytes: Buffer.byteLength(JSON.stringify(tu.input ?? {}), 'utf8'),
         })),
         error: '',
       };

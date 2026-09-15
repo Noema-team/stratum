@@ -1,17 +1,10 @@
-// E3a — failure evidence closure + E3b — glm multi-turn opt-in / sampling parity.
-//
-// E3a pins (C7/F6): a FAILED multi-turn step must leave evidence that explains
-// itself — the raw node output carries a bounded step-failure-observation
-// (stop_reason, text_length, tool names/argument bytes, repair counters,
-// negotiated transport) instead of being silently replaced with '', and the
-// loop's -loop.json turn metadata exists on the failure path exactly as on
-// success. Never reply text, never reasoning text.
-//
-// E3b pins: the 'glm' provider kind opts into the multi-turn tool wire
-// (evidence: E2 15/15 single-turn degradation; exact-shape probe proved the
-// endpoint executes the multi-turn wire correctly), and the multi-turn wire
-// carries the runner's temperature (sampling parity with the single-turn and
-// structured wires).
+// E3a — failure evidence closure (C7/F6): a FAILED multi-turn step must leave
+// evidence that explains itself. The raw node output carries a bounded
+// step-failure-observation (stop_reason, text_length in real UTF-8 bytes,
+// tool names + argument byte lengths, repair counters, negotiated transport)
+// instead of being silently replaced with '', and the loop's -loop.json turn
+// metadata exists on the failure path exactly as on success. Never reply
+// text, never hidden reasoning text.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -19,146 +12,192 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AgentLoop, type MultiTurnParams, type MultiTurnResult, type AgentLoopResult } from '../src/agent-loop.js';
+import {
+  AgentLoop,
+  type MultiTurnResult,
+  type AgentLoopResult,
+  type AgentLoopOptions,
+} from '../src/agent-loop.js';
 import { AgentRunner } from '../src/agent-runner.js';
 import { RunArtifactManager } from '../src/run-artifacts.js';
-import { createLLMProvider } from '../src/llm-provider.js';
-import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
+import type { StepRunContext } from '../src/workflow/types.js';
+import type { AssembledContext } from '../src/context-manager.js';
 
-// ---------------------------------------------------------------------------
-// E3a
-// ---------------------------------------------------------------------------
-
-interface ScriptedTurn {
-  result: Pick<MultiTurnResult, 'stop_reason' | 'text' | 'tool_uses' | 'tokens_used'>;
+class ScriptedContextManager {
+  async assemble(): Promise<AssembledContext> {
+    return {
+      system_prompt: 'sys',
+      artifact_slices: {},
+      state_summary: 'state',
+      task: 'task',
+      token_count: 1,
+      truncated: [],
+    };
+  }
 }
 
-function scriptedProvider(turns: ScriptedTurn[]) {
-  let i = 0;
+function makeCtx(overrides: Partial<StepRunContext> = {}): StepRunContext {
   return {
-    async completeMultiTurn(_params: MultiTurnParams): Promise<MultiTurnResult> {
-      const t = turns[Math.min(i, turns.length - 1)];
-      i++;
-      return { tokens_used: 10, ...t.result } as MultiTurnResult;
-    },
-  };
+    workflowRunId: 'run-e3a',
+    workflowId: 'define-work',
+    stepId: 'synthesize_definition',
+    iteration: 1,
+    revision: 0,
+    goal: 'g',
+    projectRoot: '/proj',
+    role: 'explorer',
+    ...overrides,
+  } as StepRunContext;
 }
 
-function loopOpts(provider: unknown, root: string) {
+function loopOpts(root: string, extra: Partial<AgentLoopOptions> = {}): AgentLoopOptions {
   return {
     model: 'test-model',
     projectRoot: root,
-    role: 'builder' as const,
+    role: 'explorer',
     workflowRunId: 'run-e3a',
     iteration: 1,
     nodeId: 'synthesize_definition',
     runArtifacts: new RunArtifactManager({ projectRoot: root }),
+    ...extra,
   };
 }
 
-const loopCtx = {
-  nodeId: 'synthesize_definition',
-  declaredArtifactId: undefined,
-  declaredOutputPath: undefined,
-  expectedArtifacts: undefined,
-};
-
-async function runFailingLoop(turns: ScriptedTurn[]): Promise<AgentLoopResult> {
+test('E3a: failed end_turn turn (absent block, repair exhausted) carries the observation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'e3a-'));
   try {
-    // biome-ignore lint/style/noNonNullAssertion: scripted providers are for tests
-    const provider = scriptedProvider(turns) as never;
-    const loop = new AgentLoop(provider, loopOpts(provider, root));
-    return await loop.run('system', 'user task');
+    const provider = {
+      async completeMultiTurn(_p: unknown): Promise<MultiTurnResult> {
+        // both turns reply with prose and no result block → repair once, then
+        // the shared fail-closed budget exhausts
+        return { stop_reason: 'end_turn', text: 'prose without any result block', tool_uses: [], tokens_used: 5 } as unknown as MultiTurnResult;
+      },
+    };
+    const loop = new AgentLoop(provider as never, loopOpts(root));
+    const result: AgentLoopResult = await loop.run('system', 'user task');
+    assert.equal(result.success, false);
+    const obs = result.failure_observation!;
+    assert.ok(obs, 'failure_observation must be present');
+    assert.equal(obs.stop_reason, 'end_turn');
+    assert.equal(obs.text_length, 'prose without any result block'.length);
+    assert.equal(obs.format_repairs, 1);
+    assert.equal(obs.turns_taken, 2);
+    assert.ok(obs.result_transport.length > 0);
+    // bounded observation: never the reply text itself
+    const serialized = JSON.stringify(obs);
+    assert.ok(!serialized.includes('prose without any result block'), 'observation must not carry reply text');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}
-
-test('E3a: failed end_turn turn (absent block, repair exhausted) carries the observation', async () => {
-  const result = await runFailingLoop([
-    { result: { stop_reason: 'end_turn', text: 'prose without any result block', tool_uses: [], tokens_used: 5 } },
-    { result: { stop_reason: 'end_turn', text: 'still no block', tool_uses: [], tokens_used: 5 } },
-  ]);
-  assert.equal(result.success, false);
-  assert.ok(result.failure_observation, 'failure_observation must be present');
-  assert.equal(result.failure_observation!.stop_reason, 'end_turn');
-  assert.equal(result.failure_observation!.text_length, 'still no block'.length);
-  assert.equal(result.failure_observation!.format_repairs, 1);
-  assert.equal(result.failure_observation!.turns_taken, 2);
-  assert.ok(result.failure_observation!.result_transport.length > 0);
-  // bounded observation: never the reply text itself
-  const serialized = JSON.stringify(result.failure_observation);
-  assert.ok(!serialized.includes('still no block'), 'observation must not carry reply text');
 });
 
 test('E3a: failed max_tokens turn records stop_reason max_tokens (M1 evidence)', async () => {
-  const result = await runFailingLoop([
-    { result: { stop_reason: 'max_tokens', text: '', tool_uses: [], tokens_used: 4096 } },
-  ]);
-  assert.equal(result.success, false);
-  assert.equal(result.failure_observation!.stop_reason, 'max_tokens');
-  assert.equal(result.failure_observation!.text_length, 0);
-});
-
-test('E3a: failed tool-submission turn records tool names and argument sizes', async () => {
-  const result = await runFailingLoop([
-    {
-      result: {
-        stop_reason: 'end_turn',
-        text: '',
-        tool_uses: [
-          { type: 'tool_use' as const, id: 't1', name: 'submit_result', input: { result: { goal: 'x'.repeat(50) } } },
-          { type: 'tool_use' as const, id: 't2', name: 'submit_result', input: { result: { goal: 'y' } } },
-        ],
-        tokens_used: 5,
+  const root = mkdtempSync(join(tmpdir(), 'e3a-mt-'));
+  try {
+    const provider = {
+      async completeMultiTurn(): Promise<MultiTurnResult> {
+        return { stop_reason: 'max_tokens', text: '', tool_uses: [], tokens_used: 4096 } as unknown as MultiTurnResult;
       },
-    },
-  ]);
-  assert.equal(result.success, false);
-  assert.equal(result.failure_observation!.tool_uses.length, 2, 'cardinality violation captured');
-  assert.ok(result.failure_observation!.tool_uses[0].argument_bytes > 0);
+    };
+    const loop = new AgentLoop(provider as never, loopOpts(root));
+    const result = await loop.run('system', 'user task');
+    assert.equal(result.success, false);
+    assert.equal(result.failure_observation!.stop_reason, 'max_tokens');
+    assert.equal(result.failure_observation!.text_length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test('E3a: runner persists the observation as the raw node output + failure loop metadata', async () => {
+test('E3a: a real submit-result transport failure is captured — negotiated channel, tool_use stop, cardinality violation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e3a-submit-'));
+  try {
+    // stop_reason: tool_use with submit_result + a read tool on the SAME
+    // turn — the C5 terminal/exclusive violation. First occurrence enters
+    // format repair; the repeat fails closed. This drives the REAL
+    // SubmitResultTransport via loop negotiation (resultSchemaJson present,
+    // provider has completeMultiTurn).
+    const violatingTurn = {
+      stop_reason: 'tool_use',
+      text: '',
+      tool_uses: [
+        { type: 'tool_use', id: 't1', name: 'submit_result', input: { result: { goal: 'x'.repeat(80) } } },
+        { type: 'tool_use', id: 't2', name: 'read_file', input: { path: 'src/a.ts' } },
+      ],
+      tokens_used: 5,
+    };
+    const provider = {
+      async completeMultiTurn(): Promise<MultiTurnResult> {
+        return violatingTurn as unknown as MultiTurnResult;
+      },
+    };
+    const loop = new AgentLoop(provider as never, loopOpts(root, {
+      resultSchemaJson: {
+        type: 'object',
+        properties: { result: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] } },
+        required: ['result'],
+      },
+    }));
+    const result = await loop.run('system', 'user task');
+    assert.equal(result.success, false);
+    const obs = result.failure_observation!;
+    assert.ok(obs, 'failure_observation must be present');
+    assert.equal(obs.result_transport, 'submit-result', 'the negotiated submit-result transport is recorded');
+    assert.equal(obs.stop_reason, 'tool_use');
+    assert.equal(obs.format_repairs, 1, 'one repair attempt before fail-closed');
+    assert.equal(obs.tool_uses.length, 2, 'the violating turn carried submit_result AND read_file');
+    assert.equal(obs.tool_uses[0].name, 'submit_result');
+    assert.equal(obs.tool_uses[1].name, 'read_file');
+    assert.ok(obs.tool_uses[0].argument_bytes > 80, 'argument_bytes counts real UTF-8 bytes');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('E3a: AgentRunner.run() persists the observation to disk — raw node output non-empty + failure loop metadata present', async () => {
+  // The exact defect E3a closes lives at the runner/loop/filesystem boundary:
+  // drive a REAL AgentRunner.run() with a real RunArtifactManager against a
+  // real temporary root and assert the evidence is ON DISK after the failure.
   const root = mkdtempSync(join(tmpdir(), 'e3a-runner-'));
   try {
     const provider = {
       async completeMultiTurn(): Promise<MultiTurnResult> {
-        return { stop_reason: 'max_tokens', text: '', tool_uses: [], tokens_used: 4096 } as MultiTurnResult;
+        return { stop_reason: 'max_tokens', text: '', tool_uses: [], tokens_used: 4096 } as unknown as MultiTurnResult;
       },
     };
-    const cm = new ContextManager(root, DEFAULT_CONFIG);
-    const runner = new AgentRunner(cm, provider as never, root, new RunArtifactManager({ projectRoot: root }), {
-      model: 'test-model',
-    });
-    // Drive the loop through the runner's low-level seam by invoking the same
-    // construction the runner uses — but assert at the LOOP/runner boundary
-    // with a hand-rolled failure: simplest is to call the private path via a
-    // minimal step context. To keep the test narrow we assert the runner writes
-    // the observation by running a step through the engine seam is out of scope
-    // here; instead assert the raw-file content contract the runner implements:
-    const observation = JSON.stringify({
-      kind: 'step-failure-observation',
-      result_transport: 'textual',
-      turns_taken: 1,
-      format_repairs: 0,
-      result_repairs: 0,
-      stop_reason: 'max_tokens',
-      text_length: 0,
-      tool_calls: [],
-      tool_uses: [],
-      error: 'Agent exhausted max_tokens without producing a result block',
-    });
-    assert.ok(observation.includes('step-failure-observation'));
-    assert.ok(!observation.includes('reasoning_content'));
-    // and the loop metadata naming contract matches the loop's success path:
-    const metaName = 'synthesize_definition-loop.json'.toLowerCase();
-    assert.equal(metaName, 'synthesize_definition-loop.json');
-    assert.ok(existsSync(root)); // fixture sanity
+    const runner = new AgentRunner(
+      new ScriptedContextManager(),
+      provider as never,
+      root,
+      new RunArtifactManager({ projectRoot: root }),
+      { model: 'test-model' },
+    );
+    const result = await runner.run('explorer', makeCtx({ projectRoot: root }));
+    assert.equal(result.success, false);
+    assert.ok(result.raw_output_path.length > 0, 'raw_output_path must be set');
+    assert.ok(existsSync(result.raw_output_path), 'the raw node output must exist on disk');
+
+    const raw = readFileSync(result.raw_output_path, 'utf-8');
+    assert.ok(raw.length > 0, 'raw node output must NOT be empty (the C7/F6 defect)');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    assert.equal(parsed['kind'], 'step-failure-observation');
+    assert.equal(parsed['stop_reason'], 'max_tokens');
+    assert.equal(parsed['text_length'], 0);
+    assert.equal(parsed['result_transport'], 'textual-sle-output');
+    assert.equal(parsed['error'], result.error);
+
+    // failure -loop.json: same directory, same naming as the success path
+    const loopMetaPath = join(root, '.sle', 'runs', 'run-e3a', '1', 'node-outputs', 'synthesize_definition-loop.json');
+    assert.ok(existsSync(loopMetaPath), 'failure loop metadata must exist under the run directory');
+    const meta = JSON.parse(readFileSync(loopMetaPath, 'utf-8')) as Record<string, unknown>;
+    assert.equal(meta['failed'], true);
+    assert.equal(meta['node_id'], 'synthesize_definition');
+    assert.equal(meta['turns_taken'], 1);
+    assert.ok(Array.isArray(meta['tool_calls']));
+    // both files live under root/.sle/runs/..., which the C7 evidence
+    // collector (persistRunEvidence) copies out before fixture deletion —
+    // survival is pinned by tests/d34-c7-evidence.test.ts.
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-
