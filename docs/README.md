@@ -8,12 +8,12 @@ Post-vision architecture docs. These refine, override, and prepare-for-implement
 |-----|---------|------------|
 | [overview/](overview/) | Entry-point mental models | `overview/README.md` |
 | [specs/](specs/) | Primary build reference — what to implement | `specs/README.md` |
-| [decisions/](decisions/) | Architectural Decision Records (DDR-001..028) | `decisions/README.md` |
+| [decisions/](decisions/) | Architectural Decision Records (DDR-001..035) | `decisions/README.md` |
 | [guides/](guides/) | How-to guides | — |
 | [reference/](reference/) | Quick-reference tables and type schemas | — |
 | [research/](research/) | External system architecture deep dives | — |
 | [ideas/](ideas/) | Proposals and integration analysis | `ideas/README.md` |
-| [developmentPlan/](developmentPlan/) | Phased build plans and post-MVP roadmap | `developmentPlan/post-mvp-roadmap.md` |
+| [developmentPlan/](developmentPlan/) | Phased build plans; active roadmap: `developmentPlan/post-d34-roadmap.md` (Era II) | `developmentPlan/post-d34-roadmap.md` |
 
 ## Reading order
 
