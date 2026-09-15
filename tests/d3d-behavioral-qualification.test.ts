@@ -108,25 +108,20 @@ function extractDecisionFromContext(userMessage: string): { decisionId: string; 
 // canonical front matter (the artifact FILE body — i.e. the first lines of
 // the section content, exactly where the file's front matter lives);
 // Stratum derives the route, never the model.
+// E4 preflight — the readiness review runs single-turn on the contract path:
+// proposal-mode teaching (no envelope, no front matter) — the reply IS the
+// ReadinessProposal JSON: { verdict, gaps, bodyMarkdown }.
 function stOutput(
   verdict: 'pass' | 'fail',
   gaps: Array<{ target: string; description: string; classification: string; reason: string }>,
   content: string,
-  outPath: string,
+  _outPath: string,
 ): string {
-  const fm = [
-    '---',
-    'schemaVersion: 1',
-    'gaps:',
-    ...(gaps.length > 0
-      ? gaps.map((g) => '  - ' + JSON.stringify({ closure: 'see body', ...g }))
-      : ['  []']),
-    '---',
-  ].join('\n');
-  const lines = ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', `verdict: ${verdict}`];
-  lines.push('artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '');
-  lines.push(`## ${outPath}`, '', fm, '', content);
-  return lines.join('\n');
+  return JSON.stringify({
+    verdict,
+    gaps: gaps.map((g) => ({ closure: 'see body', ...g })),
+    bodyMarkdown: content,
+  });
 }
 
 interface ScenarioScript {
@@ -144,7 +139,7 @@ interface ScenarioScript {
 // Both layers share the SAME orchestration (driveDefineWorkRun in
 // tests/fixtures/d3d/harness.ts) — this file only supplies the scripted
 // provider and the scenario-specific scripted content.
-async function runScenario(script: ScenarioScript): Promise<{ trace: DefineWorkTrace; root: string }> {
+export async function runScenario(script: ScenarioScript): Promise<{ trace: DefineWorkTrace; root: string }> {
   const root = mkdtempSync(path.join(tmpdir(), `d3d-${script.scenarioId}-`));
   const provider = new DualModeProvider(script.multiTurnSequence, script.singleTurnSequence);
 
@@ -177,23 +172,35 @@ const EARLY_GOAL = 'Make Evershift multiplayer-capable: two players can join and
 // D.3d.5 commit 2 — scripted definitions are CANONICAL artifacts (YAML front
 // matter carries the fact ledger; the markdown body stays human-facing).
 // JSON flow style per fact is valid YAML and keeps the helper trivial.
-function canonicalDefinition(
+// E4 preflight (audit finding C): definition-producing steps run the CONTRACT
+// path — the model submits a DefinitionProposal via submit_result and Stratum
+// materializes canonical YAML (schemaVersion system-injected, never
+// model-authored). `selected` is decision bookkeeping, not a CanonicalFact
+// schema field, so it is stripped here exactly as the schema would.
+function definitionProposal(
   goal: string,
   facts: Array<{ id: string; statement: string; status: string; source: string; decisionRef?: string; selected?: string }>,
   body = '',
-): string {
-  const fm = [
-    '---',
-    'schemaVersion: 1',
-    `goal: ${JSON.stringify(goal)}`,
-    'facts:',
-    ...facts.map((f) => '  - ' + JSON.stringify(f)),
-    '---',
-  ].join('\n');
-  return body ? `${fm}\n\n${body}` : fm;
+): Record<string, unknown> {
+  return {
+    goal,
+    facts: facts.map(({ selected: _selected, ...f }) => f),
+    bodyMarkdown: body,
+  };
 }
 
-const EARLY_V1 = canonicalDefinition(EARLY_GOAL, [
+// The submit_result tool call — the negotiated channel for schema-carrying
+// multi-turn produce steps. Terminal and exclusive for its turn.
+function submitProposalTurn(proposal: unknown, id: string): MultiTurnResult {
+  return {
+    stop_reason: 'tool_use',
+    text: '',
+    tool_uses: [{ type: 'tool_use', id, name: 'submit_result', input: proposal }],
+    tokens_used: 5,
+  };
+}
+
+const EARLY_V1 = definitionProposal(EARLY_GOAL, [
   { id: 'networking-layer', statement: 'Whether the repository already has a networking/transport layer.', status: 'UNKNOWN', source: 'repository' },
   { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
   { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
@@ -201,7 +208,7 @@ const EARLY_V1 = canonicalDefinition(EARLY_GOAL, [
 ], `## Requirements
 - Two players can join and play a shared real-time session together.`);
 
-const EARLY_V2 = canonicalDefinition(EARLY_GOAL, [
+const EARLY_V2 = definitionProposal(EARLY_GOAL, [
   { id: 'networking-layer', statement: 'The repository has no networking/transport layer today (docs/architecture.md: single-player, no network transport, session, or replication code anywhere).', status: 'KNOWN', source: 'repository' },
   { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
   { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
@@ -213,7 +220,7 @@ const EARLY_V2 = canonicalDefinition(EARLY_GOAL, [
 - description: Two players can join and play a shared real-time session together.
   met: false`);
 
-const EARLY_V3_DEFERRED = canonicalDefinition(EARLY_GOAL, [
+const EARLY_V3_DEFERRED = definitionProposal(EARLY_GOAL, [
   { id: 'networking-layer', statement: 'The repository has no networking/transport layer today.', status: 'KNOWN', source: 'repository' },
   { id: 'cross-platform-scope', statement: 'Whether cross-platform play belongs in this bounded increment.', status: 'UNKNOWN', source: 'human' },
   { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
@@ -239,7 +246,7 @@ const AUTHORITY_DECISION_REQUEST = {
 function earlyApplyHumanDecision(params: MultiTurnParams): MultiTurnResult {
   const userMessage = String(params.messages[0]?.content ?? '');
   const { decisionId, selectedOptionId } = extractDecisionFromContext(userMessage);
-  return mtOutput(canonicalDefinition(EARLY_GOAL, [
+  return submitProposalTurn(definitionProposal(EARLY_GOAL, [
     { id: 'networking-layer', statement: 'The repository has no networking/transport layer today.', status: 'KNOWN', source: 'repository' },
     { id: 'cross-platform-scope', statement: 'Same-platform only for this bounded increment.', status: 'DECIDED', source: 'decision', decisionRef: decisionId, selected: selectedOptionId },
     { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
@@ -279,10 +286,10 @@ function earlyScript(): ScenarioScript {
     fixtureFiles: EARLY_FIXTURE_FILES,
     objectiveIntent: EARLY_OBJECTIVE,
     multiTurnSequence: [
-      mtOutput(EARLY_V1, definitionPath),                                    // synthesize-definition
+      submitProposalTurn(EARLY_V1, 'sub-earl'),                                    // synthesize-definition
       toolUseTurn('read_file', { path: 'docs/architecture.md' }, 'tu-1'),    // refine-definition: inspect
-      mtOutput(EARLY_V2, definitionPath),                                    // refine-definition: final
-      mtOutput(EARLY_V3_DEFERRED, definitionPath),                          // apply-deferred-gaps
+      submitProposalTurn(EARLY_V2, 'sub-earl'),                                    // refine-definition: final
+      submitProposalTurn(EARLY_V3_DEFERRED, 'sub-earl'),                          // apply-deferred-gaps
       mtJsonOutput(AUTHORITY_DECISION_REQUEST, decisionRequestPath),         // prepare-human-decision
       earlyApplyHumanDecision,                                              // apply-human-decision
       mtOutput(EARLY_EXPLORATION_NEED, explorationPath),                    // record-exploration-need
@@ -333,14 +340,14 @@ test('D.3d Layer A — EARLY: substantial uncertainty handling (CAN_RESOLVE -> D
 
 const PARTIAL_GOAL = 'Faction relations affect NPC dialogue and trade prices at settlements.';
 
-const PARTIAL_V1 = canonicalDefinition(PARTIAL_GOAL, [
+const PARTIAL_V1 = definitionProposal(PARTIAL_GOAL, [
   { id: 'faction-loyalty-model', statement: 'Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).', status: 'KNOWN', source: 'human' },
   { id: 'combat-out-of-scope', statement: 'Combat is explicitly out of scope for this increment.', status: 'KNOWN', source: 'human' },
   { id: 'dialogue-trade-wiring', statement: 'The dialogue engine and trade post do not yet take faction relation as an input.', status: 'ASSUMED', source: 'human' },
 ], `## Non-Goals
 - Combat is out of scope for this increment.`);
 
-const PARTIAL_V2 = canonicalDefinition(PARTIAL_GOAL, [
+const PARTIAL_V2 = definitionProposal(PARTIAL_GOAL, [
   { id: 'faction-loyalty-model', statement: 'Settlements have factions (src/npc/faction.ts); NPCs have loyalty to their faction (src/npc/npc.ts).', status: 'KNOWN', source: 'human' },
   { id: 'combat-out-of-scope', statement: 'Combat is explicitly out of scope for this increment (src/combat/ is self-contained, no dependency on faction/dialogue state).', status: 'KNOWN', source: 'repository' },
   { id: 'dialogue-trade-wiring', statement: 'The dialogue engine (src/dialogue/dialogue-engine.ts) selects lines by disposition only; the trade post (src/trade/trade-post.ts) applies a flat multiplier — neither yet takes faction relation as an input.', status: 'KNOWN', source: 'repository' },
@@ -359,9 +366,9 @@ function partialScript(): ScenarioScript {
     fixtureFiles: PARTIAL_FIXTURE_FILES,
     objectiveIntent: PARTIAL_OBJECTIVE,
     multiTurnSequence: [
-      mtOutput(PARTIAL_V1, definitionPath),
+      submitProposalTurn(PARTIAL_V1, 'sub-part'),
       toolUseTurn('read_file', { path: 'docs/architecture.md' }, 'tu-1'),
-      mtOutput(PARTIAL_V2, definitionPath),
+      submitProposalTurn(PARTIAL_V2, 'sub-part'),
     ],
     singleTurnSequence: [
       stOutput('fail', [
@@ -389,7 +396,7 @@ test('D.3d Layer A — PARTIAL: targeted refinement only, supplied facts preserv
 // Scenario C — MATURE
 // ============================================================================
 
-const MATURE_V1 = canonicalDefinition(
+const MATURE_V1 = definitionProposal(
   "Add GET /objectives/:id/history, returning the Objective's recorded status transitions.",
   [
     { id: 'existing-route-pattern', statement: 'GET /objectives/:id (src/api/routes/objectives.ts) already uses requireWorkspaceAccess (src/api/guards/workspace-guard.ts) and 404s when the Objective is absent or belongs to a different workspace.', status: 'KNOWN', source: 'repository' },
@@ -419,7 +426,7 @@ function matureScript(): ScenarioScript {
     multiTurnSequence: [
       toolUseTurn('read_file', { path: 'src/api/routes/objectives.ts' }, 'tu-1'),
       toolUseTurn('read_file', { path: 'src/domain/objective-events.ts' }, 'tu-2'),
-      mtOutput(MATURE_V1, definitionPath),
+      submitProposalTurn(MATURE_V1, 'sub-matu'),
     ],
     singleTurnSequence: [
       stOutput('pass', [], 'All seven dimensions pass on v1 — the request is already sufficiently defined.', readinessPath),

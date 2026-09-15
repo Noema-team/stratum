@@ -482,27 +482,31 @@ class ScriptedDualModeProvider {
   }
 }
 
-function mtOut(content: string, outPath: string): MultiTurnResult {
+// E4 preflight (audit finding C) — definition-producing steps run the
+// CONTRACT path: the model submits a DefinitionProposal via submit_result
+// (terminal/exclusive) and Stratum materializes canonical YAML with the
+// system-injected schemaVersion. The gate bounces an invented decisionRef to
+// refine through the SAME acceptor production uses.
+function submitProposal(proposal: Record<string, unknown>): MultiTurnResult {
   return {
-    stop_reason: 'end_turn', tool_uses: [], tokens_used: 10,
-    text: ['<<<SLE-OUTPUT>>>', `### ${outPath}`, content, '<<<END-SLE-OUTPUT>>>'].join('\n'),
+    stop_reason: 'tool_use', text: '',
+    tool_uses: [{ type: 'tool_use', id: 'sub-1', name: 'submit_result', input: proposal }],
+    tokens_used: 10,
   };
 }
 
-function stPass(content: string, outPath: string): string {
-  return ['<!-- SLE-OUTPUT', 'role: explorer', 'node: define-work', 'verdict: pass',
-    'artifacts:', '  - id: readiness', `    path: ${outPath}`, '-->', '', `## ${outPath}`, '', content].join('\n');
+function stPass(content: string, _outPath: string): string {
+  return JSON.stringify({ verdict: 'pass', gaps: [], bodyMarkdown: content });
 }
 
-function decidedFactArtifact(decisionRef: string): string {
-  return [
-    '---',
-    'schemaVersion: 1',
-    '"goal": "Harness decision-authority parity"',
-    'facts:',
-    `  - {"id":"F1","statement":"WebSocket transport.","status":"DECIDED","source":"decision","decisionRef":"${decisionRef}"}`,
-    '---',
-  ].join('\n');
+function decidedFactProposal(decisionRef: string): Record<string, unknown> {
+  return {
+    goal: 'Harness decision-authority parity',
+    facts: [
+      { id: 'F1', statement: 'WebSocket transport.', status: 'DECIDED', source: 'decision', decisionRef },
+    ],
+    bodyMarkdown: '',
+  };
 }
 
 test('D.3d.5.2: the harness gate resolves Decisions — an invented decisionRef is refined, not reviewed (parity with production)', async () => {
@@ -510,20 +514,17 @@ test('D.3d.5.2: the harness gate resolves Decisions — an invented decisionRef 
   try {
     const definitionPath = '.sle/work/wi-d3d-decision-gate/definition.md';
     const readinessPath = '.sle/work/wi-d3d-decision-gate/readiness.md';
-    const corrected = [
-      '---',
-      'schemaVersion: 1',
-      '"goal": "Harness decision-authority parity"',
-      'facts:',
-      '  - {"id":"F1","statement":"WebSocket transport, still unconfirmed.","status":"ASSUMED","source":"human"}',
-      '---',
-    ].join('\n');
-
     const reviewedContexts: string[] = [];
     const provider = new ScriptedDualModeProvider(
       [
-        mtOut(decidedFactArtifact('dec-invented-in-harness'), definitionPath),
-        mtOut(corrected, definitionPath),
+        submitProposal(decidedFactProposal('dec-invented-in-harness')),
+        submitProposal({
+          goal: 'Harness decision-authority parity',
+          facts: [
+            { id: 'F1', statement: 'WebSocket transport, still unconfirmed.', status: 'ASSUMED', source: 'human' },
+          ],
+          bodyMarkdown: '',
+        }),
       ],
       [
         (params: LLMCompletionParams) => {
@@ -554,7 +555,7 @@ test('D.3d.5.2: the harness gate resolves Decisions — an invented decisionRef 
       'the reviewer never saw the invented decisionRef',
     );
     assert.ok(
-      reviewedContexts[0].includes('"status":"ASSUMED"'),
+      reviewedContexts[0].includes('ASSUMED'),
       'the reviewer saw the corrected artifact',
     );
   } finally {
