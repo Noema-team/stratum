@@ -17,6 +17,8 @@ import { AgentRunner } from '../../../src/agent-runner.js';
 import { RunArtifactManager } from '../../../src/run-artifacts.js';
 import { createDefinitionInputValidator, parseDefinition, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
 import { createReviewRouteDeriver } from '../../../src/workflow/methodology/readiness-artifact.js';
+import { READINESS_OUTPUT_CONTRACT } from '../../../src/workflow/methodology/readiness-contract.js';
+import { createDefinitionOutputContract } from '../../../src/workflow/methodology/definition-contract.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
 import { StratumAgentAdapter } from '../../../src/execution/stratum-agent-adapter.js';
 import { ExecutorRegistry } from '../../../src/execution/registry.js';
@@ -558,6 +560,26 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
       // D.3d.5 commit 3 — same parity for route derivation: routes are
       // derived from structured gap classifications, never model-authored.
       deriveReviewRoute: createReviewRouteDeriver(),
+      // E4 preflight (audit finding C) — the harness MUST register the SAME
+      // output contracts production's composition root registers
+      // (application.ts buildAgentRunner): the define-work workflow declares
+      // artifact type 'definition', and without the contract here the step
+      // degraded to the LEGACY path — no contract renderer (materialized
+      // definition lacked the system-injected schemaVersion: 1, so the
+      // deterministic readiness validator rejected with
+      // SCHEMA_VERSION_UNSUPPORTED until the iteration cap — E2-C runs 3/8/12)
+      // and no resultSchemaJson (textual `###`-envelope negotiation instead of
+      // the submit_result channel — E2-C's malformed-block TRANSPORT class).
+      // Models propose; Stratum materializes — including in the eval harness.
+      outputContracts: {
+        'definition-readiness': READINESS_OUTPUT_CONTRACT,
+        definition: createDefinitionOutputContract({
+          findDecision: (decisionRef: string) => {
+            const decision = decisionRepo.findById(decisionRef);
+            return decision ? { workItemId: decision.workItemId } : undefined;
+          },
+        }),
+      },
     }, undefined, artifacts,
   );
   const recordingStepRunner = new RecordingStepRunner(new AgentStepRunner(agentRunner));
