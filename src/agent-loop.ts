@@ -59,6 +59,11 @@ export interface MultiTurnParams {
   system: string;
   messages: MultiTurnMessage[];
   max_tokens: number;
+  // E3b — sampling parity across wires (C6 review closure 3 semantics): the
+  // multi-turn wire must carry the SAME sampling configuration as the
+  // single-turn and structured wires. Optional; absent leaves the provider
+  // default (legacy behavior, byte-for-byte).
+  temperature?: number;
   // D.34 C5 — widened from `typeof AGENT_TOOLS` to a structural readonly
   // array: the transport may add the result-submission tool (derived from
   // the step's contract projection) alongside the read tools. Providers map
@@ -77,6 +82,9 @@ export interface IMultiTurnProvider {
 export interface AgentLoopOptions {
   model: string;
   max_tokens?: number;
+  // E3b — forwarded to the provider on every multi-turn call (sampling
+  // parity with the single-turn/structured wires).
+  temperature?: number;
   projectRoot: string;
   role: AgentRole;
   workflowRunId: string;
@@ -127,6 +135,22 @@ export interface AgentLoopResult {
   proposal?: { value: unknown };
   turns_taken: number;
   tokens_used: number;
+  // E3a — set on FAILURE only: a bounded observation of the last provider
+  // turn, so a failed step's evidence explains itself (C7/F6: the raw
+  // node output must never be silently replaced with an empty string when
+  // the failure is exactly what needs diagnosing). Lengths and names only —
+  // never reply text, never hidden reasoning text.
+  failure_observation?: {
+    result_transport: string;
+    turns_taken: number;
+    format_repairs: number;
+    result_repairs: number;
+    stop_reason: string;
+    text_length: number;
+    tool_calls: Array<{ tool: string; path: string; turn: number }>;
+    tool_uses: Array<{ name: string; argument_bytes: number }>;
+    error: string;
+  };
   // D.3d.5 commit 1 — bounded format-repair attempts, tracked separately
   // from ordinary turns so diagnostics never imply a repair happened when
   // only ordinary tool/answer turns occurred. Exact semantics (shared with
@@ -206,6 +230,10 @@ export class AgentLoop {
     // (schema-carrying contract steps). Absent on every legacy path.
     const submissionTool = this.transport.resultSubmissionTool?.(this.transportCtx);
     const tools = submissionTool ? [...AGENT_TOOLS, submissionTool] : [...AGENT_TOOLS];
+    // E3a — the most recent provider turn, in bounded observation form.
+    // Set after every provider call; attached by fail() so a failed step's
+    // evidence explains itself (never reply text, never reasoning text).
+    let lastObservation: NonNullable<AgentLoopResult['failure_observation']> | undefined;
     const fail = (error: string): AgentLoopResult => ({
       success: false,
       turns_taken: turns,
@@ -213,6 +241,9 @@ export class AgentLoop {
       format_repairs: formatRepairs,
       result_repairs: resultRepairs,
       error,
+      ...(lastObservation
+        ? { failure_observation: { ...lastObservation, error } }
+        : {}),
     });
 
     while (turns < MAX_AGENT_TURNS) {
@@ -224,11 +255,29 @@ export class AgentLoop {
           system,
           messages: [...messages], // snapshot to avoid reference aliasing
           max_tokens: this.opts.max_tokens ?? 4096,
+          // E3b — sampling parity across wires.
+          ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
           tools,
         });
       } catch (err) {
         return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      // E3a — bounded observation of THIS turn (names and lengths only).
+      lastObservation = {
+        result_transport: this.transport.name,
+        turns_taken: turns,
+        format_repairs: formatRepairs,
+        result_repairs: resultRepairs,
+        stop_reason: result.stop_reason,
+        text_length: (result.text ?? '').length,
+        tool_calls: [...toolCallLog],
+        tool_uses: (result.tool_uses ?? []).map((tu) => ({
+          name: tu.name,
+          argument_bytes: JSON.stringify(tu.input ?? {}).length,
+        })),
+        error: '',
+      };
 
       totalTokens += result.tokens_used;
 

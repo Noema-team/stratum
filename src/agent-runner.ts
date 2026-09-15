@@ -333,6 +333,10 @@ export class AgentRunner {
         {
           model: this.runnerConfig.model,
           max_tokens: this.runnerConfig.max_tokens,
+          // E3b — sampling parity: the multi-turn wire runs the SAME
+          // sampling configuration the single-turn/structured wires get
+          // (C6 review closure 3 semantics).
+          temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
           projectRoot: this.projectRoot,
           role,
           workflowRunId: ctx.workflowRunId,
@@ -376,7 +380,43 @@ export class AgentRunner {
       resultRepairs = loopResult.result_repairs;
 
       if (!loopResult.success) {
-        rawPath = await this.writeRaw(ctx, nodeId, '');
+        // E3a — a failed step's evidence must explain itself (C7/F6): the
+        // raw node output carries the bounded last-turn observation (names,
+        // lengths, counters — never reply text, never reasoning text)
+        // instead of being silently replaced with an empty string, and the
+        // loop's `-loop.json` turn metadata is written on the failure path
+        // exactly as AgentLoop.writeTurnMetadata does on success.
+        if (loopResult.failure_observation) {
+          try {
+            const metaPath = path.join(
+              this.projectRoot, '.sle', 'runs', ctx.workflowRunId, String(ctx.iteration),
+              'node-outputs', `${nodeId.toLowerCase()}-loop.json`,
+            );
+            await (this.fs).mkdir(path.dirname(metaPath), { recursive: true });
+            await (this.fs).writeFile(
+              metaPath,
+              JSON.stringify({
+                node_id: nodeId,
+                failed: true,
+                result_transport: loopResult.failure_observation.result_transport,
+                turns_taken: loopResult.turns_taken,
+                tool_calls: loopResult.failure_observation.tool_calls,
+                stop_reason: loopResult.failure_observation.stop_reason,
+                text_length: loopResult.failure_observation.text_length,
+              }, null, 2),
+              'utf-8',
+            );
+          } catch {
+            // metadata write failures are non-fatal (same policy as the loop)
+          }
+        }
+        rawPath = await this.writeRaw(
+          ctx,
+          nodeId,
+          loopResult.failure_observation
+            ? JSON.stringify({ kind: 'step-failure-observation', ...loopResult.failure_observation }, null, 2)
+            : '',
+        );
         return {
           success: false,
           artifacts_written: [],
