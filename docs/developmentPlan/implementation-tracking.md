@@ -1,15 +1,21 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-09-11
+**Updated:** 2026-09-15
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
-> **Current work pointer (2026-09-11):** the D.3 line postdates this table (see
-> `docs/developmentPlan/d3a…d3d*` history) and is not tracked below. The active execution
-> plan is [d34-output-contracts.md](d34-output-contracts.md) (DDR-034 output contracts,
-> C1–C7); the frozen architecture decision is
-> [DDR-034](../decisions/ddr-034-models-propose-stratum-materializes.md). This file's
-> phase table below is historical as of 2026-06-16 and has not been comprehensively
-> modernized.
+> **Current work pointer (2026-09-15):** the D.3 line postdates the phase table below
+> (see `docs/developmentPlan/d3a…d3d*` history); **D.34 (DDR-034 output contracts,
+> C1–C7) is DONE and FROZEN** at baseline SHA `8263665` (PR #9). The active execution
+> plan is now the Era II plan
+> [post-d34-roadmap.md](post-d34-roadmap.md) (E0–E10: qualification → Pilot A →
+> evidence-driven hardening → multi-task pilot), under decision
+> [DDR-035](../decisions/ddr-035-post-d34-operational-pivot.md). E0 (freeze) and E1
+> (environment) are DONE: under the supported runtime (Node v22.23.2, per the
+> `node >=22` baseline requirement) `npm run verify` is fully green — 1496 pass /
+> 0 fail; the previously tracked 29-failure "baseline" was the unsupported Node 20
+> native module, not code. Next: E2 — freeze the GLM-5.3-Flash qualification config
+> and run the 15-run series. The phase table below is historical as of 2026-06-16
+> and has not been comprehensively modernized.
 
 ---
 
