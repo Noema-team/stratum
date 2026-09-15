@@ -327,6 +327,7 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
     api_key_env: 'TEST_LLM_API_KEY'
   });
   assert.ok(glm instanceof OpenAICompatibleProvider);
+  assert.ok(glm instanceof OpenAICompatibleMultiTurnProvider, 'E3b: glm opts into multi-turn — E2 series degraded to single-turn (15/15 reasoning-budget TRANSPORT exhaustion); the exact-shape probe proved the Z.ai endpoint executes the multi-turn wire correctly');
 
   const openrouter = createLLMProvider({
     provider: 'openrouter',
@@ -336,7 +337,6 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
   });
   assert.ok(openrouter instanceof OpenAICompatibleProvider);
   assert.ok(openrouter instanceof OpenAICompatibleMultiTurnProvider, 'D.3d: openrouter must get genuine multi-turn tool-calling capability');
-  assert.ok(!(glm instanceof OpenAICompatibleMultiTurnProvider), 'glm must stay single-turn-only, unaffected by the openrouter change');
   assert.ok(!(openai instanceof OpenAICompatibleMultiTurnProvider), 'openai_compatible must stay single-turn-only, unaffected by the openrouter change');
 
   delete process.env.TEST_LLM_API_KEY;

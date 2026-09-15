@@ -178,6 +178,9 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         model, messages, max_tokens: params.max_tokens, tools, tool_choice: 'auto',
+        // E3b — sampling parity: forward the temperature the runner runs
+        // everywhere else; absent leaves the provider default (legacy).
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
       }),
     });
 
@@ -541,7 +544,19 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
         model: config.model || 'glm-4',
         api_key_env: config.api_key_env || 'GLM_API_KEY',
       };
-      return new OpenAICompatibleProvider(glmConfig);
+      // E3b — the glm case now opts into the multi-turn tool wire, matching
+      // 'openrouter'. Evidence (E2/E3, 2026-09-15): the E2 qualification
+      // series degraded glm to the single-turn wire (no tools, no loop);
+      // the heavy methodology prompt then drove the hybrid reasoner to
+      // exhaust its entire completion budget on reasoning
+      // (`finish_reason: length`, 4095/4096 reasoning tokens, empty
+      // content) — 15/15 TRANSPORT failures with zero variance. The exact-
+      // shape probe proved the Z.ai endpoint executes the multi-turn wire
+      // correctly (tool_calls, valid JSON arguments) on this very request
+      // shape. Per D.3b1's own criterion — opt in when the target endpoint
+      // supports tool calling — plain single-turn stays available via
+      // 'openai_compatible'; 'glm' now means "Z.ai with tool calling".
+      return new OpenAICompatibleMultiTurnProvider(glmConfig);
     }
     case 'openrouter': {
       const orConfig: AgentLLMConfig = {
