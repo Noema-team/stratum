@@ -243,37 +243,24 @@ const AUTHORITY_DECISION_REQUEST = {
   ],
 };
 
-function earlyApplyHumanDecision(params: MultiTurnParams): MultiTurnResult {
-  const userMessage = String(params.messages[0]?.content ?? '');
-  const { decisionId, selectedOptionId } = extractDecisionFromContext(userMessage);
-  return submitProposalTurn(definitionProposal(EARLY_GOAL, [
-    { id: 'networking-layer', statement: 'The repository has no networking/transport layer today.', status: 'KNOWN', source: 'repository' },
-    { id: 'cross-platform-scope', statement: 'Same-platform only for this bounded increment.', status: 'DECIDED', source: 'decision', decisionRef: decisionId, selected: selectedOptionId },
-    { id: 'sync-latency-feasibility', statement: 'Whether client-side prediction with server reconciliation can meet the required latency/frame budget.', status: 'UNKNOWN', source: 'human' },
-    { id: 'wider-multiplayer-features', statement: 'Matchmaking, voice chat, spectating, and more-than-two-player sessions — real, but does not block this bounded 2-player increment.', status: 'DEFERRED', source: 'human' },
-  ], `## Non-Goals
-- Matchmaking, voice chat, spectating, and more-than-two-player sessions are out of scope for this bounded increment.
-
-## Acceptance Model
-- description: Two players can join and play a shared real-time session together.
-  met: false`), `.sle/work/wi-d3d-early/definition.md`);
+// DDR-036 — the apply step proposes ONLY the decision's semantic
+// consequences. The mechanical transition (DECIDED / source: decision /
+// decisionRef := the real resolved Decision id) is performed by the
+// contract's deterministic merge; this script has no field for it and no
+// way to get it wrong.
+function earlyApplyHumanDecision(_params: MultiTurnParams): MultiTurnResult {
+  return submitProposalTurn({
+    factStatement: 'Same-platform only for this bounded increment.',
+    nonGoals: [
+      'Matchmaking, voice chat, spectating, and more-than-two-player sessions are out of scope for this bounded increment.',
+    ],
+    acceptance: [
+      { description: 'Two players can join and play a shared real-time session together.', met: false },
+    ],
+    bodyMarkdown: 'The human resolved the platform-scope decision to same-platform only; cross-platform play is out of scope for this bounded increment.',
+  }, 'sub-apply');
 }
 
-const EARLY_EXPLORATION_NEED = `Exact question: can client-side prediction with server reconciliation meet the required
-latency/frame budget for real-time two-player play?
-
-Why not CAN_RESOLVE: no existing measurement or prior art exists in this repository — there is
-no networking layer at all yet, so there is nothing to read that would answer this.
-
-Why not HUMAN_DECISION: no human preference can substitute for an empirical latency measurement.
-
-Proposed method: prototype the synchronization approach against a representative network
-condition and benchmark round-trip/perceived latency.
-
-Expected evidence: a measured latency/jitter figure under representative network conditions.
-
-Exit criterion: a measured figure the Definition can cite to either confirm the candidate
-approach or force reconsideration of it.`;
 
 function earlyScript(): ScenarioScript {
   const definitionPath = '.sle/work/wi-d3d-early/definition.md';
@@ -290,25 +277,36 @@ function earlyScript(): ScenarioScript {
       toolUseTurn('read_file', { path: 'docs/architecture.md' }, 'tu-1'),    // refine-definition: inspect
       submitProposalTurn(EARLY_V2, 'sub-earl'),                                    // refine-definition: final
       submitProposalTurn(EARLY_V3_DEFERRED, 'sub-earl'),                          // apply-deferred-gaps
-      mtJsonOutput(AUTHORITY_DECISION_REQUEST, decisionRequestPath),         // prepare-human-decision
+      // DDR-036 — the prepare step proposes the decision request's semantic
+      // payload; the contract validates the fact linkage and serializes.
+      submitProposalTurn({ ...AUTHORITY_DECISION_REQUEST, targetFactId: 'cross-platform-scope' }, 'sub-dr'), // prepare-human-decision
       earlyApplyHumanDecision,                                              // apply-human-decision
-      mtOutput(EARLY_EXPLORATION_NEED, explorationPath),                    // record-exploration-need
+      // DDR-036 — the exploration need is a typed proposal; the contract
+      // validates the fact linkage and serializes canonical front matter.
+      submitProposalTurn({
+        targetFactId: 'sync-latency-feasibility',
+        question: 'Can client-side prediction with server reconciliation meet the required latency/frame budget for real-time two-player play?',
+        whyNotResolvableByReading: 'No existing measurement or prior art exists in this repository — there is no networking layer at all yet.',
+        requiredWork: 'Prototype the synchronization approach against a representative network condition and benchmark round-trip/perceived latency.',
+        completionEvidence: 'A measured latency/jitter figure under representative network conditions that either confirms the candidate approach or forces reconsideration.',
+        bodyMarkdown: 'Exit criterion: a measured figure the Definition can cite.',
+      }, 'sub-en'),                                                        // record-exploration-need
     ],
     singleTurnSequence: [
       stOutput('fail', [
         { target: 'networking-layer', description: 'cheap repository check needed; acceptance criteria missing', classification: 'CAN_RESOLVE', reason: 'closeable by reading the repository and restating the goal' },
       ], 'CAN_RESOLVE — fact networking-layer: cheap repository check needed; acceptance criteria missing.', readinessPath),
       stOutput('fail', [
-        { target: 'wider-multiplayer-features', description: 'real gap, does not block this bounded 2-player scope', classification: 'DEFER', reason: 'the gap is real but does not block the bounded scope' },
-        { target: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
-        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+        { target: 'wider-multiplayer-features', factId: 'wider-multiplayer-features', description: 'real gap, does not block this bounded 2-player scope', classification: 'DEFER', reason: 'the gap is real but does not block the bounded scope' },
+        { target: 'cross-platform-scope', factId: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
+        { target: 'sync-latency-feasibility', factId: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
       ], 'DEFER — fact wider-multiplayer-features: real gap, does not block this bounded 2-player scope. HUMAN_DECISION and EXPLORE_AS_WORK gaps also remain open.', readinessPath),
       stOutput('fail', [
-        { target: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
-        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+        { target: 'cross-platform-scope', factId: 'cross-platform-scope', description: 'genuine product/architecture tradeoff', classification: 'HUMAN_DECISION', reason: 'only a human can authorize this tradeoff' },
+        { target: 'sync-latency-feasibility', factId: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
       ], 'HUMAN_DECISION — fact cross-platform-scope: a genuine product/architecture tradeoff only a human can authorize.', readinessPath),
       stOutput('fail', [
-        { target: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
+        { target: 'sync-latency-feasibility', factId: 'sync-latency-feasibility', description: 'answering requires a prototype/benchmark', classification: 'EXPLORE_AS_WORK', reason: 'not answerable by reading or reasoning' },
       ], 'EXPLORE_AS_WORK — fact sync-latency-feasibility: answering requires a prototype/benchmark, not reading or reasoning.', readinessPath),
     ],
     resolveDecision: (options) => {

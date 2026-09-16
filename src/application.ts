@@ -23,6 +23,11 @@ import { createDefinitionInputValidator } from './workflow/methodology/definitio
 import { createReviewRouteDeriver } from './workflow/methodology/readiness-artifact.js';
 import { READINESS_OUTPUT_CONTRACT } from './workflow/methodology/readiness-contract.js';
 import { createDefinitionOutputContract } from './workflow/methodology/definition-contract.js';
+import {
+  createDecisionRequestOutputContract,
+  createDecisionApplicationOutputContract,
+  createExplorationNeedOutputContract,
+} from './workflow/methodology/escalation-contracts.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -376,6 +381,11 @@ export function buildAgentRunner(
       outputContracts: {
         'definition-readiness': READINESS_OUTPUT_CONTRACT,
         definition: createDefinitionOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
+        // DDR-036 — escalation ownership: request linkage, deterministic
+        // application merge, canonical exploration artifact.
+        'decision-request': createDecisionRequestOutputContract(),
+        'decision-application': createDecisionApplicationOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
+        'exploration-need': createExplorationNeedOutputContract(),
       },
     }, undefined, artifactRepository,
   );

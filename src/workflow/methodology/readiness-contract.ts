@@ -28,11 +28,13 @@ import {
   deriveReviewRoute,
   parseReadinessArtifact,
 } from './readiness-artifact.js';
-import { GAP_CLASSIFICATION_PRECEDENCE } from './definition-readiness.js';
+import { parseDefinition } from './definition-artifact.js';
+import { GAP_CLASSIFICATION_PRECEDENCE, type GapClassification } from './definition-readiness.js';
 import {
   type ContractDefect,
   type OutputContract,
   type OutputContractContext,
+  findInputArtifact,
 } from '../contracts.js';
 
 // ─── Semantic proposal (what the model owes Stratum) ──────────────────────────
@@ -71,6 +73,7 @@ export const READINESS_PROPOSAL_SCHEMA = z
     gaps: z.array(
       z.object({
         target: nonEmptyAfterTrim('gap target'),
+        factId: z.string().optional(),
         description: nonEmptyAfterTrim('gap description'),
         classification: z.enum(GAP_CLASSIFICATION_PRECEDENCE),
         reason: nonEmptyAfterTrim('gap reason'),
@@ -124,6 +127,7 @@ function toLf(s: string): string {
 export function renderReadiness(proposal: ReadinessProposal, _ctx?: OutputContractContext): string {
   const gaps = proposal.gaps.map((g: ReadinessGap) => ({
     target: toLf(g.target),
+    ...(g.factId !== undefined ? { factId: toLf(g.factId) } : {}),
     description: toLf(g.description),
     classification: g.classification,
     reason: toLf(g.reason),
@@ -185,8 +189,70 @@ export function readinessProposalFromPersisted(
 // (MAX_RESULT_REPAIRS), never a workflow iteration; exhaustion fails closed
 // before write.
 
-export function validateReadinessProposal(proposal: ReadinessProposal): readonly ContractDefect[] {
+// DDR-036 — escalating classifications require machine identity, and any
+// present factId must reference an existing fact in the CURRENT Definition
+// (the review step's declared input artifact, resolved by the runner into
+// trusted context). CAN_RESOLVE may omit factId: a missing ledger entry is
+// itself a CAN_RESOLVE defect the refine path fixes by ADDING the fact.
+const GAP_CLASSIFICATIONS_REQUIRING_FACT_ID: readonly GapClassification[] = ['DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'];
+
+export function validateReadinessProposal(
+  proposal: ReadinessProposal,
+  ctx?: OutputContractContext,
+): readonly ContractDefect[] {
   const defects: ContractDefect[] = [];
+  // DDR-036 — resolve the current Definition's fact ids ONCE (tolerantly:
+  // absence of the artifact/parse failure fails closed below only when a
+  // rule actually needs the ledger).
+  let definitionFactIds: string[] | undefined;
+  const definitionText = ctx ? findInputArtifact(ctx, 'definition.md') : undefined;
+  if (definitionText !== undefined) {
+    try {
+      definitionFactIds = parseDefinition(definitionText).definition.facts.map((f) => f.id);
+    } catch {
+      definitionFactIds = undefined;
+    }
+  }
+  // Trusted-input discipline: reference-existence checks run only when the
+  // ledger is available. Runtime ALWAYS resolves the review step's declared
+  // definition.md input; a ctx without it (pure unit calls) skips reference
+  // checks rather than guessing — the REQUIRED-for-escalating rule needs no
+  // ledger and always applies.
+  const ledgerCheckApplicable = definitionFactIds !== undefined;
+  proposal.gaps.forEach((gap, index) => {
+    const requiresFactId = GAP_CLASSIFICATIONS_REQUIRING_FACT_ID.includes(gap.classification);
+    if (requiresFactId && gap.factId === undefined) {
+      defects.push({
+        code: 'GAP_FACT_ID_MISSING',
+        ref: gap.target,
+        message:
+          `gap '${gap.target}' (entry ${index + 1}) is classified ${gap.classification} but carries no factId — ` +
+          'an escalating gap must act on stable canonical identity; if the concern has no ledger entry yet, ' +
+          'classify it CAN_RESOLVE so refinement adds the fact first',
+      });
+    }
+    if (gap.factId !== undefined && ledgerCheckApplicable && !definitionFactIds!.includes(gap.factId)) {
+      defects.push({
+        code: 'GAP_FACT_ID_UNRESOLVED',
+        ref: gap.factId,
+        message:
+          `gap '${gap.target}' (entry ${index + 1}) references factId '${gap.factId}' which does not exist in the ` +
+          'current Definition fact ledger',
+      });
+    }
+    if (
+      gap.factId !== undefined && requiresFactId && ctx !== undefined &&
+      definitionText === undefined
+    ) {
+      defects.push({
+        code: 'GAP_LEDGER_UNAVAILABLE',
+        ref: gap.target,
+        message:
+          `gap '${gap.target}' (entry ${index + 1}) cannot be validated against the Definition fact ledger — ` +
+          'the current definition.md input artifact could not be read',
+      });
+    }
+  });
   if (proposal.verdict === 'pass' && proposal.gaps.length > 0) {
     defects.push({
       code: 'PASS_WITH_GAPS',

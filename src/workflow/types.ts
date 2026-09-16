@@ -156,6 +156,15 @@ export interface DecisionContext {
   rationale?: string;
   resolvedAt?: string;
   resolvedBy?: string;
+  /**
+   * DDR-036 — the AUTHORITATIVE escalation target, carried from the durable
+   * Decision's subjectRef (captured at creation from the validated request).
+   * decision-application uses this as ground truth and cross-checks the
+   * (mutable) decision-request artifact against it; a mismatch fails closed.
+   * Absent on decisions that predate escalation ownership — which likewise
+   * fail closed rather than inferring the target from the request alone.
+   */
+  targetFactId?: string;
 }
 
 // ============================================================================

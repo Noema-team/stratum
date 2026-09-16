@@ -212,6 +212,11 @@ export class Scheduler {
               workflowRunId,
               workItemId,
               stepId: execResult.checkpointStepId,
+              // DDR-036 — bind the escalation target into the DURABLE
+              // Decision authority at creation time; the request artifact
+              // is cross-checked against it at application, never trusted
+              // independently.
+              ...(decisionReq.targetFactId !== undefined ? { targetFactId: decisionReq.targetFactId } : {}),
             },
             title: decisionReq.title,
             summary: decisionReq.summary,

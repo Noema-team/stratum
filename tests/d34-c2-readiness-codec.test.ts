@@ -52,6 +52,7 @@ const FAIL_PROPOSAL: ReadinessProposal = {
     },
     {
       target: 'F7',
+      factId: 'F7',
       description: 'Cross-platform scope undecided',
       classification: 'HUMAN_DECISION',
       reason: 'Product tradeoff only a human can authorize.',
@@ -81,6 +82,7 @@ gaps:
     reason: Repository inspection can confirm it.
     closure: Inspect the repository and mark F3 KNOWN.
   - target: F7
+    factId: F7
     description: Cross-platform scope undecided
     classification: HUMAN_DECISION
     reason: Product tradeoff only a human can authorize.
@@ -147,6 +149,7 @@ test('D.34.C2 PROJECTION GOLDEN: the entire provider-facing JSON Schema is pinne
           type: 'object',
           properties: {
             target: { type: 'string' },
+            factId: { type: 'string' },
             description: { type: 'string' },
             classification: { type: 'string', enum: ['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'] },
             reason: { type: 'string' },
@@ -242,7 +245,7 @@ test('D.34.C2 VALIDATE: the three methodology-forbidden combinations are determi
   const closureMissing = validateReadinessProposal({
     verdict: 'fail',
     gaps: [
-      { target: 'F1', description: 'd', classification: 'DEFER', reason: 'r', closure: 'record DEFERRED' },
+      { target: 'F1', factId: 'F1', description: 'd', classification: 'DEFER', reason: 'r', closure: 'record DEFERRED' },
       { target: 'F2', description: 'd', classification: 'CAN_RESOLVE', reason: 'r' },
     ],
     bodyMarkdown: '',

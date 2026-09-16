@@ -300,7 +300,11 @@ export const DEFINE_WORK: WorkflowDefinition = {
         '.sle/work/{workItemId}/decision-request.json',
       ],
       outputArtifact: {
-        type: 'definition',
+        // DDR-036 — the model proposes only the decision's semantic
+        // consequences; the contract performs the deterministic ledger
+        // transition (target fact := DECIDED on the resolved Decision's
+        // authority) and renders the SAME canonical Definition bytes.
+        type: 'decision-application',
         ref: 'definition:{objectiveId}',
         path: '.sle/work/{workItemId}/definition.md',
       },

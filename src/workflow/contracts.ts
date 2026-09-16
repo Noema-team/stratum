@@ -30,13 +30,47 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 
 /**
  * Context the runner passes alongside a typed proposal. Deliberately tiny —
- * the same minimal context the D.3d.5 InputValidator seam carries. Anything
- * more would be a scope widening; authority resolution (e.g. Decision
- * lookup) arrives through closures baked at the composition root, not
- * through this context.
+ * the same minimal context the D.3d.5 InputValidator seam carries, plus
+ * exactly the two DDR-036 additions: already-resolved trusted input
+ * artifacts and the resolved checkpoint decision. Authority resolution
+ * (e.g. Decision lookup) still arrives through closures baked at the
+ * composition root, never through this context. Contracts receive NO
+ * filesystem, network, clock, or repository access — the runner resolves
+ * the declared inputs once and hands over plain text.
  */
 export interface OutputContractContext {
   workItemId?: string;
+  /**
+   * DDR-036 — the step's declared input artifacts, keyed by canonical
+   * (path-safety-normalized) declared path, resolved to text by the runner
+   * BEFORE the LLM call. Absent entries are omitted; contracts that need an
+   * artifact fail closed on its absence (never guess).
+   */
+  inputArtifacts?: Readonly<Record<string, string>>;
+  /**
+   * DDR-036 — the human's resolved checkpoint decision (DecisionContext),
+   * threaded by the control plane into apply steps. Structural type only;
+   * defined in workflow/types.ts and imported here as a type (no cycle).
+   */
+  decisionContext?: import('./types.js').DecisionContext;
+}
+
+/**
+ * Resolve a declared input artifact by FILENAME. Exact key first; otherwise
+ * a UNIQUE '/filename' suffix match. Ambiguity (two declared inputs with
+ * the same filename) resolves to undefined — the caller fails closed with
+ * explicit wording. Never guesses.
+ */
+export function findInputArtifact(
+  ctx: OutputContractContext,
+  filename: string,
+): string | undefined {
+  if (!ctx.inputArtifacts) return undefined;
+  if (Object.hasOwn(ctx.inputArtifacts, filename)) return ctx.inputArtifacts[filename];
+  const matches = Object.keys(ctx.inputArtifacts).filter(
+    (k) => k === filename || k.endsWith('/' + filename),
+  );
+  return matches.length === 1 ? ctx.inputArtifacts[matches[0]] : undefined;
 }
 
 // ─── Defects ──────────────────────────────────────────────────────────────────

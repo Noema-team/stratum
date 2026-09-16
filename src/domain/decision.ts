@@ -45,6 +45,15 @@ export const DecisionSubjectRefSchema = z.object({
   stepId: z.string().optional(),
   workItemId: UUIDSchema.optional(),
   pullRequestUrl: z.string().url().optional(),
+  /**
+   * DDR-036 — the fact-ledger id this decision resolves, captured from the
+   * validated decision-request at creation time. This makes the escalation
+   * target part of the DURABLE Decision authority: on resume it threads
+   * into DecisionContext as the authoritative target, and the (mutable)
+   * request artifact is only ever CROSS-CHECKED against it — never trusted
+   * independently. Absent on decisions that predate escalation ownership.
+   */
+  targetFactId: z.string().optional(),
 }).refine(
   obj => Object.values(obj).some(v => v !== undefined),
   { message: 'DecisionSubjectRef must reference at least one subject' }

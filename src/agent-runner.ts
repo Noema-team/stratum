@@ -286,9 +286,20 @@ export class AgentRunner {
     // continuation / single-turn re-issue) — decode + validate against the
     // resolved contract. Built only on the contract path; absent otherwise,
     // leaving legacy steps byte-for-byte unchanged.
+    // DDR-036 — the contract context carries the step's resolved trusted
+    // inputs (declared input artifacts as text, the resolved checkpoint
+    // decision) so escalation contracts can validate identity and merge
+    // provenance deterministically. Resolved ONCE here and reused for
+    // materialization; contracts never touch the fs themselves.
+    let contractCtx: OutputContractContext | undefined;
     let acceptor: ResultAcceptor | undefined;
     if (contract) {
-      acceptor = createResultAcceptor(contract, { workItemId: ctx.workItemId } satisfies OutputContractContext, artifactType!);
+      contractCtx = {
+        workItemId: ctx.workItemId,
+        ...(ctx.decisionContext !== undefined ? { decisionContext: ctx.decisionContext } : {}),
+        ...(await this.readDeclaredInputArtifacts(ctx)),
+      };
+      acceptor = createResultAcceptor(contract, contractCtx, artifactType!);
     }
 
     // 1. Assemble context
@@ -437,7 +448,7 @@ export class AgentRunner {
         // the loop; decode again here (deterministic, cheap) for the typed
         // value, then materialize. The transport never declared a contract —
         // the workflow's registry lookup already fixed it.
-        const processed = this.processContractResult(contract!, loopResult.proposal.value, ctx);
+        const processed = this.processContractResult(contract!, loopResult.proposal.value, ctx, contractCtx);
         if (!processed.ok) {
           return {
             success: false,
@@ -724,7 +735,7 @@ export class AgentRunner {
         // D.34 C1 — contract path: the acceptor gated the proposal inside
         // the loop; decode again here (deterministic, cheap) for the typed
         // value, then materialize canonical bytes.
-        const processed = this.processContractResult(contract!, stepResult.value, ctx);
+        const processed = this.processContractResult(contract!, stepResult.value, ctx, contractCtx);
         if (!processed.ok) {
           return {
             success: false,
@@ -935,6 +946,30 @@ export class AgentRunner {
   }
 
   /**
+   * DDR-036 — resolve the step's declared input artifacts to text, keyed by
+   * canonical declared path. Best-effort per entry (a missing input is a
+   * CONTRACT-level fail-closed concern, with precise wording, not a runner
+   * concern); unsafe paths are skipped the same way. Pure read — contracts
+   * never see the fs.
+   */
+  private async readDeclaredInputArtifacts(
+    ctx: StepRunContext,
+  ): Promise<{ inputArtifacts?: Readonly<Record<string, string>> }> {
+    if (!ctx.inputArtifactRefs || ctx.inputArtifactRefs.length === 0) return {};
+    const resolved: Record<string, string> = {};
+    for (const ref of ctx.inputArtifactRefs) {
+      const canonical = toSafeRelativePath(ref);
+      if (canonical === null) continue;
+      try {
+        resolved[canonical] = await this.fs.readFile(path.join(this.projectRoot, canonical), 'utf-8');
+      } catch {
+        // absent — omitted; contracts fail closed on absence with wording
+      }
+    }
+    return Object.keys(resolved).length > 0 ? { inputArtifacts: resolved } : {};
+  }
+
+  /**
    * D.34 C1 — contract-path post-processing of an ACCEPTED proposal (the
    * acceptor has already gated decode+validate inside the executing loop).
    * Decodes again — deterministic and cheap — for the typed value, then
@@ -948,6 +983,7 @@ export class AgentRunner {
     contract: OutputContract<unknown>,
     value: unknown,
     ctx: StepRunContext,
+    contractCtx?: OutputContractContext,
   ): { ok: true; sections: Array<{ path: string; content: string }>; verdict?: string; typed: unknown } | { ok: false; error: string } {
     if (!ctx.outputArtifact) {
       return { ok: false, error: 'Contract path requires a declared outputArtifact — authoring error' };
@@ -963,7 +999,7 @@ export class AgentRunner {
     }
     let content: string;
     try {
-      content = contract.materialize(redecoded.data, { workItemId: ctx.workItemId });
+      content = contract.materialize(redecoded.data, contractCtx ?? { workItemId: ctx.workItemId });
     } catch (err) {
       return { ok: false, error: `Materialization failed for '${ctx.outputArtifact.type}': ${err instanceof Error ? err.message : String(err)}` };
     }

@@ -32,6 +32,13 @@ export const READINESS_SCHEMA_VERSION = 1;
 export interface ReadinessGap {
   /** The fact id (or an explicit missing-area identifier) the gap is about. */
   target: string;
+  /**
+   * DDR-036 — machine identity: the fact-ledger id this gap acts on.
+   * REQUIRED for DEFER/HUMAN_DECISION/EXPLORE_AS_WORK proposals (validated
+   * on the contract path); absent on legacy/persisted artifacts and on
+   * CAN_RESOLVE missing-fact gaps. The `target` prose stays human-facing.
+   */
+  factId?: string;
   description: string;
   classification: GapClassification;
   reason: string;
@@ -113,6 +120,9 @@ export function parseReadinessArtifact(artifactText: string): ParsedReadinessArt
         throw new ReadinessParseError('SHAPE_INVALID', `every gap must carry a non-empty string "${field}"`);
       }
     }
+    if (gap.factId !== undefined && (typeof gap.factId !== 'string' || gap.factId.trim() === '')) {
+      throw new ReadinessParseError('SHAPE_INVALID', `gap '${String(gap.target)}' "factId" must be a non-empty string when present`);
+    }
     if (gap.closure !== undefined && typeof gap.closure !== 'string') {
       throw new ReadinessParseError('SHAPE_INVALID', `gap '${String(gap.target)}' "closure" must be a string when present`);
     }
@@ -131,6 +141,7 @@ export function parseReadinessArtifact(artifactText: string): ParsedReadinessArt
     }
     gaps.push({
       target: gap.target as string,
+      ...(gap.factId !== undefined ? { factId: gap.factId as string } : {}),
       description: gap.description as string,
       classification: gap.classification as GapClassification,
       reason: gap.reason as string,

@@ -709,18 +709,20 @@ test('D.34.C4 E2E MULTI-TURN (textual fallback): result repair continues the con
 });
 
 test('D.34.C4 E2E MULTI-TURN: a non-contract produce step on the SAME runner stays legacy-materialized', async () => {
-  const legacySection = `${SLE_OPEN}\n### .sle/work/w/decision-request.json\n{"type":"human_decision"}\n${SLE_CLOSE}`;
+  // DDR-036 registered decision-request — the neutral unregistered type
+  // 'notes' carries the legacy-path invariant now.
+  const legacySection = `${SLE_OPEN}\n### .sle/work/w/notes.md\nlegacy free-form bytes\n${SLE_CLOSE}`;
   const h = makeMultiTurnHarness([legacySection]);
   const ctx = {
-    workflowRunId: 'r', workflowId: 'define-work', stepId: 'prepare-human-decision',
+    workflowRunId: 'r', workflowId: 'define-work', stepId: 'record-notes',
     iteration: 1, revision: 0, goal: 'g',
     projectRoot: h.root, role: 'explorer',
-    outputArtifact: { type: 'decision-request', ref: 'dr:{objectiveId}', path: '.sle/work/w/decision-request.json' },
+    outputArtifact: { type: 'notes', ref: 'notes:{objectiveId}', path: '.sle/work/w/notes.md' },
   } as unknown as StepRunContext;
   const result = await h.runner.run('explorer', ctx);
   assert.equal(result.success, true, result.error);
-  const written = readFileSync(join(h.root, '.sle/work/w/decision-request.json'), 'utf-8');
-  assert.equal(written, '{"type":"human_decision"}', 'model-authored bytes flow through unchanged (no contract for this type)');
+  const written = readFileSync(join(h.root, '.sle/work/w/notes.md'), 'utf-8');
+  assert.equal(written, 'legacy free-form bytes', 'model-authored bytes flow through unchanged (no contract for this type)');
 });
 
 // ─── Prompts: meaning kept, serialization moved (produce), reviews unchanged ──

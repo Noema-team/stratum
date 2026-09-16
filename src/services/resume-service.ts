@@ -142,6 +142,12 @@ export class ResumeService {
       rationale: resolution.rationale,
       resolvedAt: resolution.resolvedAt,
       resolvedBy: resolution.resolvedBy,
+      // DDR-036 — the durable Decision's own escalation target is the
+      // authoritative identity on resume; decision-application cross-checks
+      // the request artifact against it (never trusts it independently).
+      ...(decision.subjectRef?.targetFactId !== undefined
+        ? { targetFactId: decision.subjectRef.targetFactId }
+        : {}),
     };
 
     // ── (1e) Strict 9-field linkage validation. ───────────────────────────────
