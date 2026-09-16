@@ -205,7 +205,18 @@ export const MATURE_OBJECTIVE: ObjectiveIntent = {
     'Add GET /objectives/:id/history. It returns the Objective\'s recorded status transitions. ' +
     'Follow the existing GET /objectives/:id route pattern and workspace guard. Do not add a ' +
     'new entity or event type. 404 when the Objective is absent/inaccessible. Acceptance: the ' +
-    'request returns the ordered transition history for an accessible Objective.',
+    'request returns the ordered transition history for an accessible Objective. ' +
+    // DDR-037 — MATURE fixture closure: the event-source wiring was already
+    // documented in the fixture (src/domain/objective-events.ts: "The existing
+    // event/history source: every Objective status transition is already
+    // recorded here as it happens"), yet the objective text withheld it, so
+    // competent drafts recorded the wiring ASSUMED and correct reviewers
+    // (two model families, independently) demanded a verify-then-pass refine
+    // that the iteration-1 oracle then punished. A genuinely mature request
+    // supplies this repository knowledge up front; the oracle is unchanged.
+    'The event source already exists and is repository-verified: every Objective status ' +
+    'transition is already recorded as it happens (src/domain/objective-events.ts — ' +
+    'ObjectiveEventRepository.listByObjective); the history route only reads it.',
   constraints: [
     { description: 'Do not add a new entity or event type', type: 'must_not' as const },
     { description: 'Follow the existing GET /objectives/:id route pattern and workspace guard', type: 'must' as const },

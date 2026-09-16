@@ -219,6 +219,19 @@ export function validateReadinessProposal(
   // checks rather than guessing — the REQUIRED-for-escalating rule needs no
   // ledger and always applies.
   const ledgerCheckApplicable = definitionFactIds !== undefined;
+  // DDR-037 — repair-interface closure: the bounded repair must expose the
+  // domain of the constrained field, not just name the violation. The
+  // validator already extracted the legal id set from the trusted current
+  // Definition; withholding it from the repair instruction demonstrably
+  // degraded near-miss submissions into omissions (E4-D inv5). Shared by
+  // both factId defects; derived ONLY from the trusted ledger projection.
+  const legalFactIdListing =
+    definitionFactIds !== undefined && definitionFactIds.length > 0
+      ? `For this current Definition, the only valid fact IDs are: ${definitionFactIds.join(', ')}. ` +
+        'Copy exactly one for an escalating gap (DEFER / HUMAN_DECISION / EXPLORE_AS_WORK); never invent or ' +
+        'paraphrase an id. If no existing fact represents the concern, classify the gap CAN_RESOLVE and omit ' +
+        'factId so refinement adds the fact first.'
+      : undefined;
   proposal.gaps.forEach((gap, index) => {
     const requiresFactId = GAP_CLASSIFICATIONS_REQUIRING_FACT_ID.includes(gap.classification);
     if (requiresFactId && gap.factId === undefined) {
@@ -228,7 +241,8 @@ export function validateReadinessProposal(
         message:
           `gap '${gap.target}' (entry ${index + 1}) is classified ${gap.classification} but carries no factId — ` +
           'an escalating gap must act on stable canonical identity; if the concern has no ledger entry yet, ' +
-          'classify it CAN_RESOLVE so refinement adds the fact first',
+          'classify it CAN_RESOLVE so refinement adds the fact first' +
+          (legalFactIdListing !== undefined ? `. ${legalFactIdListing}` : ''),
       });
     }
     if (gap.factId !== undefined && ledgerCheckApplicable && !definitionFactIds!.includes(gap.factId)) {
@@ -237,7 +251,8 @@ export function validateReadinessProposal(
         ref: gap.factId,
         message:
           `gap '${gap.target}' (entry ${index + 1}) references factId '${gap.factId}' which does not exist in the ` +
-          'current Definition fact ledger',
+          'current Definition fact ledger' +
+          (legalFactIdListing !== undefined ? `. ${legalFactIdListing}` : ''),
       });
     }
     if (
@@ -305,11 +320,42 @@ export const READINESS_OUTPUT_CONTRACT: OutputContract<ReadinessProposal> = {
         "'pass' ONLY with zero gaps (gaps: []); 'fail' requires at least one classified gap. " +
         "'pass' only if all seven rubric dimensions pass.",
       '/gaps': 'On a fail verdict: every gap keeping the verdict from pass, in semantic order.',
+      '/gaps/items/factId':
+        'For DEFER / HUMAN_DECISION / EXPLORE_AS_WORK: copy an existing fact ID from the current ' +
+        "Definition's fact ledger EXACTLY — never invent, derive, or paraphrase one. If no ledger fact " +
+        'represents the concern, classify the gap CAN_RESOLVE and omit factId: refinement adds the fact, ' +
+        'and the next review escalates it with identity.',
       '/gaps/items/classification':
         'Exactly one of CAN_RESOLVE, DEFER, HUMAN_DECISION, EXPLORE_AS_WORK.',
       '/gaps/items/closure':
         'Required for every failing gap; for DEFER, describe what recording the DEFERRED transition requires.',
     },
+  },
+
+  // DDR-037 — the trusted finite identity vocabulary, projected into the
+  // reviewer's context BEFORE the first submission. Pure derivation from the
+  // review step's declared definition.md input (the canonical ledger); it
+  // introduces no state and no second authority — the ledger remains the
+  // single source of truth. Teaching alone proved insufficient (E4-D: the
+  // prompt already said "never invent"; models paraphrased their OWN ids),
+  // because a finite selection was represented as an unconstrained string.
+  contextTeaching: (ctx) => {
+    const definitionText = findInputArtifact(ctx, 'definition.md');
+    if (definitionText === undefined) return undefined;
+    let factIds: string[];
+    try {
+      factIds = parseDefinition(definitionText).definition.facts.map((f) => f.id);
+    } catch {
+      return undefined;
+    }
+    if (factIds.length === 0) return undefined;
+    return (
+      'VALID FACT IDs in the current Definition fact ledger (the only legal values for a gap factId):\n' +
+      factIds.map((id) => `- ${id}`).join('\n') +
+      '\nCopy one EXACTLY for an escalating gap (DEFER / HUMAN_DECISION / EXPLORE_AS_WORK). Never invent or ' +
+      'paraphrase an id. If no listed fact represents the concern, classify the gap CAN_RESOLVE and omit ' +
+      "factId — refinement adds the fact to the ledger, and the next review escalates it with identity."
+    );
   },
 
   // C2 review correction — see validateReadinessProposal above: the

@@ -137,6 +137,18 @@ export interface OutputContract<T> {
   readonly schemaAnnotations?: SchemaAnnotations;
 
   /**
+   * DDR-037 — context-aware teaching text, derived PURELY from the trusted
+   * OutputContractContext (e.g. the legal identity vocabulary extracted
+   * from a declared input artifact). Ephemeral prompt projection only:
+   * never persisted, never a second authority — the canonical artifacts
+   * remain the single source of truth the derivation merely projects.
+   * Returning undefined contributes nothing (byte-stable with absent).
+   * PURE: no clock, no randomness, no fs, no env — it receives the same
+   * trusted context `validate` does.
+   */
+  readonly contextTeaching?: (ctx: OutputContractContext) => string | undefined;
+
+  /**
    * Context-aware mechanical methodology validation beyond the schema —
    * plain code over the decoded T, NEVER zod refinements (structured defect
    * codes and authority-resolution closures would degrade into anonymous
@@ -340,4 +352,22 @@ export function renderSchemaTeaching(contract: OutputContract<unknown>): string 
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * DDR-037 — the complete result teaching for one step execution: the static
+ * schema teaching plus, when the contract declares one, its context-aware
+ * teaching derived from the trusted contract context. Absent hook or absent
+ * context returns the static text byte-for-byte. The runner consumes ONLY
+ * this combinator — it never interprets context itself (no methodology
+ * logic outside contracts).
+ */
+export function renderResultTeaching(
+  contract: OutputContract<unknown>,
+  ctx?: OutputContractContext,
+): string {
+  const contextual = ctx !== undefined ? contract.contextTeaching?.(ctx) : undefined;
+  const base = renderSchemaTeaching(contract);
+  if (contextual === undefined || contextual === '') return base;
+  return `${base}\n\n${contextual}`;
 }

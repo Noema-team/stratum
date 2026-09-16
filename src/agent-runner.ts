@@ -28,7 +28,7 @@ import {
   type ResultAcceptor,
   type OutputContractContext,
   createResultAcceptor,
-  renderSchemaTeaching,
+  renderResultTeaching,
   toJsonSchema,
 } from './workflow/contracts.js';
 
@@ -375,7 +375,7 @@ export class AgentRunner {
           ...(contract
             ? {
                 acceptResult: acceptor,
-                resultSchemaText: renderSchemaTeaching(contract),
+                resultSchemaText: renderResultTeaching(contract, contractCtx),
                 resultSchemaJson: toJsonSchema(contract.modelSchema),
               }
             : {}),
@@ -523,7 +523,7 @@ export class AgentRunner {
         // D.34 C1 — runner-generated projections; absent on the legacy path.
         ...(contract
           ? {
-              resultSchemaText: renderSchemaTeaching(contract),
+              resultSchemaText: renderResultTeaching(contract, contractCtx),
               resultSchemaJson: toJsonSchema(contract.modelSchema),
             }
           : {}),
