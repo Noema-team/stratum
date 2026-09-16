@@ -18,6 +18,11 @@ import { RunArtifactManager } from '../../../src/run-artifacts.js';
 import { createDefinitionInputValidator, parseDefinition, type CanonicalFact } from '../../../src/workflow/methodology/definition-artifact.js';
 import { createReviewRouteDeriver } from '../../../src/workflow/methodology/readiness-artifact.js';
 import { READINESS_OUTPUT_CONTRACT } from '../../../src/workflow/methodology/readiness-contract.js';
+import {
+  createDecisionRequestOutputContract,
+  createDecisionApplicationOutputContract,
+  createExplorationNeedOutputContract,
+} from '../../../src/workflow/methodology/escalation-contracts.js';
 import { createDefinitionOutputContract } from '../../../src/workflow/methodology/definition-contract.js';
 import { AgentStepRunner } from '../../../src/execution/agent-step-runner.js';
 import { StratumAgentAdapter } from '../../../src/execution/stratum-agent-adapter.js';
@@ -579,6 +584,17 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
             return decision ? { workItemId: decision.workItemId } : undefined;
           },
         }),
+        // DDR-036 — the SAME escalation contracts production registers
+        // (PR #12's parity lesson: the harness must never drift from the
+        // composition root again).
+        'decision-request': createDecisionRequestOutputContract(),
+        'decision-application': createDecisionApplicationOutputContract({
+          findDecision: (decisionRef: string) => {
+            const decision = decisionRepo.findById(decisionRef);
+            return decision ? { workItemId: decision.workItemId } : undefined;
+          },
+        }),
+        'exploration-need': createExplorationNeedOutputContract(),
       },
     }, undefined, artifacts,
   );

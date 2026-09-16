@@ -50,6 +50,14 @@ export interface DecisionRequest {
   title: string;
   summary: string;
   options: Array<{ id: string; label: string; description: string }>;
+  /**
+   * DDR-036 — the fact-ledger id this decision resolves. OPTIONAL at this
+   * boundary solely for tolerant loading of legacy persisted requests
+   * (additive compat); the NEW decision-request output contract always
+   * materializes it, and deterministic decision application fails
+   * explicitly on its absence — never infers the fact from prose.
+   */
+  targetFactId?: string;
 }
 
 export interface ExecutionFailureInfo {

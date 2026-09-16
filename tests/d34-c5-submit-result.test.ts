@@ -369,22 +369,22 @@ test('D.34.C5 E2E: mixed read+submission turn fails closed → format repair →
 });
 
 test('D.34.C5 E2E: a legacy (no-contract) step on the SAME runner — no submission tool, textual bytes intact', async () => {
-  const legacySection = `${SLE_OPEN}\n### .sle/work/w/decision-request.json\n{"type":"human_decision"}\n${SLE_CLOSE}`;
+  const legacySection = `${SLE_OPEN}\n### .sle/work/w/notes.md\nlegacy free-form bytes\n${SLE_CLOSE}`;
   const h = makeHarness([
     { stop_reason: 'end_turn', text: `thinking...\n${legacySection}` },
   ]);
   const ctx = {
-    workflowRunId: 'r', workflowId: 'define-work', stepId: 'prepare-human-decision',
+    workflowRunId: 'r', workflowId: 'define-work', stepId: 'record-notes',
     iteration: 1, revision: 0, goal: 'g',
     projectRoot: h.root, role: 'explorer',
-    outputArtifact: { type: 'decision-request', ref: 'dr:{objectiveId}', path: '.sle/work/w/decision-request.json' },
+    outputArtifact: { type: 'notes', ref: 'notes:{objectiveId}', path: '.sle/work/w/notes.md' },
   } as unknown as StepRunContext;
   const result = await h.runner.run('explorer', ctx);
   assert.equal(result.success, true, result.error);
   assert.ok(!h.provider.multiTurnCalls[0].tools.some((t) => t.name === SUBMIT_RESULT_TOOL_NAME), 'no submission tool on legacy steps');
-  const meta = JSON.parse(readFileSync(join(h.root, '.sle/runs/r/1/node-outputs/prepare-human-decision-loop.json'), 'utf-8'));
+  const meta = JSON.parse(readFileSync(join(h.root, '.sle/runs/r/1/node-outputs/record-notes-loop.json'), 'utf-8'));
   assert.equal(meta.result_transport, 'textual-sle-output', 'negotiated transport recorded for the legacy path too');
-  assert.equal(readFileSync(join(h.root, '.sle/work/w/decision-request.json'), 'utf-8'), '{"type":"human_decision"}');
+  assert.equal(readFileSync(join(h.root, '.sle/work/w/notes.md'), 'utf-8'), 'legacy free-form bytes');
 });
 
 // ─── Provider wire shapes (both real multi-turn paths) ────────────────────────

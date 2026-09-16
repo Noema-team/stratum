@@ -26,6 +26,8 @@ const DecisionRequestSchema = z
     title: z.string().min(1),
     summary: z.string().min(1),
     options: z.array(DecisionRequestOptionSchema).min(1),
+    // DDR-036 — additive; absent on legacy artifacts (tolerant load).
+    targetFactId: z.string().min(1).optional(),
   })
   .refine(
     (req) => new Set(req.options.map((o) => o.id)).size === req.options.length,

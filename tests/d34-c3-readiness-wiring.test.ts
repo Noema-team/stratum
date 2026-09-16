@@ -224,6 +224,7 @@ const VALID_FAIL_PROPOSAL: ReadinessProposal = {
   gaps: [
     {
       target: 'F1',
+      factId: 'F1',
       description: 'Platform scope is a product tradeoff only a human can authorize',
       classification: 'HUMAN_DECISION',
       reason: 'Irreversible product commitment.',
@@ -236,7 +237,7 @@ const VALID_FAIL_PROPOSAL: ReadinessProposal = {
 test('D.34.C3 E2E: garbage → format repair → methodology-invalid → result repair → success with typed route + system bytes', async () => {
   const h = makeHarness([
     'I think this definition looks pretty good overall...',                    // not JSON → format repair
-    JSON.stringify({ verdict: 'pass', gaps: [{ target: 'F1', description: 'd', classification: 'HUMAN_DECISION', reason: 'r', closure: 'c' }], bodyMarkdown: '' }), // PASS_WITH_GAPS → result repair
+    JSON.stringify({ verdict: 'pass', gaps: [{ target: 'F1', factId: 'F1', description: 'd', classification: 'HUMAN_DECISION', reason: 'r', closure: 'c' }], bodyMarkdown: '' }), // PASS_WITH_GAPS → result repair
     JSON.stringify(VALID_FAIL_PROPOSAL),                                       // accepted
   ]);
   const result: AgentRunResult = await h.runner.run('explorer', reviewCtx());
@@ -267,34 +268,35 @@ test('D.34.C3 E2E: result-repair exhaustion fails closed before write/provenance
 // invariant this test preserves for C3 is: a produce step whose declared
 // type has NO registered contract stays on the legacy bytes path, byte-for-
 // byte, on the SAME runner — the multi-turn-delimited legacy reply flows
-// through unchanged. (decision-request is such a type in define-work.)
+// through unchanged. (DDR-036 registered decision-request — the neutral
+// unregistered type 'notes' now carries this invariant.)
 test('D.34.C3 E2E: a produce step with NO registered contract stays on the legacy bytes path', async () => {
   const legacyReply = [
     '<!-- SLE-OUTPUT',
     'role: explorer',
-    'node: prepare-human-decision',
+    'node: record-notes',
     'artifacts:',
-    '  - id: decision-request',
-    '    path: .sle/work/w/decision-request.json',
+    '  - id: notes',
+    '    path: .sle/work/w/notes.md',
     '-->',
     '',
-    '## .sle/work/w/decision-request.json',
+    '## .sle/work/w/notes.md',
     '',
-    '{"type":"human_decision","title":"T","summary":"S","options":[]}',
+    'free-form legacy bytes',
   ].join('\n');
   const h = makeHarness([legacyReply]);
   const ctx: StepRunContext = {
-    workflowRunId: 'run-1', workflowId: 'define-work', stepId: 'prepare-human-decision',
+    workflowRunId: 'run-1', workflowId: 'define-work', stepId: 'record-notes',
     iteration: 1, revision: 0, goal: 'g', projectRoot: h.root, role: 'explorer',
-    outputArtifact: { type: 'decision-request', ref: 'dr:{objectiveId}', path: '.sle/work/w/decision-request.json' },
+    outputArtifact: { type: 'notes', ref: 'notes:{objectiveId}', path: '.sle/work/w/notes.md' },
   } as StepRunContext;
   const result = await h.runner.run('explorer', ctx);
   assert.equal(result.success, true, result.error);
   assert.equal('result_repairs' in result, false, 'legacy path observable shape unchanged');
   assert.equal(
-    readFileSync(join(h.root, '.sle/work/w/decision-request.json'), 'utf-8'),
-    '{"type":"human_decision","title":"T","summary":"S","options":[]}',
+    readFileSync(join(h.root, '.sle/work/w/notes.md'), 'utf-8'),
+    'free-form legacy bytes',
     'model-authored bytes flow through unchanged',
   );
-  assert.deepEqual(h.artifacts.saved.map((s) => s.ref), ['dr:{objectiveId}']);
+  assert.deepEqual(h.artifacts.saved.map((s) => s.ref), ['notes:{objectiveId}']);
 });

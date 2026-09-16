@@ -55,6 +55,7 @@ const FAIL_PROPOSAL: ReadinessProposal = {
   gaps: [
     {
       target: 'F1',
+      factId: 'F1',
       description: 'Scope membership undecided',
       classification: 'HUMAN_DECISION',
       reason: 'Only a human can authorize the boundary.',
@@ -260,28 +261,28 @@ test('D.34.C6 FALLBACK: a step WITHOUT a registered contract stays textual even 
   const provider = new ReviewProvider(true, []);
   const h = makeHarness(provider);
   const ctx = {
-    workflowRunId: 'r', workflowId: 'define-work', stepId: 'prepare-human-decision',
+    workflowRunId: 'r', workflowId: 'define-work', stepId: 'record-notes',
     iteration: 1, revision: 0, goal: 'g',
     projectRoot: h.root, role: 'explorer',
-    outputArtifact: { type: 'decision-request', ref: 'dr:{objectiveId}', path: '.sle/work/w/decision-request.json' },
+    outputArtifact: { type: 'notes', ref: 'notes:{objectiveId}', path: '.sle/work/w/notes.md' },
   } as unknown as StepRunContext;
   provider.textualReplies.push([
     '<!-- SLE-OUTPUT',
     'role: explorer',
     'node: prepare-human-decision',
     'artifacts:',
-    '  - id: decision-request',
-    '    path: .sle/work/w/decision-request.json',
+    '  - id: notes',
+    '    path: .sle/work/w/notes.md',
     '-->',
     '',
-    '## .sle/work/w/decision-request.json',
+    '## .sle/work/w/notes.md',
     '',
-    '{"type":"human_decision"}',
+    'legacy free-form bytes',
   ].join('\n'));
   const result = await h.runner.run('explorer', ctx);
   assert.equal(result.success, true, result.error);
   assert.equal(provider.structuredCalls.length, 0, 'no schema → no structured call (capability alone is not enough)');
-  assert.equal(readFileSync(join(h.root, '.sle/work/w/decision-request.json'), 'utf-8'), '{"type":"human_decision"}');
+  assert.equal(readFileSync(join(h.root, '.sle/work/w/notes.md'), 'utf-8'), 'legacy free-form bytes');
 });
 
 // ─── C6 boundary: produce steps keep the C5 negotiation ───────────────────────

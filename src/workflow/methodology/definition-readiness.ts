@@ -204,7 +204,11 @@ export const ROUTE_TOKEN_FOR_CLASSIFICATION: Record<GapClassification, string> =
 };
 
 export const GAP_CLASSIFICATION = `Every readiness failure resolves to a specific fact (or a gap where no entry yet
-exists), classified into exactly one bucket:
+exists), classified into exactly one bucket. Every ESCALATING classification (DEFER,
+HUMAN_DECISION, EXPLORE_AS_WORK) must carry 'factId': the exact ledger id of the fact it acts
+on — the escalation machinery links to that identity. A concern with no ledger entry yet is
+CAN_RESOLVE by definition: refinement adds the fact first, and the next review escalates it
+with identity. Never invent a factId — copy it exactly from the Definition's fact ledger:
 - CAN_RESOLVE — closeable without a human decision or exploratory work: an omitted non-goal
   obvious from the stated goal, a missing acceptance criterion for an already-stated
   requirement, a direct contradiction to fix, information that already exists elsewhere in
@@ -382,7 +386,7 @@ On a \`pass\` verdict, the proposal carries zero gaps — never an unresolved on
 // iteration is available). This step never shares refine-definition's
 // iterating loop — DEFER is resolved once, deterministically, by this
 // dedicated step.
-export const DEFER_APPLICATION_CONTRACT = `For every gap the most recent readiness Artifact classified DEFER:
+export const DEFER_APPLICATION_CONTRACT = `For every gap the most recent readiness Artifact classified DEFER (identify each by its factId):
 - preserve the fact entry — never delete it from the fact ledger;
 - change its status to DEFERRED;
 - preserve (or add) a brief record of why it does not block the candidate bounded scope
@@ -403,27 +407,18 @@ report it as a residual gap.`;
 // markdown, no code fences, no surrounding prose — since the checkpoint
 // step reads this file's raw bytes and parses them directly as JSON.
 export const HUMAN_DECISION_PREPARE_CONTRACT = `Choose exactly one fact the most recent readiness Artifact classified HUMAN_DECISION — one
-checkpoint asks one question. Produce a DecisionRequest JSON object with exactly these fields:
-{
-  "type": "human_decision",
-  "title": "<short, concrete question — e.g. \\"Multiplayer authority model\\">",
-  "summary": "<why the bounded scope needs this decided now, one or two sentences>",
-  "options": [
-    { "id": "<short-id>", "label": "<human label>", "description": "<what choosing this means>" },
-    ...
-  ]
-}
+checkpoint asks one question — and propose the decision request's semantic payload. The system
+serializes the request artifact and carries the fact linkage: you choose WHICH question (by its
+factId) and WHAT the options mean.
 
 Rules:
+- targetFactId must be the exact ledger id of a fact the current readiness classifies
+  HUMAN_DECISION — never a fact already DECIDED, never a CAN_RESOLVE/DEFER/EXPLORE_AS_WORK fact.
 - Every option must be a genuinely legitimate alternative for this fact — never a fake
   approve/reject wrapping of "yes" and "no" when the real choice is among several paths.
-- Option ids must be unique; every field (id, label, description) must be non-empty.
-- Never ask about a fact already DECIDED.
-- Never ask a human a CAN_RESOLVE, DEFER, or EXPLORE_AS_WORK question — this checkpoint exists
-  for HUMAN_DECISION facts only.
+- Option ids must be unique; every field non-empty.
 - Never ask a human to do repository investigation — that is CAN_RESOLVE, resolved by
-  refine-definition, not by a human decision.
-- Output the JSON object itself as the section content — nothing else.`;
+  refine-definition, not by a human decision.`;
 
 // D.3c1b — apply-human-decision: the natural continuation after
 // human-decision-checkpoint resolves. Reads the resolved DecisionContext
@@ -433,19 +428,20 @@ Rules:
 // EXACTLY that one fact — never a different HUMAN_DECISION fact merely
 // because it is also unresolved.
 export const HUMAN_DECISION_APPLY_CONTRACT = `The "## Human Decision" section above records the human's resolution: the selected option and
-(when available) their rationale, plus the Decision id. The decision-request.json artifact
-records which fact/question this resolution answers.
+(when available) their rationale, plus the Decision id. The system already knows which fact
+this decision answers (the request's fact linkage) and performs the ledger transition itself —
+the fact becomes DECIDED on the recorded Decision's authority, with no action required from
+you and no field available to you for it.
 
-Update EXACTLY the fact that decision-request.json's question was about:
-- set its status to DECIDED;
-- set its source to decision;
-- record a reference to the actual resolved Decision (the Decision id shown above) and the
-  selected option, so the fact ledger entry is traceable to a real human resolution, not merely
-  asserted;
-- preserve a brief record of the rationale, when one was given.
+You propose only what the resolution MEANS for the Definition:
+- an optional revised statement for the resolved fact, if the choice sharpens it;
+- any sections the choice changes (requirements, constraints, non-goals, acceptance) — submit
+  the COMPLETE revised list for a changed section; omit unchanged sections entirely;
+- the body record of what this decision settles and what it leaves open.
 
-Never mark any other HUMAN_DECISION or EXPLORE_AS_WORK fact as DECIDED — only the human's actual
-answer authorizes that transition for the fact it actually answered.`;
+You cannot touch the goal, other facts, or any fact's status — facts you do not mention carry
+over exactly as they were. Further unresolved HUMAN_DECISION facts stay for their own
+checkpoints.`;
 
 // D.3c1b — record-exploration-need: a bounded exploration request for one
 // EXPLORE_AS_WORK gap. This step never creates a WorkItem or a WorkProposal
@@ -454,16 +450,18 @@ answer authorizes that transition for the fact it actually answered.`;
 // its exploration blocker preserved in the fact ledger exactly as the
 // readiness review found it.
 export const EXPLORATION_NEED_CONTRACT = `Choose the fact the most recent readiness Artifact classified EXPLORE_AS_WORK (if more than one
-exists, the one blocking the candidate bounded scope most directly) and record:
-- the exact unresolved question;
-- why existing information or reasoning cannot answer it (why it is not CAN_RESOLVE);
-- why answering it requires doing something, not merely reading or deciding (why it is not
-  HUMAN_DECISION and not DEFER);
-- a proposed bounded method: spike, prototype, benchmark, measurement, or experiment;
-- the expected evidence or output that method would produce;
-- the exit criterion — what finding would allow the Definition to be refined again.
+exists, the one blocking the candidate bounded scope most directly) and propose the exploration
+need's semantic payload. The system serializes the artifact and carries the fact linkage:
+- targetFactId — the exact ledger id of that EXPLORE_AS_WORK gap;
+- question — the exact unresolved question;
+- whyNotResolvableByReading — why existing information or reasoning cannot answer it (why it
+  is not CAN_RESOLVE);
+- requiredWork — the bounded method (spike, prototype, benchmark, measurement, experiment) and
+  why answering requires doing something, not merely reading or deciding;
+- completionEvidence — the expected evidence or output, and the exit criterion — what finding
+  would allow the Definition to be refined again.
 
 Do not create a WorkItem or a WorkProposal, do not authorize any work, do not claim the fact is
 resolved, and do not mark it KNOWN. The Definition's fact ledger keeps this fact exactly as the
-readiness review classified it — this Artifact records the exploration need alongside it, it
+readiness review classified it — this artifact records the exploration need alongside it, it
 does not replace it.`;
