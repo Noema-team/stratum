@@ -84,7 +84,15 @@ materializes" forbids.
    fields — `targetFactId`, `status`, `source`, `decisionRef` are not
    model-authoable (strict schema). The proposal carries only semantic
    consequence: optional revised fact statement, optional full-section
-   replacements (requirements/constraints/nonGoals/acceptance), body. The
+   replacements (requirements/constraints/nonGoals/acceptance), body.
+   The AUTHORITATIVE target is the one bound into the durable Decision
+   authority at creation time: the Scheduler captures the validated
+   request's `targetFactId` into `Decision.subjectRef`, ResumeService
+   threads it through `DecisionContext`, and application uses that frozen
+   value while CROSS-CHECKING the (mutable) request artifact — a request
+   that changed after the checkpoint fails closed even when the substituted
+   target is itself valid. A Decision predating the binding likewise fails
+   closed rather than inferring the target from the request alone. The
    materializer merges deterministically:
 
    ```text

@@ -110,6 +110,7 @@ function ctx(overrides: Partial<OutputContractContext> = {}): OutputContractCont
       selectedOptionId: 'same-platform',
       selectedOptionLabel: 'Same-platform only',
       rationale: 'Ship the increment first.',
+      targetFactId: 'cross-platform-scope',
     },
     ...overrides,
   };
@@ -311,9 +312,39 @@ describe('DDR-036 regression: decision-application merge', () => {
         '.sle/work/wi-ddr036/readiness.md': HUMAN_GAP_READINESS,
         '.sle/work/wi-ddr036/decision-request.json': decisionRequestJson('fact-that-vanished'),
       },
+      decisionContext: {
+        decisionId: DECISION_ID,
+        selectedOptionId: 'same-platform',
+        targetFactId: 'fact-that-vanished', // durable + request AGREE on a fact the ledger lost
+      },
     });
     const defects = contract.validate({ bodyMarkdown: 'x' }, diverged);
     assert.ok(defects.some((d) => d.code === 'DECISION_APPLICATION_TARGET_MISSING'));
+  });
+
+  it('REVIEW CLOSURE: a valid-A → valid-B request substitution after the checkpoint fails closed — neither fact changes', () => {
+    // The durable Decision was created for fact A (threaded authoritatively
+    // through DecisionContext); the mutable request artifact now VALIDLY
+    // targets fact B. No model misbehavior — application must still refuse.
+    const substituted = ctx({
+      inputArtifacts: {
+        '.sle/work/wi-ddr036/definition.md': BASE_DEFINITION,
+        '.sle/work/wi-ddr036/readiness.md': HUMAN_GAP_READINESS,
+        // both facts exist and are legitimately in the ledger — the
+        // substitution is fully "valid" from the request's perspective
+        '.sle/work/wi-ddr036/decision-request.json': decisionRequestJson('sync-latency-feasibility'),
+      },
+    });
+    const defects = contract.validate({ bodyMarkdown: 'x' }, substituted);
+    assert.ok(defects.some((d) => d.code === 'DECISION_APPLICATION_TARGET_MISMATCH'));
+    // and materialization refuses too — neither fact transitions
+    assert.throws(() => contract.materialize({ bodyMarkdown: 'x' }, substituted));
+  });
+
+  it('REVIEW CLOSURE: a Decision without its durable target binding fails closed (never inferred from the request alone)', () => {
+    const unlinked = ctx({ decisionContext: { decisionId: DECISION_ID, selectedOptionId: 'same-platform' } });
+    const defects = contract.validate({ bodyMarkdown: 'x' }, unlinked);
+    assert.ok(defects.some((d) => d.code === 'DECISION_APPLICATION_DECISION_UNLINKED'));
   });
 
   it('without a resolved DecisionContext the application fails closed', () => {
@@ -324,7 +355,7 @@ describe('DDR-036 regression: decision-application merge', () => {
   it('the merged Definition must still pass the full deterministic validator — an invented decision id fails', () => {
     const defects = contract.validate(
       { bodyMarkdown: 'x' },
-      ctx({ decisionContext: { decisionId: 'dec-not-in-repo', selectedOptionId: 'same-platform' } }),
+      ctx({ decisionContext: { decisionId: 'dec-not-in-repo', selectedOptionId: 'same-platform', targetFactId: 'cross-platform-scope' } }),
     );
     // findDecision only resolves DECISION_ID → the merge's decisionRef does
     // not resolve → the Definition validator rejects it.
@@ -373,6 +404,24 @@ describe('DDR-036 regression: exploration-need', () => {
   it('legacy free-form markdown loads tolerant and legacy — carrying NO linkage authority', () => {
     const parsed = parseExplorationNeed('# Exploration\nSome free-form need.');
     assert.ok(parsed.ok && parsed.legacy);
+  });
+
+  it('REVIEW CLOSURE: the canonical body survives render → parse exactly, and re-render is byte-stable', () => {
+    const proposal = {
+      targetFactId: 'sync-latency-feasibility',
+      question: 'Can prediction meet the budget?',
+      whyNotResolvableByReading: 'No measurement exists.',
+      requiredWork: 'Benchmark prototype.',
+      completionEvidence: 'Measured frame budget report.',
+      bodyMarkdown: 'important human explanation\n\nwith paragraphs — preserved exactly',
+    };
+    const bytes = renderExplorationNeed(proposal, ctx());
+    const parsed = parseExplorationNeed(bytes);
+    assert.ok(parsed.ok && !parsed.legacy);
+    if (parsed.ok && !parsed.legacy) {
+      assert.equal(parsed.value.bodyMarkdown, proposal.bodyMarkdown, 'the body must survive the envelope exactly');
+      assert.equal(renderExplorationNeed(parsed.value, ctx()), bytes, 'render ∘ parse ∘ render is the identity');
+    }
   });
 
   it('EXPLORE_AS_WORK cannot silently finish: the contract path writes exactly one artifact at the declared path (workflow composition)', async () => {

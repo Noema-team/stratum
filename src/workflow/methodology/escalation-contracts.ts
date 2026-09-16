@@ -278,6 +278,23 @@ function resolveTrustedApplicationInputs(
     });
     return { ok: false, defects };
   }
+  // DDR-036 review closure — the AUTHORITATIVE target is the one bound into
+  // the DURABLE Decision authority at creation time (threaded through
+  // DecisionContext on resume). The request artifact is a MUTABLE file: it
+  // is cross-checked against the durable binding, never trusted alone —
+  // a valid-A→valid-B substitution between checkpoint and application
+  // fails closed here, with no model misbehavior required.
+  const authoritativeTarget = ctx.decisionContext.targetFactId;
+  if (authoritativeTarget === undefined || authoritativeTarget.trim() === '') {
+    defects.push({
+      code: 'DECISION_APPLICATION_DECISION_UNLINKED',
+      message:
+        'the durable Decision carries no targetFactId (it predates escalation ownership) — deterministic ' +
+        'application refuses to infer the target from the mutable request artifact alone; the checkpoint ' +
+        'must be re-run so the Decision is created with its escalation target bound',
+    });
+    return { ok: false, defects };
+  }
   const requestText = findInputArtifact(ctx, 'decision-request.json');
   if (requestText === undefined) {
     defects.push({
@@ -286,13 +303,13 @@ function resolveTrustedApplicationInputs(
     });
     return { ok: false, defects };
   }
-  let targetFactId: unknown;
+  let requestTarget: unknown;
   try {
-    targetFactId = (JSON.parse(requestText) as { targetFactId?: unknown }).targetFactId;
+    requestTarget = (JSON.parse(requestText) as { targetFactId?: unknown }).targetFactId;
   } catch {
-    targetFactId = undefined;
+    requestTarget = undefined;
   }
-  if (typeof targetFactId !== 'string' || targetFactId.trim() === '') {
+  if (typeof requestTarget !== 'string' || requestTarget.trim() === '') {
     // DDR-036 compat posture: load old, NEVER infer authority.
     defects.push({
       code: 'DECISION_APPLICATION_LEGACY_UNLINKED',
@@ -300,6 +317,17 @@ function resolveTrustedApplicationInputs(
         'the persisted decision-request carries no targetFactId (legacy/unlinked artifact) — deterministic ' +
         'application refuses to reconstruct the target fact from title/summary prose; the request must be ' +
         're-prepared under escalation ownership',
+    });
+    return { ok: false, defects };
+  }
+  if (requestTarget !== authoritativeTarget) {
+    defects.push({
+      code: 'DECISION_APPLICATION_TARGET_MISMATCH',
+      ref: authoritativeTarget,
+      message:
+        `the decision-request now targets fact '${requestTarget}' but the durable Decision was created for ` +
+        `'${authoritativeTarget}' — the request artifact changed after the checkpoint; refusing to apply the ` +
+        'resolution to either fact',
     });
     return { ok: false, defects };
   }
@@ -321,7 +349,7 @@ function resolveTrustedApplicationInputs(
     });
     return { ok: false, defects };
   }
-  return { ok: true, targetFactId, definition };
+  return { ok: true, targetFactId: authoritativeTarget, definition };
 }
 
 export function validateDecisionApplicationProposal(
@@ -560,13 +588,20 @@ export function parseExplorationNeed(text: string): ExplorationNeedParseResult {
   if (required.some((k) => typeof obj[k] !== 'string' || (obj[k] as string).trim() === '')) {
     return { ok: true, legacy: true };
   }
+  // The canonical body lives AFTER the closing --- (the renderer writes it
+  // there, exactly like the definition/readiness envelopes) — never inside
+  // the YAML. Envelope-inverse discipline: strip exactly the one leading
+  // newline the renderer inserts as the blank separator, and the one final
+  // newline at EOF — nothing else (no trimming, no reflow).
+  const bodyPart = text.slice(end + '\n---\n'.length);
+  const bodyMarkdown = bodyPart.replace(/^\n/, '').replace(/\n$/, '');
   const parsed = EXPLORATION_NEED_PROPOSAL_SCHEMA.safeParse({
     targetFactId: obj.targetFactId,
     question: obj.question,
     whyNotResolvableByReading: obj.whyNotResolvableByReading,
     requiredWork: obj.requiredWork,
     completionEvidence: obj.completionEvidence,
-    ...(typeof obj.bodyMarkdown === 'string' ? { bodyMarkdown: obj.bodyMarkdown } : {}),
+    ...(bodyMarkdown.length > 0 ? { bodyMarkdown } : {}),
   });
   if (!parsed.success) {
     return { ok: false, error: `Exploration-need front matter is structurally invalid: ${parsed.error.message}` };
