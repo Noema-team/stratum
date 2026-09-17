@@ -1,0 +1,25 @@
+[
+ {
+  "title": "Cross-platform play: in or out of this multiplayer increment?",
+  "summary": "The Definition is deliberately held neutral on whether the two players may sit on different platforms (e.g., one in a browser, one native desktop). Either answer composes with the current scope; what changes is validation cost and transport emphasis. Including it adds real mixed-platform requirements, device/matrix testing, and possibly a different transport priority. Excluding it keeps both players on one platform class and simplifies validation, while the platform-neutral WebSocket seam remains cheap insurance for a later increment. This is the last open scope boundary (readiness dimension 2): the increment's scope cannot be finalized until F2 is answered either way.",
+  "options": [
+   {
+    "id": "include-full",
+    "label": "Include \u2014 full cross-platform support",
+    "description": "Cross-platform play becomes a requirement: at least one browser client and one native desktop client can share one session. The Definition drops the holding platform-neutral must_not in favor of explicit cross-platform requirements and adds a mixed-platform pairing to the acceptance criteria; validation grows device/matrix coverage. WebSocket remains the transport \u2014 cross-platform reach reinforces rather than changes that choice."
+   },
+   {
+    "id": "include-smoke",
+    "label": "Include minimally \u2014 one mixed-platform pairing, no device matrix",
+    "description": "A bounded middle path: one mixed-platform pairing (e.g., one browser + one native client) is verified through the existing acceptance scenarios, with no formal device matrix or per-platform performance runs; breadth is explicitly deferred to a follow-up increment. F2 is decided 'in, minimally': the Definition gains a single mixed-platform acceptance criterion rather than full platform requirements."
+   },
+   {
+    "id": "exclude-non-goal",
+    "label": "Exclude \u2014 cross-platform is a non-goal this increment",
+    "description": "Cross-platform is recorded as a deliberate non-goal for this increment: both players run the same platform class (e.g., two desktop clients), the holding must_not is removed, and no cross-platform requirements or acceptance are added. The platform-neutral transport seam stays as cheap insurance for a later increment, but nothing here validates mixed-platform sessions."
+   }
+  ],
+  "selectedOptionId": "exclude-non-goal",
+  "resolved": true
+ }
+]

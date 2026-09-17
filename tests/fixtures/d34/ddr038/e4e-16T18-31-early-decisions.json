@@ -1,0 +1,25 @@
+[
+ {
+  "title": "Multiplayer increment: is cross-platform support in scope or out?",
+  "summary": "The Objective leaves cross-platform support genuinely undecided, and no agent may settle it by fiat. This increment's working scope is two players directly joining one real-time session (host/join by address on a local network) around the existing fixed-timestep simulation \u2014 but the success criterion does not say whether those two players must be on different platforms/OSes. Including cross-platform as a verified capability means adding platform build targets and a cross-OS acceptance matrix now: more cost and schedule, but the capability ships with the netcode instead of being retrofitted. Excluding it as a deliberate non-goal keeps the increment narrow and demonstrable, with cross-platform named as a later increment; the netcode can still be held platform-agnostic so that later work is additive. A middle path exists: bind the netcode to platform-agnostic transport as a hard constraint without a cross-platform acceptance test \u2014 most of the future-proofing at a fraction of the cost, but no verified cross-platform claim. Whichever you choose, the decision settles F-CROSSPLATFORM-SCOPE to DECIDED and fixes the scope edge the Definition currently leaves open.",
+  "options": [
+   {
+    "id": "exclude-non-goal",
+    "label": "Exclude \u2014 deliberate non-goal for this increment",
+    "description": "Two players join the shared session on whatever platform this increment targets; cross-platform play is recorded as a named future increment. Scope stays narrow \u2014 no extra build targets or cross-OS test matrix \u2014 giving the fastest path to a demonstrated shared real-time session. The existing platform-agnostic transport preference is retained so the future increment is additive rather than a re-architecture."
+   },
+   {
+    "id": "include-acceptance",
+    "label": "Include \u2014 cross-platform join is an acceptance criterion",
+    "description": "This increment must demonstrate two players on different platforms/OSes joining and playing the same real-time session. Adds platform build targets, cross-platform transport verification, and a widened acceptance matrix; higher cost and schedule, but the product capability ships now rather than being retrofitted later."
+   },
+   {
+    "id": "include-constraint-only",
+    "label": "Include as a hard constraint, not a verified criterion",
+    "description": "No cross-platform acceptance test this increment, but the netcode must be bound to platform-agnostic transport and input abstractions \u2014 promoting the current 'prefer not to couple to platform-specific APIs' hedge to a hard must-not-couple constraint. Cross-platform then becomes a later increment with no re-architecture. Buys most of the future-proofing at a fraction of the test-matrix cost, at the price of not shipping a verified cross-platform claim now."
+   }
+  ],
+  "selectedOptionId": "exclude-non-goal",
+  "resolved": true
+ }
+]

@@ -33,7 +33,7 @@ import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES,
   PARTIAL_OBJECTIVE, PARTIAL_FIXTURE_FILES,
   MATURE_OBJECTIVE, MATURE_FIXTURE_FILES,
-  findSamePlatformOnlyOption,
+  findCrossPlatformExclusionOption,
   type FixtureFile, type ObjectiveIntent,
 } from '../tests/fixtures/d3d/fixtures.js';
 import {
@@ -83,7 +83,7 @@ function parseScenarioFilter(argv: string[]): ScenarioDef[] {
 // Chained decisions: the workflow explicitly supports several real human
 // decisions in one run (one checkpoint per question). The scenario's scripted
 // answer exists only for the cross-platform scope question — when that choice
-// is among the offered options it is selected (findSamePlatformOnlyOption);
+// is among the offered options it is selected (findCrossPlatformExclusionOption);
 // for any OTHER genuine product question the run raises along the chain, the
 // policy resolves the first offered option with a transparent rationale so
 // the chain can proceed to the scope question. The specific resolution of
@@ -96,7 +96,7 @@ function decisionPolicy(scenarioId: ScenarioId) {
     decision: { title: string },
   ): { selectedOptionId: string; rationale: string } | undefined => {
     if (scenarioId !== 'early') return undefined;
-    const scripted = findSamePlatformOnlyOption(options);
+    const scripted = findCrossPlatformExclusionOption(options);
     if (scripted) {
       return {
         selectedOptionId: scripted.id,
