@@ -131,6 +131,10 @@ export interface DecisionSummary {
   summary: string;
   options: Array<{ id: string; label: string; description: string }>;
   selectedOptionId?: string;
+  // DDR-039 — the durable Decision's DDR-036 escalation identity, surfaced
+  // so oracles (and reports) can join a Decision to the canonical fact it
+  // owns by exact id instead of by lexical resemblance of its text.
+  targetFactId?: string;
 }
 
 // 'decision-gate' — a harness-only minimal scenario proving the harness path
@@ -241,22 +245,65 @@ function check(name: string, pass: boolean, detail?: string): OracleCheck {
   return { name, pass, detail };
 }
 
-// D.3d.1 — semantic identification of the platform-scope Decision. The early
-// scenario's REQUIRED human question is whether cross-platform support
-// belongs in this bounded increment; the oracle must fail if a run completes
-// without it, whatever other genuine chained Decisions the model also raises.
-// Matched from title/summary/option text — never one exact title or option id
-// (spec: ids not prescribed). A repository lookup posed as a Decision is
-// already a separate failure (see the not-a-repository-lookup check below).
-function isPlatformScopeDecision(
-  d: DecisionSummary,
-): boolean {
-  const text = (
-    `${d.title} ${d.summary} ` +
-    d.options.map((o) => `${o.label} ${o.description ?? ''}`).join(' ')
-  ).toLowerCase();
-  return /cross-?platform/.test(text) &&
-    /(scope|increment|belongs?|includ|exclud|support)/.test(text);
+// DDR-039 — semantic fact identification with id extraction. Same
+// canonical-first discipline as findFactBlocksAbout (typed facts are
+// authoritative whenever front matter parses; legacy markdown ledgers use
+// the fallback), but each match also yields the fact's durable id so a
+// Decision can be joined to the fact it owns by exact identity.
+function factIdOfBlock(block: string): string | null {
+  try {
+    const id = JSON.parse(block).id;
+    return typeof id === 'string' ? id : null;
+  } catch {
+    // legacy markdown ledger entry: "- id: f2 ..." / '- { id: "f2", ... }'
+    const m = block.match(/id"?\s*:\s*"?([A-Za-z0-9_.-]+)/);
+    return m ? m[1] : null;
+  }
+}
+
+export function findFactsAboutWithIds(
+  text: string,
+  topic: RegExp,
+): Array<{ id: string; block: string }> {
+  return findFactBlocksAbout(text, topic)
+    .map((block) => ({ id: factIdOfBlock(block), block }))
+    .filter((f): f is { id: string; block: string } => f.id !== null);
+}
+
+// DDR-039 — structural identification of the platform-scope Decision. The
+// EARLY scenario's required human question is whether cross-platform
+// support belongs in this bounded increment. The platform-scope FACT is
+// identified semantically from the final Definition (statement content);
+// the Decision is then resolved by the DDR-036 durable escalation identity
+// — the Decision whose subjectRef.targetFactId is exactly that fact's id.
+// This replaces the lexical title/summary/option matcher, which E4-G inv 4
+// proved selectable by a different Decision merely CITING the cross-
+// platform fact (a session-topology question whose summary referenced
+// "(f2)") while the genuine scope Decision — bound to the fact by
+// targetFactId and offering the exclusion option — went unexamined.
+// Fail closed on zero OR multiple authoritative matches on either side:
+// ambiguity in which fact or which Decision owns the question is a
+// finding to surface, never something the oracle resolves by guesswork.
+function platformScopeJoin(
+  trace: DefineWorkTrace,
+): { fact?: { id: string; block: string }; decision?: DecisionSummary; detail: string } {
+  const facts = findFactsAboutWithIds(trace.definitionText, /cross-?platform/i);
+  if (facts.length !== 1) {
+    return {
+      detail: `facts about cross-platform: ${facts.length} (need exactly 1) — [${facts.map((f) => f.id).join(', ')}]`,
+    };
+  }
+  const fact = facts[0];
+  const owning = trace.decisions.filter((d) => d.targetFactId === fact.id);
+  if (owning.length !== 1) {
+    return {
+      fact,
+      detail: `decisions owning fact ${fact.id} by targetFactId: ${owning.length} (need exactly 1) — [${trace.decisions
+        .map((d) => `"${d.title}" (${d.targetFactId ?? 'unbound'})`)
+        .join(' | ')}]`,
+    };
+  }
+  return { fact, decision: owning[0], detail: `"${owning[0].title}"` };
 }
 
 const REVIEW_STEP_IDS = ['definition-readiness-review', 'post-defer-readiness-review', 'post-human-readiness-review'];
@@ -276,12 +323,15 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   const networkingKnown = networkingFacts.find(
     (b) => /status"?:\s*"?KNOWN/.test(b) && /source"?:\s*"?(repository|investigation)/.test(b),
   );
-  // D.3d.1 — the REQUIRED platform-scope Decision, found semantically. Other
-  // genuine chained Decisions may also exist; the run must fail if the
-  // cross-platform membership question was never raised, never offered a
-  // legitimate same-platform-only option, resolved to a different option,
-  // or is not traceable into the final Definition via its real id.
-  const platformScopeDecision = trace.decisions.find(isPlatformScopeDecision);
+  // D.3d.1 + DDR-039 — the REQUIRED platform-scope Decision, resolved by
+  // durable identity (see platformScopeJoin). Other genuine chained
+  // Decisions may also exist; the run must fail if the cross-platform
+  // membership question was never owned by exactly one Decision bound to
+  // exactly one platform-scope fact, never offered a legitimate exclusion
+  // option, resolved to a different option, or is not traceable into the
+  // final Definition via its real id.
+  const scopeJoin = platformScopeJoin(trace);
+  const platformScopeDecision = scopeJoin.decision;
   const platformScopeOption = platformScopeDecision
     ? findCrossPlatformExclusionOption(platformScopeDecision.options)
     : undefined;
@@ -312,13 +362,13 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
       networkingKnown || `(networking-related entries found: ${networkingFacts.length})`),
     check('a Decision genuinely concerns whether cross-platform support belongs in this bounded increment',
       platformScopeDecision !== undefined,
-      platformScopeDecision ? `"${platformScopeDecision.title}"` : `decisions=[${trace.decisions.map((d) => d.title).join(' | ')}]`),
+      scopeJoin.detail),
     check('the human question was not merely a repository lookup',
       !trace.decisions.some((d) => /already have networking|networking code|does the repository/i.test(d.title)),
       trace.decisions.map((d) => d.title).join(' | ')),
     check('the platform-scope Decision offers a legitimate same-platform-only option and was resolved to it',
       platformScopeResolved,
-      `decision="${platformScopeDecision?.title}" samePlatformOption=${platformScopeOption?.id} selected=${platformScopeDecision?.selectedOptionId}`),
+      `decision="${platformScopeDecision?.title}" samePlatformOption=${platformScopeOption?.id} selected=${platformScopeDecision?.selectedOptionId} join=${scopeJoin.detail}`),
     check('the final Definition references the resolved platform-scope Decision\'s real id',
       platformScopeDecision !== undefined && platformScopeResolved &&
         trace.definitionText.includes(platformScopeDecision.id),
@@ -628,6 +678,7 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
     const decisionSummary: DecisionSummary = {
       id: pending.id, title: pending.title, summary: pending.summary,
       options: (pending.options ?? []) as Array<{ id: string; label: string; description: string }>,
+      targetFactId: (pending.subjectRef as { targetFactId?: string } | undefined)?.targetFactId,
     };
     const resolution = resolveDecision(pending.options ?? [], decisionSummary);
     if (!resolution) break; // scenario declined to resolve — run stays halted, a qualification failure to surface, not a crash.
@@ -646,6 +697,7 @@ export async function driveDefineWorkRun(opts: DriveOptions): Promise<DefineWork
     id: d.id, title: d.title, summary: d.summary,
     options: (d.options ?? []) as Array<{ id: string; label: string; description: string }>,
     selectedOptionId: d.resolution?.selectedOptionId,
+    targetFactId: (d.subjectRef as { targetFactId?: string } | undefined)?.targetFactId,
   }));
   const artifactSummaries: ArtifactSummary[] = artifacts.listLatestByWorkflowRun(workflowRunId).map((a) => ({
     type: a.type, ref: a.ref ?? a.id, path: a.path ?? '', hash: a.hash ?? '',

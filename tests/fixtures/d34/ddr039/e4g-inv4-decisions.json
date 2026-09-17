@@ -1,0 +1,51 @@
+{
+  "note": "E4-G inv4 early \u2014 two Decisions exactly as recorded in report.json (byte-faithful fields); targetFactId of the scope Decision recovered from the persisted decision-request artifact (work/wi-d3d-early/decision-request.json, targetFactId F2). The topology Decision is pinned UNBOUND: its first durable attempt provably carried no targetFactId (apply-human-decision.md cycle 1 rejected DECISION_APPLICATION_DECISION_UNLINKED), and no persisted artifact shows a binding on re-raise \u2014 the conservative adversarial case: its title/summary/options text matches every lexical platform-scope predicate.",
+  "decisions": [
+    {
+      "id": null,
+      "title": "Which session topology should Evershift's two-player multiplayer be built on?",
+      "summary": "Session topology shapes transport, trust model, infrastructure cost, and the reconciliation design, and is costly to reverse once netcode is built around it. Evershift has a single deterministic fixed-timestep tick (src/physics/tick.ts), which makes all three options structurally feasible, but they differ sharply in cost and consequences. Dedicated server: cleanest trust model and symmetric latency for both players, but requires deploying, operating, and paying for a server even for a two-player increment. Host-as-authority: no new infrastructure \u2014 one player's machine runs the authoritative simulation and the other connects \u2014 but the host gains a latency/fairness advantage and the host platform constrains the cross-platform question (F2). Lockstep peer-to-peer: no authority and no infrastructure, both clients simulate identically and exchange only inputs \u2014 cheap and bandwidth-light, but brittle to desync and input latency, hardest to reconcile when determinism breaks, and it largely forecloses prediction/reconciliation. This choice also interacts with the still-open cross-platform decision (F2): a dedicated server decouples platform support from the server role, while host-as-authority makes every supported host platform a server platform. The feasibility measurement of the candidate synchronization approach (F4) needs this topology fixed before it can be run.",
+      "options": [
+        {
+          "id": "dedicated-server",
+          "label": "Dedicated authoritative server",
+          "description": "A small always-on server runs the authoritative simulation; both clients are remote players. Cleanest trust model and symmetric platform support (F2 stays decoupled), but it adds infrastructure to deploy, run, and pay for even for a two-player increment, and it makes client-side prediction/reconciliation the natural synchronization design."
+        },
+        {
+          "id": "host-authority",
+          "label": "Host-as-authority",
+          "description": "One of the two players' machines hosts the session and runs the authoritative tick; the other connects to it. No new infrastructure and no operating cost, but the host has authority and a performance/network advantage, and the platform matrix becomes constrained: every supported host platform must be able to run the server role."
+        },
+        {
+          "id": "lockstep-p2p",
+          "label": "Lockstep peer-to-peer",
+          "description": "Both clients run the same deterministic tick and exchange inputs only \u2014 no authority, no infrastructure, minimal bandwidth. It leans on Evershift's fixed-timestep determinism, but it is brittle under input latency (game pauses or delays until both inputs arrive), is hardest to reconcile when determinism breaks, and couples tightly to the cross-platform question since both peers must behave identically."
+        }
+      ],
+      "selectedOptionId": "dedicated-server"
+    },
+    {
+      "id": null,
+      "title": "Does cross-platform support belong in the multiplayer increment, or is it excluded?",
+      "summary": "The dedicated authoritative server (F9) removed the host-platform coupling: neither player's machine runs the server, so cross-platform support is now mainly a client-side cost (platform-specific input, rendering, packaging, testing). But membership in this increment is still your call, and the Objective explicitly forbids silently settling it. Including it broadens the bounded scope and adds platform-specific client work before the synchronization approach (client prediction with reconciliation, F4) has been measured against the latency/frame budget \u2014 if F4 fails, that platform work is stranded. Excluding it keeps the increment focused on proving two-player real-time play, at the cost of an explicit non-goal that narrows who can play together now. Deferring is not available as a silent middle ground: the readiness review found it is not clearly later-phase work, so it must be either decided or explicitly deferred by you.",
+      "options": [
+        {
+          "id": "exclude-non-goal",
+          "label": "Exclude \u2014 desktop clients only this increment",
+          "description": "Record cross-platform as a deliberate non-goal for this increment. Scope stays focused on the dedicated-server multiplayer core (F4 feasibility work, transport, session flow); any platform-specific client work is deferred to a later increment. Lowest risk to the real-time-playability goal, but the question must be re-opened later."
+        },
+        {
+          "id": "include-this-increment",
+          "label": "Include \u2014 cross-platform in this increment",
+          "description": "Add cross-platform client support to this increment's requirements and constraints: the dedicated server (F9) already makes the server side platform-neutral, so this adds platform-specific client work (input, rendering, packaging, testing) on top. Broadest reach, but expands the bounded scope before the synchronization feasibility (F4) is even measured \u2014 higher risk to shipping the core two-player session."
+        },
+        {
+          "id": "defer-explicit",
+          "label": "Defer \u2014 decide after the core session is proven",
+          "description": "Record a decision that cross-platform membership is explicitly placed outside this Definition round's scope and will be revisited in a later round, once the core multiplayer session is proven feasible. F2 transitions to DEFERRED rather than DECIDED; the increment's scope stays desktop-focused without permanently closing the product question."
+        }
+      ],
+      "selectedOptionId": "exclude-non-goal"
+    }
+  ]
+}
