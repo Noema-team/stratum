@@ -365,18 +365,6 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE objectives SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE created_at IS NULL;
   UPDATE objectives SET updated_at = created_at WHERE updated_at IS NULL;
   `,
-
-  // Migration 11: durable per-run error-recovery budget (DDR-040 —
-  // docs/decisions/ddr-040-unlinked-decision-recovery.md). workflow_runs.
-  // error_recoveries_json: { [contractDefectCode]: recoveriesTaken }.
-  // Written only when an on_error_routes recovery actually routes; NULL (the
-  // overwhelming default — every run that never recovers) means "no
-  // recoveries taken". Survives checkpoint resumes so a replacement cycle
-  // producing ANOTHER unlinked durable Decision is bounded by the same
-  // run budget instead of cycling prepare→checkpoint→apply forever.
-  `
-  ALTER TABLE workflow_runs ADD COLUMN error_recoveries_json TEXT;
-  `,
 ];
 
 // ============================================================================

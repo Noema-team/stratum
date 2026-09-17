@@ -1,23 +1,27 @@
-// DDR-040 — unlinked durable Decision recovery. Pins two production fixes
-// against the E4-G inv 4 lifecycle:
+// DDR-040 — creation-time identity propagation on EVERY Decision path.
+// E4-G inv 4's lifecycle gap, root-caused: DDR-036 bound
+// DecisionRequest.targetFactId into the durable Decision on Scheduler's
+// INITIAL dispatch only — ResumeService's next-checkpoint creation (the path
+// that fires whenever a resumed run chains a SECOND decision) dropped it, so
+// any chained decision was structurally unbound from birth and its
+// application deterministically failed DECISION_APPLICATION_DECISION_
+// UNLINKED regardless of the model's proposal (the prepare contract
+// REQUIRES targetFactId; inv 4's persisted request artifact carried it).
 //
-//   ROOT CAUSE — ResumeService's next-checkpoint Decision creation dropped
-//   DecisionRequest.targetFactId (DDR-036's binding existed only on
-//   Scheduler's initial dispatch), so any CHAINED decision created during a
-//   resume was structurally unbound and its application deterministically
-//   failed DECISION_APPLICATION_DECISION_UNLINKED regardless of the model's
-//   proposal (inv 4's persisted request artifact carried the fact id).
+// This regression walks the actual E4-G inv 4 authority chain live: a
+// topology decision created at initial dispatch (bound), then a chained
+// scope decision created DURING the resume — bound from birth post-fix —
+// each independently human-resolved and applied to exactly its own fact,
+// the remaining exploration need preserved, and a clean commit.
 //
-//   RECOVERY — WorkflowStep.on_error_routes: the one bounded, opt-in,
-//   contract-defect-keyed route for DECISION_APPLICATION_DECISION_UNLINKED
-//   on apply-human-decision → prepare-human-decision. The old Decision is
-//   never re-bound and its resolution is never transferred; a FRESH bound
-//   Decision is created by re-running the authority cycle. The durable
-//   per-run recovery budget (workflow_runs.error_recoveries_json, migration
-//   11) survives checkpoint resumes, so a replacement cycle that again
-//   produces an unlinked Decision halts deterministically instead of
-//   cycling forever. Every other application defect (mismatch, missing
-//   target, already-applied, malformed) keeps the fail-closed halt.
+// Scope note (review closure): an earlier draft of DDR-040 also introduced
+// a generic on_error_routes recovery subsystem for UNLINKED applications.
+// The root-cause audit falsified its premise — post-fix, a current-run
+// unlinked durable Decision is unreachable by construction (both creation
+// paths bind; the contract requires the fact id) — so the subsystem was
+// removed rather than kept on spec. Genuinely legacy/unlinked Decisions
+// keep the deterministic fail-closed refusal; if a real run ever surfaces
+// one, that evidence decides whether recovery machinery is justified.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
@@ -26,145 +30,16 @@ import { join } from 'node:path';
 
 import type { MultiTurnParams, MultiTurnResult, ToolUseBlock } from '../src/agent-loop.js';
 import type { LLMCompletionParams } from '../src/llm-provider.js';
-import { registerWorkflow, WorkflowEngine } from '../src/workflow/index.js';
-import type { WorkflowDefinition, WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/index.js';
-import { openDatabase } from '../src/storage/database.js';
-import { WorkflowRunRepository } from '../src/storage/repositories.js';
 import { parseDefinition } from '../src/workflow/methodology/definition-artifact.js';
 
 import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES, findCrossPlatformExclusionOption,
 } from './fixtures/d3d/fixtures.js';
-import { driveDefineWorkRun, type DefineWorkTrace } from './fixtures/d3d/harness.js';
-
-const UNLINKED = 'DECISION_APPLICATION_DECISION_UNLINKED';
+import { driveDefineWorkRun } from './fixtures/d3d/harness.js';
 
 // ============================================================================
-// Part 1 — engine seam: routing, bound, fail-closed posture for other codes
-// ============================================================================
-
-function stubDeps(runner: NonNullable<WorkflowEngineDeps['stepRunner']>, repo?: WorkflowRunRepository): WorkflowEngineDeps {
-  return {
-    stepRunner: runner,
-    mapManager: { read: async () => ({ cycle: { iteration: 1, max_iterations: 3 } }), update: async () => {} } as any,
-    runArtifacts: {
-      updateNodeStatus: async () => {},
-      createRunDir: async () => {},
-      createManifest: async () => {},
-    } as any,
-    ...(repo ? { workflowRunRepository: repo } : {}),
-    projectRoot: '/tmp',
-  };
-}
-
-function failingOn(stepIds: string[], code?: string): NonNullable<WorkflowEngineDeps['stepRunner']> {
-  return {
-    run: async (step: WorkflowDefinition['steps'][number]) => {
-      if (stepIds.includes(step.id)) {
-        return {
-          success: false, artifacts_written: [], tokens_used: 0, duration_ms: 1,
-          error: `contract failure on ${step.id}`,
-          ...(code ? { contract_error_code: code } : {}),
-        };
-      }
-      return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 };
-    },
-  } as any;
-}
-
-describe('DDR-040 engine seam — on_error_routes', () => {
-  it('routes a declared UNLINKED failure once and persists the durable recovery budget', async () => {
-    registerWorkflow({
-      id: 'ddr040-route-once', label: 'T', steps: [
-        { id: 'apply', kind: 'produce', agentRole: 'builder', on_error_routes: { [UNLINKED]: { target_step_id: 'prepare' } } },
-        { id: 'prepare', kind: 'produce', agentRole: 'builder' },
-        { id: 'commit', kind: 'commit' },
-      ],
-    });
-    const repo = new WorkflowRunRepository(openDatabase(':memory:'));
-    const engine = new WorkflowEngine(stubDeps(failingOn(['apply'], UNLINKED), repo), { onCheckpoint: async () => 'approve' });
-    const result = await engine.run('ddr040-route-once', 'run-r1', 'g');
-    assert.equal(result.status, 'complete', result.error ?? '');
-    const persisted = repo.findById('run-r1');
-    assert.deepEqual(persisted?.errorRecoveries, { [UNLINKED]: 1 });
-    assert.equal(persisted?.status, 'complete');
-  });
-
-  it('a second UNLINKED in the same run exceeds the frozen bound and halts deterministically', async () => {
-    registerWorkflow({
-      id: 'ddr040-bound', label: 'T', steps: [
-        { id: 'apply', kind: 'produce', agentRole: 'builder', on_error_routes: { [UNLINKED]: { target_step_id: 'prepare' } } },
-        { id: 'prepare', kind: 'produce', agentRole: 'builder', on_error_routes: { [UNLINKED]: { target_step_id: 'apply' } } },
-        { id: 'commit', kind: 'commit' },
-      ],
-    });
-    const repo = new WorkflowRunRepository(openDatabase(':memory:'));
-    const engine = new WorkflowEngine(stubDeps(failingOn(['apply', 'prepare'], UNLINKED), repo), { onCheckpoint: async () => 'approve' });
-    const result = await engine.run('ddr040-bound', 'run-r2', 'g');
-    assert.equal(result.status, 'halted');
-    assert.match(result.error ?? '', /Error-recovery bound for 'DECISION_APPLICATION_DECISION_UNLINKED' reached \(1\)/);
-    assert.deepEqual(repo.findById('run-r2')?.errorRecoveries, { [UNLINKED]: 1 });
-  });
-
-  it('an undeclared defect code never routes even on a step declaring a UNLINKED route', async () => {
-    registerWorkflow({
-      id: 'ddr040-mismatch', label: 'T', steps: [
-        { id: 'apply', kind: 'produce', agentRole: 'builder', on_error_routes: { [UNLINKED]: { target_step_id: 'prepare' } } },
-        { id: 'prepare', kind: 'produce', agentRole: 'builder' },
-        { id: 'commit', kind: 'commit' },
-      ],
-    });
-    const repo = new WorkflowRunRepository(openDatabase(':memory:'));
-    const engine = new WorkflowEngine(
-      stubDeps(failingOn(['apply'], 'DECISION_APPLICATION_TARGET_MISMATCH'), repo),
-      { onCheckpoint: async () => 'approve' },
-    );
-    const result = await engine.run('ddr040-mismatch', 'run-r3', 'g');
-    assert.equal(result.status, 'halted');
-    assert.equal(result.error, 'contract failure on apply');
-    assert.equal(repo.findById('run-r3')?.errorRecoveries, undefined);
-    assert.equal(repo.findById('run-r3')?.current_step_id, 'apply');
-  });
-
-  it('a step with no route table keeps the fail-closed halt, byte-for-byte', async () => {
-    registerWorkflow({
-      id: 'ddr040-noroute', label: 'T', steps: [
-        { id: 'apply', kind: 'produce', agentRole: 'builder' },
-        { id: 'commit', kind: 'commit' },
-      ],
-    });
-    const engine = new WorkflowEngine(stubDeps(failingOn(['apply'], UNLINKED)), { onCheckpoint: async () => 'approve' });
-    const result = await engine.run('ddr040-noroute', 'run-r4', 'g');
-    assert.equal(result.status, 'halted');
-    assert.equal(result.final_step_id, 'apply');
-    assert.equal(result.error, 'contract failure on apply');
-  });
-
-  it('the durable budget bounds a second engine instance on the same run (resume posture)', async () => {
-    registerWorkflow({
-      id: 'ddr040-resume', label: 'T', steps: [
-        { id: 'apply', kind: 'produce', agentRole: 'builder', on_error_routes: { [UNLINKED]: { target_step_id: 'prepare' } } },
-        { id: 'prepare', kind: 'produce', agentRole: 'builder' },
-        { id: 'commit', kind: 'commit' },
-      ],
-    });
-    const repo = new WorkflowRunRepository(openDatabase(':memory:'));
-    // First instance: apply fails UNLINKED, routes, prepare succeeds, commit.
-    const e1 = new WorkflowEngine(stubDeps(failingOn(['apply'], UNLINKED), repo), { onCheckpoint: async () => 'approve' });
-    await e1.run('ddr040-resume', 'run-r5', 'g');
-    assert.deepEqual(repo.findById('run-r5')?.errorRecoveries, { [UNLINKED]: 1 });
-    // Second instance on the SAME run (resume posture): a further UNLINKED
-    // must see the persisted budget, not a fresh one.
-    repo.update({ ...repo.findById('run-r5')!, status: 'halted', current_step_id: 'apply', awaiting_checkpoint: null });
-    const e2 = new WorkflowEngine(stubDeps(failingOn(['apply'], UNLINKED), repo), { onCheckpoint: async () => 'approve' });
-    const result = await e2.run('ddr040-resume', 'run-r5', 'g');
-    assert.equal(result.status, 'halted');
-    assert.match(result.error ?? '', /Error-recovery bound/);
-  });
-});
-
-// ============================================================================
-// Part 2 — the full authority chain (E4-G inv 4's lifecycle, walked live)
+// Scripted dual-mode provider (multi-turn produce steps + single-turn
+// reviews), following tests/d3d-behavioral-qualification.test.ts.
 // ============================================================================
 
 type MultiTurnEntry = MultiTurnResult | ((params: MultiTurnParams) => MultiTurnResult);
@@ -270,7 +145,8 @@ const EXPLORATION_PROPOSAL = {
 function makeProvider(multiTurn: MultiTurnEntry[], singleTurn: string[]) {
   let mt = 0; let st = 0;
   return {
-    async complete() {
+    async complete(params: LLMCompletionParams) {
+      void params;
       const content = singleTurn[st++] ?? '';
       return { content, tokens_used: 10, duration_ms: 1 };
     },
@@ -297,9 +173,10 @@ function chainedDecisionSequence(): { multiTurn: MultiTurnEntry[]; singleTurn: s
       // prepare #2 — the scope question. The checkpoint halt for THIS decision
       // happens during a RESUME. Pre-DDR-040, ResumeService's next-checkpoint
       // creation dropped the request's targetFactId, so this Decision was
-      // structurally unbound and its application deterministically failed
-      // UNLINKED (E4-G inv 4's exact lifecycle). Post-fix it is bound from
-      // birth; the run applies it and continues.
+      // structurally unbound from birth and its application deterministically
+      // failed DECISION_APPLICATION_DECISION_UNLINKED (E4-G inv 4's exact
+      // lifecycle). Post-fix it is bound from birth; the run applies it and
+      // continues.
       submitProposalTurn(SCOPE_REQUEST, 'sub-dr2'),                              // prepare-human-decision #2
       submitProposalTurn(APPLY_PROPOSAL, 'sub-app2'),                            // apply-human-decision #2
       submitProposalTurn(EXPLORATION_PROPOSAL, 'sub-en'),                        // record-exploration-need
@@ -328,7 +205,7 @@ function chainedDecisionSequence(): { multiTurn: MultiTurnEntry[]; singleTurn: s
   };
 }
 
-describe('DDR-040 integration — the E4-G inv 4 authority chain, walked live', () => {
+describe('DDR-040 — creation-time identity propagation on every Decision path', () => {
   it('a chained decision created during a resume is bound from birth; the run applies it and commits cleanly', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ddr040-rootcause-'));
     const seq = chainedDecisionSequence();
@@ -351,7 +228,7 @@ describe('DDR-040 integration — the E4-G inv 4 authority chain, walked live', 
         },
       });
 
-      // (13)(14)(15) — post-human review, exploration recording, clean commit.
+      // Post-human review, exploration recording, clean commit.
       assert.equal(trace.finalStatus, 'complete', `run did not complete: ${trace.steps.map((s) => `${s.stepId}:${s.success}`).join(' ')}`);
       assert.equal(trace.finalStepId, 'commit');
       assert.ok(trace.steps.some((s) => s.stepId === 'post-human-readiness-review' && s.success));
@@ -367,9 +244,9 @@ describe('DDR-040 integration — the E4-G inv 4 authority chain, walked live', 
       const prepareSteps = trace.steps.filter((s) => s.stepId === 'prepare-human-decision');
       assert.equal(prepareSteps.length, 2);
 
-      // (2)(3)(7) — two decisions on two different facts, BOTH bound at
-      // creation (A via the scheduler path, B via the fixed resume path),
-      // both human-resolved separately.
+      // Two decisions on two different facts, BOTH bound at creation (A via
+      // the scheduler path, B via the fixed resume path), each
+      // human-resolved separately — no transfer.
       assert.equal(trace.decisions.length, 2);
       const [a, b] = trace.decisions;
       assert.equal(a.targetFactId, F5, 'A (topology) bound at initial dispatch');
@@ -381,11 +258,11 @@ describe('DDR-040 integration — the E4-G inv 4 authority chain, walked live', 
       assert.equal(b.selectedOptionId, exclusion.id);
       assert.ok(a.selectedOptionId);
 
-      // (6) — the persisted request artifact carries the fact id.
+      // The persisted request artifact carries the fact id.
       const requestArtifact = JSON.parse(readFileSync(join(root, '.sle/work/wi-d3d-early/decision-request.json'), 'utf8'));
       assert.equal(requestArtifact.targetFactId, F2);
 
-      // (11) — the final applications changed exactly the two targeted facts,
+      // The final applications changed exactly the two targeted facts,
       // mechanically, each with its OWN decision's authority.
       const finalDefinition = parseDefinition(
         readFileSync(join(root, '.sle/work/wi-d3d-early/definition.md'), 'utf8'),
@@ -403,7 +280,7 @@ describe('DDR-040 integration — the E4-G inv 4 authority chain, walked live', 
         'every other fact carried over verbatim',
       );
 
-      // (1) — the reviews raised and classified the gaps (route trace).
+      // The reviews raised and classified the gaps (route trace).
       const routes = trace.steps.filter((s) => s.reviewRoute).map((s) => s.reviewRoute);
       assert.deepEqual(routes, ['refine', 'defer', 'human', 'human', 'explore']);
     } finally {

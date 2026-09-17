@@ -201,7 +201,7 @@ export type OutputContractRegistry = Record<string, OutputContract<unknown>>;
  */
 export type ResultAcceptor = (
   value: unknown,
-) => { ok: true } | { ok: false; repairInstruction: string; defectCode?: string };
+) => { ok: true } | { ok: false; repairInstruction: string };
 
 /**
  * Compose the acceptor for a resolved contract. Decode failures render
@@ -235,10 +235,6 @@ export function createResultAcceptor<T>(
       return {
         ok: false,
         repairInstruction: renderResultRepairInstruction(artifactType, rendered),
-        // DDR-040 — the terminal defect code rides structurally alongside the
-        // human-readable instruction; the engine's on_error_routes seam keys
-        // on this, never on the rendered text.
-        defectCode: defects[0]?.code,
       };
     }
     return { ok: true };

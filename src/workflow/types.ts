@@ -66,16 +66,6 @@ export interface WorkflowStep {
   // data the workflow author supplies.
   on_fail_routes?: Record<string, { target_step_id: string; iteration_loop?: boolean }>;
 
-  // DDR-040 — contract-defect-keyed ERROR routes. A produce step whose output
-  // contract terminally fails (result repair exhausted) with a defect whose
-  // code is declared here may be routed to the declared target instead of
-  // halting the run. The durable recovery bound is per code per run
-  // (recovery_limit, default 1); decision identity is never mutated — the
-  // route re-enters the preparation/checkpoint authority cycle so a FRESH
-  // bound authority can be created. Strictly opt-in per step per code: a
-  // step declaring no table keeps the fail-closed halt, byte-for-byte.
-  on_error_routes?: Record<string, { target_step_id: string; recovery_limit?: number }>;
-
   // commit — write + claim-release; optionally appends to decisions log
   logs_decision?: boolean;
 
@@ -228,10 +218,6 @@ export interface WorkflowRun {
   // Validated, frozen workflow parameters for this run.
   // Set at initial dispatch from WorkItem.workflowParameters; never re-read from WorkItem on resume.
   resolvedParameters?: Record<string, unknown>;
-  // DDR-040 — durable per-run error-recovery counters, keyed by contract
-  // defect code (see WorkflowStep.on_error_routes). Survives checkpoint
-  // resumes so a second UNLINKED cycle is bounded by the SAME run budget.
-  errorRecoveries?: Record<string, number>;
 }
 
 // ============================================================================
@@ -261,10 +247,6 @@ export interface StepResult {
   tokens_used?: number;
   duration_ms?: number;
   error?: string;
-  // DDR-040 — terminal output-contract defect code (see StepRunOutcome).
-  // Set by executeProduce on failure; consulted by the run loop's
-  // on_error_routes seam before the fail-closed halt.
-  contract_error_code?: string;
   skip_reason?: string;
   // For checkpoint steps — the awaiting_checkpoint value to set
   checkpoint_step_id?: string;
@@ -307,12 +289,6 @@ export interface StepRunOutcome {
   tokens_used: number;
   duration_ms: number;
   error?: string;
-  // DDR-040 — the output-contract defect code of the TERMINAL failure, when
-  // the step failed on a contract rejection after result-repair exhaustion.
-  // Structural (never string-matched out of `error`); consumed only by the
-  // engine's on_error_routes seam. Absent for transport/format failures and
-  // every successful execution.
-  contract_error_code?: string;
   // Optional routing overrides — produce steps may set these to drive iteration
   // increment and/or non-sequential routing (e.g. the debug step after validation failure).
   next_step_id?: string;
