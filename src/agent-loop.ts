@@ -118,7 +118,7 @@ export interface AgentLoopOptions {
   // { ok: false } continue the conversation with the given instruction,
   // budget permitting (MAX_RESULT_REPAIRS)." Absent for legacy/materialized
   // steps, whose behavior is unchanged.
-  acceptResult?: (value: unknown) => { ok: true } | { ok: false; repairInstruction: string };
+  acceptResult?: (value: unknown) => { ok: true } | { ok: false; repairInstruction: string; defectCode?: string };
   // D.34 C1 — runner-generated schema projections (from the step's declared
   // output contract), surfaced to the transport via TransportContext.
   // Absent = legacy path. Transports consume them verbatim.
@@ -164,6 +164,10 @@ export interface AgentLoopResult {
   // consumes a workflow refinement iteration.
   result_repairs: number;
   error?: string;
+  // DDR-040 — the terminal output-contract defect code when the loop failed
+  // on a result-repair exhaustion (structural; the error string still
+  // carries the human-readable rendering). Absent on every other failure.
+  error_code?: string;
   rawText?: string;
 }
 
@@ -234,6 +238,9 @@ export class AgentLoop {
     // Set after every provider call; attached by fail() so a failed step's
     // evidence explains itself (never reply text, never reasoning text).
     let lastObservation: NonNullable<AgentLoopResult['failure_observation']> | undefined;
+    // DDR-040 — the terminal contract defect code, captured at the
+    // result-repair exhaustion sites and attached by fail().
+    let terminalDefectCode: string | undefined;
     const fail = (error: string): AgentLoopResult => ({
       success: false,
       turns_taken: turns,
@@ -241,6 +248,7 @@ export class AgentLoop {
       format_repairs: formatRepairs,
       result_repairs: resultRepairs,
       error,
+      ...(terminalDefectCode ? { error_code: terminalDefectCode } : {}),
       ...(lastObservation
         ? { failure_observation: { ...lastObservation, error } }
         : {}),
@@ -334,6 +342,7 @@ export class AgentLoop {
             const acceptance = this.opts.acceptResult(submission.value);
             if (!acceptance.ok) {
               if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+                terminalDefectCode = acceptance.defectCode;
                 return fail(
                   resultRepairExhaustedDiagnostic(
                     this.opts.declaredArtifactId ?? '(undeclared)',
@@ -432,6 +441,7 @@ export class AgentLoop {
         const acceptance = this.opts.acceptResult(stepResult.value);
         if (!acceptance.ok) {
           if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+            terminalDefectCode = acceptance.defectCode;
             return fail(
               resultRepairExhaustedDiagnostic(
                 this.opts.declaredArtifactId ?? '(undeclared)',

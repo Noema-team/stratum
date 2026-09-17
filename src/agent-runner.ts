@@ -55,6 +55,10 @@ export interface AgentRunResult {
   duration_ms: number;
   raw_output_path: string;
   error?: string;
+  // DDR-040 — the terminal output-contract defect code when this failure is
+  // a result-repair exhaustion on a registered contract. Structural; the
+  // StepRunner maps it to StepRunOutcome.contract_error_code.
+  error_code?: string;
   // D.3b0 — the semantic review verdict, set only when ctx.requiresReviewVerdict
   // was true AND execution succeeded with a valid `verdict: pass | fail` in
   // the transport-extracted StepResult. See run() below.
@@ -436,6 +440,7 @@ export class AgentRunner {
           raw_output_path: rawPath,
           ...(loopResult.format_repairs > 0 ? { format_repairs: loopResult.format_repairs } : {}),
           ...(loopResult.result_repairs > 0 ? { result_repairs: loopResult.result_repairs } : {}),
+          ...(loopResult.error_code ? { error_code: loopResult.error_code } : {}),
           error: loopResult.error,
         };
       }
@@ -565,6 +570,9 @@ export class AgentRunner {
       let stepResult: StepResult | undefined;
       let transportError: string | undefined;
       let providerError: string | undefined;
+      // DDR-040 — terminal contract defect code, captured at the single-turn
+      // result-repair exhaustion site.
+      let terminalDefectCode: string | undefined;
 
       while (providerError === undefined && transportError === undefined && stepResult === undefined) {
         if (useStructured) {
@@ -671,6 +679,7 @@ export class AgentRunner {
           const acceptance = acceptor(stepResult.value);
           if (!acceptance.ok) {
             if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
+              terminalDefectCode = acceptance.defectCode;
               transportError = resultRepairExhaustedDiagnostic(
                 artifactType!,
                 acceptance.repairInstruction,
@@ -721,6 +730,7 @@ export class AgentRunner {
           raw_output_path: rawPath,
           ...(formatRepairs !== undefined && formatRepairs > 0 ? { format_repairs: formatRepairs } : {}),
           ...(resultRepairs !== undefined && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+          ...(terminalDefectCode ? { error_code: terminalDefectCode } : {}),
           error: transportError ?? 'Step produced no result',
         };
       }

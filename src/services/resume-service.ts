@@ -581,6 +581,17 @@ export class ResumeService {
               workflowRunId,
               workItemId,
               stepId: execResult.checkpointStepId,
+              // DDR-040 — bind the escalation target into the durable
+              // Decision at creation time on THIS path too, mirroring
+              // Scheduler's initial-dispatch handling (scheduler.ts).
+              // E4-G inv 4 root cause: a chained decision created during a
+              // resume was structurally unbound here, so its application
+              // deterministically failed DECISION_APPLICATION_DECISION_
+              // UNLINKED even though the request artifact carried the fact
+              // id — DDR-036's binding existed only on the first dispatch.
+              ...(nextDecisionReq.targetFactId !== undefined
+                ? { targetFactId: nextDecisionReq.targetFactId }
+                : {}),
             },
             title: nextTitle,
             summary: nextSummary,

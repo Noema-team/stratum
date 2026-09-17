@@ -256,11 +256,16 @@ export class WorkflowEngine {
     // Load persisted iteration/revision — for existing runs, authoritative values
     // from before the halt (e.g. iteration > 1 for iterative workflows).
     // For new runs, loads back exactly what was just written.
+    // DDR-040 — the durable per-run error-recovery budget loads the same
+    // way, so a second UNLINKED replacement cycle is bounded by the SAME
+    // run budget across checkpoint resumes.
+    let errorRecoveries: Record<string, number> = {};
     if (this.deps.workflowRunRepository) {
       const persisted = existingRun ?? this.deps.workflowRunRepository.findById(workflowRunId);
       if (persisted) {
         iteration = persisted.iteration;
         revision = persisted.revision;
+        errorRecoveries = { ...(persisted.errorRecoveries ?? {}) };
       }
     }
 
@@ -347,6 +352,55 @@ export class WorkflowEngine {
 
       // ---- failure -----------------------------------------------------------
       if (result.outcome === 'failed') {
+        // DDR-040 — contract-defect-keyed error recovery, strictly opt-in per
+        // step per code (WorkflowStep.on_error_routes). When the terminal
+        // defect code is declared on THIS step and the run's durable recovery
+        // budget for that code is not exhausted, route to the declared target
+        // instead of halting — the recovery re-enters the authority cycle so
+        // a FRESH bound Decision can be created; nothing is mutated or
+        // transferred. A step with no table (or a failure with no structural
+        // code — transport, format, authoring) keeps the fail-closed halt
+        // below, byte-for-byte.
+        const errorCode = result.contract_error_code;
+        const errorRoute = errorCode !== undefined
+          ? step.on_error_routes?.[errorCode]
+          : undefined;
+        if (errorRoute !== undefined && errorCode !== undefined) {
+          const limit = errorRoute.recovery_limit ?? 1;
+          const taken = errorRecoveries[errorCode] ?? 0;
+          if (taken < limit) {
+            const targetIndex = def.steps.findIndex(s => s.id === errorRoute.target_step_id);
+            if (targetIndex !== -1) {
+              errorRecoveries[errorCode] = taken + 1;
+              await this.updateRunCursor(workflowRunId, {
+                status: 'active',
+                current_step_id: def.steps[targetIndex].id,
+                iteration, revision, awaiting_checkpoint: null,
+                errorRecoveries,
+              });
+              stepIndex = targetIndex;
+              continue;
+            }
+            // Declared target missing — fall through to the halt below; the
+            // error names it (authoring defect, not a silent fallback).
+          } else {
+            await this.updateRunCursor(workflowRunId, {
+              status: 'halted',
+              current_step_id: step.id,
+              iteration, revision, awaiting_checkpoint: null,
+              errorRecoveries,
+            });
+            return {
+              run_id: workflowRunId,
+              status: 'halted',
+              final_step_id: step.id,
+              iterations_used: iteration,
+              error:
+                `Error-recovery bound for '${errorCode}' reached (${limit}) on step '${step.id}' — ` +
+                `the replacement authority cycle again produced a terminal contract failure; halting deterministically`,
+            };
+          }
+        }
         // Cursor stays at step.id (already set) — a retry/restart re-executes from here.
         await this.updateRunCursor(workflowRunId, {
           status: 'halted',
@@ -562,7 +616,12 @@ export class WorkflowEngine {
         completed_at: new Date().toISOString(),
         duration_ms: result.duration_ms,
       });
-      return { outcome: 'failed', next_step_id: null, error: result.error };
+      return {
+        outcome: 'failed',
+        next_step_id: null,
+        error: result.error,
+        ...(result.contract_error_code ? { contract_error_code: result.contract_error_code } : {}),
+      };
     }
 
     await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
@@ -870,7 +929,11 @@ export class WorkflowEngine {
 
   private async updateRunCursor(
     runId: string,
-    fields: Pick<WorkflowRun, 'status' | 'current_step_id' | 'iteration' | 'revision' | 'awaiting_checkpoint'>,
+    fields: Pick<WorkflowRun, 'status' | 'current_step_id' | 'iteration' | 'revision' | 'awaiting_checkpoint'> & {
+      // DDR-040 — supplied only by the error-recovery routing write; every
+      // other cursor update preserves the persisted count (COALESCE).
+      errorRecoveries?: Record<string, number>;
+    },
   ): Promise<void> {
     if (!this.deps.workflowRunRepository) return;
     this.deps.workflowRunRepository.update({

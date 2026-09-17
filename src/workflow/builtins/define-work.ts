@@ -292,6 +292,18 @@ export const DEFINE_WORK: WorkflowDefinition = {
       includeWorkItemContext: true,
       includeObjectiveContext: true,
       includeDecisionContext: true,
+      // DDR-040 — the single authorized error-recovery route. When the
+      // resolved durable Decision was created without its escalation target
+      // (DECISION_APPLICATION_DECISION_UNLINKED — E4-G inv 4's demonstrated
+      // lifecycle gap), one bounded recovery re-runs the preparation/
+      // checkpoint authority cycle so a FRESH Decision can be created with
+      // targetFactId from birth. Decision A is never re-bound and its
+      // resolution is never transferred; every other application defect
+      // (mismatch, missing target, already-applied, malformed) keeps the
+      // fail-closed halt.
+      on_error_routes: {
+        DECISION_APPLICATION_DECISION_UNLINKED: { target_step_id: 'prepare-human-decision' },
+      },
       instruction: `Update the Definition's fact ledger.\n\n${DEFINITION_CONTRACT}\n\n${HUMAN_DECISION_APPLY_CONTRACT}` +
         `\n\n`,
       inputArtifactRefs: [

@@ -847,7 +847,8 @@ export class WorkflowRunRepository {
     this.updateStmt = db.prepare(`
       UPDATE workflow_runs
       SET status = ?, current_step_id = ?, iteration = ?, revision = ?,
-          awaiting_checkpoint = ?, updated_at = ?
+          awaiting_checkpoint = ?, updated_at = ?,
+          error_recoveries_json = COALESCE(?, error_recoveries_json)
       WHERE run_id = ?
     `);
     this.byId = db.prepare('SELECT * FROM workflow_runs WHERE run_id = ?');
@@ -901,6 +902,9 @@ export class WorkflowRunRepository {
     const result = this.updateStmt.run(
       run.status, run.current_step_id, run.iteration, run.revision,
       run.awaiting_checkpoint ?? null, run.updated_at,
+      // DDR-040 — COALESCE: an update not carrying the map preserves the
+      // persisted count; only the recovery-routing write supplies it.
+      run.errorRecoveries !== undefined ? JSON.stringify(run.errorRecoveries) : null,
       run.run_id,
     );
     if (result.changes === 0) {
@@ -944,6 +948,11 @@ function rowToWorkflowRun(r: Record<string, unknown>): WorkflowRun {
     updated_at: r.updated_at as string,
     resolvedParameters: r.resolved_parameters_json
       ? JSON.parse(r.resolved_parameters_json as string)
+      : undefined,
+    // DDR-040 (migration 11) — absent on every pre-DDR-040 row and every
+    // run that never took an error-recovery route.
+    errorRecoveries: r.error_recoveries_json
+      ? (JSON.parse(r.error_recoveries_json as string) as Record<string, number>)
       : undefined,
   };
 }
