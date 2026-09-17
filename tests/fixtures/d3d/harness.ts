@@ -39,7 +39,7 @@ import type { StepRunner, StepRunContext, StepRunOutcome, WorkflowStep } from '.
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../../../src/llm-provider.js';
 import type { Objective } from '../../../src/domain/index.js';
 import type { ObjectiveIntent, FixtureFile } from './fixtures.js';
-import { materializeFixtureRepo, findSamePlatformOnlyOption } from './fixtures.js';
+import { materializeFixtureRepo, findCrossPlatformExclusionOption } from './fixtures.js';
 
 // ============================================================================
 // RecordingStepRunner — captures the exact step/verdict/route trace of a run,
@@ -283,7 +283,7 @@ export function oracleEarly(trace: DefineWorkTrace): OracleResult {
   // or is not traceable into the final Definition via its real id.
   const platformScopeDecision = trace.decisions.find(isPlatformScopeDecision);
   const platformScopeOption = platformScopeDecision
-    ? findSamePlatformOnlyOption(platformScopeDecision.options)
+    ? findCrossPlatformExclusionOption(platformScopeDecision.options)
     : undefined;
   const platformScopeResolved =
     platformScopeDecision !== undefined &&

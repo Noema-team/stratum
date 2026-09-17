@@ -1,0 +1,25 @@
+[
+ {
+  "title": "Cross-platform play: inside or outside this multiplayer increment?",
+  "summary": "The Objective leaves cross-platform support genuinely undecided, and the Definition deliberately carries that openness \u2014 no non-goal, no constraint, only a neutral, reversible preference against transport/serialization choices that would make either answer more expensive later. Only you can set this boundary edge. The decision in your terms: including cross-platform makes it a requirement of this increment \u2014 the chosen transport/serialization must actually work on both target platforms and the acceptance surface gains a genuinely cross-platform two-client scenario, growing cost now and coupling to the still-unmeasured latency question (F4). Excluding it keeps the increment the minimal authoritative two-player session (two processes, direct join, localhost/LAN), with the path to a later cross-platform increment preserved only by the current replaceable-transport preference. A third path settles the edge cheaply without claiming the feature: no cross-platform acceptance, but platform-neutrality of the first transport/serialization layer becomes a hard, verifiable constraint rather than a soft preference.",
+  "options": [
+   {
+    "id": "exclude-non-goal",
+    "label": "Exclude \u2014 record as a deliberate non-goal",
+    "description": "Cross-platform is recorded as a deliberate non-goal of this increment. The bounded scope stays the minimal two-process authoritative session on localhost/LAN, and reversibility is carried only by the existing preference against transport/serialization choices that would make a later cross-platform increment materially costlier. Cross-platform play is re-opened as its own increment when prioritized."
+   },
+   {
+    "id": "include-requirement",
+    "label": "Include \u2014 add cross-platform as a requirement",
+    "description": "Cross-platform participation becomes a requirement of the bounded scope: the chosen transport/serialization must run on both target platforms, and the acceptance model gains an explicitly cross-platform two-client join-and-propagate scenario. This grows the cost and test surface now and interacts with the still-unmeasured latency question (F4)."
+   },
+   {
+    "id": "neutral-groundwork-constraint",
+    "label": "Constrain only \u2014 cross-platform-ready groundwork, no cross-platform feature",
+    "description": "A middle path: no cross-platform feature is claimed and no cross-platform acceptance is added, but the current soft preference is elevated to a hard constraint \u2014 the first transport/serialization layer must be replaceable/platform-neutral and demonstrably swappable \u2014 so the later cross-platform increment stays cheap. Settles the scope edge now without asserting tested cross-platform play."
+   }
+  ],
+  "selectedOptionId": "exclude-non-goal",
+  "resolved": true
+ }
+]

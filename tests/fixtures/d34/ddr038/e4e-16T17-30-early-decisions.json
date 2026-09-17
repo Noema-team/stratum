@@ -1,0 +1,25 @@
+[
+ {
+  "title": "Include cross-platform play in this multiplayer increment, or scope it to same-platform?",
+  "summary": "The Objective and Definition deliberately leave this undecided rather than guess: whether \"multiplayer-capable\" must mean a player on one platform (OS/build target) and a player on another can join the same session, or whether this increment only has to prove two players on the same platform. Nothing about the core scope changes either way \u2014 two-player shared real-time session, direct join, single authoritative source of truth, and the latency/tick measurement gate all proceed. What changes is cost and reach. Including cross-platform fully means the synchronization and serialization work must be platform-neutral from day one and the acceptance matrix widens (builds, testing, and latency measurements across the platform pair), which is real schedule risk on top of an increment that already carries an unmeasured netcode feasibility question (that question is handled separately as measurement work). Excluding it outright is the cheapest and fastest route to the success criterion but locks this increment's verification to one platform and leaves no guardrail about precluding cross-platform later. The middle path excludes it from this increment's definition of done while constraining the design choices most likely to paint us into a corner (transport, session, and state serialization must stay platform-neutral), so a future cross-platform increment extends the session layer instead of rewriting it. Each option closes the gap the same way \u2014 a recorded decision, and the fact becomes DECIDED with the boundary gaining a real edge on that side \u2014 the choice is how much scope and constraint you authorize now.",
+  "options": [
+   {
+    "id": "exclude-as-nongoal",
+    "label": "Out of scope \u2014 explicit non-goal",
+    "description": "Cross-platform play is excluded as a deliberate non-goal. Both players join from the same platform in this increment. Smallest blast radius and fastest path to the two-player real-time success criterion; no platform-neutrality constraint is imposed on design decisions now, and cross-platform can be a later increment. The fact resolves DECIDED with the boundary gaining an exclusion edge."
+   },
+   {
+    "id": "design-for-later",
+    "label": "Out of scope now, but must not be precluded",
+    "description": "Excluded from this increment's definition of done (same-platform joins only), but the boundary gains a must-not-preclude constraint: transport, session, serialization, and tick-synchronization choices must remain platform-neutral (no platform-locked transport, no platform-specific binary or state layout), so a later cross-platform increment extends rather than rewrites. Carries a small ongoing design cost with no verification or test-matrix cost."
+   },
+   {
+    "id": "include-increment",
+    "label": "In scope \u2014 supported and verified",
+    "description": "Cross-platform play is part of this increment's definition of done: two players on different identified platforms can create/join and play the shared session, verified against the same real-time and convergence acceptance criteria. Adds scope and risk \u2014 platform-neutral serialization, deterministic tick behavior across platforms, a broader build/test matrix, and latency measurements that must hold on the cross-platform pairing \u2014 the largest schedule exposure of the three choices."
+   }
+  ],
+  "selectedOptionId": "exclude-as-nongoal",
+  "resolved": true
+ }
+]

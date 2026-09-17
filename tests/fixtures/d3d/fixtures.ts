@@ -297,13 +297,81 @@ export type NextFunction = () => void;
 // spec item 4).
 // ============================================================================
 
-const SAME_PLATFORM_KEYWORDS = ['same-platform', 'same platform', 'single-platform', 'single platform', 'one platform'];
+// ============================================================================
+// DDR-038 — semantic option adjudication. The qualification contract does
+// not prescribe wording or option ids, so the EARLY oracle must evaluate the
+// INTENDED OUTCOME of an option, not its vocabulary: a legitimate option
+// EXCLUDES cross-platform support from the current increment. The previous
+// keyword matcher (SAME_PLATFORM_KEYWORDS) rejected semantically-correct
+// exclude options in E4-E (3/5 EARLY runs) purely for paraphrasing — the
+// same representation-sensitivity class DDR-037 closed for factId.
+//
+// This is a deliberately minimal deterministic polarity evaluation — NOT an
+// LLM judge and NOT a generic semantic subsystem. An option qualifies iff:
+//   1. it is about the platform-scope axis (mentions cross-platform or
+//      platform pairing), AND
+//   2. it carries explicit exclusion evidence for THIS increment, AND
+//   3. it carries no (unnegated) inclusion evidence.
+// Every predicate below is pinned against the historical decision payloads
+// of E4-D/E4-E in tests/d34-ddr038-instrument-validity.test.ts.
+// ============================================================================
 
-export function findSamePlatformOnlyOption<T extends { id: string; label: string; description?: string }>(
+const PLATFORM_SCOPE_AXIS = /cross-?platform|platform/i;
+
+const EXCLUSION_EVIDENCE = new RegExp(
+  '\\b(?:exclud\\w*|out of scope|non-goal|omit\\w*|later (?:phase|increment|release)|' +
+  'not (?:part of|in scope|included|required|supported|shipped|in this increment|in the increment)|' +
+  'only (?:on |for |the )?(?:current|single|target|same)\\s+(?:\\w+\\s+){0,2}platform|' +
+  'no cross-?platform|without cross-?platform)\\b',
+  'i',
+);
+
+// NOTE: "in scope" alone is deliberately NOT inclusion evidence — exclusion
+// options legitimately narrow scope with it ("only the current single target
+// platform is in scope", pinned from E4-E inv2).
+//
+// DDR-038 review patch — inclusion evidence is FEATURE-SCOPED, not
+// verb-scoped: the include-verb, or a positive predicate, applied to the
+// cross-platform capability itself within one sentence. An otherwise-valid
+// exclusion option may legitimately INCLUDE other things ("Exclude
+// cross-platform; include platform-neutral transport groundwork so it is
+// cheap to add later") — that is not feature inclusion. Bare "platform" is
+// deliberately not a proximity term ("platform-neutral", "platform-agnostic"
+// groundwork phrasing must not trigger the veto).
+const FEATURE_TERM = /cross-?platform|inter-platform/i;
+const INCLUSION_EVIDENCE = new RegExp(
+  '\\binclud\\w*[^.;]{0,60}(?:' + FEATURE_TERM.source + ')|' +
+  '(?:' + FEATURE_TERM.source + ')[^.;]{0,60}\\binclud\\w*|' +
+  '(?:' + FEATURE_TERM.source + ')[^.;]{0,80}\\b(?:is |are |will be |remains? |stays? |becomes? )?' +
+  '(?:required|supported|first-class|verified|shipped|part of|an? (?:acceptance|requirement|criterion))',
+  'i',
+);
+
+// Negated inclusion ("not included", "cross-platform is not required") is
+// exclusion reasoning, not inclusion evidence — strip the narrow negation
+// forms before the inclusion veto runs.
+const NEGATED_INCLUSION =
+  /\b(?:not|never|no|without|must not|cannot)\s+(?:includ\w*|requir\w*|support\w*)|\bis\s+not\s+(?:required|supported|included|verified|shipped|part of)/gi;
+
+export function isCrossPlatformExclusionOption<T extends { id: string; label: string; description?: string }>(
+  option: T,
+): boolean {
+  const fields = [option.id, option.label, option.description ?? ''];
+  const axisText = fields.join(' ');
+  // The veto evaluates each field as its own text — sentence proximity must
+  // never leak across field boundaries (an id like "exclude-include-…" is
+  // not evidence of anything by itself).
+  const inclusionText = fields.map((f) => f.replace(NEGATED_INCLUSION, ''));
+  return (
+    PLATFORM_SCOPE_AXIS.test(axisText) &&
+    EXCLUSION_EVIDENCE.test(axisText) &&
+    !inclusionText.some((f) => INCLUSION_EVIDENCE.test(f))
+  );
+}
+
+/** The first option that legitimately excludes cross-platform from this increment. */
+export function findCrossPlatformExclusionOption<T extends { id: string; label: string; description?: string }>(
   options: T[],
 ): T | undefined {
-  return options.find((o) => {
-    const text = `${o.id} ${o.label} ${o.description ?? ''}`.toLowerCase();
-    return SAME_PLATFORM_KEYWORDS.some((kw) => text.includes(kw));
-  });
+  return options.find(isCrossPlatformExclusionOption);
 }

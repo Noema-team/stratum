@@ -36,7 +36,7 @@ import {
   EARLY_OBJECTIVE, EARLY_FIXTURE_FILES,
   PARTIAL_OBJECTIVE, PARTIAL_FIXTURE_FILES,
   MATURE_OBJECTIVE, MATURE_FIXTURE_FILES,
-  findSamePlatformOnlyOption,
+  findCrossPlatformExclusionOption,
 } from './fixtures/d3d/fixtures.js';
 import {
   driveDefineWorkRun, runOracle,
@@ -310,7 +310,7 @@ function earlyScript(): ScenarioScript {
       ], 'EXPLORE_AS_WORK — fact sync-latency-feasibility: answering requires a prototype/benchmark, not reading or reasoning.', readinessPath),
     ],
     resolveDecision: (options) => {
-      const chosen = findSamePlatformOnlyOption(options);
+      const chosen = findCrossPlatformExclusionOption(options);
       assert.ok(chosen, `no same-platform-only option offered: ${JSON.stringify(options)}`);
       return { selectedOptionId: chosen!.id, rationale: 'Same-platform only for this bounded increment.' };
     },
