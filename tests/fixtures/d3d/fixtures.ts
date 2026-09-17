@@ -328,24 +328,44 @@ const EXCLUSION_EVIDENCE = new RegExp(
 
 // NOTE: "in scope" alone is deliberately NOT inclusion evidence — exclusion
 // options legitimately narrow scope with it ("only the current single target
-// platform is in scope", pinned from E4-E inv2). Inclusion evidence is the
-// explicit feature-positive forms: include*/first-class.
-const INCLUSION_EVIDENCE = /\binclud\w*|\bfirst-class\b/i;
+// platform is in scope", pinned from E4-E inv2).
+//
+// DDR-038 review patch — inclusion evidence is FEATURE-SCOPED, not
+// verb-scoped: the include-verb, or a positive predicate, applied to the
+// cross-platform capability itself within one sentence. An otherwise-valid
+// exclusion option may legitimately INCLUDE other things ("Exclude
+// cross-platform; include platform-neutral transport groundwork so it is
+// cheap to add later") — that is not feature inclusion. Bare "platform" is
+// deliberately not a proximity term ("platform-neutral", "platform-agnostic"
+// groundwork phrasing must not trigger the veto).
+const FEATURE_TERM = /cross-?platform|inter-platform/i;
+const INCLUSION_EVIDENCE = new RegExp(
+  '\\binclud\\w*[^.;]{0,60}(?:' + FEATURE_TERM.source + ')|' +
+  '(?:' + FEATURE_TERM.source + ')[^.;]{0,60}\\binclud\\w*|' +
+  '(?:' + FEATURE_TERM.source + ')[^.;]{0,80}\\b(?:is |are |will be |remains? |stays? |becomes? )?' +
+  '(?:required|supported|first-class|verified|shipped|part of|an? (?:acceptance|requirement|criterion))',
+  'i',
+);
 
-// Negated inclusion ("not included", "must not be precluded") is exclusion
-// reasoning, not inclusion evidence — strip the narrow negation forms before
-// the inclusion veto runs.
-const NEGATED_INCLUSION = /\b(?:not|never|no|without|must not|cannot)\s+includ\w*/gi;
+// Negated inclusion ("not included", "cross-platform is not required") is
+// exclusion reasoning, not inclusion evidence — strip the narrow negation
+// forms before the inclusion veto runs.
+const NEGATED_INCLUSION =
+  /\b(?:not|never|no|without|must not|cannot)\s+(?:includ\w*|requir\w*|support\w*)|\bis\s+not\s+(?:required|supported|included|verified|shipped|part of)/gi;
 
 export function isCrossPlatformExclusionOption<T extends { id: string; label: string; description?: string }>(
   option: T,
 ): boolean {
-  const text = `${option.id} ${option.label} ${option.description ?? ''}`;
-  const inclusionText = text.replace(NEGATED_INCLUSION, '');
+  const fields = [option.id, option.label, option.description ?? ''];
+  const axisText = fields.join(' ');
+  // The veto evaluates each field as its own text — sentence proximity must
+  // never leak across field boundaries (an id like "exclude-include-…" is
+  // not evidence of anything by itself).
+  const inclusionText = fields.map((f) => f.replace(NEGATED_INCLUSION, ''));
   return (
-    PLATFORM_SCOPE_AXIS.test(text) &&
-    EXCLUSION_EVIDENCE.test(text) &&
-    !INCLUSION_EVIDENCE.test(inclusionText)
+    PLATFORM_SCOPE_AXIS.test(axisText) &&
+    EXCLUSION_EVIDENCE.test(axisText) &&
+    !inclusionText.some((f) => INCLUSION_EVIDENCE.test(f))
   );
 }
 

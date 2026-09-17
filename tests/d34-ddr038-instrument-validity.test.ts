@@ -109,11 +109,25 @@ describe('DDR-038 A — semantic exclude-option adjudication on historical paylo
 
   it('every historical include option is rejected; unrelated options are rejected', () => {
     const allOptions = PAYLOADS.flatMap(({ file }) => loadJson(file)[0].options as any[]);
-    const includes = allOptions.filter((o) => /\binclud|first-class/i.test(`${o.id} ${o.label} ${o.description ?? ''}`));
+    // include-constraint-only (E4-E inv4) is deliberately NOT here: read
+    // feature-scoped it is the blend case — "No cross-platform acceptance
+    // test this increment … not shipping a verified cross-platform claim
+    // now … becomes a later increment" EXCLUDES the feature and includes
+    // only the groundwork constraint. Verb-scoped classification (the hole
+    // this patch closes) would mislabel it.
+    const includes = allOptions.filter((o) =>
+      /\binclud|first-class/i.test(`${o.id} ${o.label} ${o.description ?? ''}`) &&
+      o.id !== 'include-constraint-only',
+    );
     assert.ok(includes.length >= 4, 'control: historical include variants exist in the payloads');
     for (const o of includes) {
       assert.equal(isCrossPlatformExclusionOption(o), false, `include option must be rejected: ${o.id}`);
     }
+    assert.equal(
+      isCrossPlatformExclusionOption(allOptions.find((o: any) => o.id === 'include-constraint-only')),
+      true,
+      'the historical exclude-feature + include-constraint blend is a legitimate exclusion option',
+    );
     assert.equal(
       isCrossPlatformExclusionOption({ id: 'webgl', label: 'Use the WebGL renderer', description: 'Render everything with WebGL.' }),
       false,
@@ -123,6 +137,51 @@ describe('DDR-038 A — semantic exclude-option adjudication on historical paylo
       isCrossPlatformExclusionOption({ id: 'defer-q', label: 'Defer the question to a design spike', description: 'Ask the platform team later.' }),
       false,
       'deferring the QUESTION (not excluding the feature from this increment) is not a resolution',
+    );
+  });
+
+  it('the inclusion veto is feature-scoped: exclude-feature + include-groundwork blends are legitimate', () => {
+    // DDR-038 review patch — the four operator-specified cases. The blend
+    // ("exclude the feature, include the groundwork") is the hole the verb-
+    // scoped veto would have recreated.
+    const blend = {
+      id: 'exclude-feature-include-groundwork',
+      label: 'Exclude cross-platform; include transport groundwork',
+      description: 'Exclude cross-platform support from this increment. Include platform-neutral transport groundwork so it is cheap to add later.',
+    };
+    assert.equal(isCrossPlatformExclusionOption(blend), true, 'exclude-feature + include-groundwork must be ACCEPTED');
+    assert.equal(
+      isCrossPlatformExclusionOption({
+        id: 'include-xplat', label: 'Include cross-platform support',
+        description: 'Include cross-platform support in this increment.',
+      }),
+      false,
+      'feature inclusion in this increment must be REJECTED',
+    );
+    assert.equal(
+      isCrossPlatformExclusionOption({
+        id: 'required-acceptance', label: 'Cross-platform is required',
+        description: 'Cross-platform is required for acceptance.',
+      }),
+      false,
+      'feature-positive predicate must be REJECTED',
+    );
+    assert.equal(
+      isCrossPlatformExclusionOption({
+        id: 'no-xplat-now', label: 'No cross-platform acceptance now',
+        description: 'No cross-platform acceptance now; include platform-neutral abstractions.',
+      }),
+      true,
+      'negated-feature + groundwork inclusion must be ACCEPTED',
+    );
+    // Negated feature-positive stays exclusion reasoning:
+    assert.equal(
+      isCrossPlatformExclusionOption({
+        id: 'not-required', label: 'Cross-platform is not required',
+        description: 'Cross-platform is not required for this increment.',
+      }),
+      true,
+      'explicitly negated requirement is an exclusion option',
     );
   });
 
