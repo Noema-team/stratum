@@ -133,6 +133,9 @@ interface ScenarioReport {
     title: string; summary: string;
     options: Array<{ id: string; label: string; description?: string }>;
     selectedOptionId?: string;
+    // DDR-039 — the durable escalation identity rides into the report so a
+    // Decision↔fact join is re-derivable from report.json alone.
+    targetFactId?: string;
     resolved: boolean;
   }>;
   explorationArtifactPresent: boolean;
@@ -242,6 +245,7 @@ async function runOneScenario(scenario: ScenarioDef, outDir: string): Promise<Sc
       })),
       decisionsRequested: trace.decisions.map((d) => ({
         title: d.title, summary: d.summary, options: d.options, selectedOptionId: d.selectedOptionId,
+        targetFactId: d.targetFactId,
         resolved: d.selectedOptionId !== undefined,
       })),
       explorationArtifactPresent: trace.explorationNeedText !== null,
