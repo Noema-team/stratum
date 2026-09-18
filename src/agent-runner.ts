@@ -3,6 +3,7 @@ import path from 'path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AgentRole, AssembledContext } from './types.js';
 import type { ContextManager } from './context-manager.js';
+import { ContextBudgetExceededError } from './context-manager.js';
 import type { ILLMProvider, LLMCompletionParams } from './llm-provider.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
@@ -302,8 +303,28 @@ export class AgentRunner {
       acceptor = createResultAcceptor(contract, contractCtx, artifactType!);
     }
 
-    // 1. Assemble context
-    const context = await this.contextManager.assemble(role, ctx);
+    // 1. Assemble context. DDR-041 review — a fixed-component context-budget
+    // overflow (e.g. an authoritative Definition that cannot fit the
+    // configured boundary) fails the step HERE, BEFORE any LLM call: the
+    // Definition is never truncated or summarized, and no model ever sees a
+    // degraded task. Narrow catch — only the specific budget error converts;
+    // any other assembly error keeps its existing propagation semantics.
+    let context;
+    try {
+      context = await this.contextManager.assemble(role, ctx);
+    } catch (err) {
+      if (err instanceof ContextBudgetExceededError) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: '',
+          error: `${err.code}: ${err.message}`,
+        };
+      }
+      throw err;
+    }
 
     let parsed: { sections: Array<{ path: string; content: string }> };
     let tokensUsed = 0;

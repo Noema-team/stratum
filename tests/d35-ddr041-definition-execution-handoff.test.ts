@@ -41,6 +41,7 @@ import {
 import { validateFullBuildParams } from '../src/execution/workflow-parameters.js';
 import { resolveWorkflowInvocation } from '../src/execution/workflow-invocation.js';
 import { ContextManager } from '../src/context-manager.js';
+import { DEFAULT_CONFIG, ContextBudgetExceededError } from '../src/context-manager.js';
 import type { StepRunContext } from '../src/workflow/types.js';
 
 // Part D harness — real StratumAgentAdapter + FullBuildStepRunner + WorkflowEngine
@@ -49,6 +50,7 @@ import { StratumAgentAdapter } from '../src/execution/stratum-agent-adapter.js';
 import { FullBuildStepRunner } from '../src/execution/full-build-step-runner.js';
 import { AgentStepRunner } from '../src/execution/agent-step-runner.js';
 import { WorkflowEngine } from '../src/workflow/engine.js';
+import { AgentRunner } from '../src/agent-runner.js';
 import type { WorkflowEngineDeps, WorkflowEngineOptions } from '../src/workflow/engine.js';
 import type { ExecutionRequest } from '../src/execution/types.js';
 import type { RuntimeMap, RuntimeMapManager } from '../src/runtime-map.js';
@@ -618,5 +620,87 @@ test('ddr041: dispatch with a definitionSource that cannot be provenance-verifie
     assert.equal(r.outcome, 'failed');
     assert.equal(r.failure?.code, 'source_definition_not_found');
     assert.equal(agentSpy.ctxs.length, before, 'no model-visible step may run');
+  } finally { s.cleanup(); }
+});
+
+// ============================================================================
+// Part E — DDR-041 review: hard-context-ceiling boundary (fail closed, never
+// silently degrade the authoritative Definition)
+// ============================================================================
+
+function definitionCtx(over: { root: string; sourceWiId: string; definitionPath: string }): StepRunContext {
+  const sha = createHash('sha256').update(FIXTURE_DEFINITION).digest('hex');
+  return {
+    workflowRunId: 'r', workflowId: 'full-build', stepId: 'build', role: 'builder',
+    iteration: 1, revision: 0, goal: 'implement', projectRoot: over.root,
+    workItemId: 'wi-exec',
+    inputArtifactRefs: undefined,
+    authoritativeDefinition: {
+      sourceWorkItemId: over.sourceWiId, artifactId: 'a', ref: 'definition:x',
+      path: over.definitionPath, sha256: sha, content: FIXTURE_DEFINITION,
+    },
+  };
+}
+
+test('ddr041: a valid Definition that cannot fit the configured context ceiling fails closed — no truncation', async () => {
+  const s = seed();
+  try {
+    // Small configured boundary: the canonical Definition (a few thousand
+    // tokens) cannot fit, exactly the review's scenario.
+    const smallConfig = { ...DEFAULT_CONFIG, hard_ceiling: 300 };
+    const cm = new ContextManager(s.root, smallConfig);
+    await assert.rejects(
+      cm.assemble('builder', definitionCtx(s)),
+      (err: unknown) => {
+        assert.ok(err instanceof ContextBudgetExceededError);
+        assert.equal(err.code, 'context_budget_exceeded');
+        assert.ok(err.message.includes('hard_ceiling of 300'), err.message);
+        assert.ok(err.message.includes('AUTHORITATIVE DEFINITION'), err.message);
+        assert.ok(err.message.includes('never'), err.message);
+        return true;
+      },
+    );
+  } finally { s.cleanup(); }
+});
+
+test('ddr041: a Definition that fits assembles within the configured hard ceiling (slices budget around it)', async () => {
+  const s = seed();
+  try {
+    mkdirSync(join(s.root, '.sle/project-docs'), { recursive: true });
+    writeFileSync(join(s.root, '.sle/project-docs/requirements.md'), `# Requirements\n${'r'.repeat(20_000)}`);
+    const config = { ...DEFAULT_CONFIG, hard_ceiling: 4_000 };
+    const cm = new ContextManager(s.root, config);
+    const assembled = await cm.assemble('builder', definitionCtx(s));
+    // Verbatim bytes present...
+    assert.ok(assembled.task.includes(FIXTURE_DEFINITION));
+    // ...and the assembled total respects the configured ceiling, allowing
+    // only the estimator tolerance the existing ContextManager contract uses
+    // (testHardCeilingEnforced allows +5%).
+    assert.ok(
+      assembled.token_count <= config.hard_ceiling * 1.05,
+      `token_count ${assembled.token_count} exceeds ceiling ${config.hard_ceiling}`,
+    );
+  } finally { s.cleanup(); }
+});
+
+test('ddr041: context-budget overflow fails the step with ZERO model calls — no degraded task ever reaches a provider', async () => {
+  const s = seed();
+  try {
+    let modelCalls = 0;
+    const provider = {
+      complete: async () => {
+        modelCalls++;
+        return { content: '', tokens_used: 1, duration_ms: 1 };
+      },
+    };
+    const runArtifacts = new SpyRunArtifacts();
+    const cm = new ContextManager(s.root, { ...DEFAULT_CONFIG, hard_ceiling: 300 });
+    const runner = new AgentRunner(cm, provider, s.root, runArtifacts as never, { model: 'test-model' });
+    const result = await runner.run('builder', definitionCtx(s));
+
+    assert.equal(result.success, false);
+    assert.ok(result.error?.startsWith('context_budget_exceeded'), `error: ${result.error}`);
+    assert.equal(modelCalls, 0, 'no model call may happen on a context-budget failure');
+    assert.equal(result.tokens_used, 0);
   } finally { s.cleanup(); }
 });
