@@ -26,13 +26,36 @@
 > clean miss is a terminal `submit_result` lapse). Per-run evidence lives in the
 > experiment clones (`~/Documents/repos/E4-*`), not this repo.
 >
-> **Next: E4-H — the frozen FINAL qualification series** (GLM-5.3-Flash, OpenRouter
-> `z-ai/glm-5.3-flash`, 16K, temperature 0.7, EARLY×5/PARTIAL×5/MATURE×5, 15/15
-> rule, no mid-series changes), at the qualification-branch head once this
-> docs-only refresh merges; no other changes before it. Qualification closes with
-> H regardless of ordinary model variance; then **Pilot A** (student-platform
-> #108, GLM-5.3-Flash builder via Coding Plan). The phase table below is
-> historical as of 2026-06-16 and has not been comprehensively modernized.
+> **Era-II baseline is now `main`** (merge of PR #21, SHA `88c1d02`); the
+> long-lived `claude/what-do-you-think-446nbb` branch is RETIRED — new work
+> branches from `main`.
+>
+> **E4-H — the frozen FINAL qualification series — RUN and CLOSED**
+> (GLM-5.3-Flash, OpenRouter `z-ai/glm-5.3-flash`, 16K, 0.7, on main
+> `88c1d02`; clone `~/Documents/repos/E4-H`). **Verdict: NOT QUALIFIED for
+> unattended define-work** (15/15 rule). 9 valid runs: 6 PASS / 3 FAIL —
+> EARLY 1/3, PARTIAL 2/3, MATURE 3/3; with 3 valid FAILs the maximum was
+> 12/15, so the verdict is mathematically determined by valid runs alone.
+> All 3 FAILs are ordinary model variance: a repeat of the terminal
+> `submit_result` lapse (same class as E4-G inv 5), a duplicated
+> cross-platform fact that the DDR-039 identity join correctly fail-closed
+> on, and a Decision raised in PARTIAL where the scenario contract expects
+> none (scripted policy halts by pre-registered design). 4 further
+> invocations were interrupted by an external OpenRouter degradation window
+> (long generations ≥ ~2K tokens stalled; short completions fine; status
+> page 503) — recorded, UNCOUNTED per the frozen interruption policy, never
+> classified as model failures; the 6-run tail cannot change the verdict and
+> may optionally be completed for the record once the route recovers. No
+> deterministic Stratum/instrument defect was observed in any valid run.
+>
+> **Qualification phase: CLOSED** — no E4-I, no tuning to chase 15/15.
+> Flash proceeds under the supervised/pilot posture. **Next: Pilot A
+> preregistration** (E5, fresh branch from main): `docs/pilots/pilot-a.md`,
+> likely target magtheo/student-platform#108 (re-verify issue still
+> open/same defect before freezing). Per-run evidence lives in the
+> experiment clones (`~/Documents/repos/E4-*`), not this repo. The phase
+> table below is historical as of 2026-06-16 and has not been
+> comprehensively modernized.
 
 ---
 
