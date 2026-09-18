@@ -8,6 +8,7 @@ import type {
   PlanningDepth,
 } from './types.js';
 import type { StepRunContext } from './workflow/types.js';
+import { safeRelativeSegments } from './path-safety.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -276,33 +277,52 @@ function resolveArtifactPath(
   projectRoot: string,
   runDir?: string
 ): string | null {
+  // D.1c — every branch below validates its ref-derived path segment(s)
+  // through safeRelativeSegments before joining, and rejects (returns null,
+  // which loadSliceContent already treats as "slice not loaded") on any
+  // '..' segment. This matters most for `inputArtifactRefs` (D.1b): those
+  // ref strings come from a WorkflowStep declaration rather than the
+  // hardcoded SliceDef constants above, so they need the same scoping
+  // discipline agent-runner.ts applies to declared output paths — a ref must
+  // not be able to read outside its ref kind's designated root
+  // (.sle/project-docs for doc:, .sle/project-graph/layers for node:, the
+  // supplied runDir for run:, projectRoot for everything else).
   if (ref.startsWith('doc:')) {
-    const key = ref.slice(4);
-    return path.join(projectRoot, '.sle', 'project-docs', `${key}.md`);
+    const key = safeRelativeSegments(ref.slice(4));
+    if (key === null) return null;
+    return path.join(projectRoot, '.sle', 'project-docs', `${key.join('/')}.md`);
   }
   if (ref.startsWith('node:')) {
     const rest = ref.slice(5);
     const colonIdx = rest.indexOf(':');
     if (colonIdx === -1) return null;
-    const group = rest.slice(0, colonIdx);
-    const key = rest.slice(colonIdx + 1);
-    return path.join(projectRoot, '.sle', 'project-graph', 'layers', group, `${key}.md`);
+    const group = safeRelativeSegments(rest.slice(0, colonIdx));
+    const key = safeRelativeSegments(rest.slice(colonIdx + 1));
+    if (group === null || key === null) return null;
+    return path.join(projectRoot, '.sle', 'project-graph', 'layers', group.join('/'), `${key.join('/')}.md`);
   }
   if (ref.startsWith('run:')) {
     if (!runDir) return null;
-    return path.join(runDir, ref.slice(4));
+    const rel = safeRelativeSegments(ref.slice(4));
+    if (rel === null) return null;
+    return path.join(runDir, rel.join('/'));
   }
   if (ref.startsWith('.sle/')) {
-    return path.join(projectRoot, ref);
+    const rel = safeRelativeSegments(ref);
+    if (rel === null) return null;
+    return path.join(projectRoot, rel.join('/'));
   }
   // Bare path — treat as relative to project root
-  return path.join(projectRoot, ref);
+  const rel = safeRelativeSegments(ref);
+  if (rel === null) return null;
+  return path.join(projectRoot, rel.join('/'));
 }
 
 function resolveSummaryPath(projectRoot: string, ref: string): string | null {
   if (!ref.startsWith('doc:')) return null;
-  const key = ref.slice(4);
-  return path.join(projectRoot, '.sle', 'project-docs', `${key}.summary.md`);
+  const key = safeRelativeSegments(ref.slice(4));
+  if (key === null) return null;
+  return path.join(projectRoot, '.sle', 'project-docs', `${key.join('/')}.summary.md`);
 }
 
 function refToSliceKey(ref: string): string {
@@ -462,15 +482,115 @@ export class ContextManager {
   // ─── Component 4: Task description ────────────────────────────────────────
 
   private buildTaskDescription(role: AgentRole, ctx: StepRunContext): string {
-    const stepId = ctx.stepId;
-    // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
-    const base = stepId
-      ? (NODE_TASK_DESCRIPTIONS[stepId] ??
-         NODE_TASK_DESCRIPTIONS[stepId.toUpperCase()] ??
-         NODE_TASK_DESCRIPTIONS[role.toUpperCase()] ??
-         `Execute the ${stepId} step.`)
-      : 'Prepare for the cycle.';
-    return `${base}\n\nCycle intent: "${ctx.goal}"`;
+    // D.1b — a step's own declared instruction takes priority over the
+    // legacy step-id/role lookup below. full-build/draft-artifact steps
+    // declare no `instruction` yet, so their behavior is unchanged.
+    let text: string;
+    if (ctx.instruction) {
+      text = `${ctx.instruction}\n\nCycle intent: "${ctx.goal}"`;
+    } else {
+      const stepId = ctx.stepId;
+      // Look up by step ID directly, then by uppercase (legacy DAG node compat), then by role.
+      const base = stepId
+        ? (NODE_TASK_DESCRIPTIONS[stepId] ??
+           NODE_TASK_DESCRIPTIONS[stepId.toUpperCase()] ??
+           NODE_TASK_DESCRIPTIONS[role.toUpperCase()] ??
+           `Execute the ${stepId} step.`)
+        : 'Prepare for the cycle.';
+      text = `${base}\n\nCycle intent: "${ctx.goal}"`;
+    }
+    // D.3b0 — opt-in only (WorkflowStep.includeWorkItemContext). Goal stays
+    // available via ctx.goal above regardless of this flag; full-build/
+    // draft-artifact steps never set it, so their prompts are byte-for-byte
+    // unchanged. objectiveId is deliberately not rendered here — it is
+    // execution/provenance context (see artifact-refs.ts), not something a
+    // step shows the model unless it explicitly asks via its own instruction.
+    //
+    // D.3b1.1 — the Objective's own human intent (when opted in) is rendered
+    // under a header VISIBLY SEPARATE from the WorkItem section below, so a
+    // reader (human or model) never has to guess which content came from the
+    // human-authored Objective versus the bounded, possibly LLM-authored
+    // WorkItem. Objective renders first — it is the broader intent the
+    // WorkItem is bounded within.
+    if (ctx.includeObjectiveContext) {
+      text += this.formatObjectiveContext(ctx);
+    }
+    if (ctx.includeWorkItemContext) {
+      text += this.formatWorkItemContext(ctx);
+    }
+    // D.3c0 — the human's resolved checkpoint decision (when opted in),
+    // rendered under its own header, distinct from Objective/WorkItem
+    // content — never blurred together, same separation discipline as
+    // formatObjectiveContext below. Only ever present on a resumed
+    // continuation step (see DecisionContext in workflow/types.ts).
+    if (ctx.includeDecisionContext) {
+      text += this.formatDecisionContext(ctx);
+    }
+    // D.3d — surface the step's declared output artifact path. AgentRunner
+    // requires exactly one section at exactly this path (agent-runner.ts §6b),
+    // and define-work's OUTPUT_FORMAT_CONTRACT references "the declared output
+    // artifact path named in the task" — but the path itself was never
+    // rendered anywhere a model could see. This is prompt-surface only: no
+    // validation, mechanism, or routing changes. Steps without a declared
+    // outputArtifact (all legacy full-build/draft-artifact steps) render
+    // byte-for-byte unchanged.
+    if (ctx.outputArtifact) {
+      text += `\n\nDeclared output artifact: write exactly one artifact section at '${ctx.outputArtifact.path}'.`;
+    }
+    return text;
+  }
+
+  private formatDecisionContext(ctx: StepRunContext): string {
+    const decision = ctx.decisionContext;
+    if (!decision) return '';
+    const lines: string[] = ['', '## Human Decision', ''];
+    lines.push(`**Selected:** ${decision.selectedOptionLabel ?? decision.selectedOptionId} (option id: \`${decision.selectedOptionId}\`)`);
+    if (decision.rationale) {
+      lines.push('', `**Rationale:** ${decision.rationale}`);
+    }
+    if (decision.resolvedBy || decision.resolvedAt) {
+      const who = decision.resolvedBy ? `by ${decision.resolvedBy}` : '';
+      const when = decision.resolvedAt ? `at ${decision.resolvedAt}` : '';
+      lines.push('', `**Resolved:** ${[who, when].filter(Boolean).join(' ')}`);
+    }
+    lines.push('', `(Decision id: \`${decision.decisionId}\`)`);
+    return `\n${lines.join('\n')}`;
+  }
+
+  private formatObjectiveContext(ctx: StepRunContext): string {
+    const objective = ctx.objectiveContext;
+    if (!objective) return '';
+    const lines: string[] = ['', '## Objective — human intent', '', `**${objective.title}**`, '', objective.description];
+    if (objective.constraints.length > 0) {
+      lines.push('', '### Objective Constraints');
+      for (const c of objective.constraints) {
+        lines.push(`- ${c.type ? `[${c.type}] ` : ''}${c.description}`);
+      }
+    }
+    if (objective.successCriteria.length > 0) {
+      lines.push('', '### Objective Success Criteria');
+      for (const s of objective.successCriteria) {
+        lines.push(`- ${s.description}`);
+      }
+    }
+    return `\n${lines.join('\n')}`;
+  }
+
+  private formatWorkItemContext(ctx: StepRunContext): string {
+    const lines: string[] = ['', '## Current bounded WorkItem'];
+    if (ctx.workItemConstraints && ctx.workItemConstraints.length > 0) {
+      lines.push('', '### WorkItem Constraints');
+      for (const c of ctx.workItemConstraints) {
+        lines.push(`- ${c.type ? `[${c.type}] ` : ''}${c.description}`);
+      }
+    }
+    if (ctx.workItemAcceptanceCriteria && ctx.workItemAcceptanceCriteria.length > 0) {
+      lines.push('', '### WorkItem Acceptance Criteria');
+      for (const a of ctx.workItemAcceptanceCriteria) {
+        lines.push(`- ${a.description}`);
+      }
+    }
+    return lines.length > 2 ? `\n${lines.join('\n')}` : '';
   }
 
   // ─── Component 5: Failure context ─────────────────────────────────────────
@@ -621,6 +741,21 @@ export class ContextManager {
     ctx: StepRunContext,
     _runDir: string | undefined
   ): SliceDef[] {
+    // D.1b/D.1c — a step's declared inputArtifactRefs fully control context:
+    // they replace the role's default slice set rather than adding to it, so
+    // a step can be reasoned about from its own declaration alone. Declaring
+    // the field at all opts out of role defaults — an explicit empty array
+    // means "no artifact slices", not "fall back to the role's defaults".
+    // Only an undeclared (undefined) field falls back to getRoleSlices().
+    // full-build/draft-artifact steps never declare inputArtifactRefs, so
+    // getRoleSlices() remains their unchanged path.
+    if (ctx.inputArtifactRefs !== undefined) {
+      return ctx.inputArtifactRefs.map((ref): SliceDef => ({
+        ref,
+        mode: 'full',
+        source_weight: 'user_defined',
+      }));
+    }
     return getRoleSlices(role, ctx);
   }
 

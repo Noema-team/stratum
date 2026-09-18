@@ -1,4 +1,5 @@
 import type { UUID } from '../domain/primitives.js';
+import type { ObjectiveContext, DecisionContext } from '../workflow/types.js';
 
 export type ExecutorCapability =
   | 'repo.read'
@@ -49,6 +50,14 @@ export interface DecisionRequest {
   title: string;
   summary: string;
   options: Array<{ id: string; label: string; description: string }>;
+  /**
+   * DDR-036 — the fact-ledger id this decision resolves. OPTIONAL at this
+   * boundary solely for tolerant loading of legacy persisted requests
+   * (additive compat); the NEW decision-request output contract always
+   * materializes it, and deterministic decision application fails
+   * explicitly on its absence — never infers the fact from prose.
+   */
+  targetFactId?: string;
 }
 
 export interface ExecutionFailureInfo {
@@ -70,6 +79,25 @@ export interface ExecutionRequest {
   workflowId: string;
   repositories: RepositoryContext[];
   goal: string;
+  // D.3b0 — the WorkItem's Objective, when it has one. Threaded through to
+  // WorkflowEngine/StepRunContext for provenance and declarative-ref
+  // materialization (see workflow/artifact-refs.ts) — never queried by
+  // WorkflowEngine, ContextManager, or AgentRunner.
+  objectiveId?: string;
+  // D.3b1.1 — the Objective's own human intent (title/description/
+  // constraints/successCriteria), resolved once by Scheduler/ResumeService
+  // via ObjectiveRepository and threaded through unchanged. Absent when the
+  // WorkItem has no objectiveId, or (fail-closed) when objectiveId could not
+  // be resolved to an Objective owned by the WorkItem's project — in that
+  // case dispatch/resume itself fails before execution, so this field is
+  // never silently missing while objectiveId is present.
+  objectiveContext?: ObjectiveContext;
+  // D.3c0 — the human's resolved checkpoint decision, present ONLY when
+  // this request is a ResumeService continuation past a checkpoint (never
+  // on Scheduler's initial dispatch). Threaded through unchanged to
+  // WorkflowEngine/StepRunContext — never queried by WorkflowEngine,
+  // ContextManager, AgentRunner, or AgentLoop.
+  decisionContext?: DecisionContext;
   acceptanceCriteria: Array<{ description: string; met?: boolean }>;
   constraints: Array<{ description: string; type?: string }>;
   permissions: ExecutionPermissions;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, promises as fsPromises } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +11,7 @@ import { EvidenceService } from '../src/services/evidence-service.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
 import { ResumeService } from '../src/services/resume-service.js';
-import { SchedulerLoop, createStratumApplication } from '../src/application.js';
+import { SchedulerLoop, createStratumApplication, buildAgentRunner, resolveLLMProvider } from '../src/application.js';
 import { getCheckpointDecisionOptions } from '../src/execution/checkpoint-resolver.js';
 import {
   WorkspaceRepository,
@@ -19,8 +19,12 @@ import {
   WorkItemRepository,
   DecisionRepository,
   WorkflowRunRepository,
+  ArtifactRepository,
 } from '../src/storage/repositories.js';
 import { registerWorkflow } from '../src/workflow/registry.js';
+import { ContextManager } from '../src/context-manager.js';
+import { RunArtifactManager } from '../src/run-artifacts.js';
+import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet } from '../src/execution/types.js';
 import type { Workspace, Project, WorkItem } from '../src/domain/index.js';
 
@@ -139,6 +143,156 @@ test('createStratumApplication: creates .sle directory if absent', () => {
       port: 0,
     });
     assert.ok(existsSync(join(root, '.sle')), '.sle directory should be created');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── D.3b1.2: resolved application model reaches AgentRunner ───────────────────
+//
+// createStratumApplication() previously constructed AgentRunner with its
+// runnerConfig argument undefined, so AgentRunner defaulted to
+// { model: 'default' } — a truthy sentinel that, for a provider resolving
+// `params.model || this.defaultModel` (e.g. AnthropicSDKProvider), silently
+// overrode the actually-configured model. buildAgentRunner is the exact
+// composition-root seam createStratumApplication now delegates to; this
+// exercises it directly against a capturing single-turn provider stub.
+
+class CapturingLLMProvider implements ILLMProvider {
+  calls: LLMCompletionParams[] = [];
+  async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
+    this.calls.push(params);
+    return {
+      content: [
+        '<!-- SLE-OUTPUT', 'role: explorer', 'node: probe', 'artifacts:',
+        '  - id: probe', '    path: .sle/work/probe.md', '-->', '',
+        '## .sle/work/probe.md', '', 'ok',
+      ].join('\n'),
+      tokens_used: 1, duration_ms: 1,
+    };
+  }
+}
+
+test('D.3b1.2: buildAgentRunner threads the resolved application model into AgentRunner, not the "default" sentinel', async () => {
+  const root = makeTmpRoot();
+  try {
+    const db = openDatabase(':memory:');
+    const provider = new CapturingLLMProvider();
+    const cm = new ContextManager(root);
+    const runArtifacts = new RunArtifactManager({ projectRoot: root });
+    const artifactRepository = new ArtifactRepository(db);
+
+    const agentRunner = buildAgentRunner(cm, provider, root, runArtifacts, 'claude-configured-model', artifactRepository, 4096);
+
+    const result = await agentRunner.run('explorer', {
+      workflowRunId: 'r1', workflowId: 'd3b1-2-model-probe', stepId: 'probe',
+      iteration: 1, revision: 0, goal: 'probe', projectRoot: root,
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/probe.md' },
+    } as any);
+
+    assert.ok(result.success, result.error);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(
+      provider.calls[0].model, 'claude-configured-model',
+      'AgentRunner must send the resolved application model, not the "default" sentinel',
+    );
+    // D.3d.2 — the historical default budget is preserved when the resolved
+    // value is 4096 (omitted settings): single-turn calls carry it explicitly.
+    assert.equal(provider.calls[0].max_tokens, 4096);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── D.3d.2: settings-backed completion budget ─────────────────────────────────
+//
+// The completion budget is REAL production configuration (`.sle/settings.json`
+// optional "max_tokens"), resolved through the same path as provider/model.
+// Reasoning-style models spend completion budget on hidden reasoning tokens,
+// so a fixed 4096 assumption silently starves them. The live-eval harness
+// resolves through this exact path too, so Layer B always evaluates the
+// production model + production budget.
+
+test('D.3d.2: resolveLLMProvider with no settings file defaults the completion budget to 4096', async () => {
+  const root = makeTmpRoot();
+  try {
+    const { provider, model, maxTokens } = resolveLLMProvider(root);
+    assert.equal(maxTokens, 4096, 'absent settings must preserve the historical 4096 default');
+    assert.equal(model, 'gpt-4o');
+    assert.ok(provider);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.2: resolveLLMProvider reads a configured max_tokens from .sle/settings.json', async () => {
+  const root = makeTmpRoot();
+  try {
+    await fsPromises.mkdir(join(root, '.sle'), { recursive: true });
+    await fsPromises.writeFile(
+      join(root, '.sle', 'settings.json'),
+      JSON.stringify({ provider: 'openrouter', model: 'test/model', max_tokens: 16384 }),
+      'utf-8',
+    );
+    const { maxTokens } = resolveLLMProvider(root);
+    assert.equal(maxTokens, 16384, 'a configured positive-integer max_tokens must be resolved as-is');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.2: invalid max_tokens values fall back to 4096 (strict positive-integer rule)', async () => {
+  const invalid = ['16384', 16384.5, -1, 0, null, true];
+  for (const value of invalid) {
+    const root = makeTmpRoot();
+    try {
+      await fsPromises.mkdir(join(root, '.sle'), { recursive: true });
+      await fsPromises.writeFile(
+        join(root, '.sle', 'settings.json'),
+        JSON.stringify({ provider: 'openrouter', model: 'test/model', max_tokens: value }),
+        'utf-8',
+      );
+      const { maxTokens } = resolveLLMProvider(root);
+      assert.equal(maxTokens, 4096, `max_tokens ${JSON.stringify(value)} must fall back to the 4096 default`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  // malformed whole-file JSON follows the same philosophy: full default fallback
+  const root = makeTmpRoot();
+  try {
+    await fsPromises.mkdir(join(root, '.sle'), { recursive: true });
+    await fsPromises.writeFile(join(root, '.sle', 'settings.json'), '{ not json', 'utf-8');
+    const { maxTokens } = resolveLLMProvider(root);
+    assert.equal(maxTokens, 4096);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.2: buildAgentRunner threads a configured completion budget into AgentRunner (both call paths see it)', async () => {
+  const root = makeTmpRoot();
+  try {
+    const db = openDatabase(':memory:');
+    const provider = new CapturingLLMProvider();
+    const cm = new ContextManager(root);
+    const runArtifacts = new RunArtifactManager({ projectRoot: root });
+    const artifactRepository = new ArtifactRepository(db);
+
+    const agentRunner = buildAgentRunner(cm, provider, root, runArtifacts, 'test/model', artifactRepository, 16384);
+
+    const result = await agentRunner.run('explorer', {
+      workflowRunId: 'r2', workflowId: 'd3d-2-budget-probe', stepId: 'probe',
+      iteration: 1, revision: 0, goal: 'probe', projectRoot: root,
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/probe.md' },
+    } as any);
+
+    assert.ok(result.success, result.error);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(
+      provider.calls[0].max_tokens, 16384,
+      'AgentRunner must send the configured completion budget on single-turn calls',
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

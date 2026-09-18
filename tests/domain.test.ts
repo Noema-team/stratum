@@ -121,6 +121,7 @@ test('testObjectiveValid', () => {
     priority: 2, status: 'active',
     constraints: [{ description: 'Must not change public API' }],
     successCriteria: [{ description: 'All race tests pass' }],
+    createdAt: NOW, updatedAt: NOW,
   });
   assert(result.success, 'valid objective should parse');
 });
@@ -131,6 +132,7 @@ test('testObjectiveRejectsEmptyTitle', () => {
     title: '', description: 'desc',
     priority: 0, status: 'draft',
     constraints: [], successCriteria: [],
+    createdAt: NOW, updatedAt: NOW,
   });
   assert(!result.success, 'empty title should fail');
 });

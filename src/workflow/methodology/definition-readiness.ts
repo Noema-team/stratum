@@ -1,0 +1,467 @@
+// Stratum-owned, self-contained runtime methodology for the define-work
+// workflow (D.3a's Definition/readiness contract, reduced to exactly what
+// an executing agent needs to draft, refine, and review a Definition
+// Artifact). Originated in D.3b1.1 with CAN_RESOLVE-only resolution; D.3c1b
+// added the DEFER/HUMAN_DECISION/EXPLORE_AS_WORK route contracts below, so
+// this module now backs every step in builtins/define-work.ts, not just
+// synthesize/refine/review.
+//
+// This module exists because define-work's steps run with `projectRoot` set
+// to the TARGET repository being worked on (e.g. Evershift), not Stratum's
+// own repository — a step instruction that told the agent to go read
+// `docs/developmentPlan/d3a-definition-readiness-methodology.md` would be
+// pointing at a path that only exists in Stratum's own source tree. That is
+// especially unsafe for definition-readiness-review, which is deliberately
+// forced onto AgentRunner's single-turn path (see agent-runner.ts) and so
+// cannot use a repository-read tool to compensate for a missing doc.
+//
+// These constants are composed directly into define-work's `instruction`
+// strings (see ../builtins/define-work.ts) instead. `templateId` stays
+// deliberately inert (see WorkflowStep.templateId) — this is plain string
+// composition into the existing `instruction` declarative channel, not a
+// new resolution mechanism. `docs/developmentPlan/d3a-definition-readiness-
+// methodology.md` remains the authoritative, human-readable design record;
+// it is no longer a runtime dependency of any workflow.
+
+// ─── Fact ledger + Definition content shape (D.3a §1) ─────────────────────────
+
+// D.34 C3 — the epistemic ledger rules, split out so the readiness reviewer
+// receives them WITHOUT the Definition serialization shape: the reviewer
+// judges the canonical Definition already on disk and never authors
+// Definition bytes. The drafter's contract below composes this text
+// verbatim.
+export const DEFINITION_EPISTEMIC_RULES = `Fact ledger rules:
+- Every fact relevant to the goal is one entry { id, statement, status, source } in the ledger.
+  Epistemic status exists exactly once, in the ledger — never duplicated as a property of a
+  requirement, constraint, or risk entry; those may reference a fact by id, no more.
+- status is exactly one of:
+  - KNOWN — verified, backed by something checkable (repository content, an artifact, an
+    existing test, an authoritative human statement). Not a belief; a fact.
+  - ASSUMED — a working belief adopted so drafting can proceed, explicitly not verified. Every
+    ASSUMED fact is a candidate for the readiness rubric's risky-assumptions check.
+  - UNKNOWN — an acknowledged gap with no answer and no working assumption.
+  - DECIDED — was UNKNOWN or ASSUMED, escalated as a HUMAN_DECISION gap, resolved by a recorded
+    Decision. Carries a reference to that Decision; source becomes 'decision'.
+  - DEFERRED — a real, acknowledged gap explicitly not required to be resolved for the
+    candidate bounded scope currently being defined. This is what lets a Definition be ready
+    for a narrow scope while still carrying open facts about the wider Objective.
+- source records where the fact came from: human, repository, artifact, investigation, or
+  decision. A human's stated product requirement can be KNOWN (source: human) with no code
+  read at all. A human's *assertion about repository reality* is not automatically an observed
+  fact — it starts ASSUMED, source: human, until something with source: repository or
+  source: investigation actually confirms it. Mark a fact KNOWN with source: repository only
+  after actually inspecting the relevant file(s) with an available repository-read tool, never
+  because it seems probably true.
+- kind is the OPTIONAL explicit epistemic classification: 'product-intent' for what the human
+  wants, 'repository-claim' for an assertion about how the repository already behaves. The
+  deterministic validator enforces one rule from it mechanically — a repository-claim may not
+  be KNOWN on source: human alone — and leaves every other judgment to review. Use it when
+  the distinction is clear to you; it is never a substitute for honest status.`;
+
+// D.34 C4 — the drafter's contract, representation-neutral: the YAML shape
+// block is GONE — the exact serialization is taught by the Definition
+// output contract's generated projection + schema annotations (DDR-034
+// §8.3, src/workflow/methodology/definition-contract.ts), because the
+// model no longer authors artifact bytes at all: it submits the semantic
+// payload and Stratum serializes it. Every SEMANTIC element of the old
+// contract is preserved: the two-part structure (canonical state =
+// authoritative, body = human explanation), the deterministic gate
+// (invalid → structured defects), each section's meaning, the constraint
+// type vocabulary, and the epistemic ledger rules verbatim below.
+export const DEFINITION_CONTRACT = `A Definition artifact has TWO parts: a canonical, machine-read state (Stratum
+validates it deterministically BEFORE readiness review — an invalid one is
+sent back to you with structured defects) and a Markdown body (the human
+explanation). The canonical state is the authoritative representation: never
+duplicate its content in the body. You author the SEMANTIC content only —
+the system serializes the artifact itself from your proposal.
+
+The canonical state carries:
+- goal — the single outcome being defined: one concrete statement.
+- facts — the fact ledger, governed by the rules below.
+- requirements — concrete behavioral expectations the goal implies.
+- constraints — boundaries the work must respect, each typed exactly one of
+  must | must_not | prefer | prefer_not.
+- nonGoals — what this Definition explicitly excludes.
+- acceptance — criteria each sufficient to know the work is done.
+
+The body carries the genuinely human-facing content: design thinking, named
+risks, tradeoffs, rationale. It must not restate the ledger.
+
+${DEFINITION_EPISTEMIC_RULES}`;
+
+// D.34 C3 — the reviewer-facing subset: epistemic rules only. Judgment
+// content unchanged; serialization shape absent (the reviewer's reply is a
+// semantic proposal, and the Definition bytes already exist on disk).
+export const DEFINITION_CONTRACT_FOR_REVIEW = `The Definition you are judging already exists in canonical form — the system
+serializes any revised artifact, so judge its content, not its serialization.
+Its fact ledger must obey these rules:
+
+${DEFINITION_EPISTEMIC_RULES}`;
+
+// ─── Readiness rubric (D.3a §2) ────────────────────────────────────────────────
+
+export const READINESS_RUBRIC = `Evaluate the current Definition against these seven dimensions, each scoped to the
+candidate bounded scope this Definition defines — not the entire Objective:
+
+D.3d.4 — before the seven dimensions, verify the Definition obeys DEFINITION_CONTRACT itself.
+Every fact the Objective states must be represented in the ledger with the epistemic status
+and provenance DEFINITION_CONTRACT assigns it — one epistemic rule, applied here too:
+authoritative product/domain intent is KNOWN (source: human), while a human assertion about
+repository reality is NOT KNOWN merely because the Objective states it — it follows the
+existing verification rule (ASSUMED, source: human until repository or investigation evidence
+confirms it). An authoritative Objective fact that is absent from the ledger, silently
+weakened to ASSUMED/UNKNOWN without that cause, or given provenance it does not have is a
+CAN_RESOLVE Definition defect: name it among the current gaps
+so the normal classification order applies. A ledger defect is fixable by refining the
+Definition and must never be the reason a separate question escalates to a human first — if
+the review finds both a contract defect and a candidate HUMAN_DECISION, refine comes first
+and the question is re-examined against the corrected ledger. Then evaluate the seven
+dimensions:
+
+1. Outcome — is goal a single, concrete statement? Could a reader tell whether the eventual
+   work satisfies it?
+2. Boundary — does nonGoals meaningfully exclude adjacent scope, so the bounded scope has an
+   actual edge? A scope item whose membership in THIS increment the Objective leaves genuinely
+   undecided keeps this dimension from passing: recording it UNKNOWN is honest bookkeeping,
+   not a boundary — only a recorded human decision (include, or exclude as a deliberate
+   non-goal) settles membership. Items already understood to be later-phase are excluded via
+   DEFERRED and do not block this dimension.
+3. Critical constraints — are the must/must_not constraints that would change the shape of the
+   work captured (not an exhaustive list of every constraint imaginable)?
+4. Consistency — do requirements, constraints, and nonGoals contradict each other or goal?
+5. Risky assumptions — among ASSUMED facts, are there any whose falsity would invalidate goal
+   or a critical (must/must_not) constraint? Not every assumption is risky. A risky assumption
+   does not automatically become a human question either: the definition-side closures are a
+   safe default with recorded mitigation (keep it ASSUMED, state its rationale, and add the
+   fallback requirement), or EXPLORE_AS_WORK when only building/measuring could answer it.
+6. Acceptance — does acceptanceModel contain at least one criterion sufficient to know when the
+   authorized work is done?
+7. Remaining unknowns — among UNKNOWN facts, are there any that block the candidate bounded
+   scope (as opposed to ones that are real but irrelevant to this particular scope)? An
+   UNKNOWN whose answer could falsify the goal or a critical (must) constraint — for example,
+   whether the performance the scope requires is achievable at all — is never "irrelevant":
+   it is the scope's own feasibility, and it blocks authorization until it is isolated
+   (EXPLORE_AS_WORK) or resolved.
+
+Readiness = pass on all seven for the current version. A failing dimension points at one or
+more specific facts (or a missing fact) in the ledger — name exactly which dimensions pass or
+fail and why, and name every remaining blocker.
+
+Readiness is not an editorial review: do not fail a Definition for stylistic preference,
+hypothetical completeness, or information nobody would need in order to authorize the bounded
+scope. If all seven dimensions pass, the verdict is pass. A refinement round must be justified
+by a genuine, named gap — never by polish; manufacturing definition process for an already-
+sufficient intent is a failure of this rubric, not diligence.`;
+
+// ─── Output transport (D.3d.5) ────────────────────────────────────────────────
+//
+// The D.3d-era OUTPUT FORMAT contracts (PRODUCE_OUTPUT_FORMAT_CONTRACT /
+// REVIEW_OUTPUT_FORMAT_CONTRACT) used to be composed into define-work's
+// step instructions from here — methodology owned transport syntax. D.3d.5
+// commit 1 moved transport ownership to the execution layer:
+// src/transport/textual-sle-output.ts now owns the wire shapes, their
+// teaching, extraction, and bounded format repair, and injects the teaching
+// at execution time. Methodology text must never teach transport syntax
+// again — a step instruction answers "what does the artifact mean", never
+// "how must the reply be serialized".
+// ─── Gap classification (D.3a §3) ──────────────────────────────────────────────
+//
+// All four classifications now have a dedicated resolution path wired in
+// builtins/define-work.ts (D.3c1b): CAN_RESOLVE through the existing
+// iterating refine-definition loop, DEFER/HUMAN_DECISION/EXPLORE_AS_WORK
+// through their own dedicated, non-iterating steps.
+
+// D.3c1b — the fixed precedence order among the four gap classifications:
+// cheap/direct/autonomous closure happens before human escalation or
+// substantive exploration. Exported (not just embedded in prose) so both
+// READINESS_ROUTE_CONTRACT below and tests can lock this exact order —
+// WorkflowEngine itself carries none of this; it is pure methodology data.
+export const GAP_CLASSIFICATION_PRECEDENCE = ['CAN_RESOLVE', 'DEFER', 'HUMAN_DECISION', 'EXPLORE_AS_WORK'] as const;
+
+export type GapClassification = (typeof GAP_CLASSIFICATION_PRECEDENCE)[number];
+
+// D.3d.5 commit 3 — single membership test derived from the precedence
+// table (the ONE source of truth for the classification vocabulary).
+// Structural enum integrity, used by the canonical readiness parser and
+// the deterministic route deriver — never a judgment about whether a
+// chosen classification is CORRECT (that stays with semantic review).
+export function isGapClassification(value: unknown): value is GapClassification {
+  return typeof value === 'string' && (GAP_CLASSIFICATION_PRECEDENCE as readonly string[]).includes(value);
+}
+
+// Maps each D.3c1b route token (the allowlisted keys of define-work's
+// on_fail_routes — see builtins/define-work.ts) to the classification it
+// exists to resolve. Never consulted by WorkflowEngine or AgentRunner —
+// those validate a route token only against the step's own declared
+// on_fail_routes keys; D.3d.5 commit 3 also consumes it for deterministic
+// route derivation (src/workflow/methodology/readiness-artifact.ts). The
+// mapping exists so the classification→route pairing is defined in one place.
+export const ROUTE_TOKEN_FOR_CLASSIFICATION: Record<GapClassification, string> = {
+  CAN_RESOLVE: 'refine',
+  DEFER: 'defer',
+  HUMAN_DECISION: 'human',
+  EXPLORE_AS_WORK: 'explore',
+};
+
+export const GAP_CLASSIFICATION = `Every readiness failure resolves to a specific fact (or a gap where no entry yet
+exists), classified into exactly one bucket. Every ESCALATING classification (DEFER,
+HUMAN_DECISION, EXPLORE_AS_WORK) must carry 'factId': the exact ledger id of the fact it acts
+on — the escalation machinery links to that identity. A concern with no ledger entry yet is
+CAN_RESOLVE by definition: refinement adds the fact first, and the next review escalates it
+with identity. Never invent a factId — copy it exactly from the Definition's fact ledger:
+- CAN_RESOLVE — closeable without a human decision or exploratory work: an omitted non-goal
+  obvious from the stated goal, a missing acceptance criterion for an already-stated
+  requirement, a direct contradiction to fix, information that already exists elsewhere in
+  the repository and just hasn't been pulled into this Definition yet, or an open parameter
+  a competent engineer can settle by adopting a reasonable default — recording it ASSUMED
+  (source: investigation) with its rationale in the ledger, never silently.
+- HUMAN_DECISION — the gap is a choice only a human can authorize: product tradeoffs, risk
+  acceptance, prioritization among competing constraints, anything costly or irreversible to
+  get wrong. "Risk acceptance" means accepting a product-level risk on the human's behalf
+  (shipping something whose failure harms users or the business) — never engineering
+  uncertainty about data or behavior, which is closed by a safe default or isolated as
+  exploration. Never guessed by an agent, never silently downgraded to ASSUMED. Whether an
+  undecided scope item belongs inside the candidate bounded scope is itself such a choice:
+  settling it by writing a prefer/must_not constraint, a non-goal, or a "does not block"
+  judgment is exactly the silent guessing this classification forbids — record the item as
+  UNKNOWN (or ASSUMED) and let the review classify it, so a human decides. The converse holds
+  too: a question a competent engineer can settle with a reasonable stated default (recorded
+  in the Definition as ASSUMED, with its rationale) is NOT HUMAN_DECISION — robustness and
+  error-handling behavior for degenerate inputs being the canonical example: choose the safe
+   default, record it with its rationale, and move on. An unstated implementation detail that
+   connects facts the Objective already states is likewise derived design, not a fresh human
+   choice — and a fact the Objective states is authoritative: never re-open it as a question.
+   D.3d.4 — a fact being MENTIONED in the Objective does not imply that it participates in every
+   behavior the Objective describes. Never manufacture a relationship between independently
+   stated facts and then treat the absence of that relationship as an open scope question:
+   only a relationship actually required to satisfy the stated goal, a requirement, a
+   constraint, or an acceptance criterion needs resolving at all. A mentioned-but-unconnected
+   fact requires no relationship to be invented or resolved. Preserve it in the ledger with
+   the epistemic status and provenance DEFINITION_CONTRACT requires — this rule changes no
+   epistemic status: authoritative product/domain intent may be KNOWN (source: human), while
+   an assertion about repository reality is not KNOWN merely because the Objective states it
+   and still requires repository or investigation evidence first. It needs no question, no
+   invented behavior, and no non-goal either way.
+   D.3d.5 — the authority rule, made explicit. A choice being user-visible or affecting
+   runtime behavior does NOT by itself make it HUMAN_DECISION. Once the Objective already
+   authorizes a behavior, relationship, or outcome, ordinary reversible design and
+   implementation choices required to instantiate that authorized intent may be resolved
+   by the agent as CAN_RESOLVE: adopt a reasonable explicit default, record it ASSUMED
+   (with its rationale) in the ledger, never silently. The converse is part of the rule:
+   do not escalate merely because several reasonable implementations are possible —
+   engineering and design latitude inside already-authorized intent is not itself a human
+   product decision. The conceptual test: the human has already authorized WHAT the product
+   should do; a remaining choice that is a reasonable, reversible HOW is CAN_RESOLVE, while
+   a remaining choice that changes WHAT is being authorized — establishing or altering
+   product intent, genuinely undecided scope, a materially new user-facing policy or
+   commitment, a materially different product tradeoff, accepted product or business risk,
+   or something costly/irreversible — is HUMAN_DECISION. This rule never licenses passing a
+   chosen default off as known fact: the default is recorded honestly as ASSUMED with its
+   rationale, exactly as above. Reserving human attention for choices that
+   genuinely need it is part of this classification's discipline.
+- DEFER — the gap is real but does not block the bounded scope being defined now. DEFER is
+  for items already understood to lie outside the candidate bounded scope (clearly later-phase
+  work) — never a place to park an undecided question about what the bounded scope itself
+  contains (that is HUMAN_DECISION).
+- EXPLORE_AS_WORK — the gap can't be closed by reading or reasoning; answering it requires
+  doing something (building or measuring) to get an answer.
+
+The dividing line between CAN_RESOLVE and EXPLORE_AS_WORK is cost and kind, not topic or
+importance: reading existing code, tests, or docs to answer a factual question — however
+consequential — is CAN_RESOLVE. EXPLORE_AS_WORK is reserved for uncertainty whose resolution is
+itself substantive bounded work. Cheap/direct discovery is never EXPLORE_AS_WORK.`;
+
+// D.3c1b — refine-definition's own scope (previously the whole of what this
+// phase did, back when HUMAN_DECISION/DEFER/EXPLORE_AS_WORK gaps had no
+// dedicated resolution path of their own — see the four dedicated paths
+// wired in builtins/define-work.ts now). refine-definition still resolves
+// CAN_RESOLVE gaps only, inline, in the current Definition round; every
+// other classification has its own step and must never be guessed,
+// dropped, or force-resolved here.
+export const REFINE_DEFINITION_SCOPE = `Resolve CAN_RESOLVE gaps only, inline, in this Definition round: mark the fact KNOWN
+(source: repository or human, as appropriate) and update the relevant Definition section. Do
+not resolve or guess at a gap that is HUMAN_DECISION, DEFER, or EXPLORE_AS_WORK — leave those
+facts exactly as the prior readiness review found them (ASSUMED/UNKNOWN, not force-resolved,
+not silently dropped from the fact ledger) for their own dedicated step to handle. Never promote
+a repository assertion to KNOWN merely because it seems likely — only an actual inspection does
+that.`;
+
+// D.3c1b — the definition-readiness-review output contract: the readiness
+// Artifact stays the authoritative record of why the Definition is or is
+// not ready. D.3d.5 commit 3 — the reviewer NO LONGER declares any control
+// token: it classifies every gap in the artifact's canonical YAML front
+// matter, and Stratum derives the route deterministically from
+// GAP_CLASSIFICATION_PRECEDENCE, constrained to the routes this review
+// step declares. `routes` names exactly the classifications THIS review
+// step can resolve (the tokens its on_fail_routes carry) — a review step
+// must never be told about a classification it cannot actually act on;
+// see builtins/define-work.ts, where definition-readiness-review declares
+// all four and the post-defer/post-human reviews declare a narrower
+// subset.
+//
+// D.3c1b.1 — DEFER is NOT blocking (see GAP_CLASSIFICATION above: "the gap
+// is real but does not block the bounded scope"). What keeps a verdict from
+// `pass` is either (a) a genuinely blocking gap — CAN_RESOLVE, HUMAN_DECISION,
+// or EXPLORE_AS_WORK — or (b) an actionable-but-non-blocking DEFER gap: a
+// fact determined irrelevant to the candidate bounded scope but not yet
+// explicitly recorded as DEFERRED in the ledger. The `defer` route means
+// "at least one gap has been classified DEFER and still needs its explicit
+// DEFERRED ledger transition" — never "a DEFER gap blocks this scope". The
+// wording below must never collapse that distinction, or a model can
+// reasonably (and wrongly) treat DEFER as just another kind of blocker to
+// avoid routing.
+function classificationLine(c: GapClassification): string {
+  const token = ROUTE_TOKEN_FOR_CLASSIFICATION[c];
+  if (c === 'DEFER') {
+    return `- ${token} — at least one gap has been classified DEFER and still needs its explicit ` +
+      'DEFERRED ledger transition (the gap itself does not block the candidate bounded scope — ' +
+      'see apply-deferred-gaps).';
+  }
+  return `- ${token} — at least one ${c} gap blocks the candidate bounded scope.`;
+}
+
+export function READINESS_ROUTE_CONTRACT(routes: readonly GapClassification[]): string {
+  const classificationLines = routes.map(classificationLine).join('\n');
+  const precedenceOrder = GAP_CLASSIFICATION_PRECEDENCE.filter((c) => routes.includes(c));
+  const precedenceLines = precedenceOrder
+    .map((c, i) => `${i + 1}. ${c}${i === 0 ? ' (applied first)' : ''}`)
+    .join('\n');
+  const deferFinalization = routes.includes('DEFER')
+    ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
+      'readiness Artifact) classified DEFER for this Definition round must already carry ' +
+      '`status: DEFERRED` in the fact ledger. A DEFER classification alone does not complete ' +
+      'the required ledger bookkeeping — the gap is already non-blocking, but the Definition ' +
+      'is not eligible for `verdict: pass` until that scope decision is explicitly recorded as ' +
+      '`status: DEFERRED`. A fact still classified DEFER but still ASSUMED/UNKNOWN in the ' +
+      'ledger is not eligible for `pass`; classify it DEFER among the proposal\'s gaps so ' +
+      'apply-deferred-gaps can record the transition.'
+    : '';
+  const exploreFinalization = routes.includes('EXPLORE_AS_WORK')
+    ? '\n\nBefore this review may declare `verdict: pass`, every fact it (or a prior round\'s ' +
+      'readiness Artifact) classified EXPLORE_AS_WORK for this Definition must have been ' +
+      'actually resolved — by the measurement/build work itself (status KNOWN, source ' +
+      'investigation), by a recorded human decision that eliminated the question (status ' +
+      'DECIDED, source decision), or by an explicit re-classification recorded with its reason ' +
+      'in the fact ledger. An EXPLORE_AS_WORK fact still ASSUMED/UNKNOWN in the ledger is not ' +
+      'eligible for `pass` — arguing it "does not block" or is "an implementation choice" ' +
+      'without recorded evidence or a recorded decision is exactly the silent resolution this ' +
+      'classification forbids; classify it EXPLORE_AS_WORK among the proposal\'s gaps so ' +
+      'record-exploration-need can isolate it as bounded work.'
+    : '';
+  // D.34 C3 — the mechanical serialization framing ("canonical YAML front
+  // matter", the field-shape list) is gone: the payload schema teaches the
+  // shape, and the system serializes the artifact. The METHODOLOGY is
+  // unchanged in meaning: what must be classified, with what reason and
+  // closure semantics, precedence, pass eligibility, never-declared routes.
+  return `On a \`fail\` verdict, the proposal's gaps must classify every
+gap keeping this verdict from \`pass\`: every blocking gap (CAN_RESOLVE, HUMAN_DECISION, or
+EXPLORE_AS_WORK) and every gap classified DEFER whose fact is not yet recorded as DEFERRED.
+Each gap names its target — the fact id, or an explicit missing-area identifier when no fact
+entry exists yet — describes the gap, classifies it, gives the reason for that classification,
+and states its closure: what resolving it (or, for DEFER, recording the DEFERRED transition)
+would require.
+
+The gap list is the authoritative gap record; explain and argue in the body prose —
+never duplicate the ledger there.
+
+Never classify cheap repository inspection as EXPLORE_AS_WORK — see the CAN_RESOLVE/
+EXPLORE_AS_WORK dividing line above.
+
+Stratum derives the next step deterministically from these classifications — the reviewer
+never selects a route. This step resolves exactly these classifications:
+${classificationLines}
+
+When more than one classification is present among the current gaps this verdict must resolve,
+precedence decides — cheap/direct/autonomous closure before human escalation or substantive
+exploration:
+${precedenceLines}
+
+On a \`pass\` verdict, the proposal carries zero gaps — never an unresolved one.${deferFinalization}${exploreFinalization}`;
+}
+
+// D.3c1b — apply-deferred-gaps: converts every gap the readiness Artifact
+// classified DEFER into an explicit DEFERRED fact, without incrementing
+// iteration (see the D.3a termination contract: a genuine non-blocking
+// DEFER gap must remain markable DEFERRED even when no further refinement
+// iteration is available). This step never shares refine-definition's
+// iterating loop — DEFER is resolved once, deterministically, by this
+// dedicated step.
+export const DEFER_APPLICATION_CONTRACT = `For every gap the most recent readiness Artifact classified DEFER (identify each by its factId):
+- preserve the fact entry — never delete it from the fact ledger;
+- change its status to DEFERRED;
+- preserve (or add) a brief record of why it does not block the candidate bounded scope
+  currently being defined;
+- never mark it KNOWN — DEFERRED is not resolution, it is an explicit, recorded exclusion from
+  the current scope.
+
+Do not touch any fact classified HUMAN_DECISION or EXPLORE_AS_WORK by that same readiness
+Artifact — this step's only job is converting DEFER gaps to DEFERRED. If a gap the prior
+readiness Artifact classified DEFER cannot be converted (for example, its fact entry cannot be
+identified), leave it unconverted rather than guessing — the following readiness review will
+report it as a residual gap.`;
+
+// D.3c1b — prepare-human-decision: produces exactly one validated D.3c0
+// DecisionRequest (src/execution/decision-request.ts) for exactly one
+// currently blocking HUMAN_DECISION fact. The output section's content must
+// be the DecisionRequest as a single JSON object — valid JSON only, no
+// markdown, no code fences, no surrounding prose — since the checkpoint
+// step reads this file's raw bytes and parses them directly as JSON.
+export const HUMAN_DECISION_PREPARE_CONTRACT = `Choose exactly one fact the most recent readiness Artifact classified HUMAN_DECISION — one
+checkpoint asks one question — and propose the decision request's semantic payload. The system
+serializes the request artifact and carries the fact linkage: you choose WHICH question (by its
+factId) and WHAT the options mean.
+
+Rules:
+- targetFactId must be the exact ledger id of a fact the current readiness classifies
+  HUMAN_DECISION — never a fact already DECIDED, never a CAN_RESOLVE/DEFER/EXPLORE_AS_WORK fact.
+- Every option must be a genuinely legitimate alternative for this fact — never a fake
+  approve/reject wrapping of "yes" and "no" when the real choice is among several paths.
+- Option ids must be unique; every field non-empty.
+- Never ask a human to do repository investigation — that is CAN_RESOLVE, resolved by
+  refine-definition, not by a human decision.`;
+
+// D.3c1b — apply-human-decision: the natural continuation after
+// human-decision-checkpoint resolves. Reads the resolved DecisionContext
+// (rendered under "## Human Decision" — see ContextManager.
+// formatDecisionContext) plus the decision-request.json this run itself
+// produced (to know which fact/question was actually asked) and updates
+// EXACTLY that one fact — never a different HUMAN_DECISION fact merely
+// because it is also unresolved.
+export const HUMAN_DECISION_APPLY_CONTRACT = `The "## Human Decision" section above records the human's resolution: the selected option and
+(when available) their rationale, plus the Decision id. The system already knows which fact
+this decision answers (the request's fact linkage) and performs the ledger transition itself —
+the fact becomes DECIDED on the recorded Decision's authority, with no action required from
+you and no field available to you for it.
+
+You propose only what the resolution MEANS for the Definition:
+- an optional revised statement for the resolved fact, if the choice sharpens it;
+- any sections the choice changes (requirements, constraints, non-goals, acceptance) — submit
+  the COMPLETE revised list for a changed section; omit unchanged sections entirely;
+- the body record of what this decision settles and what it leaves open.
+
+You cannot touch the goal, other facts, or any fact's status — facts you do not mention carry
+over exactly as they were. Further unresolved HUMAN_DECISION facts stay for their own
+checkpoints.`;
+
+// D.3c1b — record-exploration-need: a bounded exploration request for one
+// EXPLORE_AS_WORK gap. This step never creates a WorkItem or a WorkProposal
+// (D.4's job, not D.3c1b's) and never claims the underlying fact is
+// resolved — the Definition remains explicitly not-ready afterward, with
+// its exploration blocker preserved in the fact ledger exactly as the
+// readiness review found it.
+export const EXPLORATION_NEED_CONTRACT = `Choose the fact the most recent readiness Artifact classified EXPLORE_AS_WORK (if more than one
+exists, the one blocking the candidate bounded scope most directly) and propose the exploration
+need's semantic payload. The system serializes the artifact and carries the fact linkage:
+- targetFactId — the exact ledger id of that EXPLORE_AS_WORK gap;
+- question — the exact unresolved question;
+- whyNotResolvableByReading — why existing information or reasoning cannot answer it (why it
+  is not CAN_RESOLVE);
+- requiredWork — the bounded method (spike, prototype, benchmark, measurement, experiment) and
+  why answering requires doing something, not merely reading or deciding;
+- completionEvidence — the expected evidence or output, and the exit criterion — what finding
+  would allow the Definition to be refined again.
+
+Do not create a WorkItem or a WorkProposal, do not authorize any work, do not claim the fact is
+resolved, and do not mark it KNOWN. The Definition's fact ledger keeps this fact exactly as the
+readiness review classified it — this artifact records the exploration need alongside it, it
+does not replace it.`;

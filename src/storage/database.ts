@@ -4,7 +4,11 @@ import Database from 'better-sqlite3';
 // Migrations — append-only; never modify an existing entry
 // ============================================================================
 
-const MIGRATIONS: string[] = [
+// Exported read-only for tests that need to construct a DB at a specific
+// pre-migration checkpoint (e.g. a migration-compatibility fixture). Not
+// part of the runtime public API otherwise — application code should only
+// ever call openDatabase().
+export const MIGRATIONS: readonly string[] = [
   // Migration 1: initial control-plane schema (DDR-032 §15, §28 Phase 2)
   // Migration 2: scheduler leases table (DDR-032 §28 Phase 5)
   `
@@ -327,6 +331,39 @@ const MIGRATIONS: string[] = [
   );
 
   CREATE INDEX idx_checkpoint_applications_run ON checkpoint_applications(workflow_run_id);
+  `,
+
+  // Migration 9: activate Objective (D.2 — docs/developmentPlan/d2-objectives.md).
+  // Every other durable entity (Workspace/Project/WorkItem/...) carries
+  // created_at/updated_at; Objective was the one exception. Nullable/
+  // append-only per convention (existing rows get NULL) — in practice there
+  // are none yet, since nothing wrote to this table before ObjectiveService.
+  `
+  ALTER TABLE objectives ADD COLUMN created_at TEXT;
+  ALTER TABLE objectives ADD COLUMN updated_at TEXT;
+  `,
+
+  // Migration 10: backfill NULL Objective timestamps (D.2.1/D.2.2 — docs/
+  // developmentPlan/d2-objectives.md). Migration 9 left created_at/
+  // updated_at nullable, but ObjectiveSchema requires valid TimestampSchema
+  // values — a pre-D.2.1 row would type as `string` while reading back as
+  // runtime `null`. Policy, applied once, existing non-null values
+  // untouched: missing created_at -> the actual time this migration runs;
+  // missing updated_at -> the row's (possibly just-backfilled) created_at.
+  // strftime('%Y-%m-%dT%H:%M:%fZ', 'now') is SQLite's UTC clock, evaluated
+  // at migration-execution time (not a fixed literal — D.2.2 correction: an
+  // earlier version of this migration hardcoded a single date, which would
+  // have been wrong for every database first migrated afterward), formatted
+  // to exactly the millisecond-precision ISO-8601 TimestampSchema requires
+  // (matching what `new Date().toISOString()` produces everywhere else).
+  // No table recreation: nullable columns stay nullable at the schema
+  // level — this migration is the one-time guarantee that no NULL survives
+  // it, not a NOT NULL constraint (SQLite can't add one without a full
+  // recreation, and every future row is written through ObjectiveService,
+  // which always supplies both fields).
+  `
+  UPDATE objectives SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE created_at IS NULL;
+  UPDATE objectives SET updated_at = created_at WHERE updated_at IS NULL;
   `,
 ];
 

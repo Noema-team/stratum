@@ -8,14 +8,16 @@ import {
   WorkItemRepository,
   StepExecutionRepository,
   RepositoryRepository,
+  ObjectiveRepository,
   CheckpointApplicationRepository,
 } from '../storage/repositories.js';
 import { getWorkflow } from '../workflow/registry.js';
+import type { DecisionContext } from '../workflow/types.js';
 import type { ExecutorRegistry } from '../execution/registry.js';
-import { resolveRepositories, selectAdapter } from '../execution/dispatch-primitive.js';
+import { resolveRepositories, resolveObjectiveContext, selectAdapter } from '../execution/dispatch-primitive.js';
 import { LeaseManager } from '../scheduler/lease-manager.js';
 import { DEFAULT_SCHEDULER_CONFIG } from '../scheduler/types.js';
-import type { CheckpointResolver } from '../execution/checkpoint-resolver.js';
+import type { CheckpointResolver, CheckpointResolution } from '../execution/checkpoint-resolver.js';
 
 // ============================================================================
 // ResumeService — resolves a checkpoint Decision and continues the same run.
@@ -55,6 +57,7 @@ export class ResumeService {
   private readonly workItemRepo: WorkItemRepository;
   private readonly stepExecRepo: StepExecutionRepository;
   private readonly repoRepo: RepositoryRepository;
+  private readonly objectiveRepo: ObjectiveRepository;
   private readonly leaseManager: LeaseManager;
   private readonly leaseExpiryMs: number;
 
@@ -75,6 +78,7 @@ export class ResumeService {
     this.workItemRepo = new WorkItemRepository(db);
     this.stepExecRepo = new StepExecutionRepository(db);
     this.repoRepo = new RepositoryRepository(db);
+    this.objectiveRepo = new ObjectiveRepository(db);
     this.leaseManager = new LeaseManager(db);
     this.leaseExpiryMs = config.leaseExpiryMs ?? DEFAULT_SCHEDULER_CONFIG.leaseExpiryMs;
     this.checkpointResolver = checkpointResolver ?? null;
@@ -125,6 +129,26 @@ export class ResumeService {
         'INVALID_OPTION',
       );
     }
+
+    // D.3c0 — the human's resolved decision, using only fields already
+    // available from this Decision + the caller-supplied resolution. Built
+    // here (not queried by WorkflowEngine/ContextManager/AgentRunner/
+    // AgentLoop) and threaded through the continuation's ExecutionRequest
+    // below. Scheduler's initial dispatch never constructs one of these.
+    const decisionContext: DecisionContext = {
+      decisionId,
+      selectedOptionId: resolution.selectedOptionId,
+      selectedOptionLabel: selectedOption.label,
+      rationale: resolution.rationale,
+      resolvedAt: resolution.resolvedAt,
+      resolvedBy: resolution.resolvedBy,
+      // DDR-036 — the durable Decision's own escalation target is the
+      // authoritative identity on resume; decision-application cross-checks
+      // the request artifact against it (never trusts it independently).
+      ...(decision.subjectRef?.targetFactId !== undefined
+        ? { targetFactId: decision.subjectRef.targetFactId }
+        : {}),
+    };
 
     // ── (1e) Strict 9-field linkage validation. ───────────────────────────────
     // All three WorkItem IDs must be present and equal:
@@ -235,6 +259,17 @@ export class ResumeService {
     }
     const naturalNextStepId = def.steps[checkpointIdx + 1]?.id ?? null;
 
+    // D.3c0.2 — a dynamic HUMAN_DECISION checkpoint (one that declared
+    // decisionRequestArtifact — see workflow/types.ts) has already had its
+    // selected option validated against the durable Decision's own options
+    // (step 1d above). That selection is DATA the workflow itself defined,
+    // never a generic 'approve'/'reject' control command — so it must never
+    // be routed through the production CheckpointResolver's approve/reject
+    // vocabulary (which throws for anything else, and would wrongly cancel
+    // an option merely because it happens to be named 'reject').
+    const checkpointStep = def.steps[checkpointIdx];
+    const isDynamicCheckpoint = !!checkpointStep.decisionRequestArtifact;
+
     // Load WorkItem for the ExecutionRequest.
     const workItem = this.workItemRepo.findById(workItemId);
     if (!workItem) {
@@ -261,6 +296,15 @@ export class ResumeService {
 
     // (4b) Repository resolution — fail closed; missing repository is a kernel error.
     const repositories = resolveRepositories(workItem.repositoryIds, this.repoRepo);
+
+    // (4b-2) Objective context resolution — fail closed, same invariant as
+    // repository resolution: an unresolvable Objective is a kernel error,
+    // not a soft degradation to "resume without objective context."
+    const objectiveContext = resolveObjectiveContext(
+      workItem.objectiveId,
+      workItem.projectId,
+      this.objectiveRepo,
+    );
 
     // (4c) Acquire repository write leases BEFORE resolver — same invariant as Scheduler.
     const toLease = workItem.repositoryIds.length > 0 ? workItem.repositoryIds : [null as string | null];
@@ -330,13 +374,16 @@ export class ResumeService {
         };
       } else {
         // APPLYING — execute the primitive.
-        let rawResolution: import('../execution/checkpoint-resolver.js').CheckpointResolution = {
-          remainAtCheckpoint: false,
-          incrementRevision: false,
-          cancel: resolution.selectedOptionId === 'reject',
-        };
+        let rawResolution: CheckpointResolution;
 
-        if (this.checkpointResolver) {
+        if (isDynamicCheckpoint) {
+          // D.3c0.2 — always continue to the natural next step; the
+          // selected option id is opaque workflow data here, never a
+          // cancel/remain-at-checkpoint control signal. This still goes
+          // through the exact same journal (APPLYING/APPLIED) below as
+          // every other resolved checkpoint.
+          rawResolution = { remainAtCheckpoint: false, incrementRevision: false, cancel: false };
+        } else if (this.checkpointResolver) {
           rawResolution = await this.checkpointResolver.resolveCheckpoint({
             workflowId: run.workflow_id,
             stepId: run.awaiting_checkpoint!,
@@ -347,6 +394,12 @@ export class ResumeService {
             iteration: run.iteration,
             revision: run.revision,
           });
+        } else {
+          rawResolution = {
+            remainAtCheckpoint: false,
+            incrementRevision: false,
+            cancel: resolution.selectedOptionId === 'reject',
+          };
         }
 
         journaledResolution = {
@@ -459,6 +512,9 @@ export class ResumeService {
           workflowId: run.workflow_id,
           repositories,
           goal: workItem.goal,
+          objectiveId: workItem.objectiveId,
+          objectiveContext,
+          decisionContext,
           acceptanceCriteria: workItem.acceptanceCriteria,
           constraints: workItem.constraints,
           permissions: { pushBranch: false, createPr: false, merge: false },
@@ -500,7 +556,23 @@ export class ResumeService {
           return;
         }
         this.stepExecRepo.updateState(stepExecutionId, 'waiting', { completedAt: doneAt });
-        const nextDecisionOptions = nextDecisionReq.options;
+        // D.3c0.2 — same correctness rule as Scheduler's initial-dispatch
+        // handling (scheduler.ts): a SECOND dynamic checkpoint's exact
+        // title/summary/options must reach the durable Decision, with no
+        // fabricated 'approve' recommendation. A second STATIC checkpoint
+        // (full-build's confirm/sharding_approval, or any other non-opt-in
+        // checkpoint — none of which declare decisionRequestArtifact) keeps
+        // ResumeService's own historical wording and unconditional 'approve'
+        // recommendation, unchanged.
+        const nextCheckpointStep = def.steps.find(s => s.id === execResult.checkpointStepId);
+        const nextIsDynamic = !!nextCheckpointStep?.decisionRequestArtifact;
+        const nextTitle = nextIsDynamic ? nextDecisionReq.title : 'Workflow reached another checkpoint';
+        const nextSummary = nextIsDynamic
+          ? nextDecisionReq.summary
+          : `Workflow '${run.workflow_id}' paused at step '${execResult.checkpointStepId ?? 'unknown'}'.`;
+        const nextRecommendedOptionId = nextIsDynamic
+          ? (nextDecisionReq.options.some(o => o.id === 'approve') ? 'approve' : undefined)
+          : 'approve';
         this.workService.needsDecision({
           workItemId,
           decision: {
@@ -509,11 +581,22 @@ export class ResumeService {
               workflowRunId,
               workItemId,
               stepId: execResult.checkpointStepId,
+              // DDR-040 — bind the escalation target into the durable
+              // Decision at creation time on THIS path too, mirroring
+              // Scheduler's initial-dispatch handling (scheduler.ts).
+              // E4-G inv 4 root cause: a chained decision created during a
+              // resume was structurally unbound here, so its application
+              // deterministically failed DECISION_APPLICATION_DECISION_
+              // UNLINKED even though the request artifact carried the fact
+              // id — DDR-036's binding existed only on the first dispatch.
+              ...(nextDecisionReq.targetFactId !== undefined
+                ? { targetFactId: nextDecisionReq.targetFactId }
+                : {}),
             },
-            title: 'Workflow reached another checkpoint',
-            summary: `Workflow '${run.workflow_id}' paused at step '${execResult.checkpointStepId ?? 'unknown'}'.`,
-            options: nextDecisionOptions,
-            recommendedOptionId: 'approve',
+            title: nextTitle,
+            summary: nextSummary,
+            options: nextDecisionReq.options,
+            recommendedOptionId: nextRecommendedOptionId,
             impact: 'medium',
             reversibility: 'easy',
             urgency: 'normal',

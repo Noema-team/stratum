@@ -1,22 +1,35 @@
 # Stratum 
 
 > ⚠️ **Status: Under Active Development**  
-> Stratum is currently in active development. Vertical Slices 1–6 are complete: the full development cycle engine, web dashboard UI, facilitator chat, document intake pipeline, critic agent, and WebSocket event bus are all implemented. Advanced features such as the knowledge engine (Cognee integration), Beads integration, and secure Docker sandboxing remain deferred. See the [Implementation Tracking](docs/developmentPlan/implementation-tracking.md) for the current coverage breakdown.
+> Stratum is a control and orchestration plane for autonomous software work: it converts human objectives into bounded `WorkItem`s, dispatches agents through replaceable execution adapters, and surfaces only the decisions that need human attention. The control-plane migration (DDR-032) is substantially implemented — SQLite-backed domain entities, the generic `WorkflowEngine`, Scheduler authority, and durable checkpoint `Decision`s are all in place. Evidence-loop composition and the attention-first UI are still in progress. See the [Implementation Tracking](docs/developmentPlan/implementation-tracking.md) for the current coverage breakdown.
 
 ---
 
 ## What is Stratum?
 
-Based on the core specifications, Stratum is a closed-loop development orchestration platform that transforms natural-language human intent into fully validated, production-ready software.
+Stratum is the control and orchestration plane above autonomous coding agents, not the agent itself. Human intent becomes a durable `Objective`, which is decomposed into bounded `WorkItem`s. Once a `WorkItem` is marked `READY`, the Scheduler is the sole authority for dispatching it:
 
-Instead of performing ad-hoc LLM code generation, Stratum executes a deterministic, multi-agent Directed Acyclic Graph (DAG) across a highly structured system lifecycle:
+```text
+Control Plane (Workspace / Project / Objective)
+    ↓
+WorkItem — READY
+    ↓
+Scheduler
+    ↓
+ExecutionAdapter
+    ↓
+WorkflowEngine
+    ↓
+Decision / Evidence / Artifact
+```
 
-$$\text{Intent} \longrightarrow \text{Scoping} \longrightarrow \text{Design} \longrightarrow \text{Plan} \longrightarrow \text{Test} \longrightarrow \text{Confirm Gate} \longrightarrow \text{Build} \longrightarrow \text{Validation Gate} \longrightarrow \text{Snapshot}$$
+The kernel has no built-in knowledge of software-development methodology — that lives entirely in `WorkflowDefinition`s composed from six generic step kinds (`gather`, `produce`, `review`, `checkpoint`, `execute`, `commit`). `full-build` expresses the traditional design → test → build → validate pipeline as one such workflow running on the generic engine; `draft-artifact` is a lighter workflow for small, targeted changes without paying for the full pipeline. See [DDR-031](docs/decisions/ddr-031-workflow-generalization.md) (generic workflow engine), [DDR-032](docs/decisions/ddr-032-control-plane-migration.md) (control plane), and [DDR-033](docs/decisions/ddr-033-technology-independent-software-lifecycle.md) (current direction above them) for the architectural decisions.
 
-### Key Characteristics (Spec-Driven)
-*   **Bounded Multi-Agent Roles**: Orchestrates specialized agents (Designer, Planner, Tester, Builder, Debugger, Evaluator, Historian) within strict context windows to prevent LLM hallucination and scope drift.
-*   **Validation-First Execution**: Code is never considered finished until it passes an automated three-phase check: static analysis (lint/type-check), semantic correctness (LLM evaluation), and functional test suites (runtime execution).
-*   **Human-in-the-Loop Boundaries**: Integrates explicit confirmation gates (e.g., plans/tests review) ensuring the user remains the ultimate director of codebase evolution.
+### Key Characteristics
+*   **Deterministic authority, agent proposals**: Agents propose work, artifacts, and decisions; only deterministic Stratum services (`WorkService`, `Scheduler`) mutate durable control-plane state.
+*   **Generic workflow kernel**: Six step kinds replace a fixed pipeline. New methodology is added as a `WorkflowDefinition`, never by changing `WorkflowEngine`.
+*   **Durable checkpoints**: Workflow checkpoints are first-class `Decision`s, persisted in SQLite and safe to resume after a restart — decision application does not depend on process memory.
+*   **Evidence-based completion**: Work is not "done" because an agent says so; completion is gated on evidence (tests, CI, review) appropriate to the work contract.
 
 ---
 
@@ -24,28 +37,24 @@ $$\text{Intent} \longrightarrow \text{Scoping} \longrightarrow \text{Design} \lo
 
 ```directory
 .
-├── src/                      # TS Core Engine
-│   ├── daemon.ts             # REST server & state coordinator (port 8000)
-│   ├── state-machine.ts      # Core lifecycle machine (5 states, 12 transitions)
-│   ├── dag-runner.ts         # DAG execution coordinator
-│   ├── context-manager.ts    # 5-component context assembly with token budgeting
-│   ├── critic-agent.ts       # LLM-backed design critic with revision loop
-│   ├── intake-service.ts     # Document intake pipeline with 5-layer coherence gate
-│   ├── sharding-service.ts   # Task decomposition with SHARDING_APPROVAL gate
-│   ├── chat-service.ts       # Facilitator conversation with session persistence
-│   ├── event-bus.ts          # WebSocket event bus (62+ event types)
-│   ├── llm-provider.ts       # Multi-provider LLM abstraction (Anthropic/GLM/OpenRouter)
-│   └── rule-files.ts         # Validation rule schemas (Zod)
-├── public/                   # Web Dashboard (served by daemon)
-│   ├── index.html            # 3-page SPA shell (Overview, Chat, Graph)
-│   ├── index.js              # Client-side routing, WebSocket client, page logic
-│   └── index.css             # Dashboard styles
-├── tests/                    # Test suite
-└── docs/                     # Documentation Vault
-    ├── overview/             # Mental models (e.g. what-is-sle.md)
-    ├── specs/                # Target architectural specifications
-    ├── decisions/            # Architectural Decision Records (DDR-001..030)
-    └── developmentPlan/      # Implementation tracking & roadmaps
+├── src/
+│   ├── domain/                # Control-plane entities: Workspace, Project, Objective, WorkItem, Decision, Evidence, Event...
+│   ├── workflow/               # Generic WorkflowEngine + built-in workflows (full-build, draft-artifact)
+│   ├── scheduler/               # Scheduler authority: dispatches READY WorkItems, leases
+│   ├── execution/                # ExecutionAdapter contract + adapters (StratumAgentAdapter, ClaudeCodeAdapter)
+│   ├── evidence/                 # Evidence model + collectors
+│   ├── storage/                  # SQLite persistence
+│   ├── api/                      # Control-plane HTTP API + dashboard
+│   ├── services/                  # Application services
+│   ├── cli.ts                    # `stratum` CLI entry point
+│   └── daemon.ts                  # Legacy single-project daemon, being retired per DDR-032
+├── public/                       # Web dashboard (served by the control-plane API)
+├── tests/                        # Test suite
+└── docs/                         # Documentation Vault
+    ├── overview/                 # Mental models (e.g. what-is-sle.md)
+    ├── specs/                    # Target architectural specifications
+    ├── decisions/                # Architectural Decision Records (DDR-001..033)
+    └── developmentPlan/          # Implementation tracking & roadmaps
 ```
 
 ---
@@ -64,16 +73,16 @@ npm run build
 npm test
 ```
 
-### 3. Run the Daemon
+### 3. Start Stratum
 ```bash
-# Foreground mode — starts daemon and opens the web dashboard in your browser
+# Starts the control-plane daemon and opens the web dashboard in your browser
 npx stratum
 
 # Or manually
-node dist/cli.js start-daemon
+node dist/cli.js start
 ```
 
-The dashboard is served at `http://localhost:8000` by default.
+The dashboard is served at `http://localhost:7700` by default.
 
 ---
 

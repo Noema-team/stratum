@@ -1,6 +1,6 @@
 # DDR-032 — Control plane migration: multi-project orchestration above the workflow kernel
 
-**Date:** 2026-08-28 · **Status:** proposed
+**Date:** 2026-08-28 · **Status:** accepted
 **Affects:** additive — a new control-plane layer (projects, objectives, work items, decisions, evidence, policy, scheduler, durable storage) built **on top of** the DDR-031 workflow model. No changes to the DDR-031 spec set.
 **Source:** reworked from the untracked draft `STRATUM_CONTROL_PLANE_MIGRATION.md` (derived from branch `claude/vigilant-allen-wxa1nf` before DDR-031 landed). This DDR supersedes that draft.
 

@@ -61,6 +61,7 @@ const OBJ: Objective = {
   priority: 2, status: 'active',
   constraints: [{ description: 'No API change' }],
   successCriteria: [{ description: 'All race tests pass' }],
+  createdAt: NOW, updatedAt: NOW,
 };
 
 const WI: WorkItem = {

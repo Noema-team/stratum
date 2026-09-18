@@ -1,0 +1,30 @@
+[
+ {
+  "title": "Does cross-platform play belong inside this multiplayer increment?",
+  "summary": "This increment already defines the smallest faithful multiplayer slice: one player creates a session, one joins, both share a real-time fixed-tick simulation over WebSocket with solo play intact. The open question is whether those two players must be able to sit on different platforms (e.g., a web client and a native desktop client) within this same increment. Answering yes widens the work: transport and input handling get re-examined under a platform matrix, acceptance gains cross-platform pairings, and the schedule stretches (risk R2). Answering no keeps the increment narrow \u2014 and because the adopted defaults (host-authoritative topology, WebSocket behind an abstraction, interface-isolated sync strategy) are deliberately platform-neutral, cross-platform can be added later without a rewrite, especially if a forward-compatibility constraint is recorded now. Either answer settles the boundary: the readiness review blocks authorization precisely because this scope member is currently neither in nor out, so the Definition correctly refused to guess it for you.",
+  "options": [
+   {
+    "id": "out-non-goal",
+    "label": "Exclude \u2014 deliberate non-goal",
+    "description": "Cross-platform play is recorded as an explicit non-goal of this increment. Only the current single target platform is in scope; platform interoperability is deferred to a future increment with no new constraint attached."
+   },
+   {
+    "id": "out-keep-door-open",
+    "label": "Exclude, but preserve the option",
+    "description": "Cross-platform stays out of this increment's acceptance, but add a constraint that the transport and input abstractions remain platform-neutral (WebSocket-behind-an-interface, abstracted input) so a later increment can add platforms without rework. Costs a little discipline in the abstraction layer now; no platform matrix or cross-platform test pairings."
+   },
+   {
+    "id": "in-minimal",
+    "label": "Include minimal cross-platform",
+    "description": "Require the shared session to work across the platforms already reachable by the chosen transport (e.g., the same build running on two different OS/browser combinations). No new native or mobile clients are built; acceptance gains cross-platform pairings and their latency-budget runs."
+   },
+   {
+    "id": "in-full",
+    "label": "Include cross-platform fully",
+    "description": "Make inter-platform play a first-class requirement: at least two genuinely distinct clients (e.g., web and native desktop) interoperating in one shared session. Transport and input choices are re-examined under a platform matrix, acceptance must cover cross-platform pairings end-to-end, and the increment's schedule grows accordingly."
+   }
+  ],
+  "selectedOptionId": "out-non-goal",
+  "resolved": true
+ }
+]

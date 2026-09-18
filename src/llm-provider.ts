@@ -1,5 +1,8 @@
 import { z } from 'zod';
+import Anthropic from '@anthropic-ai/sdk';
 import type { AgentLLMConfig } from './types.js';
+import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult, MultiTurnMessage } from './agent-loop.js';
+import { AnthropicSDKProvider } from './anthropic-provider.js';
 
 export interface LLMCompletionParams {
   model: string;
@@ -16,6 +19,55 @@ export interface LLMCompletionResult {
 
 export interface ILLMProvider {
   complete(params: LLMCompletionParams): Promise<LLMCompletionResult>;
+}
+
+// ─── D.34 C6 — the native structured-output capability ────────────────────────
+//
+// A provider implements completeStructured ONLY when it can genuinely
+// constrain a completion to a JSON Schema natively (no textual envelope,
+// no tool loop): OpenAI-wire endpoints via response_format json_schema,
+// Anthropic via a forced single-tool extraction call. Presence of the
+// method is the capability probe — the same structural duck-typing
+// AgentRunner uses for completeMultiTurn; a provider that lacks the
+// capability leaves the method genuinely absent (DynamicLLMProvider syncs
+// it exactly like multi-turn), so fallback is by CAPABILITY, never by
+// provider name.
+//
+// C6 boundary: the structured channel slots into the EXISTING execution
+// policy — review steps run single-turn, and this is their capability-1
+// wire. Produce steps keep the C5 negotiation (submit_result on the
+// multi-turn loop); this seam never reopens multi-turn review.
+
+export interface StructuredCompletionParams {
+  model: string;
+  system?: string;
+  /** Conversation turns (system handled separately). Repair re-issues
+   *  carry the previous assistant turn + the repair instruction. */
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  max_tokens: number;
+  /** THE generated projection from the step's registered output contract. */
+  schema: Record<string, unknown>;
+  /** Optional tool/schema name surfaced to the provider API. */
+  schemaName?: string;
+  /**
+   * C6 review closure 3 — sampling parity: the structured wire must not
+   * silently change the model's sampling configuration relative to the
+   * textual wire. The runner passes the SAME value it passes to complete()
+   * (runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature), and both
+   * native providers forward it on the wire.
+   */
+  temperature?: number;
+}
+
+export interface StructuredCompletionResult {
+  /** The provider's parsed structured value (already an object). */
+  value: unknown;
+  tokens_used: number;
+  duration_ms: number;
+}
+
+export interface IStructuredProvider {
+  completeStructured(params: StructuredCompletionParams): Promise<StructuredCompletionResult>;
 }
 
 export const LLMCompletionParamsSchema = z.object({
@@ -37,9 +89,9 @@ export const LLMCompletionResultSchema = z.object({
 });
 
 export class OpenAICompatibleProvider implements ILLMProvider {
-  private baseUrl: string;
-  private apiKey: string;
-  private defaultModel: string;
+  protected baseUrl: string;
+  protected apiKey: string;
+  protected defaultModel: string;
 
   constructor(config: AgentLLMConfig) {
     this.baseUrl = (config.base_url || 'https://api.openai.com/v1').replace(/\/$/, '');
@@ -99,6 +151,199 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     LLMCompletionResultSchema.parse(result);
     return result;
   }
+}
+
+// D.3d — genuine multi-turn (tool-calling) support for an OpenAI-compatible
+// endpoint, using the OpenAI chat-completions `tools`/`tool_calls` wire
+// format that OpenRouter (and OpenAI itself) both speak natively. This is
+// not "faking" multi-turn capability onto a provider that lacks it — a
+// tool-calling-capable model reached through OpenRouter genuinely executes
+// the same tool_use/tool_result round trip AgentLoop already drives for
+// AnthropicSDKProvider (see agent-loop.ts); only the wire format differs.
+// Kept as a separate class (rather than changing OpenAICompatibleProvider
+// itself) so plain openai_compatible/glm configurations — whose target
+// model or endpoint may not support tool calling — are unaffected; only
+// the 'openrouter' case in createLLMProvider() below opts into it.
+export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider implements IMultiTurnProvider {
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    const model = params.model || this.defaultModel;
+    const messages = buildOpenAIToolMessages(params.system, params.messages);
+    const tools = params.tools.map((t) => ({
+      type: 'function' as const,
+      function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model, messages, max_tokens: params.max_tokens, tools, tool_choice: 'auto',
+        // E3b — sampling parity: forward the temperature the runner runs
+        // everywhere else; absent leaves the provider default (legacy).
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'unknown error');
+      throw new Error(`LLM API request failed: ${response.status} ${response.statusText} — ${errorBody}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{
+        message: { content: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
+        finish_reason: string;
+      }>;
+      usage?: { total_tokens: number };
+    };
+
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    const finishReason = choice?.finish_reason ?? 'stop';
+    const rawToolCalls = message?.tool_calls ?? [];
+
+    const toolUses = rawToolCalls.map((tc) => ({
+      type: 'tool_use' as const,
+      id: tc.id,
+      name: tc.function.name,
+      input: parseToolArguments(tc.function.arguments),
+    }));
+
+    const stopReason =
+      finishReason === 'length' ? 'max_tokens'
+      : (finishReason === 'tool_calls' || toolUses.length > 0) ? 'tool_use'
+      : 'end_turn';
+
+    return {
+      stop_reason: stopReason,
+      text: message?.content ?? '',
+      tool_uses: toolUses,
+      tokens_used: data.usage?.total_tokens ?? 0,
+    };
+  }
+}
+
+// A malformed tool_call.function.arguments string (not valid JSON) fails
+// closed to an empty object rather than throwing — handleToolCall (tools.ts)
+// then reports a normal tool-result error for a missing/invalid argument,
+// the same way it already handles any other malformed tool input.
+function parseToolArguments(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+// ─── D.34 C6 — native structured output on the OpenAI wire ────────────────────
+//
+// response_format json_schema (strict) is OpenAI's and OpenRouter's genuine
+// constrained-decoding mechanism for tool-calling-capable models. Kept as a
+// separate class on the SAME opt-in discipline as the multi-turn provider:
+// only the 'openrouter' case opts in; plain openai_compatible/glm endpoints
+// are not assumed to support it (fallback by capability — they simply lack
+// completeStructured).
+export class OpenAICompatibleStructuredProvider extends OpenAICompatibleMultiTurnProvider implements IStructuredProvider {
+  async completeStructured(params: StructuredCompletionParams): Promise<StructuredCompletionResult> {
+    const start = Date.now();
+    const model = params.model || this.defaultModel;
+    const messages: Array<Record<string, string>> = [];
+    if (params.system) messages.push({ role: 'system', content: params.system });
+    for (const m of params.messages) messages.push({ role: m.role, content: m.content });
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: params.max_tokens,
+        ...(params.temperature !== undefined && { temperature: params.temperature }),
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: params.schemaName ?? 'result',
+            strict: true,
+            schema: params.schema,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'unknown error');
+      throw new Error(`LLM API request failed: ${response.status} ${response.statusText} — ${errorBody}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string | null } }>;
+      usage?: { total_tokens: number };
+    };
+    const content = data.choices?.[0]?.message?.content ?? '';
+    let value: unknown;
+    try {
+      value = JSON.parse(content);
+    } catch (err) {
+      // Native structured output must be schema-shaped JSON; a provider that
+      // returns prose violated its own capability contract — fail closed.
+      throw new Error(
+        `Structured completion returned non-JSON content: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { value, tokens_used: data.usage?.total_tokens ?? 0, duration_ms: Date.now() - start };
+  }
+}
+
+// Converts AgentLoop's provider-agnostic MultiTurnMessage[] (Anthropic-
+// content-block-shaped: one assistant message carrying an array of
+// tool_use blocks, one user message carrying an array of tool_result
+// blocks) into the OpenAI wire format, which has no equivalent grouping —
+// an assistant tool-calling turn is `tool_calls` on one assistant message,
+// and each tool result is its OWN `role: 'tool'` message.
+function buildOpenAIToolMessages(system: string, messages: MultiTurnMessage[]): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  if (system) result.push({ role: 'system', content: system });
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      result.push({ role: msg.role, content: msg.content });
+      continue;
+    }
+
+    const toolUseBlocks = msg.content.filter(
+      (b): b is { type: 'tool_use'; id: string; name: string; input: unknown } => b.type === 'tool_use',
+    );
+    const toolResultBlocks = msg.content.filter(
+      (b): b is { type: 'tool_result'; tool_use_id: string; content: string } => b.type === 'tool_result',
+    );
+    const textBlocks = msg.content.filter(
+      (b): b is { type: 'text'; text: string } => b.type === 'text',
+    );
+
+    if (toolUseBlocks.length > 0) {
+      result.push({
+        role: 'assistant',
+        content: textBlocks.length > 0 ? textBlocks.map((b) => b.text).join('') : null,
+        tool_calls: toolUseBlocks.map((b) => ({
+          id: b.id,
+          type: 'function',
+          function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+        })),
+      });
+      continue;
+    }
+
+    if (toolResultBlocks.length > 0) {
+      for (const b of toolResultBlocks) {
+        result.push({ role: 'tool', tool_call_id: b.tool_use_id, content: b.content });
+      }
+      continue;
+    }
+
+    result.push({ role: msg.role, content: textBlocks.map((b) => b.text).join('') });
+  }
+
+  return result;
 }
 
 export class AnthropicProvider implements ILLMProvider {
@@ -179,15 +424,39 @@ export class AnthropicProvider implements ILLMProvider {
   }
 }
 
+function supportsMultiTurn(provider: ILLMProvider): provider is ILLMProvider & IMultiTurnProvider {
+  return typeof (provider as Partial<IMultiTurnProvider>).completeMultiTurn === 'function';
+}
+
+// D.3b1 — the narrowest capability-preserving seam: `completeMultiTurn` is
+// only ever present on this instance (as an own, dynamically (re)assigned
+// property, not a class method) when the currently-wrapped provider itself
+// implements it. AgentRunner's multi-turn detection is exactly
+// `typeof provider.completeMultiTurn === 'function'` — if this class
+// declared `completeMultiTurn` as an ordinary method, that check would
+// always be true regardless of what the wrapped provider actually supports,
+// and AgentRunner would select the multi-turn path only to have it throw.
+// Declaring it as an optional property and (re)computing it in
+// syncMultiTurnCapability() — called from the constructor and every
+// setProvider() — keeps the capability honest across provider swaps: a
+// provider that doesn't support multi-turn leaves the capability genuinely
+// absent, never a promise that fails later.
 export class DynamicLLMProvider implements ILLMProvider {
   private activeProvider: ILLMProvider;
+  completeMultiTurn?: (params: MultiTurnParams) => Promise<MultiTurnResult>;
+  // D.34 C6 — synced exactly like multi-turn: the structured-output
+  // capability is genuinely present only when the wrapped provider
+  // implements it, so capability probing stays honest across provider swaps.
+  completeStructured?: (params: import('./llm-provider.js').StructuredCompletionParams) => Promise<import('./llm-provider.js').StructuredCompletionResult>;
 
   constructor(initialProvider: ILLMProvider) {
     this.activeProvider = initialProvider;
+    this.syncMultiTurnCapability();
   }
 
   setProvider(provider: ILLMProvider) {
     this.activeProvider = provider;
+    this.syncMultiTurnCapability();
   }
 
   getProvider(): ILLMProvider {
@@ -197,14 +466,74 @@ export class DynamicLLMProvider implements ILLMProvider {
   async complete(params: LLMCompletionParams): Promise<LLMCompletionResult> {
     return this.activeProvider.complete(params);
   }
+
+  private syncMultiTurnCapability(): void {
+    if (supportsMultiTurn(this.activeProvider)) {
+      const provider = this.activeProvider;
+      this.completeMultiTurn = (params) => provider.completeMultiTurn(params);
+    } else {
+      delete this.completeMultiTurn;
+    }
+    if (supportsStructured(this.activeProvider)) {
+      const provider = this.activeProvider;
+      this.completeStructured = (params) => provider.completeStructured(params);
+    } else {
+      delete this.completeStructured;
+    }
+  }
 }
 
+function supportsStructured(provider: ILLMProvider): provider is ILLMProvider & IStructuredProvider {
+  return typeof (provider as Partial<IStructuredProvider>).completeStructured === 'function';
+}
+
+// D.3b1.2 — AgentLLMConfig.base_url's pre-existing convention (see the old
+// AnthropicProvider.complete() above) treats the value as the exact prefix
+// placed immediately before '/messages' — a caller configuring the
+// standard form 'https://api.anthropic.com/v1' relies on that producing
+// '.../v1/messages'. The official SDK instead treats its own `baseURL`
+// option as a host/prefix placed before the SDK's OWN fixed '/v1/messages'
+// resource path — passing the old convention's value straight through
+// would double it into '.../v1/v1/messages'. Stripping a trailing '/v1'
+// (the standard existing form) before handing the value to the SDK
+// reproduces exactly the old resulting URL. A base_url that does not end
+// in '/v1' is passed through unchanged (out of scope — narrower than the
+// old provider's fully free-form '/messages' suffixing, but preserves the
+// one convention callers actually depend on).
+export function anthropicSdkBaseUrl(configBaseUrl: string | undefined): string | undefined {
+  if (!configBaseUrl) return undefined;
+  const trimmed = configBaseUrl.replace(/\/$/, '');
+  return trimmed.endsWith('/v1') ? trimmed.slice(0, -'/v1'.length) : trimmed;
+}
+
+// D.3b1.1 — the anthropic case is the one production configuration that
+// must return a genuinely multi-turn-capable provider: AnthropicSDKProvider
+// implements IMultiTurnProvider against the real Anthropic SDK, so a run
+// wired through this factory (as resolveLLMProvider() does) can actually
+// take AgentLoop's multi-turn path — DynamicLLMProvider only ever preserves
+// a capability that's genuinely present on what it wraps. The REST-based
+// AnthropicProvider above stays exported (and covered by its own tests) but
+// is no longer reachable from this factory, since it has no multi-turn
+// implementation. openai_compatible/glm stay single-turn-only — they are
+// not faked into multi-turn capability. openrouter DOES get genuine
+// multi-turn capability (OpenAICompatibleMultiTurnProvider, D.3d) since
+// OpenRouter's own wire format for tool-calling-capable models is real,
+// not faked.
 export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
   switch (config.provider) {
     case 'openai_compatible':
       return new OpenAICompatibleProvider(config);
-    case 'anthropic':
-      return new AnthropicProvider(config);
+    case 'anthropic': {
+      const apiKey = process.env[config.api_key_env] || process.env.SLE_LLM_API_KEY || '';
+      if (!apiKey) {
+        throw new Error(
+          `API key not found. Set ${config.api_key_env} or SLE_LLM_API_KEY environment variable.`
+        );
+      }
+      const baseURL = anthropicSdkBaseUrl(config.base_url);
+      const client = baseURL ? new Anthropic({ apiKey, baseURL }) : undefined;
+      return new AnthropicSDKProvider(apiKey, { defaultModel: config.model, client });
+    }
     case 'glm': {
       const glmConfig: AgentLLMConfig = {
         ...config,
@@ -215,7 +544,19 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
         model: config.model || 'glm-4',
         api_key_env: config.api_key_env || 'GLM_API_KEY',
       };
-      return new OpenAICompatibleProvider(glmConfig);
+      // E3b — the glm case now opts into the multi-turn tool wire, matching
+      // 'openrouter'. Evidence (E2/E3, 2026-09-15): the E2 qualification
+      // series degraded glm to the single-turn wire (no tools, no loop);
+      // the heavy methodology prompt then drove the hybrid reasoner to
+      // exhaust its entire completion budget on reasoning
+      // (`finish_reason: length`, 4095/4096 reasoning tokens, empty
+      // content) — 15/15 TRANSPORT failures with zero variance. The exact-
+      // shape probe proved the Z.ai endpoint executes the multi-turn wire
+      // correctly (tool_calls, valid JSON arguments) on this very request
+      // shape. Per D.3b1's own criterion — opt in when the target endpoint
+      // supports tool calling — plain single-turn stays available via
+      // 'openai_compatible'; 'glm' now means "Z.ai with tool calling".
+      return new OpenAICompatibleMultiTurnProvider(glmConfig);
     }
     case 'openrouter': {
       const orConfig: AgentLLMConfig = {
@@ -224,7 +565,15 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
         model: config.model || 'google/gemini-2.5-pro',
         api_key_env: config.api_key_env || 'OPENROUTER_API_KEY',
       };
-      return new OpenAICompatibleProvider(orConfig);
+      // D.3d — OpenRouter genuinely supports the OpenAI tool-calling wire
+      // format for tool-capable models, so it gets real multi-turn
+      // capability (OpenAICompatibleMultiTurnProvider above), unlike
+      // openai_compatible/glm above which stay single-turn-only.
+      // D.34 C6 — it also genuinely supports response_format json_schema
+      // (strict), so the structured-output capability rides along; absence
+      // of that capability on other providers keeps the textual review
+      // fallback as the honest default (probing is by capability).
+      return new OpenAICompatibleStructuredProvider(orConfig);
     }
     default:
       throw new Error(`Unknown LLM provider: ${(config as { provider: string }).provider}`);

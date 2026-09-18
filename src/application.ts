@@ -14,11 +14,20 @@ import { openDatabase } from './storage/database.js';
 import { WorkService } from './services/work-service.js';
 import { EvidenceService } from './services/evidence-service.js';
 import { ResumeService } from './services/resume-service.js';
-import { WorkflowRunRepository } from './storage/repositories.js';
+import { WorkflowRunRepository, ArtifactRepository, DecisionRepository } from './storage/repositories.js';
 
 import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
 import { AgentStepRunner } from './execution/agent-step-runner.js';
+import { createDefinitionInputValidator } from './workflow/methodology/definition-artifact.js';
+import { createReviewRouteDeriver } from './workflow/methodology/readiness-artifact.js';
+import { READINESS_OUTPUT_CONTRACT } from './workflow/methodology/readiness-contract.js';
+import { createDefinitionOutputContract } from './workflow/methodology/definition-contract.js';
+import {
+  createDecisionRequestOutputContract,
+  createDecisionApplicationOutputContract,
+  createExplorationNeedOutputContract,
+} from './workflow/methodology/escalation-contracts.js';
 import { FullBuildStepRunner } from './execution/full-build-step-runner.js';
 import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 
@@ -156,12 +165,25 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
   const runArtifacts = new RunArtifactManager({ projectRoot });
 
+  // D.1b — declarative-artifact provenance (see docs/developmentPlan/
+  // d1a-declarative-contract-spike.md). Zero callers before D.1b.
+  const artifactRepository = new ArtifactRepository(db);
+
+  // D.3d.5 commit 2 — Decision authority lookup for the deterministic
+  // Definition gate: a DECIDED fact's decisionRef must resolve to a real
+  // control-plane Decision owned by the same work item. Injected as a
+  // storage-free closure so the methodology-owned validator stays pure.
+  const decisionRepository = new DecisionRepository(db);
+
   // ── LLM provider (reads settings file; falls back gracefully) ─────────────
-  const { provider: llmProvider, model: resolvedModel } = resolveLLMProvider(projectRoot);
+  const { provider: llmProvider, model: resolvedModel, maxTokens: resolvedMaxTokens } = resolveLLMProvider(projectRoot);
 
   // ── Agent execution stack ──────────────────────────────────────────────────
   const contextManager = new ContextManager(projectRoot);
-  const agentRunner = new AgentRunner(contextManager, llmProvider, projectRoot, runArtifacts);
+  const agentRunner = buildAgentRunner(
+    contextManager, llmProvider, projectRoot, runArtifacts, resolvedModel, artifactRepository, resolvedMaxTokens,
+    decisionRepository,
+  );
   const agentStepRunner = new AgentStepRunner(agentRunner);
 
   const tagService = new TagService(mapManager);
@@ -220,7 +242,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
   };
 
   // ── Adapter + registry ─────────────────────────────────────────────────────
-  const adapter = new StratumAgentAdapter(engineDeps, engineOpts);
+  const adapter = new StratumAgentAdapter(engineDeps, engineOpts, artifactRepository);
   registry.register(adapter);
 
   // ── Scheduler + loop ───────────────────────────────────────────────────────
@@ -269,12 +291,112 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-interface LLMProviderResult {
+export interface LLMProviderResult {
   provider: ILLMProvider;
   model: string;
+  // D.3d.2 — resolved completion budget from the same `.sle/settings.json`
+  // the provider/model resolve from (`"max_tokens": 16384`). Absent or
+  // invalid → 4096, AgentRunner's own historical default, so existing
+  // deployments behave byte-for-byte as before. This is the REAL production
+  // configuration seam: reasoning-style models spend completion budget on
+  // hidden reasoning tokens, so the budget must be an operator setting, not
+  // a fixed assumption — and the live-eval harness resolves through this
+  // exact same path so Layer B always evaluates the production budget.
+  maxTokens: number;
 }
 
-function resolveLLMProvider(projectRoot: string): LLMProviderResult {
+// D.3d.2 — the completion-budget validation rule, matching the existing
+// settings philosophy in resolveLLMProvider: strict per-field typeof checks,
+// anything not a positive integer falls back to the 4096 default silently
+// (same as an invalid model type falls back to the default model). Exported
+// only for direct regression coverage of the validation edge cases.
+export function resolveCompletionBudget(saved: unknown): number {
+  const v = (saved as Record<string, unknown> | null)?.max_tokens;
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 4096;
+}
+
+// D.3b1.2 — narrow composition-root seam. AgentRunner defaults its
+// runnerConfig to { model: 'default' } when none is given, and that literal
+// is truthy — so `params.model || this.defaultModel` in the provider layer
+// (e.g. AnthropicSDKProvider) would send the sentinel string 'default'
+// instead of falling back to the provider's own configured model. The
+// composition root must always pass the resolved application model through
+// explicitly. Extracted only so this specific wiring has direct regression
+// coverage without exposing db/scheduler/registry or any new control-plane
+// concept — createStratumApplication calls this exact function.
+export function buildAgentRunner(
+  contextManager: ContextManager,
+  llmProvider: ILLMProvider,
+  projectRoot: string,
+  runArtifacts: RunArtifactManager,
+  resolvedModel: string,
+  artifactRepository: ArtifactRepository,
+  maxTokens: number,
+  decisionRepository?: DecisionRepository,
+): AgentRunner {
+  // D.34 C4 — the DECIDED-provenance resolver, built once and baked into
+  // BOTH seams that need it: the deterministic input gate (validator) and
+  // the Definition output contract's mechanical validation. One authority,
+  // one closure, two consumers.
+  const findDecision = decisionRepository
+    ? (decisionRef: string) => {
+        const decision = decisionRepository.findById(decisionRef);
+        return decision ? { workItemId: decision.workItemId } : undefined;
+      }
+    : undefined;
+  return new AgentRunner(
+    contextManager, llmProvider, projectRoot, runArtifacts,
+    {
+      model: resolvedModel,
+      max_tokens: maxTokens,
+      // D.3d.5 commit 2 — the composition root wires the methodology-owned
+      // deterministic validators into the runner's generic registry. The
+      // runner itself never learns what a Definition is. When a
+      // DecisionRepository is available, the validator resolves DECIDED
+      // provenance against real control-plane Decisions owned by the same
+      // work item — invented or borrowed authority fails deterministically.
+      // D.34 C4 — the SAME closure is baked into the Definition output
+      // contract, so the contract path's mechanical validation resolves
+      // DECIDED provenance against exactly the same authority as the gate.
+      inputValidators: {
+        definition: createDefinitionInputValidator({
+          ...(decisionRepository ? { findDecision } : {}),
+        }),
+      },
+      // D.3d.5 commit 3 — review routes are NEVER model-authored: derived
+      // deterministically from the readiness artifact's structured gap
+      // classifications (GAP_CLASSIFICATION_PRECEDENCE). Same seam shape as
+      // the validators — the runner stays generic, methodology owns meaning.
+      deriveReviewRoute: createReviewRouteDeriver(),
+      // D.34 C3/C4 — the define-work steps are on the OUTPUT-CONTRACT path
+      // (DDR-034 §7): reviews return a semantic proposal (verdict + typed
+      // gaps + body); Definition produce steps return the Definition's
+      // semantic content (goal + fact ledger + … + body). Stratum decodes,
+      // validates the methodology invariants, and materializes the canonical
+      // artifact bytes itself. The registry keys are the workflow's OWN
+      // declarations (define-work's outputArtifact.type values).
+      // deriveReviewRoute above remains for the legacy path (and load-path
+      // route derivation); on the contract path the contract's own typed
+      // deriver takes precedence.
+      outputContracts: {
+        'definition-readiness': READINESS_OUTPUT_CONTRACT,
+        definition: createDefinitionOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
+        // DDR-036 — escalation ownership: request linkage, deterministic
+        // application merge, canonical exploration artifact.
+        'decision-request': createDecisionRequestOutputContract(),
+        'decision-application': createDecisionApplicationOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
+        'exploration-need': createExplorationNeedOutputContract(),
+      },
+    }, undefined, artifactRepository,
+  );
+}
+
+// D.3d — exported so the define-work live-provider evaluation harness
+// (scripts/eval-define-work.ts) resolves its provider/model exactly the
+// way createStratumApplication does: reading `.sle/settings.json` under
+// the target project root, honoring the same env-var fallbacks, with no
+// bespoke provider path or hard-coded eval-only model.
+export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
   const settingsPath = path.join(projectRoot, '.sle', 'settings.json');
   let config: AgentLLMConfig = {
     provider: 'openai_compatible',
@@ -282,6 +404,7 @@ function resolveLLMProvider(projectRoot: string): LLMProviderResult {
     model: 'gpt-4o',
     api_key_env: 'OPENAI_API_KEY',
   };
+  let maxTokens = 4096;
 
   if (existsSync(settingsPath)) {
     try {
@@ -297,19 +420,25 @@ function resolveLLMProvider(projectRoot: string): LLMProviderResult {
         };
         if (saved.api_key) process.env.SLE_LLM_API_KEY = String(saved.api_key);
       }
+      // D.3d.2 — optional completion budget, validated by the same strict
+      // per-field philosophy as model/base_url above. Read independently of
+      // the provider guard so a settings file refining only the budget still
+      // applies it; absent/invalid keeps AgentRunner's 4096 default exactly.
+      maxTokens = resolveCompletionBudget(saved);
     } catch {
       // malformed settings — fall back to default
     }
   }
 
   try {
-    return { provider: new DynamicLLMProvider(createLLMProvider(config)), model: config.model };
+    return { provider: new DynamicLLMProvider(createLLMProvider(config)), model: config.model, maxTokens };
   } catch {
     return {
       provider: new DynamicLLMProvider({
         complete: () => Promise.reject(new Error('LLM not configured')),
       }),
       model: config.model,
+      maxTokens,
     };
   }
 }

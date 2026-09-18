@@ -16,6 +16,7 @@ import {
   ProjectRepository,
   WorkItemRepository,
   RepositoryRepository,
+  ObjectiveRepository,
   EventRepository,
   WorkflowRunRepository,
   DecisionRepository,
@@ -28,7 +29,7 @@ import { Scheduler } from '../src/scheduler/index.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { ControlPlaneServer } from '../src/api/control-plane-server.js';
 import { registerWorkflow } from '../src/workflow/registry.js';
-import type { Workspace, Project, WorkItem, Repository } from '../src/domain/index.js';
+import type { Workspace, Project, WorkItem, Repository, Objective } from '../src/domain/index.js';
 import type { ExecutionAdapter, ExecutionRequest, ExecutionResult, CapabilitySet } from '../src/execution/types.js';
 
 // ── Terminal-checkpoint workflow ──────────────────────────────────────────────
@@ -91,6 +92,16 @@ function seedRepository(db: ReturnType<typeof makeDb>, projectId: string): strin
     defaultBranch: 'main', status: 'active',
   } as Repository);
   return repoId;
+}
+
+function seedObjective(db: ReturnType<typeof makeDb>, projectId: string): string {
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  new ObjectiveRepository(db).save({
+    id, projectId, title: 'Objective', description: 'desc', priority: 0,
+    status: 'draft', constraints: [], successCriteria: [], createdAt: now, updatedAt: now,
+  } as Objective);
+  return id;
 }
 
 // ── HTTP server helper ────────────────────────────────────────────────────────
@@ -258,6 +269,92 @@ test('B.1: createWorkItem rejects repository from another project', () => {
     }),
     /does not belong/i,
   );
+  db.close();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// D.2 — Objective linkage: objective.projectId === workItem.projectId
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('D.2: createWorkItem accepts a same-project objectiveId', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const objectiveId = seedObjective(db, projectId);
+  const svc = new WorkService(db, wsId);
+
+  const wi = svc.createWorkItem({ projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact', objectiveId });
+
+  assert.equal(wi.objectiveId, objectiveId);
+  const fetched = new WorkItemRepository(db).findById(wi.id)!;
+  assert.equal(fetched.objectiveId, objectiveId);
+  db.close();
+});
+
+test('D.2: createWorkItem rejects an objectiveId from another project (same workspace)', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const otherProjectId = seedProject(db, wsId);
+  const otherObjectiveId = seedObjective(db, otherProjectId);
+  const svc = new WorkService(db, wsId);
+
+  assert.throws(
+    () => svc.createWorkItem({
+      projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      objectiveId: otherObjectiveId,
+    }),
+    /does not belong/i,
+  );
+  db.close();
+});
+
+test('D.2: createWorkItem rejects an objectiveId from another workspace entirely', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const otherWsId = seedWorkspace(db);
+  const otherProjectId = seedProject(db, otherWsId);
+  const otherObjectiveId = seedObjective(db, otherProjectId);
+  const svc = new WorkService(db, wsId);
+
+  assert.throws(
+    () => svc.createWorkItem({
+      projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      objectiveId: otherObjectiveId,
+    }),
+    /does not belong/i,
+  );
+  db.close();
+});
+
+test('D.2: createWorkItem rejects a nonexistent objectiveId', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new WorkService(db, wsId);
+
+  assert.throws(
+    () => svc.createWorkItem({
+      projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact',
+      objectiveId: randomUUID(),
+    }),
+    /not found/i,
+  );
+  db.close();
+});
+
+test('D.2: createWorkItem without objectiveId retains prior behavior (no validation, undefined)', () => {
+  const db = makeDb();
+  const wsId = seedWorkspace(db);
+  const projectId = seedProject(db, wsId);
+  const svc = new WorkService(db, wsId);
+
+  const wi = svc.createWorkItem({ projectId, title: 'T', goal: 'G', workflowId: 'draft-artifact' });
+
+  assert.equal(wi.objectiveId, undefined);
+  const fetched = new WorkItemRepository(db).findById(wi.id)!;
+  assert.equal(fetched.objectiveId, undefined);
   db.close();
 });
 

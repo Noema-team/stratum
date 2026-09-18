@@ -115,6 +115,17 @@ auto-detection based on context (user just started a cycle, SCOPING node is acti
 
 **Why deferred:** Both DDRs are architecturally sound but have 14 critical specification gaps that would require significant additional design work before implementation. The existing single-shot model (context manager assembles slice → single LLM call → write artifacts) is sufficient for MVP. Deferring lets us learn from real usage what agents actually need.
 
+> **2026-09-11 update — partially superseded for a narrow slice.** D.3 live-model screening
+> evidence (see [d34-failure-audit.md](d34-failure-audit.md)) showed mechanical
+> serialization/transport failures dominating a semantically capable model's residual
+> failures. [DDR-034](../decisions/ddr-034-models-propose-stratum-materializes.md) activates
+> DDR-029's principle ("LLMs produce typed, validated declarations") for the D.3 methodology
+> artifacts (`definition`, `definition-readiness`) **now**: models return semantic proposals;
+> Stratum materializes canonical bytes. Implementation plan:
+> [d34-output-contracts.md](d34-output-contracts.md). DDR-029's broader scope (per-role
+> typed outputs, Builder file operations, the gap table below) **remains deferred** and the
+> single-shot statement above remains true for every non-contract role.
+
 **MVP baseline:** `AgentResult.output: unknown` (types.md:244). The daemon calls the LLM, parses the response, writes artifacts. No typed output validation, no multi-turn read requests, no structured file operations.
 
 ### Critical gaps to resolve before implementation

@@ -16,7 +16,7 @@ import type {
 } from '../domain/index.js';
 import type { WorkflowRun } from '../workflow/types.js';
 
-// Artifact metadata record (cross-run provenance stored in DB; content stays in .sle/)
+// Artifact metadata record (cross-run provenance stored in DB; content stays on disk)
 export interface ArtifactRecord {
   id: string;
   workItemId?: string;
@@ -24,7 +24,10 @@ export interface ArtifactRecord {
   stepExecutionId?: string;
   type: string;
   ref?: string;   // DDR-031 ArtifactRef string, e.g. "node:auth:architecture"
-  path?: string;  // relative to .sle/
+  // Project-root-relative (the same convention AgentRunner/agent-runner.ts
+  // uses for every write path — never relative to .sle/ specifically, even
+  // for artifacts that happen to live under it).
+  path?: string;
   hash?: string;
   createdAt: string;
 }
@@ -183,17 +186,17 @@ export class ObjectiveRepository {
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
-      INSERT INTO objectives (id, project_id, title, description, priority, status, constraints_json, success_criteria_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO objectives (id, project_id, title, description, priority, status, constraints_json, success_criteria_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM objectives WHERE id = ?');
     this.byProject = db.prepare('SELECT * FROM objectives WHERE project_id = ? ORDER BY priority DESC, title');
-    this.statusStmt = db.prepare('UPDATE objectives SET status = ? WHERE id = ?');
+    this.statusStmt = db.prepare('UPDATE objectives SET status = ?, updated_at = ? WHERE id = ?');
   }
 
   save(o: Objective): void {
     this.insert.run(o.id, o.projectId, o.title, o.description, o.priority, o.status,
-      JSON.stringify(o.constraints), JSON.stringify(o.successCriteria));
+      JSON.stringify(o.constraints), JSON.stringify(o.successCriteria), o.createdAt, o.updatedAt);
   }
 
   findById(id: string): Objective | undefined {
@@ -205,8 +208,8 @@ export class ObjectiveRepository {
     return (this.byProject.all(projectId) as Record<string, unknown>[]).map(rowToObjective);
   }
 
-  updateStatus(id: string, status: Objective['status']): void {
-    this.statusStmt.run(status, id);
+  updateStatus(id: string, status: Objective['status'], updatedAt: string): void {
+    this.statusStmt.run(status, updatedAt, id);
   }
 }
 
@@ -220,6 +223,8 @@ function rowToObjective(r: Record<string, unknown>): Objective {
     status: r.status as Objective['status'],
     constraints: JSON.parse(r.constraints_json as string),
     successCriteria: JSON.parse(r.success_criteria_json as string),
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
   };
 }
 
@@ -236,6 +241,7 @@ export class WorkItemRepository {
   private readonly countForProject: Database.Statement;
   private readonly countAll: Database.Statement;
   private readonly countForWorkspace: Database.Statement;
+  private readonly countForObjective: Database.Statement;
   private readonly unmetDepsCount: Database.Statement;
   private readonly stateStmt: Database.Statement;
   private readonly addDep: Database.Statement;
@@ -259,6 +265,7 @@ export class WorkItemRepository {
     this.countForWorkspace = db.prepare(
       'SELECT COUNT(*) as count FROM work_items wi JOIN projects p ON wi.project_id = p.id WHERE p.workspace_id = ? AND wi.state = ?',
     );
+    this.countForObjective = db.prepare('SELECT COUNT(*) as count FROM work_items WHERE objective_id = ?');
     this.unmetDepsCount = db.prepare(`
       SELECT COUNT(*) as count FROM work_dependencies wd
       JOIN work_items wi ON wi.id = wd.depends_on_id
@@ -325,6 +332,12 @@ export class WorkItemRepository {
 
   countByStateInWorkspace(workspaceId: string, state: WorkItemState): number {
     return ((this.countForWorkspace.get(workspaceId, state) as { count: number }).count);
+  }
+
+  // D.2 — trivial from the existing table; used for the Objective read model's
+  // optional linked-WorkItem count. Counts every state, not just active ones.
+  countByObjective(objectiveId: string): number {
+    return ((this.countForObjective.get(objectiveId) as { count: number }).count);
   }
 
   // True if all blocking dependencies are in the 'completed' state.
@@ -637,6 +650,9 @@ export class ArtifactRepository {
   private readonly byId: Database.Statement;
   private readonly byWorkItem: Database.Statement;
   private readonly byWorkflowRun: Database.Statement;
+  private readonly byWorkflowRunRefAndHash: Database.Statement;
+  private readonly latestByWorkflowRun: Database.Statement;
+  private readonly latestByWorkItem: Database.Statement;
 
   constructor(db: Database.Database) {
     this.insert = db.prepare(`
@@ -646,6 +662,24 @@ export class ArtifactRepository {
     this.byId = db.prepare('SELECT * FROM artifacts WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM artifacts WHERE work_item_id = ? ORDER BY created_at');
     this.byWorkflowRun = db.prepare('SELECT * FROM artifacts WHERE workflow_run_id = ? ORDER BY created_at');
+    this.byWorkflowRunRefAndHash = db.prepare(
+      'SELECT * FROM artifacts WHERE workflow_run_id = ? AND ref = ? AND hash = ? ORDER BY created_at LIMIT 1'
+    );
+    // D.1c — "latest" = most recently inserted row per distinct ref (by
+    // rowid, not created_at: createdAt has only millisecond resolution and
+    // two versions of the same ref could in principle share a timestamp).
+    this.latestByWorkflowRun = db.prepare(`
+      SELECT * FROM artifacts
+      WHERE workflow_run_id = ?
+        AND rowid IN (SELECT MAX(rowid) FROM artifacts WHERE workflow_run_id = ? GROUP BY ref)
+      ORDER BY created_at
+    `);
+    this.latestByWorkItem = db.prepare(`
+      SELECT * FROM artifacts
+      WHERE work_item_id = ?
+        AND rowid IN (SELECT MAX(rowid) FROM artifacts WHERE work_item_id = ? GROUP BY ref)
+      ORDER BY created_at
+    `);
   }
 
   save(a: ArtifactRecord): void {
@@ -661,12 +695,36 @@ export class ArtifactRepository {
     return r ? rowToArtifact(r) : undefined;
   }
 
+  // Idempotency lookup for declarative provenance (D.1c): dedupe by
+  // (workflowRunId, ref, hash) rather than just (workflowRunId, ref) — a
+  // retry that reproduces identical content is a no-op, but a step that
+  // refines its own output under the same ref (e.g. Definition v1 → v2, same
+  // workflowRunId + ref, different hash) records a new version instead of
+  // leaving a stale row. There is no unique DB constraint backing this —
+  // callers must check-then-save.
+  findByWorkflowRunRefAndHash(workflowRunId: string, ref: string, hash: string): ArtifactRecord | undefined {
+    const r = this.byWorkflowRunRefAndHash.get(workflowRunId, ref, hash) as Record<string, unknown> | undefined;
+    return r ? rowToArtifact(r) : undefined;
+  }
+
+  // Full version history, oldest first.
   listByWorkItem(workItemId: string): ArtifactRecord[] {
     return (this.byWorkItem.all(workItemId) as Record<string, unknown>[]).map(rowToArtifact);
   }
 
   listByWorkflowRun(workflowRunId: string): ArtifactRecord[] {
     return (this.byWorkflowRun.all(workflowRunId) as Record<string, unknown>[]).map(rowToArtifact);
+  }
+
+  // D.1c — one row per distinct ref: the most recently recorded version.
+  // Use this (not listByWorkflowRun) wherever a caller wants "the current
+  // artifacts", not the full refinement history.
+  listLatestByWorkflowRun(workflowRunId: string): ArtifactRecord[] {
+    return (this.latestByWorkflowRun.all(workflowRunId, workflowRunId) as Record<string, unknown>[]).map(rowToArtifact);
+  }
+
+  listLatestByWorkItem(workItemId: string): ArtifactRecord[] {
+    return (this.latestByWorkItem.all(workItemId, workItemId) as Record<string, unknown>[]).map(rowToArtifact);
   }
 }
 

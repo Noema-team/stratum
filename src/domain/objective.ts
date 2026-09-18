@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { UUIDSchema, ConstraintSchema, CriterionSchema } from './primitives.js';
+import { UUIDSchema, TimestampSchema, ConstraintSchema, CriterionSchema } from './primitives.js';
 
 export const ObjectiveStatusEnum = z.enum(['draft', 'active', 'completed', 'cancelled']);
 export type ObjectiveStatus = z.infer<typeof ObjectiveStatusEnum>;
@@ -13,6 +13,8 @@ export const ObjectiveSchema = z.object({
   status: ObjectiveStatusEnum,
   constraints: z.array(ConstraintSchema),
   successCriteria: z.array(CriterionSchema),
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
 });
 
 export type Objective = z.infer<typeof ObjectiveSchema>;

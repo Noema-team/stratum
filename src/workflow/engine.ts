@@ -10,9 +10,12 @@ import type {
   StepResult,
   StepRunner,
   StepRunContext,
+  ObjectiveContext,
+  DecisionContext,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
+import { materializeStepRunContext } from './artifact-refs.js';
 
 // ============================================================================
 // WorkflowEngine dependencies
@@ -90,6 +93,23 @@ export class WorkflowEngine {
     workItemId?: string,
     maxIterations?: number,
     resolvedParameters?: Record<string, unknown>,
+    // D.3b0 — WorkItem snapshot, threaded in by the caller (StratumAgentAdapter,
+    // from ExecutionRequest.objectiveId/constraints/acceptanceCriteria — itself
+    // populated by Scheduler/ResumeService from the WorkItem row). Never
+    // queried here: the engine only carries these through to StepRunContext.
+    objectiveId?: string,
+    workItemConstraints?: Array<{ description: string; type?: string }>,
+    workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
+    // D.3b1.1 — the Objective's own human intent snapshot, threaded in the
+    // same way (StratumAgentAdapter, from ExecutionRequest.objectiveContext
+    // — itself resolved once by Scheduler/ResumeService via
+    // ObjectiveRepository). Never queried here.
+    objectiveContext?: ObjectiveContext,
+    // D.3c0 — the human's resolved checkpoint decision, threaded in the same
+    // way, but only ever present on a ResumeService continuation (from
+    // ExecutionRequest.decisionContext) — Scheduler's initial dispatch has
+    // none. Never queried here.
+    decisionContext?: DecisionContext,
   ): Promise<WorkflowRunResult> {
 
     // ---- SQLite cursor ownership --------------------------------------------
@@ -291,7 +311,32 @@ export class WorkflowEngine {
 
       // Cursor is already pointing at step.id (set by previous advance or init save).
       // Execute the step.
-      const ctx = this.makeStepRunContext(step, workflowRunId, iteration, revision, goal, workflowId, resolvedParameters);
+      const rawCtx = this.makeStepRunContext(
+        step, workflowRunId, iteration, revision, goal, workflowId, workItemId, resolvedParameters,
+        objectiveId, workItemConstraints, workItemAcceptanceCriteria, objectiveContext, decisionContext,
+      );
+
+      // D.3b0 — materialize any {workItemId}/{objectiveId} placeholders in a
+      // declared outputArtifact/inputArtifactRefs BEFORE calling executeStep,
+      // i.e. before ContextManager or AgentRunner (LLM call, filesystem
+      // write) ever sees the context. A workflow that declares no
+      // placeholders is unaffected — materializeStepRunContext is a no-op.
+      const materialized = materializeStepRunContext(rawCtx);
+      if (!materialized.ok) {
+        await this.updateRunCursor(workflowRunId, {
+          status: 'halted',
+          current_step_id: step.id,
+          iteration, revision, awaiting_checkpoint: null,
+        });
+        return {
+          run_id: workflowRunId,
+          status: 'halted',
+          final_step_id: step.id,
+          iterations_used: iteration,
+          error: materialized.error,
+        };
+      }
+      const ctx = materialized.value;
       const result = await this.executeStep(step, workflowRunId, iteration, ctx);
 
       // Generic revision increment — produced by confirm-revise (and any future step
@@ -554,6 +599,87 @@ export class WorkflowEngine {
 
     const result = await this.deps.stepRunner.run(step, ctx);
 
+    // D.3b0 — opt-in semantic review verdict contract. Generic execution
+    // success is not the same thing as a review's semantic pass/fail
+    // judgment (see WorkflowStep.requiresReviewVerdict and AgentRunner.run()).
+    // Every review step that does not opt in falls through to the unchanged
+    // legacy branch below, byte-for-byte — this includes every full-build
+    // review step.
+    if (step.requiresReviewVerdict) {
+      const verdict = result.reviewVerdict;
+      if (!result.success || (verdict !== 'pass' && verdict !== 'fail')) {
+        // Execution failure (transport/parse/write) OR a missing/invalid
+        // verdict on an otherwise-successful execution — neither is a
+        // semantic judgment, so this halts rather than routing through
+        // on_fail/on_pass as if it were one.
+        await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          duration_ms: Date.now() - start,
+        });
+        return {
+          outcome: 'failed',
+          next_step_id: null,
+          error: result.error ?? `Review step '${step.id}' requires a semantic verdict but produced none`,
+        };
+      }
+
+      // A successful review execution whose semantic result is 'fail' is not
+      // an execution failure — the produced review artifact (if any) is
+      // preserved via the same markComplete/provenance path as a 'pass'.
+      await this.markComplete(step.id, workflowRunId, iteration, result.artifacts_written);
+      if (verdict === 'fail') {
+        // D.3c1a — bounded semantic-fail routing. A step that declares
+        // on_fail_routes requires a validated route token (StepRunner —
+        // AgentRunner — already checked it against this same table; this
+        // is a defensive re-check, never the sole gate) and routes through
+        // the declared mapping instead of the single legacy on_fail
+        // target. WorkflowEngine never interprets what any token *means*
+        // — it only maps the token through data the workflow author
+        // supplied. A step that does NOT declare on_fail_routes keeps
+        // exactly the legacy on_fail behavior below, byte-for-byte.
+        if (step.on_fail_routes) {
+          const route = result.reviewRoute;
+          // D.3c1a.1 — an exact OWN-key allowlist membership test. A plain
+          // `step.on_fail_routes[route]` lookup resolves inherited
+          // Object.prototype members for a token like 'toString' or
+          // 'constructor' (both truthy functions), which would let an
+          // undeclared token slip past this defensive re-check even though
+          // AgentRunner's own Object.keys()-based gate correctly rejects
+          // it — silently defeating the "own declared key" invariant.
+          const isDeclaredRoute = !!route && Object.prototype.hasOwnProperty.call(step.on_fail_routes, route);
+          const mapping = isDeclaredRoute ? step.on_fail_routes[route!] : undefined;
+          if (!route || !mapping) {
+            await this.deps.runArtifacts.updateNodeStatus(workflowRunId, iteration, step.id, {
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              duration_ms: Date.now() - start,
+            });
+            return {
+              outcome: 'failed',
+              next_step_id: null,
+              error: `Review step '${step.id}' declares on_fail_routes but produced no valid route (got: '${route ?? 'none'}')`,
+            };
+          }
+          return {
+            outcome: 'completed',
+            next_step_id: mapping.target_step_id,
+            _iterate: mapping.iteration_loop ? true : undefined,
+            duration_ms: Date.now() - start,
+          };
+        }
+        return {
+          outcome: 'completed',
+          next_step_id: step.on_fail?.target_step_id ?? null,
+          _iterate: step.on_fail?.iteration_loop ? true : undefined,
+          duration_ms: Date.now() - start,
+        };
+      }
+      const passTarget = step.on_pass?.target_step_id ?? '__next__';
+      return { outcome: 'completed', next_step_id: passTarget, duration_ms: Date.now() - start };
+    }
+
+    // Legacy behavior — unchanged for every review step that does not opt in.
     if (!result.success) {
       await this.markComplete(step.id, workflowRunId, iteration, []);
       return {
@@ -666,7 +792,13 @@ export class WorkflowEngine {
     revision: number,
     goal: string,
     workflowId: string,
+    workItemId: string | undefined,
     resolvedParameters?: Record<string, unknown>,
+    objectiveId?: string,
+    workItemConstraints?: Array<{ description: string; type?: string }>,
+    workItemAcceptanceCriteria?: Array<{ description: string; met?: boolean }>,
+    objectiveContext?: ObjectiveContext,
+    decisionContext?: DecisionContext,
   ): StepRunContext {
     return {
       workflowRunId,
@@ -677,7 +809,38 @@ export class WorkflowEngine {
       revision,
       goal,
       projectRoot: this.deps.projectRoot ?? process.cwd(),
+      workItemId,
+      // D.1b — copy the step's own declarative contract onto the context,
+      // exactly as `role` is already copied from step.agentRole above.
+      instruction: step.instruction,
+      outputArtifact: step.outputArtifact,
+      inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
+      // D.3b0 — WorkItem snapshot passed straight through from run()'s own
+      // params (never queried here). Rendering constraints/acceptance
+      // criteria into the assembled context is still gated by
+      // includeWorkItemContext — see ContextManager.buildTaskDescription.
+      objectiveId,
+      workItemConstraints,
+      workItemAcceptanceCriteria,
+      includeWorkItemContext: step.includeWorkItemContext,
+      requiresReviewVerdict: step.requiresReviewVerdict,
+      // D.3d.5 commit 2 — copied the same way: the deterministic input-
+      // validation gate keys off this declared name (AgentRunner registry).
+      inputValidator: step.inputValidator,
+      // D.3c1a — copied the same way, so AgentRunner can validate a
+      // semantic-fail route token against this step's own declared keys.
+      on_fail_routes: step.on_fail_routes,
+      // D.3b1.1 — Objective human-intent snapshot, passed straight through
+      // from run()'s own params (never queried here). Rendering is gated by
+      // includeObjectiveContext — see ContextManager.buildTaskDescription.
+      objectiveContext,
+      includeObjectiveContext: step.includeObjectiveContext,
+      // D.3c0 — resolved human decision, passed straight through from run()'s
+      // own params (never queried here). Rendering is gated by
+      // includeDecisionContext — see ContextManager.buildTaskDescription.
+      decisionContext,
+      includeDecisionContext: step.includeDecisionContext,
     };
   }
 

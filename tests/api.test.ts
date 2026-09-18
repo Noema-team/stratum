@@ -6,6 +6,8 @@ import {
   WorkspaceRepository,
   ProjectRepository,
   WorkItemRepository,
+  ArtifactRepository,
+  ObjectiveRepository,
 } from '../src/storage/repositories.js';
 import { WorkService } from '../src/services/work-service.js';
 import { EvidenceService } from '../src/services/evidence-service.js';
@@ -41,7 +43,7 @@ let _port = 19100;
 function nextPort() { return ++_port; }
 
 async function withServer(
-  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService }) => Promise<void>,
+  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService; db: ReturnType<typeof openTestDb> }) => Promise<void>,
 ): Promise<void> {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
@@ -63,7 +65,7 @@ async function withServer(
   await srv.listen();
   const base = `http://localhost:${srv.port}`;
   try {
-    await fn(base, { workItem: wi, project: proj, workspace: ws, workService });
+    await fn(base, { workItem: wi, project: proj, workspace: ws, workService, db });
   } finally {
     await srv.close();
     db.close();
@@ -233,6 +235,223 @@ test('testEvidenceRequiresFields', async () => {
   await withServer(async (base, { workItem }) => {
     const r = await post(`${base}/work/${workItem.id}/evidence`, { type: 'github.ci' });
     assert.equal(r.status, 400);
+  });
+});
+
+// ============================================================================
+// Artifacts (D.1c — docs/developmentPlan/d1a-declarative-contract-spike.md §4)
+// ============================================================================
+
+test('testArtifactsEmptyInitially', async () => {
+  await withServer(async (base, { workItem }) => {
+    const r = await get(`${base}/work/${workItem.id}/artifacts`);
+    assert.equal(r.status, 200);
+    assert.deepEqual((r.body as { data: unknown[] }).data, []);
+  });
+});
+
+test('testArtifactsReturnsLatestPerRef', async () => {
+  await withServer(async (base, { workItem, db }) => {
+    const artifacts = new ArtifactRepository(db);
+    const now = new Date().toISOString();
+    artifacts.save({
+      id: 'a1', workItemId: workItem.id, workflowRunId: 'run-1',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashA', createdAt: now,
+    });
+    // A second, later version of the same ref — only the latest should be returned.
+    artifacts.save({
+      id: 'a2', workItemId: workItem.id, workflowRunId: 'run-1',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashB', createdAt: now,
+    });
+
+    const r = await get(`${base}/work/${workItem.id}/artifacts`);
+    assert.equal(r.status, 200);
+    const data = (r.body as { data: Array<{ ref: string; hash: string; path: string }> }).data;
+    assert.equal(data.length, 1, 'only the current version of the ref should be returned, not full history');
+    assert.equal(data[0].ref, 'definition:definition');
+    assert.equal(data[0].hash, 'hashB');
+    // Metadata only — no field carries file content, only its recorded path.
+    assert.equal(data[0].path, '.sle/work/definition.md');
+  });
+});
+
+test('testArtifactsNotFoundForUnknownWorkItem', async () => {
+  await withServer(async (base) => {
+    const r = await get(`${base}/work/does-not-exist/artifacts`);
+    assert.equal(r.status, 404);
+  });
+});
+
+test('testArtifactsWorkspaceIsolation', async () => {
+  await withServer(async (base, { db }) => {
+    // A WorkItem in a completely different workspace, with an artifact
+    // recorded against it, must not be reachable through this server
+    // (configured for the first workspace) even though the id is valid.
+    const wsB: Workspace = { id: randomUUID(), name: 'ws-b', createdAt: new Date().toISOString() };
+    new WorkspaceRepository(db).save(wsB);
+    const projB = makeProject(wsB.id);
+    new ProjectRepository(db).save(projB);
+    const wiB = makeWorkItem(projB.id);
+    new WorkItemRepository(db).save(wiB);
+    new ArtifactRepository(db).save({
+      id: 'a-b1', workItemId: wiB.id, workflowRunId: 'run-b',
+      type: 'definition', ref: 'definition:definition', path: '.sle/work/definition.md',
+      hash: 'hashB', createdAt: new Date().toISOString(),
+    });
+
+    const r = await get(`${base}/work/${wiB.id}/artifacts`);
+    assert.equal(r.status, 404, 'a WorkItem belonging to another workspace must not be visible through this endpoint');
+  });
+});
+
+// ============================================================================
+// Objectives (D.2 — Project -> Objective -> WorkItems)
+// ============================================================================
+
+test('testObjectivesEmptyInitially', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await get(`${base}/projects/${project.id}/objectives`);
+    assert.equal(r.status, 200);
+    assert.deepEqual((r.body as { data: unknown[] }).data, []);
+  });
+});
+
+test('testObjectivesCreate', async () => {
+  await withServer(async (base, { project }) => {
+    const r = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'Make Evershift multiplayer-capable',
+      description: 'Players can host and join sessions together.',
+      priority: 3,
+    });
+    assert.equal(r.status, 200);
+    const data = (r.body as { data: Record<string, unknown> }).data;
+    assert.equal(data.projectId, project.id);
+    assert.equal(data.title, 'Make Evershift multiplayer-capable');
+    assert.equal(data.status, 'draft');
+    assert.equal(data.priority, 3);
+    assert.ok(data.createdAt);
+    assert.ok(data.updatedAt);
+    assert.equal(data.linkedWorkItemCount, 0);
+  });
+});
+
+test('testObjectivesCreateRequiresFields', async () => {
+  await withServer(async (base, { project }) => {
+    const r1 = await post(`${base}/projects/${project.id}/objectives`, { description: 'D' });
+    assert.equal(r1.status, 400);
+    const r2 = await post(`${base}/projects/${project.id}/objectives`, { title: 'T' });
+    assert.equal(r2.status, 400);
+  });
+});
+
+// D.2.1 — the array-shape check (`Array.isArray`) alone does not validate
+// element structure; ObjectiveService's ObjectiveSchema.safeParse() check is
+// what actually rejects these, surfaced here as an ordinary 400.
+test('testObjectivesCreateRejectsMalformedConstraintElements', async () => {
+  await withServer(async (base, { project }) => {
+    const r1 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [null],
+    });
+    assert.equal(r1.status, 400, `expected 400 for constraints: [null], got ${r1.status}: ${JSON.stringify(r1.body)}`);
+
+    const r2 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [{ foo: 'bar' }],
+    });
+    assert.equal(r2.status, 400, `expected 400 for a constraint missing 'description', got ${r2.status}`);
+
+    const r3 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', successCriteria: [{ met: true }],
+    });
+    assert.equal(r3.status, 400, `expected 400 for successCriteria missing 'description', got ${r3.status}`);
+
+    const r4 = await post(`${base}/projects/${project.id}/objectives`, {
+      title: 'T', description: 'D', constraints: [{ description: 'x', type: 'not-a-real-type' }],
+    });
+    assert.equal(r4.status, 400, `expected 400 for an invalid constraint type, got ${r4.status}`);
+
+    // None of the rejected requests should have persisted anything.
+    const list = await get(`${base}/projects/${project.id}/objectives`);
+    assert.deepEqual((list.body as { data: unknown[] }).data, []);
+  });
+});
+
+test('testObjectivesListByProject', async () => {
+  await withServer(async (base, { project }) => {
+    await post(`${base}/projects/${project.id}/objectives`, { title: 'A', description: 'D' });
+    await post(`${base}/projects/${project.id}/objectives`, { title: 'B', description: 'D' });
+
+    const r = await get(`${base}/projects/${project.id}/objectives`);
+    assert.equal(r.status, 200);
+    const data = (r.body as { data: Array<{ title: string }> }).data;
+    assert.equal(data.length, 2);
+    assert.deepEqual(data.map((o) => o.title).sort(), ['A', 'B']);
+  });
+});
+
+test('testObjectivesGetById', async () => {
+  await withServer(async (base, { project }) => {
+    const created = await post(`${base}/projects/${project.id}/objectives`, { title: 'T', description: 'D' });
+    const id = (created.body as { data: { id: string } }).data.id;
+
+    const r = await get(`${base}/objectives/${id}`);
+    assert.equal(r.status, 200);
+    assert.equal((r.body as { data: { id: string } }).data.id, id);
+  });
+});
+
+test('testObjectivesGetByIdNotFound', async () => {
+  await withServer(async (base) => {
+    const r = await get(`${base}/objectives/does-not-exist`);
+    assert.equal(r.status, 404);
+  });
+});
+
+test('testObjectivesLinkedWorkItemCount', async () => {
+  await withServer(async (base, { project, workService }) => {
+    const created = await post(`${base}/projects/${project.id}/objectives`, { title: 'T', description: 'D' });
+    const objectiveId = (created.body as { data: { id: string } }).data.id;
+
+    workService.createWorkItem({
+      projectId: project.id, title: 'linked', goal: 'g', workflowId: 'draft-artifact', objectiveId,
+    });
+
+    const r = await get(`${base}/objectives/${objectiveId}`);
+    assert.equal((r.body as { data: { linkedWorkItemCount: number } }).data.linkedWorkItemCount, 1);
+  });
+});
+
+test('testObjectivesCrossWorkspaceProjectCreateFails', async () => {
+  await withServer(async (base, { db }) => {
+    // A Project in a completely different workspace: POSTing an Objective
+    // against it (through a server configured for the first workspace) must
+    // fail closed even though the project id is valid.
+    const wsB: Workspace = { id: randomUUID(), name: 'ws-b', createdAt: new Date().toISOString() };
+    new WorkspaceRepository(db).save(wsB);
+    const projB = makeProject(wsB.id);
+    new ProjectRepository(db).save(projB);
+
+    const r = await post(`${base}/projects/${projB.id}/objectives`, { title: 'T', description: 'D' });
+    assert.equal(r.status, 404, 'creating an Objective against another workspace\'s Project must fail closed');
+  });
+});
+
+test('testObjectivesCrossWorkspaceLookupFails', async () => {
+  await withServer(async (base, { db }) => {
+    const wsB: Workspace = { id: randomUUID(), name: 'ws-b', createdAt: new Date().toISOString() };
+    new WorkspaceRepository(db).save(wsB);
+    const projB = makeProject(wsB.id);
+    new ProjectRepository(db).save(projB);
+    const now = new Date().toISOString();
+    const objectiveB = {
+      id: randomUUID(), projectId: projB.id, title: 'T', description: 'D', priority: 0,
+      status: 'draft' as const, constraints: [], successCriteria: [], createdAt: now, updatedAt: now,
+    };
+    new ObjectiveRepository(db).save(objectiveB);
+
+    const r = await get(`${base}/objectives/${objectiveB.id}`);
+    assert.equal(r.status, 404, 'an Objective belonging to another workspace must not be visible through this endpoint');
   });
 });
 

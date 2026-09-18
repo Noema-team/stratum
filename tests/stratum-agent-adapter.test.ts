@@ -49,8 +49,10 @@ class SpyRunArtifacts {
 
 class SpyAgentRunner {
   public calls: string[] = [];
-  async run(role: string, _ctx: StepRunContext): Promise<AgentRunResult> {
+  public lastCtx: StepRunContext | undefined;
+  async run(role: string, ctx: StepRunContext): Promise<AgentRunResult> {
     this.calls.push(role);
+    this.lastCtx = ctx;
     return { success: true, next_node: null as any, artifacts_written: [], tokens_used: 0, duration_ms: 1, raw_output_path: '' };
   }
   [key: string]: unknown;
@@ -179,7 +181,10 @@ function makeAdapter(opts: AdapterHarnessOpts = {}): {
   return { adapter: new StratumAgentAdapter(engineDeps, engineOpts), agentSpy, criticSpy, runArtifacts, cleanup };
 }
 
-function makeRequest(workflowParameters?: Record<string, unknown>): ExecutionRequest {
+function makeRequest(
+  workflowParameters?: Record<string, unknown>,
+  overrides: Partial<ExecutionRequest> = {},
+): ExecutionRequest {
   return {
     stepExecutionId: 'se-1',
     workItemId: 'wi-1',
@@ -193,6 +198,7 @@ function makeRequest(workflowParameters?: Record<string, unknown>): ExecutionReq
     permissions: { pushBranch: false, createPr: false, merge: false },
     budget: {},
     workflowParameters,
+    ...overrides,
   };
 }
 
@@ -281,4 +287,30 @@ test('resolveWorkflowInvocationNonFullBuildDoesNotThrowOnMissingFullBuildFields'
   assert.doesNotThrow(() => {
     resolveWorkflowInvocation('draft-artifact', { planning_depth: 'not-a-valid-depth' });
   }, 'non-full-build must not validate through FullBuildParams schema');
+});
+
+// ============================================================================
+// D.3b1.2 — ExecutionRequest.objectiveContext -> StepRunContext.objectiveContext
+// ============================================================================
+
+test('D.3b1.2: StratumAgentAdapter forwards ExecutionRequest.objectiveContext onto StepRunContext.objectiveContext', async () => {
+  const { adapter, agentSpy, cleanup } = makeAdapter();
+  try {
+    const objectiveContext = {
+      id: 'obj-adapter-forwarding',
+      title: 'Add real-time multiplayer to Evershift',
+      description: 'Players can join and play a shared session together in real time.',
+      constraints: [{ description: 'Must stay same-platform', type: 'must' as const }],
+      successCriteria: [{ description: 'Two players can join a session' }],
+    };
+
+    const result = await adapter.execute(makeRequest(
+      { planning_depth: 'minimal' },
+      { objectiveContext },
+    ));
+
+    assert.equal(result.outcome, 'succeeded', `expected succeeded, got: ${result.failure?.message}`);
+    assert.deepStrictEqual(agentSpy.lastCtx?.objectiveContext, objectiveContext,
+      'the adapter must forward ExecutionRequest.objectiveContext through WorkflowEngine onto StepRunContext.objectiveContext');
+  } finally { cleanup(); }
 });

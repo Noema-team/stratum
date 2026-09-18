@@ -1,0 +1,730 @@
+// D.3d.5 commit 1 — the unified StepResult transport seam.
+//
+// Locks the new boundary established by this commit:
+//
+//   - the canonical StepResult contract (artifacts + optional review
+//     verdict, NEVER a route — commit 3 removed model route authority:
+//     routes are derived deterministically from structured gap
+//     classifications, never read from the reply);
+//   - the textual SLE-OUTPUT fallback as the only transport current
+//     providers genuinely get, with a structured transport injectable for
+//     providers/adapters that have real structured-output capability;
+//   - bounded format repair for BOTH non-compliance kinds: a reply whose
+//     result block is malformed (the old parseWithRetry path) AND a reply
+//     with no result block at all (previously an immediate fatal failure —
+//     the GPT-OSS-120B live failure mode);
+//   - repair exhaustion fails closed;
+//   - honest diagnostics: ordinary turns and format-repair attempts are
+//     counted and reported separately (the pre-D.3d.5 "after N turn(s)"
+//     message implied N repair attempts where none had happened);
+//   - a model-declared `route:` token is IGNORED — it carries no authority
+//     anywhere in the system.
+
+import { test } from 'node:test';
+import { strict as assert } from 'node:assert';
+import { promises as fs } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { AgentLoop, type IMultiTurnProvider, type MultiTurnResult, type MultiTurnParams } from '../src/agent-loop.js';
+import { AgentRunner, type AgentRunnerConfig, validateOutputPath } from '../src/agent-runner.js';
+import { createReviewRouteDeriver } from '../src/workflow/methodology/readiness-artifact.js';
+import type { RunArtifactManager } from '../src/run-artifacts.js';
+import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
+import {
+  type ResultTransport,
+  type StepResult,
+  type TransportContext,
+  MAX_FORMAT_REPAIRS,
+  TransportParseError,
+} from '../src/transport/step-result.js';
+import {
+  TextualSleOutputTransport,
+  resolveResultTransport,
+} from '../src/transport/textual-sle-output.js';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const PRODUCE_CTX: TransportContext = { role: 'explorer', requiresReviewVerdict: false, execution: 'multi-turn' };
+
+function endTurn(text: string, tokens = 10): MultiTurnResult {
+  return { stop_reason: 'end_turn', text, tool_uses: [], tokens_used: tokens };
+}
+
+function sleBlock(path: string, content: string): string {
+  return `<<<SLE-OUTPUT>>>\n### ${path}\n${content}\n<<<END-SLE-OUTPUT>>>\n`;
+}
+
+function makeLoop(provider: IMultiTurnProvider, opts: Partial<Parameters<typeof AgentLoop.prototype.run> extends never ? never : Record<string, unknown>> = {}): AgentLoop {
+  return new AgentLoop(provider, {
+    model: 'test',
+    projectRoot: mkdtempSync(join(tmpdir(), 'd3d5-loop-')),
+    role: 'explorer',
+    workflowRunId: 'r',
+    iteration: 1,
+    nodeId: 'n',
+    runArtifacts: { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+    ...opts,
+  });
+}
+
+// A minimal real-shaped structured transport — stands in for a future
+// provider-native structured-output adapter. It accepts raw replies that
+// are JSON StepResults, on BOTH execution paths. No provider capability is
+// faked: this object exists to prove the SEAM carries a non-textual
+// StepResult end to end, including single-turn review.
+class JsonStepResultTransport implements ResultTransport {
+  readonly name = 'json-step-result';
+  formatInstruction(): string {
+    return 'Reply with a single JSON object: {"artifacts":[{"path":"...","content":"..."}]}';
+  }
+  extractProduce(raw: string): StepResult {
+    return this.parse(raw);
+  }
+  extractSingleTurn(raw: string): StepResult {
+    return this.parse(raw);
+  }
+  private parse(raw: string): StepResult {
+    try {
+      const obj = JSON.parse(raw) as { artifacts?: unknown; review?: { verdict?: string } };
+      if (!Array.isArray(obj.artifacts)) throw new Error('missing artifacts');
+      // D.34 C1 — a bytes transport yields the materialized kind.
+      const stepResult: StepResult = {
+        kind: 'materialized',
+        artifacts: obj.artifacts as Array<{ path: string; content: string }>,
+      };
+      if (obj.review?.verdict === 'pass' || obj.review?.verdict === 'fail') {
+        stepResult.review = { verdict: obj.review.verdict };
+      }
+      return stepResult;
+    } catch (err) {
+      throw new TransportParseError('invalid JSON StepResult', raw, (err as Error).message);
+    }
+  }
+  repairInstruction(): string {
+    return 'Reply with a single valid JSON StepResult object.';
+  }
+}
+
+// ─── Canonical contract ───────────────────────────────────────────────────────
+
+test('D.3d.5.1: the canonical StepResult carries no route — the model token stays outside the contract (commit 3: ignored everywhere)', () => {
+  const t = new TextualSleOutputTransport();
+  const raw =
+    '<!-- SLE-OUTPUT\n' +
+    'role: explorer\nnode: review\n' +
+    'artifacts:\n  - id: readiness\n    path: .sle/work/w/readiness.md\n' +
+    'verdict: fail\nroute: human\n-->\n\n## .sle/work/w/readiness.md\n\nbody';
+  const stepResult = t.extractSingleTurn(raw, { role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' });
+  // D.34 C1 — StepResult is a discriminated union: the textual transport
+  // yields kind 'materialized' with exactly artifacts and (optionally) review.
+  assert.equal(stepResult.kind, 'materialized');
+  assert.deepEqual(Object.keys(stepResult).sort(), ['artifacts', 'kind', 'review'], 'materialized StepResult has exactly kind, artifacts and (optionally) review');
+  assert.equal(stepResult.kind === 'materialized' ? stepResult.review?.verdict : undefined, 'fail');
+  assert.equal((stepResult as Record<string, unknown>)['route'], undefined, 'route must never appear on StepResult');
+  // D.3d.5 commit 3 — the model-declared token is simply ignored: the
+  // transport neither extracts nor surfaces it, and no migration helper
+  // exists anymore. Control flow comes only from deterministic derivation.
+  assert.equal(resolveResultTransport(undefined).name, 'textual-sle-output', 'default transport is the textual fallback');
+});
+
+// ─── Textual fallback extraction ─────────────────────────────────────────────
+
+test('D.3d.5.1: textual transport extracts a produce reply into a StepResult', () => {
+  const t = new TextualSleOutputTransport();
+  const result = t.extractProduce(sleBlock('.sle/work/w/definition.md', '# Definition body'), PRODUCE_CTX);
+  assert.equal(result.artifacts.length, 1);
+  assert.equal(result.artifacts[0].path, '.sle/work/w/definition.md');
+  assert.equal(result.review, undefined, 'produce replies carry no review');
+});
+
+test('D.3d.5.1: textual transport raises TransportParseError with a reason for malformed blocks', () => {
+  const t = new TextualSleOutputTransport();
+  const malformed = '<<<SLE-OUTPUT>>>\n### .sle/work/w/definition.md\n\n<<<END-SLE-OUTPUT>>>'; // empty content
+  assert.throws(() => t.extractProduce(malformed, PRODUCE_CTX), TransportParseError);
+});
+
+// ─── Structured result path (seam, honestly labeled) ─────────────────────────
+
+test('D.3d.5.1: a structured transport is injectable and its StepResult flows through the loop unchanged', async () => {
+  const jsonReply = JSON.stringify({ artifacts: [{ path: '.sle/work/w/definition.md', content: '# Structured' }] });
+  const provider: IMultiTurnProvider = { async completeMultiTurn() { return endTurn(jsonReply); } };
+  const loop = makeLoop(provider, { resultTransport: new JsonStepResultTransport() });
+  const result = await loop.run('System', 'Produce.');
+  assert.equal(result.success, true);
+  assert.equal(result.format_repairs, 0);
+  assert.equal(result.parsedOutput?.sections[0].path, '.sle/work/w/definition.md');
+  assert.equal(result.parsedOutput?.sections[0].content, '# Structured');
+});
+
+// ─── Bounded format repair: absent result block (the GPT-OSS fix) ────────────
+
+test('D.3d.5.1: a reply with NO result block receives bounded format repair and can still succeed', async () => {
+  const replies = [
+    endTurn('Here is my analysis in plain prose, no block at all.'),
+    endTurn(sleBlock('.sle/work/w/definition.md', '# After repair')),
+  ];
+  const seen: MultiTurnParams[] = [];
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn(params) {
+      seen.push(params);
+      return replies[seen.length - 1] ?? endTurn('', 1);
+    },
+  };
+  const loop = makeLoop(provider);
+  const result = await loop.run('System', 'Produce.');
+
+  assert.equal(result.success, true, result.error);
+  assert.equal(result.format_repairs, 1, 'exactly one bounded repair attempt');
+  // The repair turn must contain the transport's absence-repair prompt AND
+  // the assistant's non-compliant reply for context.
+  const lastUser = seen[1].messages.at(-1);
+  assert.equal(lastUser?.role, 'user');
+  assert.ok(String(lastUser?.content).includes('did not contain the required machine-readable output block'));
+  const assistantTurn = seen[1].messages.at(-2);
+  assert.equal(assistantTurn?.role, 'assistant');
+  assert.ok(String(assistantTurn?.content).includes('plain prose'));
+  // The first call's instruction injection teaches the syntax up front.
+  assert.ok(String(seen[0].messages[0].content).includes('<<<SLE-OUTPUT>>>'));
+});
+
+test('D.3d.5.1: repair exhaustion on absent result block fails closed with honest diagnostics', async () => {
+  const provider: IMultiTurnProvider = { async completeMultiTurn() { return endTurn('Prose only, never any block.'); } };
+  const loop = makeLoop(provider);
+  const result = await loop.run('System', 'Produce.');
+
+  assert.equal(result.success, false);
+  assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS);
+  // Shared diagnostic wording — counters are literally accurate:
+  // N provider turn(s) counts ALL invocations (repairs included),
+  // M format-repair attempt(s) counts repair-prompted invocations only.
+  assert.ok(result.error?.includes('carried no recognizable result block and format repair is exhausted'), result.error);
+  assert.ok(/\d+ provider turn\(s\)/.test(result.error!), 'error counts provider turns');
+  assert.ok(/\d+ format-repair attempt\(s\)/.test(result.error!), 'error counts repair attempts separately');
+});
+
+// ─── Bounded format repair: malformed result block (pre-existing behavior) ───
+
+test('D.3d.5.1: a MALFORMED result block still receives the same bounded repair and can succeed', async () => {
+  const malformed = '<<<SLE-OUTPUT>>>\n### .sle/work/w/definition.md\n\n<<<END-SLE-OUTPUT>>>'; // empty content
+  const replies = [endTurn(malformed), endTurn(sleBlock('.sle/work/w/definition.md', '# Repaired'))];
+  const seen: MultiTurnParams[] = [];
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn(params) { seen.push(params); return replies[seen.length - 1] ?? endTurn('', 1); },
+  };
+  const loop = makeLoop(provider);
+  const result = await loop.run('System', 'Produce.');
+
+  assert.equal(result.success, true, result.error);
+  assert.equal(result.format_repairs, 1);
+  const lastUser = seen[1].messages.at(-1);
+  assert.ok(String(lastUser?.content).includes('not parseable'), 'malformed repair names the parse reason');
+});
+
+test('D.3d.5.1: repair exhaustion on malformed block fails closed with honest diagnostics', async () => {
+  const malformed = '<<<SLE-OUTPUT>>>\n### .sle/work/w/definition.md\n\n<<<END-SLE-OUTPUT>>>';
+  const provider: IMultiTurnProvider = { async completeMultiTurn() { return endTurn(malformed); } };
+  const loop = makeLoop(provider);
+  const result = await loop.run('System', 'Produce.');
+
+  assert.equal(result.success, false);
+  assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS);
+  assert.ok(result.error?.includes('carried a malformed result block and format repair is exhausted'), result.error);
+  assert.ok(/\d+ provider turn\(s\)/.test(result.error!));
+  assert.ok(/\d+ format-repair attempt\(s\)/.test(result.error!));
+});
+
+// ─── Runner-level seam wiring ────────────────────────────────────────────────
+
+test('D.3d.5.1: AgentRunner injects the transport teaching into the single-turn request', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-runner-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }>; model: string; max_tokens: number; temperature: number }) {
+        requests.push(params);
+        return {
+          content:
+            '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nProbe body.',
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' } satisfies Partial<AgentRunnerConfig> as AgentRunnerConfig,
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root,
+      instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(requests.length, 1);
+    const userMsg = requests[0].messages.find((m) => m.role === 'user')!;
+    assert.ok(userMsg.content.includes('<!-- SLE-OUTPUT'), 'single-turn request carries the preamble-shape teaching');
+    assert.ok(!userMsg.content.includes('<<<SLE-OUTPUT>>>'), 'single-turn teaching must not leak the multi-turn delimiter shape');
+    assert.ok(userMsg.content.includes('Do the probe.'), 'the step instruction itself is untouched');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1: AgentRunner resolves its transport through the seam, honoring an explicit override', () => {
+  const override: ResultTransport = {
+    name: 'json-single-turn',
+    formatInstruction: () => 'reply with JSON StepResult',
+    extractProduce: (raw: string) => JSON.parse(raw) as StepResult,
+    repairInstruction: () => 'reply with JSON StepResult',
+  };
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-runner2-'));
+  try {
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      { async complete() { return { content: '', tokens_used: 0 }; } } as never,
+      root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', resultTransport: override } as AgentRunnerConfig,
+    );
+    const resolved = (runner as unknown as { resultTransport: ResultTransport }).resultTransport;
+    assert.equal(resolved, override, 'an explicit transport override always wins');
+    assert.equal(
+      (new AgentRunner(cm, { async complete() { return { content: '', tokens_used: 0 }; } } as never, root, { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager, { model: 'test' }) as unknown as { resultTransport: ResultTransport }).resultTransport.name,
+      'textual-sle-output',
+      'without an override the textual fallback is resolved',
+    );
+    void validateOutputPath; // reference import (path-safety regression net stays hot)
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Total extraction ownership: single-turn review through the seam ─────────
+
+test('D.3d.5.1: a structured transport serves a REVIEW step end to end — the runner never touches the legacy preamble parser', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-review-'));
+  try {
+    // A provider whose review reply is a JSON StepResult with a fail verdict.
+    // Only the injected transport can read it; if AgentRunner still parsed
+    // the legacy HTML/YAML preamble internally, this run would fail with
+    // "Missing SLE-OUTPUT preamble comment".
+    const provider = {
+      async complete() {
+        return {
+          content: JSON.stringify({
+            artifacts: [{ path: '.sle/work/w/readiness.md', content: 'Readiness body' }],
+            review: { verdict: 'fail' },
+          }),
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', resultTransport: new JsonStepResultTransport() },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'definition-readiness-review',
+      iteration: 1, revision: 0, goal: 'review', projectRoot: root,
+      instruction: 'Review the definition.',
+      requiresReviewVerdict: true,
+      outputArtifact: { type: 'definition-readiness', ref: 'dr:1', path: '.sle/work/w/readiness.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.reviewVerdict, 'fail', 'the structured review verdict flows through the canonical contract');
+    assert.equal(result.reviewRoute, undefined, 'no legacy route token exists in a structured reply');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1: the legacy textual path still serves a REVIEW step — a model-declared route token carries NO authority (commit 3)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-review2-'));
+  try {
+    const provider = {
+      async complete() {
+        return {
+          content:
+            '<!-- SLE-OUTPUT\nrole: explorer\nnode: definition-readiness-review\nartifacts:\n  - id: readiness\n    path: .sle/work/w/readiness.md\nverdict: fail\nroute: refine\n-->\n\n## .sle/work/w/readiness.md\n\nReadiness body',
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test', deriveReviewRoute: createReviewRouteDeriver() },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'definition-readiness-review',
+      iteration: 1, revision: 0, goal: 'review', projectRoot: root,
+      instruction: 'Review the definition.',
+      requiresReviewVerdict: true,
+      on_fail_routes: { refine: { target_step_id: 'refine-definition' }, human: { target_step_id: 'prepare-human' } },
+      outputArtifact: { type: 'definition-readiness', ref: 'dr:1', path: '.sle/work/w/readiness.md' },
+    } as never);
+
+    // The model declared `route: refine` AND multiple routes are declared —
+    // but the artifact carries no structured gap classifications, so the
+    // token is ignored and derivation fails closed. The model can no longer
+    // select control flow by declaring a token.
+    assert.equal(result.success, false);
+    assert.deepStrictEqual(result.artifacts_written, []);
+    assert.match(result.error ?? '', /derivable route/);
+    assert.match(result.error ?? '', /FRONT_MATTER_MISSING/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Metadata-driven teaching: no workflow-specific assumptions ──────────────
+
+test('D.3d.5.1: single-turn teaching is generated from actual step metadata (role, node, artifact id/path)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-meta-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return {
+          content:
+            '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nProbe body.',
+          tokens_used: 5,
+        };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm,
+      provider as never,
+      root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root,
+      instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    const userMsg = requests[0].messages.find((m) => m.role === 'user')!;
+    // Generated from THIS step's metadata — nothing define-work-specific:
+    assert.ok(userMsg.content.includes('role: explorer'), 'teaching renders the actual role');
+    assert.ok(userMsg.content.includes('node: probe'), 'teaching renders the actual node id');
+    assert.ok(userMsg.content.includes('id: probe'), 'teaching renders the actual artifact id');
+    assert.ok(userMsg.content.includes('path: .sle/work/w/probe.md'), 'teaching renders the actual declared path');
+    assert.ok(!userMsg.content.includes('readiness'), 'no workflow-specific artifact names leak into teaching');
+    assert.ok(!userMsg.content.includes('workItemId'), 'no placeholder leaks when real metadata exists');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Closure: symmetric bounded repair across execution paths ────────────────
+
+const SINGLE_CTX: TransportContext = { role: 'explorer', requiresReviewVerdict: false, execution: 'single-turn', nodeId: 'probe', declaredArtifactId: 'probe', declaredOutputPath: '.sle/work/w/probe.md', expectedArtifacts: 1 };
+
+test('D.3d.5.1c: single-turn ABSENT output receives bounded repair and can still succeed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c1-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const replies = [
+      'Plain prose, no block.',
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nAfter repair.',
+    ];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return { content: replies[Math.min(requests.length - 1, replies.length - 1)], tokens_used: 4 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.format_repairs, 1, 'exactly one bounded repair attempt');
+    assert.equal(requests.length, 2, 'repair issued exactly one additional provider call');
+    // The repair instruction teaches the SINGLE-TURN representation; the
+    // previous non-compliant reply appears as the previous ASSISTANT turn.
+    const repairMsg = requests[1].messages.at(-1)!.content as string;
+    assert.ok(repairMsg.includes('did not contain the required machine-readable output block'), 'absent-kind repair wording');
+    assert.ok(!repairMsg.includes('<<<SLE-OUTPUT>>>'), 'single-turn repair must NOT teach the multi-turn delimiters');
+    const priorAssistant = requests[1].messages.find((m) => m.role === 'assistant');
+    assert.ok(priorAssistant, 'previous reply represented as an assistant turn');
+    assert.equal(priorAssistant!.content, 'Plain prose, no block.');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: single-turn MALFORMED output receives bounded repair and can still succeed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c2-'));
+  try {
+    const replies = [
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\n-->\n\nno artifacts list', // preamble missing artifacts → parse error
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nRepaired body.',
+    ];
+    const provider = {
+      async complete() {
+        return { content: replies.shift() ?? 'garbage', tokens_used: 4 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.format_repairs, 1);
+    assert.ok((result as { format_repairs?: number }).format_repairs === 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: single-turn repair exhaustion fails closed with the shared precise diagnostic', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c3-'));
+  try {
+    const provider = {
+      async complete() { return { content: 'Eternal prose, never a block.', tokens_used: 4 }; },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, false);
+    assert.equal(result.format_repairs, MAX_FORMAT_REPAIRS, 'budget NOT raised for single-turn');
+    assert.ok(result.error?.includes('carried no recognizable result block and format repair is exhausted'), result.error);
+    assert.ok(result.error?.includes('2 provider turn(s), 1 format-repair attempt(s)'), result.error);
+    assert.ok(result.raw_output_path.length > 0, 'raw output still written on exhaustion');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: multi-turn repair teaching matches the multi-turn representation (no cross-teaching)', async () => {
+  const t = new TextualSleOutputTransport();
+  const mtRepair = t.repairInstruction({ ...PRODUCE_CTX }, 'absent');
+  assert.ok(mtRepair.includes('<<<SLE-OUTPUT>>>'), 'multi-turn repair teaches delimiters');
+  assert.ok(!mtRepair.includes('<!-- SLE-OUTPUT'), 'multi-turn repair must NOT teach the preamble shape');
+  const stRepair = t.repairInstruction(SINGLE_CTX, 'absent');
+  assert.ok(stRepair.includes('<!-- SLE-OUTPUT'), 'single-turn repair teaches the preamble');
+  assert.ok(!stRepair.includes('<<<SLE-OUTPUT>>>'), 'single-turn repair must NOT teach the delimiters');
+});
+
+// ─── Closure: multi-turn gets real execution metadata ────────────────────────
+
+test('D.3d.5.1c: the multi-turn loop teaches from the step\'s REAL declared output path, not a generic placeholder', async () => {
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn(params) {
+      return endTurn(sleBlock('.sle/work/wi-9/definition.md', '# Real path run'));
+    },
+  };
+  const loop = new AgentLoop(provider, {
+    model: 'test',
+    projectRoot: mkdtempSync(join(tmpdir(), 'd3d5-c5-')),
+    role: 'explorer',
+    workflowRunId: 'r',
+    iteration: 1,
+    nodeId: 'synthesize-definition',
+    runArtifacts: { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+    declaredArtifactId: 'definition',
+    declaredOutputPath: '.sle/work/wi-9/definition.md',
+    expectedArtifacts: 1,
+  });
+  const seen: MultiTurnParams[] = [];
+  const orig = provider.completeMultiTurn.bind(provider);
+  (provider as { completeMultiTurn: typeof orig }).completeMultiTurn = async (params) => {
+    seen.push(params);
+    return orig(params);
+  };
+  const result = await loop.run('System', 'Produce.');
+  assert.equal(result.success, true, result.error);
+  const firstUser = seen[0].messages[0].content as string;
+  assert.ok(firstUser.includes('### .sle/work/wi-9/definition.md'), 'teaching renders the actual declared path');
+  assert.ok(!firstUser.includes('workItemId'), 'no generic placeholder when real metadata exists');
+  assert.ok(firstUser.includes('Never emit more than one artifact section'), 'single-declared-artifact step gets the single-artifact restriction');
+});
+
+// ─── Closure: artifact cardinality reflects the executing step ───────────────
+
+test('D.3d.5.1c: the one-artifact restriction is NOT a transport-wide law', () => {
+  const t = new TextualSleOutputTransport();
+  const constrained = t.formatInstruction({
+    role: 'explorer', requiresReviewVerdict: false, execution: 'multi-turn',
+    nodeId: 'synthesize-definition', declaredArtifactId: 'definition',
+    declaredOutputPath: '.sle/work/w/definition.md', expectedArtifacts: 1,
+  });
+  assert.ok(constrained.includes('Never emit more than one artifact section'), 'a single-declared-artifact step requires exactly that artifact');
+
+  const unconstrained = t.formatInstruction({
+    role: 'builder', requiresReviewVerdict: false, execution: 'multi-turn',
+    nodeId: 'implement', expectedArtifacts: undefined,
+  });
+  assert.ok(
+    !unconstrained.includes('Never emit more than one artifact section'),
+    'a multi-artifact-compatible execution must not have a false one-artifact restriction taught',
+  );
+  assert.ok(unconstrained.includes("one '### <path>' section per declared output artifact"), 'multi-artifact teaching asks for one section per declared artifact');
+});
+
+// ─── D.3d.5 commit-1 final closure: three repair-mechanics defects ───────────
+
+test('D.3d.5.1c: the repair conversation is a CONTINUATION — original task, teaching, assistant reply, then repair instruction', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c7-'));
+  try {
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    // First reply is invalid AND carries no reconstructable context (no path,
+    // no teaching — the repair can only succeed from retained conversation).
+    const replies = [
+      'A context-free prose answer.',
+      '<!-- SLE-OUTPUT\nrole: explorer\nnode: probe\nartifacts:\n  - id: probe\n    path: .sle/work/w/probe.md\n-->\n\n## .sle/work/w/probe.md\n\nRepaired from retained context.',
+    ];
+    const provider = {
+      async complete(params: { messages: Array<{ role: string; content: string }> }) {
+        requests.push(params);
+        return { content: replies[Math.min(requests.length - 1, 1)], tokens_used: 3 };
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      { updateNodeStatus: async () => {}, writeNodeOutput: async () => {} } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(requests.length, 2);
+    const repair = requests[1].messages;
+    // system retained
+    assert.equal(repair[0].role, 'system');
+    // ORIGINAL user content retained (task + transport teaching + declared path)
+    const originalUser = repair.find((m) => m.role === 'user')!;
+    assert.ok(originalUser.content.includes('Do the probe.'), 'original task retained');
+    assert.ok(originalUser.content.includes('<!-- SLE-OUTPUT'), 'original transport teaching retained');
+    assert.ok(originalUser.content.includes('.sle/work/w/probe.md'), 'declared path retained via original teaching');
+    // previous reply represented AS an assistant turn
+    const assistantTurn = repair.find((m) => m.role === 'assistant');
+    assert.ok(assistantTurn, 'previous reply appears as an assistant turn');
+    assert.equal(assistantTurn!.content, 'A context-free prose answer.');
+    // final user message is the transport repair instruction
+    const last = repair.at(-1)!;
+    assert.equal(last.role, 'user');
+    assert.ok(last.content.includes('did not contain the required machine-readable output block'), 'repair instruction is the final user message');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('D.3d.5.1c: a provider exception ON the repair call preserves all prior evidence', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'd3d5-c8-'));
+  try {
+    let calls = 0;
+    const provider = {
+      async complete() {
+        calls++;
+        if (calls === 1) return { content: 'Malformed prose, tokens count.', tokens_used: 7 };
+        throw new Error('network reset mid-repair');
+      },
+    };
+    const cm = new ContextManager(root, DEFAULT_CONFIG);
+    const runner = new AgentRunner(
+      cm, provider as never, root,
+      {
+        updateNodeStatus: async () => {},
+        // actually persist, so raw-output preservation is observable
+        writeNodeOutput: async (runId: string, iter: number, node: string, content: string) => {
+          const p = join(root, '.sle', 'runs', runId, String(iter), 'node-outputs', `${node.toLowerCase()}.md`);
+          const dir = p.slice(0, p.lastIndexOf('/'));
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(p, content, 'utf-8');
+        },
+      } as unknown as RunArtifactManager,
+      { model: 'test' },
+    );
+    const result = await runner.run('explorer', {
+      workflowRunId: 'r', workflowId: 'wf', stepId: 'probe', iteration: 1, revision: 0,
+      goal: 'probe', projectRoot: root, instruction: 'Do the probe.',
+      outputArtifact: { type: 'probe', ref: 'probe:1', path: '.sle/work/w/probe.md' },
+    } as never);
+
+    assert.equal(result.success, false);
+    assert.ok(result.error?.includes('network reset mid-repair'), result.error);
+    assert.equal(result.tokens_used, 7, 'accumulated tokens from the successful first call preserved');
+    assert.equal((result as { format_repairs?: number }).format_repairs, 1, 'the initiated repair attempt is counted');
+    // latest available raw reply preserved in the raw output record
+    const rawWritten = await fs.readFile(result.raw_output_path, 'utf-8');
+    assert.ok(rawWritten.includes('Malformed prose, tokens count.'), 'prior raw model reply not erased');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── D.3d.5 commit-1 final closure: single-turn absent/malformed taxonomy ────
+
+test('D.3d.5.1c: single-turn extraction taxonomy — no preamble is ABSENT, broken preamble is MALFORMED', () => {
+  const t = new TextualSleOutputTransport();
+  const stCtx: TransportContext = { role: 'explorer', requiresReviewVerdict: true, execution: 'single-turn' };
+  try {
+    t.extractSingleTurn('Pure prose, no preamble marker anywhere.', stCtx);
+    assert.fail('expected TransportParseError');
+  } catch (err) {
+    assert.ok(err instanceof TransportParseError);
+    assert.equal((err as TransportParseError).kind, 'absent', 'no preamble at all must classify ABSENT');
+  }
+  try {
+    // preamble exists but is invalid (missing artifacts list)
+    t.extractSingleTurn('<!-- SLE-OUTPUT\nrole: explorer\nnode: x\n-->\n\nbody without artifacts', stCtx);
+    assert.fail('expected TransportParseError');
+  } catch (err) {
+    assert.ok(err instanceof TransportParseError);
+    assert.equal((err as TransportParseError).kind, 'malformed', 'an existing-but-invalid preamble must classify MALFORMED');
+  }
+});
