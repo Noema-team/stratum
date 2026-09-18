@@ -1,21 +1,38 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-09-15
+**Updated:** 2026-09-18
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
-> **Current work pointer (2026-09-15):** the D.3 line postdates the phase table below
+> **Current work pointer (2026-09-18):** the D.3 line postdates the phase table below
 > (see `docs/developmentPlan/d3a…d3d*` history); **D.34 (DDR-034 output contracts,
 > C1–C7) is DONE and FROZEN** at baseline SHA `8263665` (PR #9). The active execution
-> plan is now the Era II plan
+> plan is the Era II plan
 > [post-d34-roadmap.md](post-d34-roadmap.md) (E0–E10: qualification → Pilot A →
 > evidence-driven hardening → multi-task pilot), under decision
 > [DDR-035](../decisions/ddr-035-post-d34-operational-pivot.md). E0 (freeze) and E1
 > (environment) are DONE: under the supported runtime (Node v22.23.2, per the
-> `node >=22` baseline requirement) `npm run verify` is fully green — 1496 pass /
-> 0 fail; the previously tracked 29-failure "baseline" was the unsupported Node 20
-> native module, not code. Next: E2 — freeze the GLM-5.3-Flash qualification config
-> and run the 15-run series. The phase table below is historical as of 2026-06-16
-> and has not been comprehensively modernized.
+> `node >=22` baseline requirement) the suite is fully green — 1561 pass / 0 fail.
+>
+> **Qualification (E2–E4) status:** instrument hardening landed across successive
+> series — DDR-036/037/038 (escalation ownership, harness seams; PRs #13–#15 →
+> `d2c4856`/`387f4e8`/`d38a1cf`), DDR-039 oracle identity join (PR #18 → `325f453`),
+> DDR-040 decision creation-time identity propagation (PR #19, MERGED → `7b2d1ce`;
+> root fix: the ResumeService creation path now binds `targetFactId` like the
+> scheduler — E4-G inv 4's UNLINKED halt was a system lifecycle defect, not model
+> omission). Series
+> scores: E4-E (GLM-5.3 full) adjudicated 11/15; E4-F void-incomplete (6 valid runs
+> preserved, uncounted); **E4-G (GLM-5.3-Flash, 16K, OpenRouter) raw 13/15 — best
+> raw score of any candidate — adjudicated 14/15** (~$0.13/series; flash's only
+> clean miss is a terminal `submit_result` lapse). Per-run evidence lives in the
+> experiment clones (`~/Documents/repos/E4-*`), not this repo.
+>
+> **Next: E4-H — the frozen FINAL qualification series** (GLM-5.3-Flash, OpenRouter
+> `z-ai/glm-5.3-flash`, 16K, temperature 0.7, EARLY×5/PARTIAL×5/MATURE×5, 15/15
+> rule, no mid-series changes), at the qualification-branch head once this
+> docs-only refresh merges; no other changes before it. Qualification closes with
+> H regardless of ordinary model variance; then **Pilot A** (student-platform
+> #108, GLM-5.3-Flash builder via Coding Plan). The phase table below is
+> historical as of 2026-06-16 and has not been comprehensively modernized.
 
 ---
 
