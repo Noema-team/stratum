@@ -14,7 +14,7 @@ import { openDatabase } from './storage/database.js';
 import { WorkService } from './services/work-service.js';
 import { EvidenceService } from './services/evidence-service.js';
 import { ResumeService } from './services/resume-service.js';
-import { WorkflowRunRepository, ArtifactRepository, DecisionRepository } from './storage/repositories.js';
+import { WorkflowRunRepository, ArtifactRepository, DecisionRepository, WorkItemRepository } from './storage/repositories.js';
 
 import { ExecutorRegistry } from './execution/registry.js';
 import { StratumAgentAdapter } from './execution/stratum-agent-adapter.js';
@@ -227,6 +227,10 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
 
   // ── WorkflowEngine deps ────────────────────────────────────────────────────
   const workflowRunRepository = new WorkflowRunRepository(db);
+  // DDR-041 — used by StratumAgentAdapter to validate a declared
+  // definitionSource against the execution WorkItem's project/Objective
+  // authority before any step runs (fail-closed; see definition-source.ts).
+  const workItemRepository = new WorkItemRepository(db);
 
   const engineDeps = {
     stepRunner: fullBuildStepRunner,
@@ -234,6 +238,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     runArtifacts,
     projectRoot,
     workflowRunRepository,
+    workItemRepository,
   };
 
   const engineOpts = {

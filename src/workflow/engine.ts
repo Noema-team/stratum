@@ -1,6 +1,6 @@
 import type { RuntimeMapManager } from '../runtime-map.js';
 import type { RunArtifactManager } from '../run-artifacts.js';
-import type { WorkflowRunRepository } from '../storage/repositories.js';
+import type { WorkflowRunRepository, WorkItemRepository } from '../storage/repositories.js';
 import type {
   CapHitAction,
   WorkflowRun,
@@ -12,6 +12,7 @@ import type {
   StepRunContext,
   ObjectiveContext,
   DecisionContext,
+  AuthoritativeDefinition,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
@@ -29,6 +30,11 @@ export interface WorkflowEngineDeps {
   // When present, the engine durably persists WorkflowRun cursor state and
   // operates in fail-closed mode: persistence failures abort lifecycle transitions.
   workflowRunRepository?: WorkflowRunRepository;
+  // DDR-041 — needed only when a run declares a definitionSource: the adapter
+  // validates the source WorkItem's project/Objective/state against the
+  // execution WorkItem before any step runs. Absent deps with a declared
+  // source fail closed (see definition-source.ts).
+  workItemRepository?: WorkItemRepository;
 }
 
 export interface WorkflowEngineOptions {
@@ -58,6 +64,10 @@ export class WorkflowEngine {
     private readonly deps: WorkflowEngineDeps,
     private readonly opts: WorkflowEngineOptions,
   ) {}
+
+  // DDR-041 — authoritative Definition for the current run() invocation,
+  // threaded into every StepRunContext (see run()'s parameter).
+  private authoritativeDefinitionForRun?: AuthoritativeDefinition;
 
   // --------------------------------------------------------------------------
   // run — execute a workflow definition from the given start step.
@@ -110,7 +120,16 @@ export class WorkflowEngine {
     // ExecutionRequest.decisionContext) — Scheduler's initial dispatch has
     // none. Never queried here.
     decisionContext?: DecisionContext,
+    // DDR-041 — the integrity-pinned canonical Definition this run implements,
+    // resolved once by StratumAgentAdapter from the frozen definitionSource in
+    // the run's resolvedParameters (initial dispatch and resume alike). Carried
+    // through to every StepRunContext verbatim; never re-selected here.
+    authoritativeDefinition?: AuthoritativeDefinition,
   ): Promise<WorkflowRunResult> {
+    // DDR-041 — set per run() invocation; the adapter creates a fresh engine
+    // per execute(), and run() resetting it at entry keeps any direct reuse
+    // honest.
+    this.authoritativeDefinitionForRun = authoritativeDefinition;
 
     // ---- SQLite cursor ownership --------------------------------------------
     // For existing runs, the persisted cursor is authoritative. Callers may not
@@ -841,6 +860,9 @@ export class WorkflowEngine {
       // includeDecisionContext — see ContextManager.buildTaskDescription.
       decisionContext,
       includeDecisionContext: step.includeDecisionContext,
+      // DDR-041 — verbatim authoritative Definition for this run; rendering is
+      // unconditional (it IS the authority), see ContextManager.
+      authoritativeDefinition: this.authoritativeDefinitionForRun,
     };
   }
 

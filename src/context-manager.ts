@@ -7,7 +7,7 @@ import type {
   FailureReport,
   PlanningDepth,
 } from './types.js';
-import type { StepRunContext } from './workflow/types.js';
+import type { StepRunContext, AuthoritativeDefinition } from './workflow/types.js';
 import { safeRelativeSegments } from './path-safety.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -515,6 +515,15 @@ export class ContextManager {
     if (ctx.includeObjectiveContext) {
       text += this.formatObjectiveContext(ctx);
     }
+    // DDR-041 — the authoritative canonical Definition renders verbatim under
+    // its own header, BEFORE the optional Objective/WorkItem sections: it is
+    // the binding scope specification, system-resolved and integrity-pinned —
+    // visibly distinct from human intent, WorkItem bounds, and all supporting
+    // project-doc context below it. Never summarized, rewritten, or truncated
+    // (the definition-source resolver enforces the size boundary explicitly).
+    if (ctx.authoritativeDefinition) {
+      text += this.formatAuthoritativeDefinition(ctx.authoritativeDefinition);
+    }
     if (ctx.includeWorkItemContext) {
       text += this.formatWorkItemContext(ctx);
     }
@@ -540,8 +549,25 @@ export class ContextManager {
     return text;
   }
 
-  private formatDecisionContext(ctx: StepRunContext): string {
-    const decision = ctx.decisionContext;
+  // DDR-041 — verbatim authoritative Definition. Full canonical bytes, no
+  // truncation of any kind; the resolver's size cap is the only boundary and
+  // it fails explicitly rather than degrade. Provenance is rendered so the
+  // model (and any human auditor) can see exactly which WorkItem produced
+  // these bytes and which hash pins them.
+  private formatAuthoritativeDefinition(def: AuthoritativeDefinition): string {
+    const lines = [
+      '',
+      '## AUTHORITATIVE DEFINITION',
+      '',
+      `Source: define-work WorkItem \`${def.sourceWorkItemId}\` (artifact \`${def.ref ?? def.path}\`, sha256 \`${def.sha256}\`).`,
+      'These canonical bytes were resolved and integrity-pinned by the system from that WorkItem\'s recorded Definition artifact. This is the authoritative specification of the scope to implement — treat it as exact and binding. Do not widen, narrow, or reinterpret it. All other context in this task (objective, work-item bounds, project docs, plans) is subordinate supporting material.',
+      '',
+      def.content,
+    ];
+    return `\n${lines.join('\n')}`;
+  }
+
+  private formatDecisionContext(ctx: StepRunContext): string {    const decision = ctx.decisionContext;
     if (!decision) return '';
     const lines: string[] = ['', '## Human Decision', ''];
     lines.push(`**Selected:** ${decision.selectedOptionLabel ?? decision.selectedOptionId} (option id: \`${decision.selectedOptionId}\`)`);

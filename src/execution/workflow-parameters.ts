@@ -1,5 +1,6 @@
 import type { CapHitAction } from '../workflow/types.js';
 import type { PlanningDepth } from '../types.js';
+import { parseDefinitionSourceRef } from './definition-source.js';
 
 // ============================================================================
 // Full-build workflow parameter contract
@@ -12,6 +13,11 @@ export interface FullBuildParameters {
   planning_depth: PlanningDepth;
   max_iterations: number;
   on_cap_hit: 'halt' | 'force_pass' | 'user_prompt';
+  // DDR-041 — exact reference to the completed define-work WorkItem whose
+  // canonical Definition this run implements. Resolved and integrity-pinned
+  // by StratumAgentAdapter at dispatch (see definition-source.ts); frozen
+  // into WorkflowRun.resolvedParameters with the other parameters.
+  definitionSource?: { workItemId: string };
 }
 
 // Strict validator: throws on explicit invalid values (not silently defaults).
@@ -46,10 +52,23 @@ export function validateFullBuildParams(raw?: Record<string, unknown>): FullBuil
     );
   }
 
+  // DDR-041 — strict shape gate: if a definitionSource is declared it must be
+  // the exact single-key reference (deep validation happens at dispatch in
+  // definition-source.ts; this keeps the frozen contract honest).
+  const definitionSource = raw['definitionSource'];
+  if (definitionSource !== undefined && !parseDefinitionSourceRef(definitionSource)) {
+    throw new Error(
+      `Invalid definitionSource '${JSON.stringify(definitionSource)}'. Must be { workItemId: <non-empty string> }`
+    );
+  }
+
   return {
     planning_depth: (depth as PlanningDepth | undefined) ?? 'minimal',
     max_iterations: (maxIter as number | undefined) ?? DEFAULT_MAX_ITERATIONS,
     on_cap_hit: (capHit as FullBuildParameters['on_cap_hit'] | undefined) ?? 'halt',
+    ...(definitionSource !== undefined
+      ? { definitionSource: parseDefinitionSourceRef(definitionSource)! }
+      : {}),
   };
 }
 
