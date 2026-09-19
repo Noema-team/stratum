@@ -400,6 +400,11 @@ export class AgentRunner {
                 resultSchemaJson: toJsonSchema(contract.modelSchema),
               }
             : {}),
+          // E10/A3 — the bounded transport retry is a define-work
+          // step-execution policy ONLY (one re-issue of a headers-timeout
+          // request, fail closed on repeat). Every other workflow keeps the
+          // historical fail-fast behavior.
+          ...(ctx.workflowId === 'define-work' ? { transportRetry: true } : {}),
         }
       );
 
@@ -442,6 +447,11 @@ export class AgentRunner {
                   : {}),
                 ...(loopResult.failure_observation.rejected_result
                   ? { rejected_result: loopResult.failure_observation.rejected_result }
+                  : {}),
+                // E10/A3 — bounded transport-retry record on the failure path
+                // (success-path metadata is written by the loop itself).
+                ...(loopResult.transport_retry
+                  ? { transport_retry: loopResult.transport_retry }
                   : {}),
               }, null, 2),
               'utf-8',

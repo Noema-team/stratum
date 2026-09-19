@@ -533,3 +533,128 @@ test('Multi-turn: nested cause code composes only defined codes (no undefined pr
   assert.match(tf.cause_message ?? '', /connection closed/);
   assert.strictEqual(result.turns_taken, 2);
 });
+
+// ─── E10/A3 — bounded transport retry (undici HeadersTimeout only) ───────────
+
+class ScriptedTransportProvider implements IMultiTurnProvider {
+  public calls: MultiTurnParams[] = [];
+  private script: Array<MultiTurnResult | Error>;
+  constructor(script: Array<MultiTurnResult | Error>) {
+    this.script = [...script];
+  }
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    this.calls.push(params);
+    const step = this.script.shift();
+    if (step instanceof Error) throw step;
+    return step ?? { stop_reason: 'end_turn', text: '', tool_uses: [], tokens_used: 1 };
+  }
+}
+
+// The exact wire shape Pilot A2 recorded: TypeError('fetch failed') whose
+// undici cause chain carries HeadersTimeoutError / UND_ERR_HEADERS_TIMEOUT
+// after ~300 s (library-default headersTimeout — no explicit client setting).
+function headersTimeoutError(): Error {
+  return Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+  });
+}
+
+function retryLoop(provider: IMultiTurnProvider, transportRetry: boolean): AgentLoop {
+  return new AgentLoop(provider, {
+    model: 'claude-sonnet-4-6',
+    projectRoot: '/project',
+    role: 'designer',
+    workflowRunId: 'test-run-1',
+    iteration: 1,
+    nodeId: 'DESIGN',
+    runArtifacts: makeRunArtifacts(),
+    fsModule: makeMockFs({}),
+    listTrackedFiles: async () => [],
+    ...(transportRetry ? { transportRetry: true } : {}),
+  });
+}
+
+test('Multi-turn: A3 retry — headers timeout re-issued once with identical conversation, then succeeds', async () => {
+  const provider = new ScriptedTransportProvider([
+    headersTimeoutError(),
+    endTurnResult(sle('docs/requirements.md', '# Requirements')),
+  ]);
+
+  const result = await retryLoop(provider, true).run('System prompt', 'Build a widget.');
+
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(result.parsedOutput?.sections[0].path, 'docs/requirements.md');
+  // Exactly one re-issue of the SAME request: byte-identical model/messages/
+  // tools/parameters — the conversation state was preserved, no tool call
+  // was re-run, and the Definition contract path is untouched.
+  assert.strictEqual(provider.calls.length, 2);
+  assert.deepStrictEqual(provider.calls[1], provider.calls[0]);
+  // No extra model turn consumed: the retry re-entered the SAME turn slot,
+  // so turns_taken matches the un-retried single-turn baseline (1).
+  assert.strictEqual(result.turns_taken, 1);
+  const retry = result.transport_retry;
+  assert.ok(retry, 'transport_retry recorded on the successful result');
+  assert.strictEqual(retry.attempts, 1);
+  assert.strictEqual(retry.outcome, 'succeeded');
+  assert.strictEqual(retry.first_failure.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+  assert.ok(Number.isFinite(retry.first_failure.duration_ms));
+  assert.ok(Number.isFinite(retry.retried_request_ms));
+});
+
+test('Multi-turn: A3 retry — repeated headers timeout fails closed with both attempts recorded', async () => {
+  const provider = new ScriptedTransportProvider([headersTimeoutError(), headersTimeoutError()]);
+
+  const result = await retryLoop(provider, true).run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  // Exactly one retry — a third attempt is prohibited by the frozen policy.
+  assert.strictEqual(provider.calls.length, 2);
+  assert.match(result.error ?? '', /after transport retry/);
+  // Final attempt's cause recorded; the first attempt's cause is in the
+  // bounded retry record (outcome 'failed').
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf);
+  assert.strictEqual(tf.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+  assert.match(tf.cause_message ?? '', /Headers Timeout/);
+  const retry = result.transport_retry;
+  assert.ok(retry);
+  assert.strictEqual(retry.attempts, 1);
+  assert.strictEqual(retry.outcome, 'failed');
+  assert.strictEqual(retry.first_failure.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+  assert.ok(Number.isFinite(retry.first_failure.duration_ms));
+  assert.ok(Number.isFinite(retry.retried_request_ms));
+});
+
+test('Multi-turn: A3 retry — non-eligible transport error never retries', async () => {
+  const provider = new ScriptedTransportProvider([
+    Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }),
+    }),
+    endTurnResult(sle('docs/requirements.md', '# Requirements')),
+  ]);
+
+  const result = await retryLoop(provider, true).run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(provider.calls.length, 1, 'no retry for a non-eligible error');
+  assert.strictEqual(result.transport_retry, undefined);
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf);
+  assert.strictEqual(tf.cause_code, 'ECONNRESET');
+});
+
+test('Multi-turn: A3 retry — policy disabled (non-define-work default) never retries', async () => {
+  const provider = new ScriptedTransportProvider([
+    headersTimeoutError(),
+    endTurnResult(sle('docs/requirements.md', '# Requirements')),
+  ]);
+
+  const result = await retryLoop(provider, false).run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(provider.calls.length, 1, 'historical fail-fast without the opt-in');
+  assert.strictEqual(result.transport_retry, undefined);
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf);
+  assert.strictEqual(tf.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+});
