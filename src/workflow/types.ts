@@ -395,4 +395,24 @@ export interface StepRunContext {
   // gated by includeDecisionContext — see ContextManager.buildTaskDescription.
   decisionContext?: DecisionContext;
   includeDecisionContext?: boolean;
+
+  // DDR-041 — the authoritative canonical Definition this execution run
+  // implements, resolved ONCE per dispatch/resume by StratumAgentAdapter from
+  // the frozen definitionSource reference in WorkflowRun.resolvedParameters
+  // (never selected or reconstructed by the model, never read from a mutable
+  // caller field on resume). Rendered verbatim by ContextManager under its
+  // own authoritative header — never summarized, rewritten, or truncated.
+  authoritativeDefinition?: AuthoritativeDefinition;
+}
+
+// DDR-041 — integrity-pinned authoritative Definition handed into execution.
+// sha256 pins the exact bytes against the source's recorded artifact
+// provenance; content is the full canonical artifact text.
+export interface AuthoritativeDefinition {
+  sourceWorkItemId: string;
+  artifactId: string;
+  ref: string | null;
+  path: string;
+  sha256: string;
+  content: string;
 }

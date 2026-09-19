@@ -7,7 +7,7 @@ import type {
   FailureReport,
   PlanningDepth,
 } from './types.js';
-import type { StepRunContext } from './workflow/types.js';
+import type { StepRunContext, AuthoritativeDefinition } from './workflow/types.js';
 import { safeRelativeSegments } from './path-safety.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -386,6 +386,18 @@ function applyLoadingMode(content: string, def: SliceDef): string {
 
 // ─── ContextManager ───────────────────────────────────────────────────────────
 
+// DDR-041 review — thrown when the fixed, non-truncatable context components
+// (system prompt + state summary + task + failure context) alone exceed the
+// configured hard ceiling. Carries a diagnosable code; callers must fail the
+// step BEFORE any model call (see AgentRunner.run's assemble boundary).
+export class ContextBudgetExceededError extends Error {
+  readonly code = 'context_budget_exceeded';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ContextBudgetExceededError';
+  }
+}
+
 export class ContextManager {
   private fs: typeof import('fs').promises;
 
@@ -515,6 +527,15 @@ export class ContextManager {
     if (ctx.includeObjectiveContext) {
       text += this.formatObjectiveContext(ctx);
     }
+    // DDR-041 — the authoritative canonical Definition renders verbatim under
+    // its own header, BEFORE the optional Objective/WorkItem sections: it is
+    // the binding scope specification, system-resolved and integrity-pinned —
+    // visibly distinct from human intent, WorkItem bounds, and all supporting
+    // project-doc context below it. Never summarized, rewritten, or truncated
+    // (the definition-source resolver enforces the size boundary explicitly).
+    if (ctx.authoritativeDefinition) {
+      text += this.formatAuthoritativeDefinition(ctx.authoritativeDefinition);
+    }
     if (ctx.includeWorkItemContext) {
       text += this.formatWorkItemContext(ctx);
     }
@@ -538,6 +559,24 @@ export class ContextManager {
       text += `\n\nDeclared output artifact: write exactly one artifact section at '${ctx.outputArtifact.path}'.`;
     }
     return text;
+  }
+
+  // DDR-041 — verbatim authoritative Definition. Full canonical bytes, no
+  // truncation of any kind; the resolver's size cap is the only boundary and
+  // it fails explicitly rather than degrade. Provenance is rendered so the
+  // model (and any human auditor) can see exactly which WorkItem produced
+  // these bytes and which hash pins them.
+  private formatAuthoritativeDefinition(def: AuthoritativeDefinition): string {
+    const lines = [
+      '',
+      '## AUTHORITATIVE DEFINITION',
+      '',
+      `Source: define-work WorkItem \`${def.sourceWorkItemId}\` (artifact \`${def.ref ?? def.path}\`, sha256 \`${def.sha256}\`).`,
+      'These canonical bytes were resolved and integrity-pinned by the system from that WorkItem\'s recorded Definition artifact. This is the authoritative specification of the scope to implement — treat it as exact and binding. Do not widen, narrow, or reinterpret it. All other context in this task (objective, work-item bounds, project docs, plans) is subordinate supporting material.',
+      '',
+      def.content,
+    ];
+    return `\n${lines.join('\n')}`;
   }
 
   private formatDecisionContext(ctx: StepRunContext): string {
@@ -626,7 +665,47 @@ export class ContextManager {
       charsToTokens(task.length) +
       (failureContext ? charsToTokens(failureContext.length) : 0);
 
-    const artifactBudget = Math.max(this.config.hard_ceiling - fixedTokens, 500);
+    // DDR-041 review — when this invocation carries an AUTHORITATIVE
+    // DEFINITION, the fixed (non-truncatable) components alone may not
+    // exceed the configured hard ceiling: previously an oversized task (the
+    // verbatim Definition) silently survived via the max(..., 500) budget
+    // floor, violating the hard-context-ceiling invariant. Fail closed with
+    // a diagnosable error BEFORE any artifact slicing or model call — the
+    // authoritative Definition is never truncated or summarized; it either
+    // fits the configured boundary or execution fails explicitly.
+    //
+    // Deliberately scoped to Definition-carrying runs: every run without one
+    // keeps its exact legacy budget behavior (byte-for-byte), and the known
+    // pre-existing over-ceiling instructions elsewhere are a separate latent
+    // issue to be addressed on evidence, not inside this boundary fix.
+    const carriesAuthority = ctx.authoritativeDefinition !== undefined;
+    if (carriesAuthority && fixedTokens > this.config.hard_ceiling) {
+      const def = ctx.authoritativeDefinition!;
+      const breakdown = [
+        `system=${charsToTokens(systemPrompt.length)}`,
+        `state=${charsToTokens(stateSummary.length)}`,
+        `task=${charsToTokens(task.length)}`,
+        `failureContext=${failureContext ? charsToTokens(failureContext.length) : 0}`,
+      ].join(' ');
+      throw new ContextBudgetExceededError(
+        `Fixed context components (${breakdown}; total ${fixedTokens} tokens) exceed the configured ` +
+        `hard_ceiling of ${this.config.hard_ceiling} tokens for role='${role}' step='${ctx.stepId}'.` +
+        ` The task carries an AUTHORITATIVE DEFINITION (${Buffer.byteLength(def.content, 'utf-8')} bytes, ` +
+        `~${charsToTokens(def.content.length)} tokens, sha256 ${def.sha256.slice(0, 12)}…) which is never ` +
+        `truncated or summarized by design — it cannot fit this invocation's configured context boundary. ` +
+        `Raise the configured context boundary or produce a smaller canonical Definition.`
+      );
+    }
+
+    // For Definition-carrying runs the slice budget is the ceiling MINUS the
+    // fixed components — floored at zero, never at a positive minimum (a
+    // positive floor could push the assembled total past the ceiling; the
+    // ceiling is the authority, slices may be empty). Non-carrying runs keep
+    // the legacy floor.
+    const artifactBudget = Math.max(
+      this.config.hard_ceiling - fixedTokens,
+      carriesAuthority ? 0 : 500,
+    );
 
     const runDir = ctx.failureReport?.run_dir;
     const sliceDefs = this.resolveSliceDefs(role, ctx, runDir);
@@ -690,12 +769,18 @@ export class ContextManager {
         }
       }
 
-      // Hard ceiling safety: if still over, truncate never_truncate as last resort
-      if (totalTokens > this.config.hard_ceiling) {
+      // Hard ceiling safety: if still over (never_truncate slices are skipped
+      // by the tiered pass), force-truncate. For Definition-carrying runs the
+      // target is the REMAINING budget (targeting hard_ceiling would ignore
+      // the fixed components and let the assembled total exceed the ceiling —
+      // DDR-041 review, same defect family); non-carrying runs keep the exact
+      // legacy target.
+      const forceTarget = carriesAuthority ? artifactBudget : this.config.hard_ceiling;
+      if (totalTokens > forceTarget) {
         console.warn(`[ContextManager] Hard ceiling exceeded for role=${role}. Forcing truncation.`);
         for (const slice of loaded) {
-          if (totalTokens <= this.config.hard_ceiling) break;
-          const over = totalTokens - this.config.hard_ceiling;
+          if (totalTokens <= forceTarget) break;
+          const over = totalTokens - forceTarget;
           const keepChars = tokensToChars(slice.tokens - over);
           if (keepChars < 0) {
             totalTokens -= slice.tokens;

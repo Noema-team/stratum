@@ -11,6 +11,8 @@ import type { ArtifactRepository } from '../storage/repositories.js';
 import { resolveWorkflowInvocation } from './workflow-invocation.js';
 import { getCheckpointDecisionOptions } from './checkpoint-resolver.js';
 import { parseDecisionRequest } from './decision-request.js';
+import { resolveDefinitionSource } from './definition-source.js';
+import type { AuthoritativeDefinition } from '../workflow/types.js';
 
 const STRATUM_CAPABILITIES: ReadonlySet<ExecutorCapability> = new Set<ExecutorCapability>([
   'repo.read',
@@ -58,6 +60,58 @@ export class StratumAgentAdapter implements ExecutionAdapter {
     // Resolve workflow-specific parameter contract and cap semantics via seam.
     const invocation = resolveWorkflowInvocation(request.workflowId, rawParams);
 
+    // DDR-041 — trusted Definition → execution handoff. When the (frozen)
+    // parameters carry a definitionSource reference, the SYSTEM resolves it
+    // into the integrity-pinned canonical Definition BEFORE any step runs:
+    // source WorkItem + D.1 artifact provenance + sha256 pin, all fail-closed
+    // (see definition-source.ts). The model never selects or reconstructs the
+    // identity, and a resolution failure aborts the run rather than degrading
+    // to goal text. On resume this reads the persisted run's resolvedParameters
+    // (loaded above), never a mutable caller field.
+    let authoritativeDefinition: AuthoritativeDefinition | undefined;
+    if (invocation.normalizedParams['definitionSource'] !== undefined) {
+      if (!request.workItemId) {
+        return {
+          schemaVersion: 1,
+          stepExecutionId: request.stepExecutionId,
+          outcome: 'failed',
+          artifacts: [],
+          evidenceClaims: [],
+          decisionRequests: [],
+          usage: { durationMs: Date.now() - start },
+          failure: {
+            code: 'invalid_definition_source',
+            message: 'A definitionSource was declared but the execution request carries no workItemId — the source cannot be validated against this run\'s project/Objective authority',
+          },
+        };
+      }
+      const resolved = await resolveDefinitionSource(
+        invocation.normalizedParams['definitionSource'],
+        { workItemId: request.workItemId },
+        {
+          workItemRepository: this.engineDeps.workItemRepository,
+          artifactRepository: this.artifactRepository,
+          projectRoot: this.engineDeps.projectRoot ?? process.cwd(),
+        },
+      );
+      if (!resolved.ok) {
+        return {
+          schemaVersion: 1,
+          stepExecutionId: request.stepExecutionId,
+          outcome: 'failed',
+          artifacts: [],
+          evidenceClaims: [],
+          decisionRequests: [],
+          usage: { durationMs: Date.now() - start },
+          failure: {
+            code: resolved.failure.code,
+            message: resolved.failure.message,
+          },
+        };
+      }
+      authoritativeDefinition = resolved.value;
+    }
+
     const mergedOpts: WorkflowEngineOptions = {
       ...this.engineOpts,
       onCapHit: invocation.onCapHit,
@@ -77,6 +131,7 @@ export class StratumAgentAdapter implements ExecutionAdapter {
       request.acceptanceCriteria,
       request.objectiveContext,
       request.decisionContext,
+      authoritativeDefinition,
     );
 
     // 'halted' without an error means the workflow is waiting at a checkpoint —
