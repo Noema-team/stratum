@@ -150,7 +150,31 @@ export interface AgentLoopResult {
     tool_calls: Array<{ tool: string; path: string; turn: number }>;
     tool_uses: Array<{ name: string; argument_bytes: number }>;
     error: string;
+    // E8/A2 preflight (Pilot A E7) — evidence-only, bounded cause metadata
+    // for a failed provider CALL (names/codes/duration; never payloads or
+    // reply text). Pilot A r1/r4 recorded nothing but "fetch failed".
+    transport_failure?: {
+      duration_ms: number;
+      error_name: string;
+      error_code?: string;
+      cause_name?: string;
+      cause_code?: string;
+      cause_message?: string;
+    };
+    // E8/A2 preflight (Pilot A E7) — bounded description of the last
+    // contract-rejected submission: argument_bytes is the UTF-8 byte size of
+    // the COMPACT normalized JSON serialization of the rejected value, and
+    // repair_instruction is the instruction as issued. The value itself is
+    // the transport-parsed semantic value — NOT original provider/wire
+    // bytes — and travels separately via rejected_result_payload.
+    rejected_result?: { argument_bytes: number; repair_instruction: string };
   };
+  // E8/A2 preflight (Pilot A E7) — the normalized rejected semantic payload:
+  // the transport-parsed submission/produce value, JSON-serialized (compact).
+  // This is NOT a capture of original provider/wire bytes. Persisted by the
+  // runner as a sibling file on the failure path so contract rejections
+  // remain diagnosable (attempt 5 lost the value entirely).
+  rejected_result_payload?: string;
   // D.3d.5 commit 1 — bounded format-repair attempts, tracked separately
   // from ordinary turns so diagnostics never imply a repair happened when
   // only ordinary tool/answer turns occurred. Exact semantics (shared with
@@ -168,6 +192,38 @@ export interface AgentLoopResult {
 }
 
 // ─── AgentLoop ────────────────────────────────────────────────────────────────
+
+// E8/A2 preflight (Pilot A E7) — bounded, evidence-only cause extraction for
+// a failed provider call: names, codes, and the undici cause chain only —
+// never request/response payloads or reply text. "fetch failed" alone left
+// Pilot A unable to distinguish timeout, reset, or server error.
+function describeTransportFailure(
+  err: unknown,
+  durationMs: number,
+): NonNullable<AgentLoopResult['failure_observation']>['transport_failure'] {
+  const e = err as {
+    name?: string; code?: string;
+    cause?: { name?: string; code?: string; message?: string; cause?: { code?: string } };
+  };
+  const cause = e.cause;
+  // Compose the cause-code chain from DEFINED codes only — an absent outer
+  // code must never surface as "undefined:<inner>" (evidence correctness).
+  const causeCodes = [cause?.code, cause?.cause?.code].filter(
+    (c): c is string => typeof c === 'string' && c.length > 0,
+  );
+  return {
+    duration_ms: durationMs,
+    error_name: e.name ?? 'unknown',
+    ...(e.code ? { error_code: e.code } : {}),
+    ...(cause
+      ? {
+          cause_name: cause.name,
+          ...(causeCodes.length > 0 ? { cause_code: causeCodes.join(':') } : {}),
+          ...(cause.message ? { cause_message: cause.message } : {}),
+        }
+      : {}),
+  };
+}
 
 export class AgentLoop {
   private fs: typeof nodeFsPromises;
@@ -234,6 +290,13 @@ export class AgentLoop {
     // Set after every provider call; attached by fail() so a failed step's
     // evidence explains itself (never reply text, never reasoning text).
     let lastObservation: NonNullable<AgentLoopResult['failure_observation']> | undefined;
+    // E8/A2 preflight (Pilot A E7) — evidence-only failure metadata, kept
+    // across turns so any later failure (turn cap, repair exhaustion) still
+    // carries the last provider-call failure and the last rejected
+    // submission with it.
+    let lastTransportFailure: NonNullable<AgentLoopResult['failure_observation']>['transport_failure'];
+    let lastRejected: NonNullable<AgentLoopResult['failure_observation']>['rejected_result'];
+    let lastRejectedPayload: string | undefined;
     const fail = (error: string): AgentLoopResult => ({
       success: false,
       turns_taken: turns,
@@ -241,14 +304,34 @@ export class AgentLoop {
       format_repairs: formatRepairs,
       result_repairs: resultRepairs,
       error,
-      ...(lastObservation
-        ? { failure_observation: { ...lastObservation, error } }
+      ...(lastObservation || lastTransportFailure || lastRejected
+        ? {
+            failure_observation: {
+              ...(lastObservation ?? {
+                result_transport: this.transport.name,
+                turns_taken: turns,
+                format_repairs: formatRepairs,
+                result_repairs: resultRepairs,
+                stop_reason: 'provider_error',
+                text_length: 0,
+                tool_calls: [],
+                tool_uses: [],
+              }),
+              error,
+              ...(lastTransportFailure ? { transport_failure: lastTransportFailure } : {}),
+              ...(lastRejected ? { rejected_result: lastRejected } : {}),
+            },
+          }
         : {}),
+      ...(lastRejectedPayload ? { rejected_result_payload: lastRejectedPayload } : {}),
     });
 
     while (turns < MAX_AGENT_TURNS) {
       turns++;
       let result: MultiTurnResult;
+      // E8/A2 preflight — per-call timing so a provider failure records how
+      // long the failed request ran before dying (Pilot A: NOT PERSISTED).
+      const callStartedAt = Date.now();
       try {
         result = await this.provider.completeMultiTurn({
           model: this.opts.model,
@@ -260,6 +343,7 @@ export class AgentLoop {
           tools,
         });
       } catch (err) {
+        lastTransportFailure = describeTransportFailure(err, Date.now() - callStartedAt);
         return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
@@ -333,6 +417,16 @@ export class AgentLoop {
             // channel (same conversation, same budget, same instruction).
             const acceptance = this.opts.acceptResult(submission.value);
             if (!acceptance.ok) {
+              // E8/A2 preflight (Pilot A E7) — preserve the rejected
+              // submission: bounded description here; the normalized rejected
+              // semantic payload (compact JSON of the transport-parsed value —
+              // not wire bytes) in rejected_result_payload, so the persisted
+              // file's byte size equals argument_bytes (attempt 5 lost both).
+              lastRejected = {
+                argument_bytes: Buffer.byteLength(JSON.stringify(submission.value)),
+                repair_instruction: acceptance.repairInstruction,
+              };
+              lastRejectedPayload = JSON.stringify(submission.value);
               if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
                 return fail(
                   resultRepairExhaustedDiagnostic(
@@ -431,6 +525,14 @@ export class AgentLoop {
         }
         const acceptance = this.opts.acceptResult(stepResult.value);
         if (!acceptance.ok) {
+          // E8/A2 preflight (Pilot A E7) — same rejected-submission evidence
+          // on the textual channel (symmetric with the submit-result channel):
+          // normalized rejected semantic payload, not wire bytes.
+          lastRejected = {
+            argument_bytes: Buffer.byteLength(JSON.stringify(stepResult.value)),
+            repair_instruction: acceptance.repairInstruction,
+          };
+          lastRejectedPayload = JSON.stringify(stepResult.value);
           if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
             return fail(
               resultRepairExhaustedDiagnostic(

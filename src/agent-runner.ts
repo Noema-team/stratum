@@ -435,9 +435,28 @@ export class AgentRunner {
                 tool_calls: loopResult.failure_observation.tool_calls,
                 stop_reason: loopResult.failure_observation.stop_reason,
                 text_length: loopResult.failure_observation.text_length,
+                // E8/A2 preflight (Pilot A E7) — provider-call failure cause
+                // metadata and the bounded rejected-submission description.
+                ...(loopResult.failure_observation.transport_failure
+                  ? { transport_failure: loopResult.failure_observation.transport_failure }
+                  : {}),
+                ...(loopResult.failure_observation.rejected_result
+                  ? { rejected_result: loopResult.failure_observation.rejected_result }
+                  : {}),
               }, null, 2),
               'utf-8',
             );
+            // E8/A2 preflight — the normalized rejected semantic payload
+            // (transport-parsed value, compact JSON — not original wire
+            // bytes) as a sibling file; its byte size equals the
+            // observation's rejected_result.argument_bytes.
+            if (loopResult.rejected_result_payload) {
+              await (this.fs).writeFile(
+                metaPath.replace(/-loop\.json$/, '-rejected-result.json'),
+                loopResult.rejected_result_payload,
+                'utf-8',
+              );
+            }
           } catch {
             // metadata write failures are non-fatal (same policy as the loop)
           }

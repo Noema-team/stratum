@@ -471,3 +471,65 @@ test('Multi-turn: ParseError on SLE-OUTPUT → retry prompt issued (Phase B cont
   assert.strictEqual(result.success, true);
   assert.strictEqual(result.parsedOutput?.sections[0].path, 'docs/requirements.md');
 });
+
+// E8/A2 preflight (Pilot A E7) — a provider-call failure must record bounded
+// cause metadata (names/codes/duration), not just "fetch failed".
+test('Multi-turn: provider-call failure records bounded transport-failure metadata', async () => {
+  let calls = 0;
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn() {
+      calls++;
+      if (calls === 1) return toolUseResult('read_file', { path: 'docs/requirements.md' });
+      throw Object.assign(new TypeError('fetch failed'), {
+        code: 'UND_ERR_CONNECT_FAILED',
+        cause: Object.assign(new Error('connect ETIMEDOUT 1.2.3.4:443'), { code: 'ETIMEDOUT' }),
+      });
+    },
+  };
+  const loop = makeLoop(provider);
+
+  const result = await loop.run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  assert.match(result.error ?? '', /fetch failed/);
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf, 'transport_failure attached to the failure observation');
+  assert.strictEqual(tf.error_name, 'TypeError');
+  assert.strictEqual(tf.error_code, 'UND_ERR_CONNECT_FAILED');
+  assert.strictEqual(tf.cause_name, 'Error');
+  assert.strictEqual(tf.cause_code, 'ETIMEDOUT');
+  assert.match(tf.cause_message ?? '', /ETIMEDOUT/);
+  assert.ok(tf.duration_ms >= 0);
+  assert.strictEqual(result.turns_taken, 2);
+});
+
+// E8/A2 evidence correctness — cause-code composition must emit only DEFINED
+// codes: an absent outer code must never surface as "undefined:<inner>".
+test('Multi-turn: nested cause code composes only defined codes (no undefined prefix)', async () => {
+  let calls = 0;
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn() {
+      calls++;
+      if (calls === 1) return toolUseResult('read_file', { path: 'docs/requirements.md' });
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('connection closed'), {
+          cause: { code: 'ECONNRESET' },
+        }),
+      });
+    },
+  };
+  const loop = makeLoop(provider);
+
+  const result = await loop.run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf);
+  assert.strictEqual(tf.error_name, 'TypeError');
+  assert.strictEqual(tf.error_code, undefined);
+  assert.strictEqual(tf.cause_name, 'Error');
+  assert.strictEqual(tf.cause_code, 'ECONNRESET');
+  assert.ok(!String(tf.cause_code).includes('undefined'));
+  assert.match(tf.cause_message ?? '', /connection closed/);
+  assert.strictEqual(result.turns_taken, 2);
+});
