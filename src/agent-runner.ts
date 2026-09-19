@@ -446,8 +446,10 @@ export class AgentRunner {
               }, null, 2),
               'utf-8',
             );
-            // E8/A2 preflight — the exact rejected payload bytes as a sibling
-            // file (the bounded observation above never carries payloads).
+            // E8/A2 preflight — the normalized rejected semantic payload
+            // (transport-parsed value, compact JSON — not original wire
+            // bytes) as a sibling file; its byte size equals the
+            // observation's rejected_result.argument_bytes.
             if (loopResult.rejected_result_payload) {
               await (this.fs).writeFile(
                 metaPath.replace(/-loop\.json$/, '-rejected-result.json'),

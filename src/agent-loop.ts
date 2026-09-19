@@ -162,13 +162,18 @@ export interface AgentLoopResult {
       cause_message?: string;
     };
     // E8/A2 preflight (Pilot A E7) — bounded description of the last
-    // contract-rejected submission; the full payload travels separately in
-    // rejected_result_payload (never inside this bounded observation).
+    // contract-rejected submission: argument_bytes is the UTF-8 byte size of
+    // the COMPACT normalized JSON serialization of the rejected value, and
+    // repair_instruction is the instruction as issued. The value itself is
+    // the transport-parsed semantic value — NOT original provider/wire
+    // bytes — and travels separately via rejected_result_payload.
     rejected_result?: { argument_bytes: number; repair_instruction: string };
   };
-  // E8/A2 preflight (Pilot A E7) — the exact bytes of the last rejected
-  // submission, persisted by the runner as a sibling file on the failure
-  // path so contract rejections remain diagnosable (attempt 5 lost them).
+  // E8/A2 preflight (Pilot A E7) — the normalized rejected semantic payload:
+  // the transport-parsed submission/produce value, JSON-serialized (compact).
+  // This is NOT a capture of original provider/wire bytes. Persisted by the
+  // runner as a sibling file on the failure path so contract rejections
+  // remain diagnosable (attempt 5 lost the value entirely).
   rejected_result_payload?: string;
   // D.3d.5 commit 1 — bounded format-repair attempts, tracked separately
   // from ordinary turns so diagnostics never imply a repair happened when
@@ -201,6 +206,11 @@ function describeTransportFailure(
     cause?: { name?: string; code?: string; message?: string; cause?: { code?: string } };
   };
   const cause = e.cause;
+  // Compose the cause-code chain from DEFINED codes only — an absent outer
+  // code must never surface as "undefined:<inner>" (evidence correctness).
+  const causeCodes = [cause?.code, cause?.cause?.code].filter(
+    (c): c is string => typeof c === 'string' && c.length > 0,
+  );
   return {
     duration_ms: durationMs,
     error_name: e.name ?? 'unknown',
@@ -208,9 +218,8 @@ function describeTransportFailure(
     ...(cause
       ? {
           cause_name: cause.name,
-          ...(cause.code ? { cause_code: cause.code } : {}),
+          ...(causeCodes.length > 0 ? { cause_code: causeCodes.join(':') } : {}),
           ...(cause.message ? { cause_message: cause.message } : {}),
-          ...(cause.cause?.code ? { cause_code: `${cause.code}:${cause.cause.code}` } : {}),
         }
       : {}),
   };
@@ -409,13 +418,15 @@ export class AgentLoop {
             const acceptance = this.opts.acceptResult(submission.value);
             if (!acceptance.ok) {
               // E8/A2 preflight (Pilot A E7) — preserve the rejected
-              // submission: bounded description here, exact payload bytes in
-              // rejected_result_payload (attempt 5 lost both).
+              // submission: bounded description here; the normalized rejected
+              // semantic payload (compact JSON of the transport-parsed value —
+              // not wire bytes) in rejected_result_payload, so the persisted
+              // file's byte size equals argument_bytes (attempt 5 lost both).
               lastRejected = {
                 argument_bytes: Buffer.byteLength(JSON.stringify(submission.value)),
                 repair_instruction: acceptance.repairInstruction,
               };
-              lastRejectedPayload = JSON.stringify(submission.value, null, 2);
+              lastRejectedPayload = JSON.stringify(submission.value);
               if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
                 return fail(
                   resultRepairExhaustedDiagnostic(
@@ -515,12 +526,13 @@ export class AgentLoop {
         const acceptance = this.opts.acceptResult(stepResult.value);
         if (!acceptance.ok) {
           // E8/A2 preflight (Pilot A E7) — same rejected-submission evidence
-          // on the textual channel (symmetric with the submit-result channel).
+          // on the textual channel (symmetric with the submit-result channel):
+          // normalized rejected semantic payload, not wire bytes.
           lastRejected = {
             argument_bytes: Buffer.byteLength(JSON.stringify(stepResult.value)),
             repair_instruction: acceptance.repairInstruction,
           };
-          lastRejectedPayload = JSON.stringify(stepResult.value, null, 2);
+          lastRejectedPayload = JSON.stringify(stepResult.value);
           if (resultRepairDecision(resultRepairs).action === 'fail-closed') {
             return fail(
               resultRepairExhaustedDiagnostic(

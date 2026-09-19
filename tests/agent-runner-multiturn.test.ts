@@ -502,3 +502,34 @@ test('Multi-turn: provider-call failure records bounded transport-failure metada
   assert.ok(tf.duration_ms >= 0);
   assert.strictEqual(result.turns_taken, 2);
 });
+
+// E8/A2 evidence correctness — cause-code composition must emit only DEFINED
+// codes: an absent outer code must never surface as "undefined:<inner>".
+test('Multi-turn: nested cause code composes only defined codes (no undefined prefix)', async () => {
+  let calls = 0;
+  const provider: IMultiTurnProvider = {
+    async completeMultiTurn() {
+      calls++;
+      if (calls === 1) return toolUseResult('read_file', { path: 'docs/requirements.md' });
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('connection closed'), {
+          cause: { code: 'ECONNRESET' },
+        }),
+      });
+    },
+  };
+  const loop = makeLoop(provider);
+
+  const result = await loop.run('System', 'Produce output.');
+
+  assert.strictEqual(result.success, false);
+  const tf = result.failure_observation?.transport_failure;
+  assert.ok(tf);
+  assert.strictEqual(tf.error_name, 'TypeError');
+  assert.strictEqual(tf.error_code, undefined);
+  assert.strictEqual(tf.cause_name, 'Error');
+  assert.strictEqual(tf.cause_code, 'ECONNRESET');
+  assert.ok(!String(tf.cause_code).includes('undefined'));
+  assert.match(tf.cause_message ?? '', /connection closed/);
+  assert.strictEqual(result.turns_taken, 2);
+});

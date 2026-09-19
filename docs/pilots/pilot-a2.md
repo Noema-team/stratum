@@ -32,7 +32,7 @@ Any change to this file after T0 is an experiment-integrity violation ending the
 
 **Delta 2 — evidence-only observability (this PR's code change).** In `src/agent-loop.ts` / `src/agent-runner.ts`:
 - A failed provider call records bounded cause metadata — `duration_ms`, error name/code, undici cause name/code/message — into the failure observation (`transport_failure`), closing the "fetch failed" blind spot (r1/r4).
-- A contract-rejected submission is preserved: bounded `rejected_result` (bytes + repair instruction) in the observation, exact payload bytes in a sibling `<step>-rejected-result.json` (attempt 5 lost both).
+- A contract-rejected submission is preserved: bounded `rejected_result` in the observation — `argument_bytes` is the UTF-8 byte size of the compact normalized JSON serialization of the rejected value, plus the repair instruction as issued — and the **normalized rejected semantic payload** (the transport-parsed value, JSON-serialized; NOT original wire bytes) in a sibling `<step>-rejected-result.json`, whose byte size equals `argument_bytes` (attempt 5 lost both).
 
 No behavior change: `MAX_AGENT_TURNS`, `MAX_RESULT_REPAIRS`, prompts, provider selection, retry behavior, and workflow semantics are untouched. This is the "safe evidence improvement" category — it changes what is recorded, not what the model or workflow does.
 

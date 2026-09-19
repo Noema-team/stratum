@@ -543,9 +543,10 @@ test('D.34.C1: multi-turn — a proposal with no acceptor registered fails close
 });
 
 // E8/A2 preflight (Pilot A E7) — repair exhaustion must preserve the rejected
-// submission: bounded description in the observation, exact payload bytes in
-// rejected_result_payload (attempt 5 lost both).
-test('D.34.C1/E8.A2: repair exhaustion preserves rejected-result evidence and payload bytes', async () => {
+// submission: bounded description in the observation, plus the normalized
+// rejected semantic payload (transport-parsed value, compact JSON — not wire
+// bytes) in rejected_result_payload (attempt 5 lost both).
+test('D.34.C1/E8.A2: repair exhaustion preserves the normalized rejected semantic payload', async () => {
   const provider = new ScriptedMultiTurnProvider([
     JSON.stringify({ goal: 42 }),
     JSON.stringify({ wrong: 'still the wrong shape' }),
