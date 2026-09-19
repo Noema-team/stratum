@@ -458,3 +458,85 @@ test('D.34.C5 WIRE (OpenRouter/OpenAI): the submission tool maps onto function t
     globalThis.fetch = realFetch;
   }
 });
+
+// ─── E10/A3 — bounded transport retry on the ACCEPTED-SUBMISSION branch ───────
+//
+// Review finding on PR #26: define-work succeeds through the accepted
+// submit_result branch, whose early writeTurnMetadata/return bypassed the
+// textual-channel fix — a retried-then-accepted Definition would have lost
+// its retry evidence. This regression uses the ACTUAL proposal transport
+// with real disk persistence.
+
+import { AgentLoop, type IMultiTurnProvider, type MultiTurnParams, type MultiTurnResult } from '../src/agent-loop.js';
+
+function headersTimeoutError(): Error {
+  return Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+  });
+}
+
+class ScriptedSubmitProvider implements IMultiTurnProvider {
+  public calls: MultiTurnParams[] = [];
+  private script: Array<MultiTurnResult | Error>;
+  constructor(script: Array<MultiTurnResult | Error>) {
+    this.script = [...script];
+  }
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    this.calls.push(params);
+    const step = this.script.shift();
+    if (step instanceof Error) throw step;
+    return step ?? { stop_reason: 'end_turn', text: '', tool_uses: [], tokens_used: 1 };
+  }
+}
+
+test('D.34.C5/E10.A3 TOOL: eligible timeout → same-request retry → accepted submission carries retry evidence (returned AND persisted)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e10-a3-'));
+  const provider = new ScriptedSubmitProvider([
+    headersTimeoutError(),
+    { stop_reason: 'tool_use', text: '', tokens_used: 10, tool_uses: [{ type: 'tool_use', id: 'sub1', name: SUBMIT_RESULT_TOOL_NAME, input: VALID_PROPOSAL }] },
+  ]);
+  const loop = new AgentLoop(provider, {
+    model: 'test-model',
+    projectRoot: root, // real fs — the -loop.json must land on disk
+    role: 'explorer',
+    workflowRunId: 'r',
+    iteration: 1,
+    nodeId: 'synthesize-definition',
+    runArtifacts: { updateNodeStatus: async () => {} } as never,
+    // The ACTUAL proposal transport (the channel define-work negotiates).
+    resultTransport: new SubmitResultTransport(),
+    declaredArtifactId: 'definition',
+    declaredOutputPath: '.sle/work/w/definition.md',
+    expectedArtifacts: 1,
+    resultSchemaText: SCHEMA_TEXT,
+    resultSchemaJson: SCHEMA_JSON as Record<string, unknown>,
+    acceptResult: (value: unknown) =>
+      JSON.stringify(value) === JSON.stringify(VALID_PROPOSAL) ? { ok: true as const } : { ok: false as const, repairInstruction: 'submit the valid proposal' },
+    transportRetry: true,
+  });
+
+  const result = await loop.run('System', 'Produce the Definition.');
+
+  // Same-request retry: byte-identical parameters on the re-issue, exactly
+  // one retry, no extra turn (same slot as the un-retried baseline).
+  assert.strictEqual(result.success, true, result.error);
+  assert.strictEqual(provider.calls.length, 2);
+  assert.deepStrictEqual(provider.calls[1], provider.calls[0]);
+  assert.strictEqual(result.turns_taken, 1);
+  // The RETURNED record rides the accepted-submission result.
+  assert.ok(result.transport_retry, 'transport_retry on the accepted-submission result');
+  assert.strictEqual(result.transport_retry!.attempts, 1);
+  assert.strictEqual(result.transport_retry!.outcome, 'succeeded');
+  assert.strictEqual(result.transport_retry!.first_failure.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+  assert.ok(Number.isFinite(result.transport_retry!.first_failure.duration_ms));
+  assert.ok(Number.isFinite(result.transport_retry!.retried_request_ms));
+  // The PERSISTED record: the accepted-submission branch's writeTurnMetadata
+  // call must carry the retry evidence into the real -loop.json artifact.
+  const meta = JSON.parse(
+    readFileSync(join(root, '.sle/runs/r/1/node-outputs/synthesize-definition-loop.json'), 'utf-8'),
+  );
+  assert.equal(meta.result_transport, 'submit-result');
+  assert.ok(meta.transport_retry, 'transport_retry persisted by the accepted-submission branch');
+  assert.strictEqual(meta.transport_retry.outcome, 'succeeded');
+  assert.strictEqual(meta.transport_retry.first_failure.cause_code, 'UND_ERR_HEADERS_TIMEOUT');
+});

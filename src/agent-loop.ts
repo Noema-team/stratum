@@ -542,7 +542,11 @@ export class AgentLoop {
               });
               continue;
             }
-            await this.writeTurnMetadata(turns, toolCallLog);
+            // E10/A3 — the accepted-submission return must carry the retry
+            // record too: define-work succeeds through THIS branch, so a
+            // retried-then-accepted Definition would otherwise lose its
+            // retry evidence.
+            await this.writeTurnMetadata(turns, toolCallLog, transportRetry);
             return {
               success: true,
               proposal: { value: submission.value },
@@ -550,6 +554,7 @@ export class AgentLoop {
               tokens_used: totalTokens,
               format_repairs: formatRepairs,
               result_repairs: resultRepairs,
+              ...(transportRetry ? { transport_retry: transportRetry } : {}),
               rawText: result.text,
             };
           }
