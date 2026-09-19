@@ -541,3 +541,30 @@ test('D.34.C1: multi-turn — a proposal with no acceptor registered fails close
   assert.equal(result.success, false);
   assert.match(result.error ?? '', /no result acceptor is registered/);
 });
+
+// E8/A2 preflight (Pilot A E7) — repair exhaustion must preserve the rejected
+// submission: bounded description in the observation, exact payload bytes in
+// rejected_result_payload (attempt 5 lost both).
+test('D.34.C1/E8.A2: repair exhaustion preserves rejected-result evidence and payload bytes', async () => {
+  const provider = new ScriptedMultiTurnProvider([
+    JSON.stringify({ goal: 42 }),
+    JSON.stringify({ wrong: 'still the wrong shape' }),
+  ]);
+  const loop = makeLoop(provider, {
+    declaredArtifactId: 'test-artifact',
+    resultTransport: new ProposalTransport(),
+    acceptResult: (value: unknown) => {
+      const parsed = SIMPLE_CONTRACT.modelSchema.safeParse(value);
+      return parsed.success ? { ok: true } : { ok: false, repairInstruction: 'shape rejected' };
+    },
+  });
+  const result = await loop.run('sys', 'produce');
+  assert.equal(result.success, false);
+  assert.match(result.error ?? '', /result repair is exhausted/);
+  const rr = result.failure_observation?.rejected_result;
+  assert.ok(rr, 'rejected_result attached to the failure observation');
+  assert.ok(rr.argument_bytes > 0);
+  assert.equal(rr.repair_instruction, 'shape rejected');
+  const payload = JSON.parse(result.rejected_result_payload ?? 'null');
+  assert.deepEqual(payload, { wrong: 'still the wrong shape' });
+});
