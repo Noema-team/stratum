@@ -324,11 +324,16 @@ export function createDefinitionOutputContract(deps: DefinitionContractDeps = {}
           'exactly once, here — never duplicated on a requirement, constraint, or acceptance entry.',
         '/facts/items/source':
           'Where the fact came from: human, repository, artifact, investigation, or decision. ' +
+          "'artifact' is a source value ONLY — it is never a fact kind (kinds are only " +
+          "'product-intent' and 'repository-claim'). " +
           'A human assertion about repository reality is not KNOWN on human authority alone; ' +
           'source: decision belongs exclusively to DECIDED facts.',
         '/facts/items/kind':
-          "Optional: 'product-intent' or 'repository-claim'. One mechanical rule follows from " +
-          'it: a repository-claim may not be KNOWN on source: human alone.',
+          "Optional: 'product-intent' or 'repository-claim'. These two are the ONLY kind " +
+          "values ever — 'artifact' is a source, never a kind. When neither classification " +
+          'fits, OMIT kind entirely (deferral is expressed via status, e.g. DEFERRED — never ' +
+          'by inventing a kind). One mechanical rule follows from kind: a repository-claim ' +
+          'may not be KNOWN on source: human alone.',
         '/facts/items/decisionRef':
           'Required exactly when status is DECIDED: the id of the recorded Decision that ' +
           'resolved the fact. Never present on a non-DECIDED fact.',
