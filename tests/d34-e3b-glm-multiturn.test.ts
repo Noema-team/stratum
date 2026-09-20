@@ -1,12 +1,14 @@
-// E3b — glm multi-turn opt-in + multi-turn sampling parity.
+// E3b — multi-turn wire coverage (the wire class the 'glm' provider kind
+// used to reach; E11 removed the Coding Plan provider, so the factory-level
+// test below now pins its REMOVAL while the wire itself stays covered via
+// the direct OpenAICompatibleMultiTurnProvider constructions below and the
+// 'openrouter' factory case).
 //
-// Pins: the 'glm' provider kind exposes completeMultiTurn (E2 evidence: the
-// series degraded glm to the single-turn wire — 15/15 reasoning-budget
-// TRANSPORT exhaustion; probe evidence: the Z.ai endpoint executes the
-// multi-turn wire correctly on the exact request shape), the multi-turn wire
-// carries temperature when the caller sets it (sampling parity with the
-// single-turn/structured wires — C6 review closure 3 semantics), and the
-// legacy wire shape (temperature unset) stays byte-for-byte unchanged.
+// Pins: 'glm' is rejected by the factory (E11 removal — fail closed, never a
+// silent fallback), the multi-turn wire carries temperature when the caller
+// sets it (sampling parity with the single-turn/structured wires — C6 review
+// closure 3 semantics), and the legacy wire shape (temperature unset) stays
+// byte-for-byte unchanged.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -16,26 +18,18 @@ import { join } from 'node:path';
 
 import { createLLMProvider } from '../src/llm-provider.js';
 
-test('E3b: the glm provider kind opts into the multi-turn tool wire', () => {
+test('E11: the glm (Z.ai Coding Plan) provider kind is rejected by the factory', () => {
   const root = mkdtempSync(join(tmpdir(), 'e3b-'));
   try {
-    const originalKey = process.env.GLM_API_KEY;
-    process.env.GLM_API_KEY = 'test-key-for-capability-probe';
-    try {
-      const provider = createLLMProvider({
-        provider: 'glm',
-        model: 'glm-5.3-flash',
-        api_key_env: 'GLM_API_KEY',
-      });
-      assert.equal(
-        typeof (provider as { completeMultiTurn?: unknown }).completeMultiTurn,
-        'function',
-        'glm must expose completeMultiTurn (capability probe must pass)',
-      );
-    } finally {
-      if (originalKey === undefined) delete process.env.GLM_API_KEY;
-      else process.env.GLM_API_KEY = originalKey;
-    }
+    assert.throws(
+      () =>
+        createLLMProvider({
+          provider: 'glm' as never,
+          model: 'glm-5.3-flash',
+          api_key_env: 'GLM_API_KEY',
+        }),
+      /Unknown LLM provider: glm/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

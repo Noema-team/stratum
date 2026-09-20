@@ -514,8 +514,8 @@ export function anthropicSdkBaseUrl(configBaseUrl: string | undefined): string |
 // a capability that's genuinely present on what it wraps. The REST-based
 // AnthropicProvider above stays exported (and covered by its own tests) but
 // is no longer reachable from this factory, since it has no multi-turn
-// implementation. openai_compatible/glm stay single-turn-only — they are
-// not faked into multi-turn capability. openrouter DOES get genuine
+// implementation. openai_compatible stays single-turn-only — it is not
+// faked into multi-turn capability. openrouter DOES get genuine
 // multi-turn capability (OpenAICompatibleMultiTurnProvider, D.3d) since
 // OpenRouter's own wire format for tool-calling-capable models is real,
 // not faked.
@@ -534,30 +534,6 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
       const client = baseURL ? new Anthropic({ apiKey, baseURL }) : undefined;
       return new AnthropicSDKProvider(apiKey, { defaultModel: config.model, client });
     }
-    case 'glm': {
-      const glmConfig: AgentLLMConfig = {
-        ...config,
-        // Default to Z.AI Coding Plan endpoint.
-        // For standard Z.AI use: https://api.z.ai/api/paas/v4
-        // For mainland CN use: https://open.bigmodel.cn/api/paas/v4
-        base_url: config.base_url || 'https://api.z.ai/api/coding/paas/v4',
-        model: config.model || 'glm-4',
-        api_key_env: config.api_key_env || 'GLM_API_KEY',
-      };
-      // E3b — the glm case now opts into the multi-turn tool wire, matching
-      // 'openrouter'. Evidence (E2/E3, 2026-09-15): the E2 qualification
-      // series degraded glm to the single-turn wire (no tools, no loop);
-      // the heavy methodology prompt then drove the hybrid reasoner to
-      // exhaust its entire completion budget on reasoning
-      // (`finish_reason: length`, 4095/4096 reasoning tokens, empty
-      // content) — 15/15 TRANSPORT failures with zero variance. The exact-
-      // shape probe proved the Z.ai endpoint executes the multi-turn wire
-      // correctly (tool_calls, valid JSON arguments) on this very request
-      // shape. Per D.3b1's own criterion — opt in when the target endpoint
-      // supports tool calling — plain single-turn stays available via
-      // 'openai_compatible'; 'glm' now means "Z.ai with tool calling".
-      return new OpenAICompatibleMultiTurnProvider(glmConfig);
-    }
     case 'openrouter': {
       const orConfig: AgentLLMConfig = {
         ...config,
@@ -568,7 +544,7 @@ export function createLLMProvider(config: AgentLLMConfig): ILLMProvider {
       // D.3d — OpenRouter genuinely supports the OpenAI tool-calling wire
       // format for tool-capable models, so it gets real multi-turn
       // capability (OpenAICompatibleMultiTurnProvider above), unlike
-      // openai_compatible/glm above which stay single-turn-only.
+      // openai_compatible above which stays single-turn-only.
       // D.34 C6 — it also genuinely supports response_format json_schema
       // (strict), so the structured-output capability rides along; absence
       // of that capability on other providers keeps the textual review

@@ -68,7 +68,7 @@ const CyclesStartPayloadSchema = z.object({
 });
 
 const SettingsPayloadSchema = z.object({
-  provider: z.enum(['openai_compatible', 'anthropic', 'glm', 'openrouter']),
+  provider: z.enum(['openai_compatible', 'anthropic', 'openrouter']),
   base_url: z.string().optional().nullable(),
   model: z.string().min(1, 'model required'),
   api_key: z.string().optional().nullable(),
@@ -398,7 +398,6 @@ export class DaemonServer {
           process.env.OPENAI_API_KEY ||
           process.env.SLE_LLM_API_KEY ||
           process.env.ANTHROPIC_API_KEY ||
-          process.env.GLM_API_KEY ||
           process.env.OPENROUTER_API_KEY
         );
         data.api_key = hasKey ? '••••••••' : '';
@@ -462,8 +461,7 @@ export class DaemonServer {
 
           const api_key_env = (
             provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
-            provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
-            provider === 'glm' ? 'GLM_API_KEY' : 'OPENROUTER_API_KEY'
+            provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY'
           );
 
           if (finalApiKey) {
