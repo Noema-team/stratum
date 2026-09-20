@@ -446,31 +446,44 @@ export class DaemonServer {
         provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY'
       );
       const providerChanged = existingSettings.provider !== provider;
+      // E11 re-review — the provider-change boundary covers masked, empty,
+      // null, AND omitted keys: only an explicit non-empty submitted key
+      // counts as a new credential.
+      const MASKED_KEY = '••••••••';
+      const explicitKeySubmitted =
+        typeof api_key === 'string' && api_key.length > 0 && api_key !== MASKED_KEY;
 
       let finalApiKey = api_key;
-      if (api_key === '••••••••') {
-        if (providerChanged) {
-          const envCredential = process.env[api_key_env] || process.env.SLE_LLM_API_KEY || '';
-          if (!envCredential) {
-            this.sendError(
-              res, 422, 'credential_required',
-              `Provider changed (${String(existingSettings.provider ?? '(none)')} → ${provider}): the masked key belongs to the previous provider and is never reused. Set ${api_key_env} (or SLE_LLM_API_KEY), or submit an explicit API key for ${provider}.`,
-            );
-            return;
-          }
-          // Deliberately use the new provider's configured environment
-          // credential: persist NO stored key for the new provider.
-          finalApiKey = '';
-        } else {
-          finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
+      if (providerChanged && !explicitKeySubmitted) {
+        // SLE_LLM_API_KEY is provider-agnostic and may hold the PREVIOUS
+        // provider's key, so it is NOT trusted here — only the new
+        // provider's own environment variable is.
+        const envCredential = process.env[api_key_env] || '';
+        if (!envCredential) {
+          this.sendError(
+            res, 422, 'credential_required',
+            `Provider changed (${String(existingSettings.provider ?? '(none)')} → ${provider}): the previous provider's credential is never reused. Set ${api_key_env}, or submit an explicit API key for ${provider}.`,
+          );
+          return;
         }
+        // Deliberately use the new provider's configured environment
+        // credential: persist NO stored key for the new provider.
+        finalApiKey = '';
+      } else if (api_key === MASKED_KEY) {
+        finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
       }
 
       // Validate BEFORE persisting: build (and only then activate) the new
-      // provider. Any failure here leaves the previous configuration and
-      // environment untouched.
+      // provider. Any failure here — or in the persistence step below —
+      // leaves the previous configuration and environment untouched.
       const prevProviderKey = process.env[api_key_env];
       const prevSleKey = process.env.SLE_LLM_API_KEY;
+      const rollbackEnv = () => {
+        if (prevProviderKey === undefined) delete process.env[api_key_env];
+        else process.env[api_key_env] = prevProviderKey;
+        if (prevSleKey === undefined) delete process.env.SLE_LLM_API_KEY;
+        else process.env.SLE_LLM_API_KEY = prevSleKey;
+      };
       let newInner: ILLMProvider | undefined;
       if (this.deps.llmProvider) {
         try {
@@ -486,10 +499,7 @@ export class DaemonServer {
             api_key_env,
           });
         } catch (err) {
-          if (prevProviderKey === undefined) delete process.env[api_key_env];
-          else process.env[api_key_env] = prevProviderKey;
-          if (prevSleKey === undefined) delete process.env.SLE_LLM_API_KEY;
-          else process.env.SLE_LLM_API_KEY = prevSleKey;
+          rollbackEnv();
           this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
           return;
         }
@@ -506,6 +516,7 @@ export class DaemonServer {
         await fs.mkdir(path.dirname(settingsPath), { recursive: true });
         await fs.writeFile(settingsPath, JSON.stringify(updatedSettings, null, 2), 'utf8');
       } catch (err) {
+        rollbackEnv();
         this.sendError(res, 500, 'save_settings_failed', (err as Error).message);
         return;
       }

@@ -39,7 +39,7 @@ Nothing else changes. No model, prompt, turn-cap, repair-budget, or Definition-c
 
 ## 2b. E11 amendment — route change to OpenRouter (reason and consequences)
 
-The Z.ai Coding Plan provider was **removed from Stratum entirely** (operator decision, E11): `'glm'` is gone from the provider type/enum, factory, settings templates, and daemon schemas; a settings file still naming it fails closed with migration guidance. Consequences frozen here:
+The Z.ai Coding Plan provider was **removed from Stratum** (operator decision, E11): the dedicated `'glm'` provider kind is gone from the type/enum, factory, settings templates, and daemon schemas, and legacy `provider: 'glm'` settings fail closed with migration guidance. **Scope: the dedicated Coding Plan kind only** — direct `openai_compatible` endpoints, `anthropic`, and other providers remain available; OpenRouter is the designated route for these runs, not the only permitted provider kind. Consequences frozen here:
 
 - **Route (frozen):** provider `openrouter`, model `z-ai/glm-5.3-flash`, base_url `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY`, max_tokens 16384. Same underlying model via OpenRouter's OpenAI-compatible multi-turn wire (`OpenAICompatibleMultiTurnProvider` — the same wire class the Coding Plan route used; E3b evidence).
 - **Rationale:** (a) operator policy — all Stratum runs route through OpenRouter; (b) A2's diagnosis (client-side undici default headers timeout) left no evidence the Coding Plan endpoint was required; (c) the retry delta is unchanged by the route swap.

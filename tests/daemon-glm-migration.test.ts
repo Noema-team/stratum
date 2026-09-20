@@ -44,19 +44,27 @@ function makeRequest(server: DaemonServer, method: string, path: string, body?: 
 
 async function withMigrationServer(
   fn: (server: DaemonServer, root: string) => Promise<void>,
+  opts: { llmProvider?: boolean; settings?: 'legacy' | 'directory' } = {},
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'e11-migration-'));
   const prevCwd = process.cwd();
   const prevOpenrouter = process.env.OPENROUTER_API_KEY;
   const prevSle = process.env.SLE_LLM_API_KEY;
   mkdirSync(join(root, '.sle'), { recursive: true });
-  writeFileSync(join(root, '.sle', 'settings.json'), LEGACY_SETTINGS, 'utf-8');
+  if (opts.settings === 'directory') {
+    // A directory at the settings path makes every write fail with EISDIR
+    // (the initial read's EISDIR is swallowed by the handler's try/catch).
+    mkdirSync(join(root, '.sle', 'settings.json'));
+  } else {
+    writeFileSync(join(root, '.sle', 'settings.json'), LEGACY_SETTINGS, 'utf-8');
+  }
   process.chdir(root);
   const server = new DaemonServer();
   try {
     await server.start({ port: 0 } as never, {
       stateAPI: { onStateChanged: () => {} } as never,
       pidFile: { writePidFile: () => {}, removePidFile: () => {} },
+      ...(opts.llmProvider ? { llmProvider: { setProvider: () => {} } } : {}),
     } as never);
     await fn(server, root);
   } finally {
@@ -139,4 +147,80 @@ test('E11: same-provider masked edit still reuses the stored credential', async 
     assert.strictEqual(onDisk.provider, 'openrouter');
     assert.strictEqual(onDisk.api_key, 'stored-or-key');
   });
+});
+
+// E11 re-review 1 — SLE_LLM_API_KEY is provider-agnostic and may hold the
+// PREVIOUS provider's key: it must NOT count as the new provider's credential.
+test('E11: provider change does not trust SLE_LLM_API_KEY as the new provider credential', async () => {
+  await withMigrationServer(async (server, root) => {
+    delete process.env.OPENROUTER_API_KEY;
+    process.env.SLE_LLM_API_KEY = 'old-zai-key-in-generic-var';
+
+    const res = await makeRequest(server, 'POST', '/api/v2/settings', {
+      provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'z-ai/glm-5.3-flash',
+      api_key: MASKED,
+    });
+
+    assert.strictEqual(res.statusCode, 422, 'SLE_LLM_API_KEY must not be trusted across providers');
+    const err = JSON.parse(res.body);
+    assert.match(err.error?.message ?? err.message ?? '', /OPENROUTER_API_KEY/);
+    assert.ok(!String(err.error?.message ?? err.message ?? '').includes('SLE_LLM_API_KEY'));
+    const onDisk = JSON.parse(readFileSync(join(root, '.sle', 'settings.json'), 'utf-8'));
+    assert.strictEqual(onDisk.provider, 'glm');
+    assert.strictEqual(process.env.SLE_LLM_API_KEY, 'old-zai-key-in-generic-var');
+    assert.strictEqual(process.env.OPENROUTER_API_KEY, undefined);
+  });
+});
+
+// E11 re-review 2 — the provider-change rule covers empty, null, AND omitted
+// keys, not just the masked sentinel: none of them may bypass the requirement.
+test('E11: empty, null, and omitted keys cannot bypass the provider-change credential rule', async () => {
+  for (const apiKey of ['', null, undefined]) {
+    await withMigrationServer(async (server, root) => {
+      delete process.env.OPENROUTER_API_KEY;
+      delete process.env.SLE_LLM_API_KEY;
+
+      const body: Record<string, unknown> = {
+        provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'z-ai/glm-5.3-flash',
+      };
+      if (apiKey !== undefined) body.api_key = apiKey;
+      const res = await makeRequest(server, 'POST', '/api/v2/settings', body);
+
+      assert.strictEqual(res.statusCode, 422, `api_key ${JSON.stringify(apiKey) ?? 'omitted'} must not bypass the rule`);
+      const onDisk = JSON.parse(readFileSync(join(root, '.sle', 'settings.json'), 'utf-8'));
+      assert.strictEqual(onDisk.provider, 'glm', 'previous configuration intact');
+      assert.strictEqual(onDisk.api_key, 'zai-secret-cred');
+    });
+  }
+});
+
+// E11 re-review 3 — a persistence failure after temporary environment changes
+// restores the previous environment (same rollback as the validation path).
+test('E11: settings persistence failure rolls back the environment', async () => {
+  await withMigrationServer(
+    async (server) => {
+      process.env.OPENROUTER_API_KEY = 'prev-or-key';
+      process.env.SLE_LLM_API_KEY = 'prev-sle';
+
+      const res = await makeRequest(server, 'POST', '/api/v2/settings', {
+        provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'z-ai/glm-5.3-flash',
+        api_key: 'new-or-key',
+      });
+
+      assert.strictEqual(res.statusCode, 500, 'persistence must fail (EISDIR)');
+      const err = JSON.parse(res.body);
+      assert.strictEqual(err.error?.code, 'save_settings_failed');
+      assert.match(err.error?.message ?? '', /EISDIR/);
+      // The temporary env changes were rolled back.
+      assert.strictEqual(process.env.OPENROUTER_API_KEY, 'prev-or-key');
+      assert.strictEqual(process.env.SLE_LLM_API_KEY, 'prev-sle');
+    },
+    { llmProvider: true, settings: 'directory' },
+  );
 });
