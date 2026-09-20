@@ -44,6 +44,7 @@ import {
   validateSchemaAnnotations,
 } from '../src/workflow/contracts.js';
 import { TextualSleOutputTransport, SLE_OPEN, SLE_CLOSE } from '../src/transport/textual-sle-output.js';
+import { SubmitResultTransport } from '../src/transport/submit-result-transport.js';
 import { AgentRunner } from '../src/agent-runner.js';
 import { buildAgentRunner } from '../src/application.js';
 import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
@@ -391,6 +392,7 @@ const MT_CTX = {
   declaredOutputPath: '.sle/work/w/definition.md',
   expectedArtifacts: 1,
   resultSchemaText: DEF_SCHEMA_TEXT,
+  resultSchemaJson: toJsonSchema(CONTRACT.modelSchema) as Record<string, unknown>,
 };
 
 test('D.34.C4 MT TRANSPORT: proposal teaching keeps the delimiters, drops the section envelope', () => {
@@ -755,4 +757,56 @@ test('D.34.C4 METHODOLOGY: the slimmed contract keeps every semantic element', (
   assert.ok(DEFINITION_CONTRACT.includes('sent back to you with structured defects'), 'deterministic gate');
   assert.ok(DEFINITION_CONTRACT.includes('status is exactly one of:'), 'status vocabulary');
   assert.ok(DEFINITION_CONTRACT.includes('source records where the fact came from:'), 'source vocabulary');
+});
+
+// ─── E12/A4 — source/kind disambiguation in the generated teaching ───────────
+//
+// Pilot A3 evidence: the model submitted a 15,550-byte proposal whose ONLY
+// defect was facts[13].kind='artifact' — twice, including after repair —
+// because 'artifact' is a legitimate SOURCE value and the teaching never said
+// the two vocabularies are disjoint. The A4 change strengthens the
+// annotations ONLY: the schema, validator, and projection are untouched, so
+// there must be no second source of schema authority.
+
+test('E12/A4: the generated teaching explicitly disambiguates source vs kind', () => {
+  const teaching = renderSchemaTeaching(CONTRACT);
+  // Both directions of the collision, in the actual teaching text:
+  assert.match(teaching, /'artifact' is a source value ONLY — it is never a fact kind/);
+  assert.match(teaching, /'artifact' is a source, never a kind/);
+  // Omission guidance for facts that fit neither classification:
+  assert.match(teaching, /OMIT kind entirely/);
+  // The allowed kind values are still taught (unchanged requirement):
+  assert.match(teaching, /'product-intent'/);
+  assert.match(teaching, /'repository-claim'/);
+});
+
+test('E12/A4: the clarification reaches the actual submit_result teaching', () => {
+  const submit = new SubmitResultTransport();
+  const teaching = submit.formatInstruction(MT_CTX);
+  assert.ok(teaching.includes(DEF_SCHEMA_TEXT), 'generated schema embedded verbatim');
+  assert.match(teaching, /'artifact' is a source, never a kind/);
+  assert.match(teaching, /OMIT kind entirely/);
+});
+
+test('E12/A4: validator and projection are UNCHANGED — no second schema authority', () => {
+  // The schema itself still rejects 'artifact' as a kind (annotation text is
+  // teaching, never a second validator):
+  const bad = CONTRACT.modelSchema.safeParse({
+    goal: 'g',
+    bodyMarkdown: 'notes',
+    facts: [{ id: 'F1', statement: 's', status: 'DEFERRED', source: 'artifact', kind: 'artifact' }],
+  });
+  assert.equal(bad.success, false);
+  assert.equal(bad.error?.issues[0].path.join('.'), 'facts.0.kind');
+  // Omission remains legal — the exact shape A3 was one token away from:
+  const omitted = CONTRACT.modelSchema.safeParse({
+    goal: 'g',
+    bodyMarkdown: 'notes',
+    facts: [{ id: 'F1', statement: 's', status: 'DEFERRED', source: 'artifact' }],
+  });
+  assert.equal(omitted.success, true);
+  // The projected tool schema is byte-identical to the schema projection —
+  // the annotation change cannot leak into the wire schema.
+  const submit = new SubmitResultTransport();
+  assert.deepEqual(submit.resultSubmissionTool(MT_CTX)!.input_schema, toJsonSchema(CONTRACT.modelSchema));
 });
