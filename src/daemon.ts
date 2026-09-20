@@ -13,6 +13,7 @@ import type { ScopingService } from './scoping-service.js';
 import type { ConfirmService } from './confirm-service.js';
 import type { APIResponse, APIError, ShardingProposal } from './types.js';
 import { LinkIndexManager } from './link-index.js';
+import type { ILLMProvider } from './llm-provider.js';
 import { LinkSourceSchema, LinkTargetSchema } from './types.js';
 import type { IntakeService } from './intake-service.js';
 import type { ShardingService } from './sharding-service.js';
@@ -433,9 +434,65 @@ export class DaemonServer {
 
       const { provider, base_url, model, api_key } = parsed.data;
 
+      // E11 review — credential migration rule: a masked key means "keep
+      // whatever credential this project already had". That is ONLY valid
+      // when the provider is unchanged. A provider CHANGE must never carry
+      // the old provider's credential across (a legacy Z.ai key must never
+      // become the OpenRouter key); the new provider either gets an explicit
+      // key, or its own configured environment credential — otherwise the
+      // migration is rejected BEFORE anything is persisted or activated.
+      const api_key_env = (
+        provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
+        provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY'
+      );
+      const providerChanged = existingSettings.provider !== provider;
+
       let finalApiKey = api_key;
       if (api_key === '••••••••') {
-        finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
+        if (providerChanged) {
+          const envCredential = process.env[api_key_env] || process.env.SLE_LLM_API_KEY || '';
+          if (!envCredential) {
+            this.sendError(
+              res, 422, 'credential_required',
+              `Provider changed (${String(existingSettings.provider ?? '(none)')} → ${provider}): the masked key belongs to the previous provider and is never reused. Set ${api_key_env} (or SLE_LLM_API_KEY), or submit an explicit API key for ${provider}.`,
+            );
+            return;
+          }
+          // Deliberately use the new provider's configured environment
+          // credential: persist NO stored key for the new provider.
+          finalApiKey = '';
+        } else {
+          finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
+        }
+      }
+
+      // Validate BEFORE persisting: build (and only then activate) the new
+      // provider. Any failure here leaves the previous configuration and
+      // environment untouched.
+      const prevProviderKey = process.env[api_key_env];
+      const prevSleKey = process.env.SLE_LLM_API_KEY;
+      let newInner: ILLMProvider | undefined;
+      if (this.deps.llmProvider) {
+        try {
+          if (finalApiKey) {
+            process.env.SLE_LLM_API_KEY = finalApiKey;
+            process.env[api_key_env] = finalApiKey;
+          }
+          const { createLLMProvider } = await import('./llm-provider.js');
+          newInner = createLLMProvider({
+            provider,
+            base_url: base_url || undefined,
+            model,
+            api_key_env,
+          });
+        } catch (err) {
+          if (prevProviderKey === undefined) delete process.env[api_key_env];
+          else process.env[api_key_env] = prevProviderKey;
+          if (prevSleKey === undefined) delete process.env.SLE_LLM_API_KEY;
+          else process.env.SLE_LLM_API_KEY = prevSleKey;
+          this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
+          return;
+        }
       }
 
       const updatedSettings = {
@@ -453,37 +510,11 @@ export class DaemonServer {
         return;
       }
 
-      if (this.deps.llmProvider) {
-        try {
-          if (finalApiKey) {
-            process.env.SLE_LLM_API_KEY = finalApiKey;
-          }
-
-          const api_key_env = (
-            provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
-            provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY'
-          );
-
-          if (finalApiKey) {
-            process.env[api_key_env] = finalApiKey;
-          }
-
-          const { createLLMProvider } = await import('./llm-provider.js');
-          const newInner = createLLMProvider({
-            provider,
-            base_url: base_url || undefined,
-            model,
-            api_key_env,
-          });
-
-          if (typeof this.deps.llmProvider.setProvider === 'function') {
-            this.deps.llmProvider.setProvider(newInner);
-          } else {
-            this.deps.llmProvider = newInner;
-          }
-        } catch (err) {
-          this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
-          return;
+      if (this.deps.llmProvider && newInner) {
+        if (typeof this.deps.llmProvider.setProvider === 'function') {
+          this.deps.llmProvider.setProvider(newInner);
+        } else {
+          this.deps.llmProvider = newInner;
         }
       }
 

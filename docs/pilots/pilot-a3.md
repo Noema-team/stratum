@@ -1,6 +1,6 @@
 # Pilot A3 — Preregistration (E10, amended E11)
 
-**Frozen:** 2026-09-19, before any model-driven run. **Amended 2026-09-19 (E11, before T0 — A3 has NOT started):** route changed Z.ai Coding Plan → OpenRouter and the pilot driver re-frozen, because the Coding Plan provider was removed from Stratum entirely (see §2b).
+**Frozen:** 2026-09-19, before any model-driven run. **Amended 2026-09-20 (E11, before T0 — A3 has NOT started):** route changed Z.ai Coding Plan → OpenRouter and the pilot driver re-frozen, because the Coding Plan provider was removed from Stratum entirely (see §2b).
 **Status:** Preregistered; Pilot A3 has NOT started. Execution begins only after this document's amendment is reviewed and merged.
 
 A3 is the **bounded-retry rerun of Pilot A2** — same issue, same immutable target SHA, same model, same limits — with exactly **two** deliberate delta set:
