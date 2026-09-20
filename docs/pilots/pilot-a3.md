@@ -1,22 +1,24 @@
-# Pilot A3 — Preregistration (E10)
+# Pilot A3 — Preregistration (E10, amended E11)
 
-**Frozen:** 2026-09-19, before any model-driven run.
-**Status:** Preregistered; Pilot A3 has NOT started. Execution begins only after this document is reviewed and merged, on the merge commit of this PR.
+**Frozen:** 2026-09-19, before any model-driven run. **Amended 2026-09-20 (E11, before T0 — A3 has NOT started):** route changed Z.ai Coding Plan → OpenRouter and the pilot driver re-frozen, because the Coding Plan provider was removed from Stratum entirely (see §2b).
+**Status:** Preregistered; Pilot A3 has NOT started. Execution begins only after this document's amendment is reviewed and merged.
 
-A3 is the **bounded-retry rerun of Pilot A2** — same issue, same immutable target SHA, same model/route, same limits — with exactly **one** deliberate delta set:
+A3 is the **bounded-retry rerun of Pilot A2** — same issue, same immutable target SHA, same model, same limits — with exactly **two** deliberate delta set:
 
-1. **Bounded transport retry** (this PR's code change; the operator-authorized successor policy from A2's closeout).
-2. Nothing else. No model, prompt, provider, turn-cap, repair-budget, or Definition-contract changes.
+1. **Bounded transport retry** (merged in PR #26; the operator-authorized successor policy from A2's closeout).
+2. **Route change: Z.ai Coding Plan → OpenRouter** (E11 amendment — the Coding Plan provider was removed from Stratum; see §2b).
+
+Nothing else changes. No model, prompt, turn-cap, repair-budget, or Definition-contract changes.
 
 ## 1. Frozen baselines
 
 | Item | Value |
 | --- | --- |
 | Stratum baseline | `a4a1be5617de83575122b61ab9b0b94bd92a9b09` (A2 execution revision) |
-| Stratum A3 execution revision | The merge commit of this PR — delta vs baseline is the bounded retry seam + its tests + this document |
+| Stratum A3 execution revision | The merge commit of the amended A3 PR — delta vs baseline: the bounded retry seam + its tests (PR #26), the Coding Plan provider removal (E11), and this amendment |
 | Target repository / `main` (immutable, for controlled comparison) | `magtheo/student-platform` @ `86ec0871d64ecca8732434c11d015fd8e08ddc7e`, branch `pilot-a/issue-108`, never merged |
 | Target issue | `magtheo/student-platform#108` — OPEN (re-verified 2026-09-19) |
-| Pilot driver (corrected harness, unchanged since A2) | sha256 `6095ffd90b64a5f0add544ab8cffa2fc0c6d4759c45f3de8b2e3dfe748c2a086` — verified 2026-09-19. Any change after T0 = experiment-integrity failure. A3 WI ids are driver arguments (`wi-define-108-a3`); the execution WI is created as a logged mechanical seeding action (same repository API), exactly as in A2. |
+| Pilot driver (corrected harness, re-frozen by the E11 amendment) | sha256 `09bd01f68a9637ae47b2364c1ace6c4837102688cecd7ae94b9a04a635f42654` — verified 2026-09-19. (Pre-amendment hash: `6095ffd9…48c2a086`, retired unused — A3 never started on it.) Any change after T0 = experiment-integrity failure. A3 WI ids are driver arguments (`wi-define-108-a3`); the execution WI is created as a logged mechanical seeding action (same repository API), exactly as in A2. |
 | Pilot A2 record | DIAGNOSED FAILURE — single define-work attempt died at turn 16, `UND_ERR_HEADERS_TIMEOUT` after 301,237 ms. Evidence: `evidence/a2-*` (immutable). |
 
 ## 2. The one delta — bounded transport retry (exact policy)
@@ -35,13 +37,22 @@ A3 is the **bounded-retry rerun of Pilot A2** — same issue, same immutable tar
 
 **Timeout attribution (corrects the A2 closeout's wording — A2 evidence itself is untouched):** the 300 s limit is **undici's library-default `headersTimeout`** — the GLM multi-turn provider issues a plain `fetch()` with no explicit dispatcher or timeout options. The client gave up at ~300 s; whether the server would have responded later is NOT established by this evidence. A3's hypothesis is therefore stated at request level (transient/slow-completion), not gateway level.
 
+## 2b. E11 amendment — route change to OpenRouter (reason and consequences)
+
+The Z.ai Coding Plan provider was **removed from Stratum** (operator decision, E11): the dedicated `'glm'` provider kind is gone from the type/enum, factory, settings templates, and daemon schemas, and legacy `provider: 'glm'` settings fail closed with migration guidance. **Scope: the dedicated Coding Plan kind only** — direct `openai_compatible` endpoints, `anthropic`, and other providers remain available; OpenRouter is the designated route for these runs, not the only permitted provider kind. Consequences frozen here:
+
+- **Route (frozen):** provider `openrouter`, model `z-ai/glm-5.3-flash`, base_url `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY`, max_tokens 16384. Same underlying model via OpenRouter's OpenAI-compatible multi-turn wire (`OpenAICompatibleMultiTurnProvider` — the same wire class the Coding Plan route used; E3b evidence).
+- **Rationale:** (a) operator policy — all Stratum runs route through OpenRouter; (b) A2's diagnosis (client-side undici default headers timeout) left no evidence the Coding Plan endpoint was required; (c) the retry delta is unchanged by the route swap.
+- **Comparability caveat (recorded, accepted):** A2 ran on Coding Plan; A3 varies BOTH the retry policy and the route. If A3's define-work transport behavior differs from A2's, route and retry effects are confounded at the transport level. Accepted deliberately: the route removal makes this the only available forward path, and the primary A3 question (does the already-demonstrated Definition flow through DDR-041 to full-build) is route-independent.
+- **Pre-T0 verification added to Gate A:** OpenRouter route reachability probe + OPENROUTER_API_KEY presence (~32.4 credits available as of 2026-09-19); driver hash re-check against the amended value above.
+
 ## 3. Target drift (recorded, not acted on)
 
 student-platform `origin/main` has advanced `86ec087… → ef071455639bb89558341165342420298166a261` while #108 remains open. The defect persists at main HEAD: rag-worker `main.py:1097` still publishes `{"error": str(e)}` while rag-api still reads `details.get("error_message", …)` (now ~line 244; line numbers drifted, the mismatch did not). **A3 runs against the original immutable `86ec087…` for controlled comparison with Pilot A/A2.** Integration with newer `main` is separate verification, out of scope here.
 
 ## 4. Explicitly unchanged (the reproduction set)
 
-Identical to Pilot A2's frozen configuration (docs/pilots/pilot-a2.md §3): model `glm-5.3-flash`; route Z.ai Coding Plan (provider `glm`, `GLM_API_KEY`, max_tokens 16384); `MAX_AGENT_TURNS` 24; `MAX_RESULT_REPAIRS` 1; context `hard_ceiling` default 4000; `planning_depth` `'minimal'` / `max_iterations` 5 / `on_cap_hit` `'halt'`; 120-min clock; 2/3/2 budgets; zero mid-run frozen-field changes; no provider retries beyond the §2 policy; no in-path independent model reviewer (deterministic validation gate + external PR review); same dedicated worktrees and isolation rules (ordinary checkouts and both `main`s untouched; pilot branch never merged); publication through existing mechanisms only, PR never merged by the experiment.
+Identical to Pilot A2's frozen configuration (docs/pilots/pilot-a2.md §3) EXCEPT the route (§2b): model `z-ai/glm-5.3-flash` via OpenRouter; `MAX_AGENT_TURNS` 24; `MAX_RESULT_REPAIRS` 1; context `hard_ceiling` default 4000; `planning_depth` `'minimal'` / `max_iterations` 5 / `on_cap_hit` `'halt'`; 120-min clock; 2/3/2 budgets; zero mid-run frozen-field changes; no provider retries beyond the §2 policy; no in-path independent model reviewer (deterministic validation gate + external PR review); same dedicated worktrees and isolation rules (ordinary checkouts and both `main`s untouched; pilot branch never merged); publication through existing mechanisms only, PR never merged by the experiment.
 
 ## 5. Fresh state
 

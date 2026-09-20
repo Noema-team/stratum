@@ -320,14 +320,17 @@ test('testCreateLLMProviderReturnsCorrectType', async () => {
   const anthropic = createLLMProvider(ANTHROPIC_CONFIG);
   assert.ok(anthropic instanceof AnthropicSDKProvider);
 
-  const glm = createLLMProvider({
-    provider: 'glm',
-    base_url: 'https://open.bigmodel.cn/api/paas/v4',
-    model: 'glm-4',
-    api_key_env: 'TEST_LLM_API_KEY'
-  });
-  assert.ok(glm instanceof OpenAICompatibleProvider);
-  assert.ok(glm instanceof OpenAICompatibleMultiTurnProvider, 'E3b: glm opts into multi-turn — E2 series degraded to single-turn (15/15 reasoning-budget TRANSPORT exhaustion); the exact-shape probe proved the Z.ai endpoint executes the multi-turn wire correctly');
+  // E11 — the Z.ai Coding Plan provider ('glm') was REMOVED: the factory
+  // must reject it (no silent fallthrough to another provider kind).
+  assert.throws(
+    () => createLLMProvider({
+      provider: 'glm' as never,
+      base_url: 'https://api.z.ai/api/coding/paas/v4',
+      model: 'glm-4',
+      api_key_env: 'TEST_LLM_API_KEY',
+    }),
+    /Unknown LLM provider: glm/,
+  );
 
   const openrouter = createLLMProvider({
     provider: 'openrouter',

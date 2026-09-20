@@ -688,3 +688,27 @@ test('resolveCheckpoint: confirm revise → incrementRevision: true', async () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// E11 — the Z.ai Coding Plan provider ('glm') was removed. A settings file
+// still naming it must fail CLOSED with an actionable migration message —
+// never the silent 'LLM not configured' fallback, never a different route.
+test('E11: resolveLLMProvider fail-closed on removed glm provider, with migration guidance', async () => {
+  const root = makeTmpRoot();
+  try {
+    await fsPromises.mkdir(join(root, '.sle'), { recursive: true });
+    await fsPromises.writeFile(
+      join(root, '.sle', 'settings.json'),
+      JSON.stringify({ provider: 'glm', model: 'glm-5.3-flash', max_tokens: 16384 }),
+      'utf-8',
+    );
+    assert.throws(() => resolveLLMProvider(root), (err: Error) => {
+      assert.match(err.message, /'glm' \(Z\.ai Coding Plan\) was removed/);
+      assert.match(err.message, /openrouter/);
+      assert.match(err.message, /z-ai\/glm-5\.3-flash/);
+      assert.match(err.message, /OPENROUTER_API_KEY/);
+      return true;
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

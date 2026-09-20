@@ -264,9 +264,10 @@ test('testGenerateDefaultsProviders', async () => {
   const config = generateDefaults('api');
   assert.ok(config.agents.providers.openai);
   assert.ok(config.agents.providers.openrouter);
-  assert.ok(config.agents.providers.glm);
   assert.ok(config.agents.providers.zai);
   assert.ok(config.agents.providers.anthropic);
+  // E11 — the Z.ai Coding Plan template was removed with the 'glm' provider.
+  assert.strictEqual(config.agents.providers.glm, undefined);
 });
 
 test('testGenerateDefaultsStaticAnalysis', async () => {

@@ -13,6 +13,7 @@ import type { ScopingService } from './scoping-service.js';
 import type { ConfirmService } from './confirm-service.js';
 import type { APIResponse, APIError, ShardingProposal } from './types.js';
 import { LinkIndexManager } from './link-index.js';
+import type { ILLMProvider } from './llm-provider.js';
 import { LinkSourceSchema, LinkTargetSchema } from './types.js';
 import type { IntakeService } from './intake-service.js';
 import type { ShardingService } from './sharding-service.js';
@@ -68,7 +69,7 @@ const CyclesStartPayloadSchema = z.object({
 });
 
 const SettingsPayloadSchema = z.object({
-  provider: z.enum(['openai_compatible', 'anthropic', 'glm', 'openrouter']),
+  provider: z.enum(['openai_compatible', 'anthropic', 'openrouter']),
   base_url: z.string().optional().nullable(),
   model: z.string().min(1, 'model required'),
   api_key: z.string().optional().nullable(),
@@ -398,7 +399,6 @@ export class DaemonServer {
           process.env.OPENAI_API_KEY ||
           process.env.SLE_LLM_API_KEY ||
           process.env.ANTHROPIC_API_KEY ||
-          process.env.GLM_API_KEY ||
           process.env.OPENROUTER_API_KEY
         );
         data.api_key = hasKey ? '••••••••' : '';
@@ -434,9 +434,75 @@ export class DaemonServer {
 
       const { provider, base_url, model, api_key } = parsed.data;
 
+      // E11 review — credential migration rule: a masked key means "keep
+      // whatever credential this project already had". That is ONLY valid
+      // when the provider is unchanged. A provider CHANGE must never carry
+      // the old provider's credential across (a legacy Z.ai key must never
+      // become the OpenRouter key); the new provider either gets an explicit
+      // key, or its own configured environment credential — otherwise the
+      // migration is rejected BEFORE anything is persisted or activated.
+      const api_key_env = (
+        provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
+        provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY'
+      );
+      const providerChanged = existingSettings.provider !== provider;
+      // E11 re-review — the provider-change boundary covers masked, empty,
+      // null, AND omitted keys: only an explicit non-empty submitted key
+      // counts as a new credential.
+      const MASKED_KEY = '••••••••';
+      const explicitKeySubmitted =
+        typeof api_key === 'string' && api_key.length > 0 && api_key !== MASKED_KEY;
+
       let finalApiKey = api_key;
-      if (api_key === '••••••••') {
+      if (providerChanged && !explicitKeySubmitted) {
+        // SLE_LLM_API_KEY is provider-agnostic and may hold the PREVIOUS
+        // provider's key, so it is NOT trusted here — only the new
+        // provider's own environment variable is.
+        const envCredential = process.env[api_key_env] || '';
+        if (!envCredential) {
+          this.sendError(
+            res, 422, 'credential_required',
+            `Provider changed (${String(existingSettings.provider ?? '(none)')} → ${provider}): the previous provider's credential is never reused. Set ${api_key_env}, or submit an explicit API key for ${provider}.`,
+          );
+          return;
+        }
+        // Deliberately use the new provider's configured environment
+        // credential: persist NO stored key for the new provider.
+        finalApiKey = '';
+      } else if (api_key === MASKED_KEY) {
         finalApiKey = existingSettings.api_key || process.env.SLE_LLM_API_KEY || '';
+      }
+
+      // Validate BEFORE persisting: build (and only then activate) the new
+      // provider. Any failure here — or in the persistence step below —
+      // leaves the previous configuration and environment untouched.
+      const prevProviderKey = process.env[api_key_env];
+      const prevSleKey = process.env.SLE_LLM_API_KEY;
+      const rollbackEnv = () => {
+        if (prevProviderKey === undefined) delete process.env[api_key_env];
+        else process.env[api_key_env] = prevProviderKey;
+        if (prevSleKey === undefined) delete process.env.SLE_LLM_API_KEY;
+        else process.env.SLE_LLM_API_KEY = prevSleKey;
+      };
+      let newInner: ILLMProvider | undefined;
+      if (this.deps.llmProvider) {
+        try {
+          if (finalApiKey) {
+            process.env.SLE_LLM_API_KEY = finalApiKey;
+            process.env[api_key_env] = finalApiKey;
+          }
+          const { createLLMProvider } = await import('./llm-provider.js');
+          newInner = createLLMProvider({
+            provider,
+            base_url: base_url || undefined,
+            model,
+            api_key_env,
+          });
+        } catch (err) {
+          rollbackEnv();
+          this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
+          return;
+        }
       }
 
       const updatedSettings = {
@@ -450,42 +516,16 @@ export class DaemonServer {
         await fs.mkdir(path.dirname(settingsPath), { recursive: true });
         await fs.writeFile(settingsPath, JSON.stringify(updatedSettings, null, 2), 'utf8');
       } catch (err) {
+        rollbackEnv();
         this.sendError(res, 500, 'save_settings_failed', (err as Error).message);
         return;
       }
 
-      if (this.deps.llmProvider) {
-        try {
-          if (finalApiKey) {
-            process.env.SLE_LLM_API_KEY = finalApiKey;
-          }
-
-          const api_key_env = (
-            provider === 'openai_compatible' ? 'OPENAI_API_KEY' :
-            provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
-            provider === 'glm' ? 'GLM_API_KEY' : 'OPENROUTER_API_KEY'
-          );
-
-          if (finalApiKey) {
-            process.env[api_key_env] = finalApiKey;
-          }
-
-          const { createLLMProvider } = await import('./llm-provider.js');
-          const newInner = createLLMProvider({
-            provider,
-            base_url: base_url || undefined,
-            model,
-            api_key_env,
-          });
-
-          if (typeof this.deps.llmProvider.setProvider === 'function') {
-            this.deps.llmProvider.setProvider(newInner);
-          } else {
-            this.deps.llmProvider = newInner;
-          }
-        } catch (err) {
-          this.sendError(res, 400, 'reload_provider_failed', (err as Error).message);
-          return;
+      if (this.deps.llmProvider && newInner) {
+        if (typeof this.deps.llmProvider.setProvider === 'function') {
+          this.deps.llmProvider.setProvider(newInner);
+        } else {
+          this.deps.llmProvider = newInner;
         }
       }
 

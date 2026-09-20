@@ -412,8 +412,10 @@ export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
   let maxTokens = 4096;
 
   if (existsSync(settingsPath)) {
+    let savedProvider: unknown;
     try {
       const saved = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      savedProvider = saved.provider;
       if (saved.provider) {
         config = {
           provider: saved.provider as LLMProvider,
@@ -433,6 +435,18 @@ export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
     } catch {
       // malformed settings — fall back to default
     }
+    // E11 — the Z.ai Coding Plan provider ('glm') was REMOVED. A settings
+    // file still naming it must fail CLOSED with an actionable migration
+    // message — never the silent "LLM not configured" fallback (the generic
+    // unknown-provider catch below) and never a silently-different route.
+    if (savedProvider === 'glm') {
+      throw new Error(
+        "provider 'glm' (Z.ai Coding Plan) was removed from Stratum. " +
+        'Migrate .sle/settings.json to OpenRouter, e.g. { "provider": "openrouter", ' +
+        '"model": "z-ai/glm-5.3-flash", "base_url": "https://openrouter.ai/api/v1", ' +
+        '"api_key_env": "OPENROUTER_API_KEY" }.',
+      );
+    }
   }
 
   try {
@@ -451,7 +465,6 @@ export function resolveLLMProvider(projectRoot: string): LLMProviderResult {
 function deriveApiKeyEnv(provider: string): string {
   switch (provider) {
     case 'anthropic': return 'ANTHROPIC_API_KEY';
-    case 'glm': return 'GLM_API_KEY';
     case 'openrouter': return 'OPENROUTER_API_KEY';
     default: return 'OPENAI_API_KEY';
   }
