@@ -27,6 +27,12 @@ import { resolveResultTransport } from './transport/textual-sle-output.js';
 // (the workflow-level refinement cap, which stays 4).
 export const MAX_AGENT_TURNS = 24;
 
+// E10/A3 — bounded transport retry: the ONLY eligible error is undici's
+// HeadersTimeoutError (UND_ERR_HEADERS_TIMEOUT), and at most ONE retry may
+// occur within a step execution. A repeated timeout fails closed. Do not
+// raise without preregistration.
+const MAX_HEADERS_TIMEOUT_RETRIES = 1;
+
 export interface MultiTurnMessage {
   role: 'user' | 'assistant';
   content: string | MultiTurnContentBlock[];
@@ -124,6 +130,12 @@ export interface AgentLoopOptions {
   // Absent = legacy path. Transports consume them verbatim.
   resultSchemaText?: string;
   resultSchemaJson?: Record<string, unknown>;
+  // E10/A3 — enable the bounded transport retry: ONE re-issue of the SAME
+  // failed inference request when it dies with undici HeadersTimeoutError.
+  // A capability flag, not a policy engine — the CALLER decides scope
+  // (production composition: define-work step executions only). Absent =
+  // historical fail-fast behavior, byte-for-byte.
+  transportRetry?: boolean;
 }
 
 export interface AgentLoopResult {
@@ -189,9 +201,31 @@ export interface AgentLoopResult {
   result_repairs: number;
   error?: string;
   rawText?: string;
+  // E10/A3 — bounded transport-retry observability, present ONLY when the
+  // retry policy fired. Records the first attempt's bounded cause, the
+  // retried request's duration, and the final outcome, so a retried call is
+  // always distinguishable from an un-retried one in evidence. Never carries
+  // request payloads, reply text, or credentials.
+  transport_retry?: {
+    attempts: number;
+    first_failure: { duration_ms: number; cause_code?: string };
+    retried_request_ms: number;
+    outcome: 'succeeded' | 'failed';
+  };
 }
 
 // ─── AgentLoop ────────────────────────────────────────────────────────────────
+
+// E10/A3 — explicit non-optional shape (the indexed optional property type
+// otherwise carries `| undefined` into every reader).
+export interface TransportFailureInfo {
+  duration_ms: number;
+  error_name: string;
+  error_code?: string;
+  cause_name?: string;
+  cause_code?: string;
+  cause_message?: string;
+}
 
 // E8/A2 preflight (Pilot A E7) — bounded, evidence-only cause extraction for
 // a failed provider call: names, codes, and the undici cause chain only —
@@ -200,7 +234,7 @@ export interface AgentLoopResult {
 function describeTransportFailure(
   err: unknown,
   durationMs: number,
-): NonNullable<AgentLoopResult['failure_observation']>['transport_failure'] {
+): TransportFailureInfo {
   const e = err as {
     name?: string; code?: string;
     cause?: { name?: string; code?: string; message?: string; cause?: { code?: string } };
@@ -223,6 +257,15 @@ function describeTransportFailure(
         }
       : {}),
   };
+}
+
+// E10/A3 — the ONLY retry-eligible transport failure: undici HeadersTimeout
+// (UND_ERR_HEADERS_TIMEOUT), checked against the already-extracted cause-code
+// chain (single extraction — eligibility and evidence can never diverge).
+function isHeadersTimeoutFailure(f: { cause_code?: string }): boolean {
+  return (
+    typeof f.cause_code === 'string' && f.cause_code.split(':').includes('UND_ERR_HEADERS_TIMEOUT')
+  );
 }
 
 export class AgentLoop {
@@ -297,6 +340,11 @@ export class AgentLoop {
     let lastTransportFailure: NonNullable<AgentLoopResult['failure_observation']>['transport_failure'];
     let lastRejected: NonNullable<AgentLoopResult['failure_observation']>['rejected_result'];
     let lastRejectedPayload: string | undefined;
+    // E10/A3 — bounded transport-retry state, function-scoped: the ONE-retry
+    // budget spans the whole step execution, and the record must survive to
+    // whichever return fires (success or fail).
+    let headersTimeoutRetries = 0;
+    let transportRetry: AgentLoopResult['transport_retry'];
     const fail = (error: string): AgentLoopResult => ({
       success: false,
       turns_taken: turns,
@@ -324,6 +372,7 @@ export class AgentLoop {
           }
         : {}),
       ...(lastRejectedPayload ? { rejected_result_payload: lastRejectedPayload } : {}),
+      ...(transportRetry ? { transport_retry: transportRetry } : {}),
     });
 
     while (turns < MAX_AGENT_TURNS) {
@@ -332,19 +381,65 @@ export class AgentLoop {
       // E8/A2 preflight — per-call timing so a provider failure records how
       // long the failed request ran before dying (Pilot A: NOT PERSISTED).
       const callStartedAt = Date.now();
+      // E10/A3 — the request object is built ONCE per turn: the retry (when
+      // eligible) re-issues byte-identical parameters by construction, not
+      // by reconstruction.
+      const multiTurnParams = {
+        model: this.opts.model,
+        system,
+        messages: [...messages], // snapshot to avoid reference aliasing
+        max_tokens: this.opts.max_tokens ?? 4096,
+        // E3b — sampling parity across wires.
+        ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+        tools,
+      };
       try {
-        result = await this.provider.completeMultiTurn({
-          model: this.opts.model,
-          system,
-          messages: [...messages], // snapshot to avoid reference aliasing
-          max_tokens: this.opts.max_tokens ?? 4096,
-          // E3b — sampling parity across wires.
-          ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
-          tools,
-        });
+        result = await this.provider.completeMultiTurn(multiTurnParams);
       } catch (err) {
-        lastTransportFailure = describeTransportFailure(err, Date.now() - callStartedAt);
-        return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
+        const failure = describeTransportFailure(err, Date.now() - callStartedAt);
+        if (
+          this.opts.transportRetry === true &&
+          isHeadersTimeoutFailure(failure) &&
+          headersTimeoutRetries < MAX_HEADERS_TIMEOUT_RETRIES
+        ) {
+          headersTimeoutRetries++;
+          const retryStartedAt = Date.now();
+          try {
+            result = await this.provider.completeMultiTurn(multiTurnParams);
+            transportRetry = {
+              attempts: 1,
+              first_failure: {
+                duration_ms: failure.duration_ms,
+                ...(failure.cause_code ? { cause_code: failure.cause_code } : {}),
+              },
+              retried_request_ms: Date.now() - retryStartedAt,
+              outcome: 'succeeded',
+            };
+            // Retry succeeded: the turn continues with this result. The
+            // failed attempt never produced a turn — the retry re-entered
+            // the SAME turn slot (no extra model turn, no repair
+            // consumption); already-executed tool results are part of
+            // `messages` and were never re-run (no tool replay).
+          } catch (retryErr) {
+            const retryFailure = describeTransportFailure(retryErr, Date.now() - retryStartedAt);
+            lastTransportFailure = retryFailure;
+            transportRetry = {
+              attempts: 1,
+              first_failure: {
+                duration_ms: failure.duration_ms,
+                ...(failure.cause_code ? { cause_code: failure.cause_code } : {}),
+              },
+              retried_request_ms: Date.now() - retryStartedAt,
+              outcome: 'failed',
+            };
+            return fail(
+              `LLM call failed after transport retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            );
+          }
+        } else {
+          lastTransportFailure = failure;
+          return fail(`LLM call failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // E3a — bounded observation of THIS turn (names and byte lengths only;
@@ -447,7 +542,11 @@ export class AgentLoop {
               });
               continue;
             }
-            await this.writeTurnMetadata(turns, toolCallLog);
+            // E10/A3 — the accepted-submission return must carry the retry
+            // record too: define-work succeeds through THIS branch, so a
+            // retried-then-accepted Definition would otherwise lose its
+            // retry evidence.
+            await this.writeTurnMetadata(turns, toolCallLog, transportRetry);
             return {
               success: true,
               proposal: { value: submission.value },
@@ -455,6 +554,7 @@ export class AgentLoop {
               tokens_used: totalTokens,
               format_repairs: formatRepairs,
               result_repairs: resultRepairs,
+              ...(transportRetry ? { transport_retry: transportRetry } : {}),
               rawText: result.text,
             };
           }
@@ -551,7 +651,7 @@ export class AgentLoop {
       }
 
       // Write turn metadata to run artifacts
-      await this.writeTurnMetadata(turns, toolCallLog);
+      await this.writeTurnMetadata(turns, toolCallLog, transportRetry);
 
       // D.34 C1 — kind-split return: a proposal replaces parsedOutput; the
       // runner decodes it against the workflow-declared contract.
@@ -564,6 +664,7 @@ export class AgentLoop {
           format_repairs: formatRepairs,
           result_repairs: resultRepairs,
           rawText: result.text,
+          ...(transportRetry ? { transport_retry: transportRetry } : {}),
         };
       }
       return {
@@ -576,6 +677,7 @@ export class AgentLoop {
         format_repairs: formatRepairs,
         result_repairs: resultRepairs,
         rawText: result.text,
+        ...(transportRetry ? { transport_retry: transportRetry } : {}),
       };
     }
 
@@ -584,7 +686,11 @@ export class AgentLoop {
 
   private async writeTurnMetadata(
     turns_taken: number,
-    tool_calls: Array<{ tool: string; path: string; turn: number }>
+    tool_calls: Array<{ tool: string; path: string; turn: number }>,
+    // E10/A3 — present only when the bounded transport retry fired; persisted
+    // on the success path too, so a retried call is visible in evidence even
+    // when the step ultimately succeeded.
+    transportRetry?: AgentLoopResult['transport_retry']
   ): Promise<void> {
     try {
       const { workflowRunId, iteration, nodeId, runArtifacts } = this.opts;
@@ -598,7 +704,17 @@ export class AgentLoop {
         absMetaPath,
         // D.34 C5 — the negotiated result transport is part of the run
         // record: which wire actually carried the semantic result.
-        JSON.stringify({ node_id: nodeId, result_transport: this.transport.name, turns_taken, tool_calls }, null, 2),
+        JSON.stringify(
+          {
+            node_id: nodeId,
+            result_transport: this.transport.name,
+            turns_taken,
+            tool_calls,
+            ...(transportRetry ? { transport_retry: transportRetry } : {}),
+          },
+          null,
+          2,
+        ),
         'utf-8'
       );
       await runArtifacts.updateNodeStatus(workflowRunId, iteration, nodeId, {
