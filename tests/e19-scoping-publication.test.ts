@@ -263,8 +263,11 @@ function makeFullBuildRunner(deps: Partial<ConstructorParameters<typeof FullBuil
   });
 }
 
-test('E19: executeScopingProduce propagates real failure — the step that reported artifacts_written unconditionally in A8 now fails', async () => {
-  // Real stack with the A8 heading defect: begin() rejects.
+test('E19: executeScopingProduce surfaces an unapprovable charter as a FAILED outcome — never success (E20: resolved, not thrown)', async () => {
+  // Real stack with the A8 heading defect: begin() rejects; the runner must
+  // surface it as a failed outcome (E20 contract) so the engine records the
+  // terminal state cleanly — and never report success for a charter no
+  // consumer can accept.
   const s = await makeStack(sleOutput('docs/cycle-charter.md', A8_STYLE_CHARTER));
   try {
     const runner = makeFullBuildRunner({
@@ -276,11 +279,10 @@ test('E19: executeScopingProduce propagates real failure — the step that repor
       snapshotService: {}, summariseService: {},
       scopingService: s.scoping,
     });
-    await assert.rejects(
-      () => runner.run({ id: 'scoping.produce', kind: 'produce', agentRole: 'facilitator' } as WorkflowStep, s.ctx),
-      (e: any) => e.code === 'charter_validation_failed',
-      'the produce step must FAIL, never report success for a charter no consumer can accept',
-    );
+    const outcome = await runner.run({ id: 'scoping.produce', kind: 'produce', agentRole: 'facilitator' } as WorkflowStep, s.ctx);
+    assert.strictEqual(outcome.success, false);
+    assert.ok(outcome.error?.includes('Scope'));
+    assert.strictEqual(s.map.map.cycle.awaiting_scoping, false);
   } finally {
     await s.cleanup();
   }

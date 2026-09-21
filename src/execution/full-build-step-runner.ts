@@ -400,12 +400,29 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
       return this.deps.agentStepRunner.run(step, ctx);
     }
     const start = Date.now();
+    // E20 — begin() failures (missing charter / charter_validation_failed)
+    // must surface as a FAILED STEP OUTCOME, not a thrown exception. A10
+    // attempt 1 proved the difference matters: a throw escapes the engine's
+    // outcome path, leaving the run row ACTIVE and the manifest node RUNNING
+    // while only the WorkItem is failed — an inconsistent terminal state.
+    // The outcome path records node failed + run halted cleanly (the A9-style
+    // terminal) and preserves the error verbatim.
+    try {
+      await this.deps.scopingService.begin(ctx);
+    } catch (err) {
+      return {
+        success: false,
+        artifacts_written: [],
+        tokens_used: 0,
+        duration_ms: Date.now() - start,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
     // E19 — begin() now fails closed (missing file / structurally invalid
     // charter) BEFORE any approval state, so a resolved begin() guarantees
     // the charter exists and validates. Reporting it afterwards is truthful
     // — previously this line reported artifacts_written unconditionally,
     // which is exactly how A8 reached a checkpoint for a file nobody wrote.
-    await this.deps.scopingService.begin(ctx);
     return {
       success: true,
       artifacts_written: ['docs/cycle-charter.md'],
