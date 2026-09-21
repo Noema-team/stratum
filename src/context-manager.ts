@@ -561,6 +561,21 @@ export class ContextManager {
     // byte-for-byte unchanged.
     if (ctx.outputArtifact) {
       text += `\n\nDeclared output artifact: write exactly one artifact section at '${ctx.outputArtifact.path}'.`;
+      // E20 — the scoping charter is a deterministic producer/consumer
+      // contract: ScopingService validates Scope/Purpose heading syntax
+      // BEFORE any approval state. The grammar must be taught in the SAME
+      // channel that already teaches the declared path (this task text —
+      // the only prompt surface the full-build execution path assembles).
+      // PR #34's edit to FACILITATOR_SCOPING_TEMPLATE is inert here: the
+      // execution path never reads that template (A10 attempt 1 proved it —
+      // the model wrote an excellent charter under its own heading
+      // vocabulary and the deterministic consumer correctly rejected it).
+      if (ctx.stepId === 'scoping.produce' && ctx.role === 'facilitator') {
+        text +=
+          `\n\nThe charter is structurally validated before any human is asked to approve it. It must use EXACTLY these Markdown headings, spelled exactly as written (no numbering, no extra words in the heading):\n\n` +
+          `## Scope\n## Purpose\n## Requirements\n## Boundaries\n## Version bump\n## Deferred items\n\n` +
+          `A charter whose Scope or Purpose headings deviate from that syntax (e.g. "## In scope" or "## 1. Scope statement") fails deterministic validation and the step fails.`;
+      }
     }
     return text;
   }
