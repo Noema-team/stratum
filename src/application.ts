@@ -338,6 +338,12 @@ export function buildAgentRunner(
   artifactRepository: ArtifactRepository,
   maxTokens: number,
   decisionRepository?: DecisionRepository,
+  // E15/A6 — optional completion-budget overrides keyed by
+  // "workflowId/stepId" (declarative project settings are ALSO honored via
+  // the runner's own projectRoot read; this explicit argument is for
+  // composition roots that pass config directly). Absent = global budget
+  // everywhere.
+  workflowMaxTokens?: Record<string, number>,
 ): AgentRunner {
   // D.34 C4 — the DECIDED-provenance resolver, built once and baked into
   // BOTH seams that need it: the deterministic input gate (validator) and
@@ -354,6 +360,7 @@ export function buildAgentRunner(
     {
       model: resolvedModel,
       max_tokens: maxTokens,
+      ...(workflowMaxTokens ? { workflowMaxTokens } : {}),
       // D.3d.5 commit 2 — the composition root wires the methodology-owned
       // deterministic validators into the runner's generic registry. The
       // runner itself never learns what a Definition is. When a
