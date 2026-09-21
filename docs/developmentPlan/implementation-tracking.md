@@ -1,9 +1,37 @@
 # SLE v2 — Spec Implementation Tracking
 
-**Updated:** 2026-09-18
+**Updated:** 2026-09-21
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
-> **Current work pointer (2026-09-18):** the D.3 line postdates the phase table below
+> **Current work pointer (2026-09-21):** the supervised-pilot series on
+> magtheo/student-platform#108 has run A2–A6 under the Era II roadmap
+> ([post-d34-roadmap.md](post-d34-roadmap.md), current through the "close the
+> first real single-task pilot" gate). Authoritative per-pilot history lives in
+> [docs/pilots/](../pilots/) and the merged PRs; summary:
+> **A2** transport death (`UND_ERR_HEADERS_TIMEOUT`, turn 16) → PR #25
+> instrumentation + bounded retry (PR #26); **A3** first live `submit_result`,
+> one contract-vocabulary defect, repair exhausted → teaching clarified (PR #28);
+> Coding Plan provider removed, route moved to OpenRouter (PR #27); **A4**
+> 24-turn exploration exhaustion (38 unique reads, no repeats); **A5**
+> completion-budget death (`stop_reason=max_tokens`, turn 19, 16,384) → PR #29;
+> **A6** (PR #30): step-scoped `define-work/synthesize-definition` budget
+> 32,768 — **first successful synthesis (9 turns), first accepted submission
+> (zero rejections), first materialized canonical Definition with D.1
+> provenance**, then a NEW terminal class: the post-step map sync
+> (`RuntimeMapSchema.parse`) rejected the pilot driver's unvalidated seed
+> (`project.type: 'python'`, `task_store.type: 'sqlite'`). Stratum `main`:
+> `6f9e6c9`. **Next:** A7 preregistration
+> ([pilot-a7.md](../pilots/pilot-a7.md)) — the mechanical seed correction
+> (new frozen driver hash `718374b4…`); per the A6 decision boundary the
+> limiting factor is this control-plane defect, not define-work model
+> capability. DDR-041 Definition → `full-build` handoff remains tested
+> mechanically only; the live demonstration is the next capability milestone.
+> Per-run evidence lives in `~/Documents/repos/pilot-a/evidence/`, not this
+> repo. The phase table below is historical.
+>
+> ---
+>
+> **Work pointer (2026-09-18) — HISTORICAL:** the D.3 line postdates the phase table below
 > (see `docs/developmentPlan/d3a…d3d*` history); **D.34 (DDR-034 output contracts,
 > C1–C7) is DONE and FROZEN** at baseline SHA `8263665` (PR #9). The active execution
 > plan is the Era II plan
