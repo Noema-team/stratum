@@ -3,7 +3,7 @@
 **Frozen:** 2026-09-21, before any model-driven run.
 **Status:** Preregistered; Pilot A6 has NOT started. Execution begins only after this document is reviewed and merged, on the merge commit of its PR.
 
-A6 changes exactly **one** behavioral variable: **define-work's completion budget: 16,384 → 32,768 tokens.** Everything else is frozen from A5.
+A6 changes exactly **one** behavioral variable: **the define-work / synthesize-definition completion budget: 16,384 → 32,768 tokens** — step-scoped, because A5's failure point was precisely that one step. Every other step, including the not-yet-exercised later define-work stages (definition-readiness-review, refine-definition) and all of full-build, keeps 16,384. Everything else is frozen from A5.
 
 ## 1. Evidence basis (the five-run series)
 
@@ -19,14 +19,14 @@ A6 changes exactly **one** behavioral variable: **define-work's completion budge
 `.sle/settings.json` gains an optional declarative section:
 
 ```json
-"workflow_max_tokens": { "define-work": 32768 }
+"workflow_max_tokens": { "define-work/synthesize-definition": 32768 }
 ```
 
 **Plumbing (traced):** settings → `resolveCompletionBudget`/`resolveLLMProvider` → `AgentRunnerConfig.max_tokens` → AgentRunner → AgentLoop/completeMultiTurn. The global budget is applied at three runner call sites (multi-turn loop, structured single-turn, plain single-turn) for every workflow.
 
-**Seam:** `AgentRunnerConfig.workflowMaxTokens?: Record<string, number>` (explicit composition-root argument) with a strict project-settings fallback read by the runner from `projectRoot` — required because the frozen pilot driver's 8-argument `buildAgentRunner` call cannot pass new arguments. One lookup helper (`completionBudgetFor(ctx.workflowId)`) applied at the three existing call sites. Strict per-field validation: absent file/key, non-object, or any invalid entry (non-integer, ≤ 0) → no override; never an error, never a partial map.
+**Seam:** `AgentRunnerConfig.workflowMaxTokens?: Record<string, number>` keyed by compact `"workflowId/stepId"` (explicit composition-root argument) with a strict project-settings fallback read by the runner from `projectRoot` — required because the frozen pilot driver's 8-argument `buildAgentRunner` call cannot pass new arguments. One lookup helper (`completionBudgetFor(ctx)`, key `\`${ctx.workflowId}/${ctx.stepId}\` `` ``` ``) applied at the three existing call sites. Fail-closed whole-map validation: absent file/key, wrong shape, or ANY invalid entry (malformed key, non-integer, ≤ 0) discards the ENTIRE map → the existing global budget applies everywhere; never an error, never a partial map.
 
-**Scope guarantee (regression-pinned):** define-work's generation path receives 32,768; every other workflow keeps 16,384 (or the project's global budget); `MAX_AGENT_TURNS = 24` and `MAX_RESULT_REPAIRS = 1` constants pinned; retry policy, result schema, and submit_result teaching untouched (existing E12/C5/C1 pins); absent/invalid settings preserve byte-for-byte backward compatibility. No budget-policy framework, no provider- or model-specific branching, no reasoning configuration, no new stages, no prompt/teaching changes.
+**Scope guarantee (regression-pinned):** define-work/synthesize-definition receives 32,768; definition-readiness-review, refine-definition, and full-build keep 16,384; repairs/retries inside synthesize-definition retain 32,768 (in-run continuation calls ride the same step lookup); the override also reaches the runner through the pilot driver's actual 8-argument `buildAgentRunner` path with settings declared before construction; `MAX_AGENT_TURNS = 24` and `MAX_RESULT_REPAIRS = 1` constants pinned; retry policy, result schema, and submit_result teaching untouched (existing E12/C5/C1 pins); absent/malformed settings preserve byte-for-byte backward compatibility. No budget-policy framework, no provider- or model-specific branching, no pilot-specific identifiers, no reasoning configuration, no new stages, no prompt/teaching changes.
 
 ## 3. Provider qualification (completed 2026-09-21, minimal non-pilot call)
 
@@ -39,7 +39,7 @@ POST `/chat/completions`, model `z-ai/glm-5.3-flash`, `max_tokens: 32768`, one `
 | Stratum A6 execution revision | The merge commit of this PR — delta vs `cc0ba2b…`: the budget seam + regressions + this document |
 | Target / branch | `86ec0871d64ecca8732434c11d015fd8e08ddc7e`, `pilot-a/issue-108`, never merged |
 | Issue | `magtheo/student-platform#108` (re-verify OPEN at Gate A) |
-| Model / route | `z-ai/glm-5.3-flash` via OpenRouter, `OPENROUTER_API_KEY`, **global max_tokens 16384 unchanged; define-work generation 32768 via the scoped override** |
+| Model / route | `z-ai/glm-5.3-flash` via OpenRouter, `OPENROUTER_API_KEY`, **global max_tokens 16384 unchanged; define-work/synthesize-definition generation 32768 via the step-scoped override** |
 | Limits | `MAX_AGENT_TURNS` 24 · `MAX_RESULT_REPAIRS` 1 · single `UND_ERR_HEADERS_TIMEOUT` retry · E12 teaching · `hard_ceiling` 4000 · minimal/5/halt · budgets 2/3/2 · 120-min clock |
 | Pilot driver | sha256 `09bd01f68a9637ae47b2364c1ace6c4837102688cecd7ae94b9a04a635f42654` (verified 2026-09-21); any post-T0 change = integrity failure |
 | WorkItems / state | Fresh `wi-define-108-a6` / `wi-exec-108-a6`; A5 `.sle` archived then removed; the `workflow_max_tokens` settings section is added as a logged mechanical pre-T0 seeding action (the frozen driver seeds only the base settings) |
@@ -50,7 +50,7 @@ POST `/chat/completions`, model `z-ai/glm-5.3-flash`, `max_tokens: 32768`, one `
 
 Closeout rules (frozen):
 - Valid submission → continue through Gate B and H1 normally.
-- Exhausts 32,768 completion tokens → **STOP**; preserved as evidence that more generation budget alone does not solve convergence.
+- Exhausts 32,768 completion tokens → **STOP**; preserved as evidence that more generation budget alone does not solve convergence at the synthesize-definition failure point.
 - Hits the 24-turn cap instead → **STOP**; no mid-run raise.
 - `source`/`kind` rejection returns → preserve and **STOP** under the existing repair policy.
 - Any new failure class → diagnosed independently, without attributing to prior classes.

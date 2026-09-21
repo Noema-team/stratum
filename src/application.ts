@@ -338,10 +338,11 @@ export function buildAgentRunner(
   artifactRepository: ArtifactRepository,
   maxTokens: number,
   decisionRepository?: DecisionRepository,
-  // E15/A6 — optional per-workflow completion-budget overrides (declarative
-  // project settings are ALSO honored via the runner's own projectRoot read;
-  // this explicit argument is for composition roots that pass config
-  // directly). Absent = global budget everywhere.
+  // E15/A6 — optional completion-budget overrides keyed by
+  // "workflowId/stepId" (declarative project settings are ALSO honored via
+  // the runner's own projectRoot read; this explicit argument is for
+  // composition roots that pass config directly). Absent = global budget
+  // everywhere.
   workflowMaxTokens?: Record<string, number>,
 ): AgentRunner {
   // D.34 C4 — the DECIDED-provenance resolver, built once and baked into

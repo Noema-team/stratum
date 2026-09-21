@@ -1,20 +1,21 @@
-// E15/A6 — the per-workflow completion-budget override.
+// E15/A6 — the per-(workflow,step) completion-budget override.
 //
-// Pilot A5 died at turn 19 on stop_reason=max_tokens (the frozen global
-// 16,384 completion budget) with five turn slots unused. A6 changes exactly
-// ONE variable: define-work's completion budget → 32,768 via a declarative
-// settings section (`workflow_max_tokens`), read strictly by the runner from
-// its projectRoot (the pilot driver's frozen call shape passes no new
-// arguments) or by explicit composition-root config. Everything else —
-// global budget, turn cap, repair budget, retry policy, teaching — is
-// pinned unchanged here or by the existing suites.
+// Pilot A5 died at turn 19 on stop_reason=max_tokens at ONE precise point:
+// define-work / synthesize-definition, with the frozen global 16,384
+// completion budget exhausted mid-generation. A6 changes exactly ONE
+// behavioral variable: define-work/synthesize-definition → 32,768. Every
+// other step — including the not-yet-exercised later define-work stages
+// (definition-readiness-review, refine-definition) and full-build — keeps
+// 16,384. The override is a declarative settings map keyed by
+// "workflowId/stepId", read strictly (fail-closed whole map) by the runner
+// from its projectRoot — required because the frozen pilot driver's
+// 8-argument buildAgentRunner call cannot pass new arguments.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { z } from 'zod';
 
 import { AgentRunner, type AgentRunnerConfig } from '../src/agent-runner.js';
 import { buildAgentRunner } from '../src/application.js';
@@ -24,22 +25,22 @@ import type { ContextManager } from '../src/context-manager.js';
 import type { AssembledContext } from '../src/types.js';
 import type { StepRunContext } from '../src/workflow/types.js';
 import type { RunArtifactManager } from '../src/run-artifacts.js';
-import type { ILLMProvider, LLMCompletionParams, LLMCompletionResult } from '../src/llm-provider.js';
+import type { ILLMProvider, LLMCompletionParams } from '../src/llm-provider.js';
 
 const GLOBAL_BUDGET = 16384;
-const DEFINE_BUDGET = 32768;
+const SYNTH_BUDGET = 32768;
+const OVERRIDE = { 'define-work/synthesize-definition': SYNTH_BUDGET };
 
 class CapturingMultiTurnProvider implements ILLMProvider {
   public calls: LLMCompletionParams[] = [];
-  async complete(_params: LLMCompletionParams): Promise<LLMCompletionResult> {
+  async complete(): Promise<never> {
     throw new Error('single-turn path must not be used in this test');
   }
   async completeMultiTurn(params: any): Promise<any> {
     this.calls.push(params);
-    // Terminate immediately with a valid textual proposal-shaped turn is not
-    // needed — the budget rides the REQUEST, so one captured call suffices;
-    // then end the run with an unparsable end_turn (failure paths are fine:
-    // the assertion is on the captured request, not the result).
+    // Terminate each run with an unparsable end_turn: the budget rides the
+    // REQUEST, so what matters is the captured max_tokens — including the
+    // format-repair continuation call the empty turn triggers.
     return { stop_reason: 'end_turn', text: '', tool_uses: [], tokens_used: 1 };
   }
 }
@@ -50,9 +51,9 @@ class StubContextManager implements ContextManager {
   }
 }
 
-function ctxWith(workflowId: string, root: string): StepRunContext {
+function ctxWith(workflowId: string, stepId: string, root: string): StepRunContext {
   return {
-    workflowRunId: 'r', workflowId, stepId: 'synthesize-definition',
+    workflowRunId: 'r', workflowId, stepId,
     iteration: 1, revision: 0, goal: 'g', projectRoot: root, role: 'explorer',
     outputArtifact: { type: 'definition', ref: 'definition:{objectiveId}', path: '.sle/work/w/definition.md' },
   } as unknown as StepRunContext;
@@ -62,90 +63,109 @@ function makeRunner(root: string, provider: ILLMProvider, config?: Partial<Agent
   return new AgentRunner(new StubContextManager(), provider, root, { writeNodeOutput: async () => {}, updateNodeStatus: async () => {} } as unknown as RunArtifactManager, { model: 'test-model', max_tokens: GLOBAL_BUDGET, ...config });
 }
 
-test('E15/A6: explicit config override — define-work receives 32768, other workflows keep the global 16384', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'e15-explicit-'));
-  try {
-    const defineProvider = new CapturingMultiTurnProvider();
-    const otherProvider = new CapturingMultiTurnProvider();
-    // (Each run may legitimately make >1 provider call — e.g. a format
-    // repair continuation — so assertions cover ALL captured calls.)
-    const runner = makeRunner(root, defineProvider, { workflowMaxTokens: { 'define-work': DEFINE_BUDGET } });
-    await runner.run('explorer', ctxWith('define-work', root));
-    const runner2 = makeRunner(root, otherProvider, { workflowMaxTokens: { 'define-work': DEFINE_BUDGET } });
-    await runner2.run('explorer', ctxWith('full-build', root));
+function writeSettings(root: string, extra: Record<string, unknown>): string {
+  mkdirSync(join(root, '.sle'), { recursive: true });
+  const p = join(root, '.sle', 'settings.json');
+  writeFileSync(p, JSON.stringify({ max_tokens: GLOBAL_BUDGET, ...extra }), 'utf-8');
+  return p;
+}
 
-    assert.ok(defineProvider.calls.length >= 1);
-    assert.ok(defineProvider.calls.every((c) => c.max_tokens === DEFINE_BUDGET), 'every define-work generation call must use the override');
-    assert.ok(otherProvider.calls.length >= 1);
-    assert.ok(otherProvider.calls.every((c) => c.max_tokens === GLOBAL_BUDGET), 'non-define-work must keep the existing global budget');
+async function expectBudget(root: string, workflowId: string, stepId: string, expected: number, config?: Partial<AgentRunnerConfig>): Promise<void> {
+  const provider = new CapturingMultiTurnProvider();
+  const runner = makeRunner(root, provider, config);
+  await runner.run('explorer', ctxWith(workflowId, stepId, root));
+  assert.ok(provider.calls.length >= 1, `${workflowId}/${stepId} must make at least one provider call`);
+  assert.ok(
+    provider.calls.every((c) => c.max_tokens === expected),
+    `${workflowId}/${stepId}: every captured call (${provider.calls.length}, incl. any repair continuation) must use ${expected}, got ${JSON.stringify(provider.calls.map((c) => c.max_tokens))}`,
+  );
+}
+
+test('E15/A6: ONLY define-work/synthesize-definition receives 32768 — every other step keeps the global 16384', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e15-matrix-'));
+  try {
+    const cfg = { workflowMaxTokens: { ...OVERRIDE } };
+    await expectBudget(root, 'define-work', 'synthesize-definition', SYNTH_BUDGET, cfg);
+    await expectBudget(root, 'define-work', 'definition-readiness-review', GLOBAL_BUDGET, cfg);
+    await expectBudget(root, 'define-work', 'refine-definition', GLOBAL_BUDGET, cfg);
+    await expectBudget(root, 'full-build', 'implement-tasks', GLOBAL_BUDGET, cfg);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('E15/A6: declarative settings override — the frozen 8-arg construction path picks up workflow_max_tokens from projectRoot', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'e15-settings-'));
-  try {
-    mkdirSync(join(root, '.sle'), { recursive: true });
-    writeFileSync(join(root, '.sle', 'settings.json'), JSON.stringify({ max_tokens: GLOBAL_BUDGET, workflow_max_tokens: { 'define-work': DEFINE_BUDGET } }), 'utf-8');
-    const defineProvider = new CapturingMultiTurnProvider();
-    const otherProvider = new CapturingMultiTurnProvider();
-    // NO explicit workflowMaxTokens — the runner must resolve the override
-    // from projectRoot (the pilot driver cannot pass new arguments).
-    const runner = makeRunner(root, defineProvider);
-    await runner.run('explorer', ctxWith('define-work', root));
-    const runner2 = makeRunner(root, otherProvider);
-    await runner2.run('explorer', ctxWith('full-build', root));
-
-    assert.ok(defineProvider.calls.length >= 1);
-    assert.ok(defineProvider.calls.every((c) => c.max_tokens === DEFINE_BUDGET), 'settings-declared override must reach the define-work generation path');
-    assert.ok(otherProvider.calls.length >= 1);
-    assert.ok(otherProvider.calls.every((c) => c.max_tokens === GLOBAL_BUDGET));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('E15/A6: backward compatibility — absent, empty, or invalid overrides leave global behavior untouched', async () => {
-  const variants: Array<Record<string, unknown> | undefined> = [
-    undefined,
-    {},
-    { workflow_max_tokens: {} },
-    { workflow_max_tokens: { 'define-work': 0 } },
-    { workflow_max_tokens: { 'define-work': -5 } },
-    { workflow_max_tokens: { 'define-work': 1.5 } },
-    { workflow_max_tokens: { 'define-work': 'big' } },
-    { workflow_max_tokens: 'define-work' },
-  ];
-  for (const settings of variants) {
-    const root = mkdtempSync(join(tmpdir(), 'e15-compat-'));
-    try {
-      mkdirSync(join(root, '.sle'), { recursive: true });
-      writeFileSync(join(root, '.sle', 'settings.json'), JSON.stringify({ max_tokens: GLOBAL_BUDGET, ...(settings ?? {}) }), 'utf-8');
-      const provider = new CapturingMultiTurnProvider();
-      const runner = makeRunner(root, provider);
-      await runner.run('explorer', ctxWith('define-work', root));
-      assert.strictEqual(provider.calls[0].max_tokens, GLOBAL_BUDGET, `variant ${JSON.stringify(settings)} must fall back to the global budget`);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-});
-
-test('E15/A6: buildAgentRunner threads the explicit override for composition roots that pass it', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'e15-bar-'));
+test('E15/A6: repairs/retries inside synthesize-definition retain 32768 (continuation calls ride the same lookup)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e15-repair-'));
   try {
     const provider = new CapturingMultiTurnProvider();
+    const runner = makeRunner(root, provider, { workflowMaxTokens: { ...OVERRIDE } });
+    await runner.run('explorer', ctxWith('define-work', 'synthesize-definition', root));
+    // The empty end_turn forces the format-repair continuation: an in-run
+    // second generation for the SAME step must keep the step's budget.
+    assert.ok(provider.calls.length >= 2, 'expected the initial call plus at least one repair continuation');
+    assert.ok(provider.calls.every((c) => c.max_tokens === SYNTH_BUDGET), `all in-run calls must retain ${SYNTH_BUDGET}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('E15/A6: the ACTUAL existing 8-argument buildAgentRunner path picks up the settings override (declared before construction)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e15-8arg-'));
+  try {
+    writeSettings(root, { workflow_max_tokens: { ...OVERRIDE } });
+    const provider = new CapturingMultiTurnProvider();
+    // The frozen pilot driver's call shape: exactly the original 8 positional
+    // arguments — settings must already be on disk when the runner is built.
     const runner = buildAgentRunner(
       new StubContextManager(), provider, root,
       { writeNodeOutput: async () => {}, updateNodeStatus: async () => {} } as unknown as RunArtifactManager,
       'test-model', undefined as never, GLOBAL_BUDGET, undefined,
-      { 'define-work': DEFINE_BUDGET },
     );
-    await runner.run('explorer', ctxWith('define-work', root));
-    assert.strictEqual(provider.calls[0].max_tokens, DEFINE_BUDGET);
+    await expectBudgetFrom(runner, provider, root, 'define-work', 'synthesize-definition', SYNTH_BUDGET);
+    await expectBudgetFrom(runner, provider, root, 'define-work', 'definition-readiness-review', GLOBAL_BUDGET);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+
+  async function expectBudgetFrom(runner: AgentRunner, provider: CapturingMultiTurnProvider, root: string, workflowId: string, stepId: string, expected: number): Promise<void> {
+    provider.calls.length = 0;
+    await runner.run('explorer', ctxWith(workflowId, stepId, root));
+    assert.ok(provider.calls.length >= 1);
+    assert.ok(provider.calls.every((c) => c.max_tokens === expected), `${workflowId}/${stepId}: expected ${expected}`);
+  }
+});
+
+test('E15/A6: fail-closed whole-map validation — one invalid entry discards the ENTIRE map (no partial overrides)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'e15-failclosed-'));
+  try {
+    // A valid sibling is present, but the invalid entry must kill the whole map.
+    writeSettings(root, { workflow_max_tokens: { ...OVERRIDE, 'define-work/refine-definition': -5 } });
+    await expectBudget(root, 'define-work', 'synthesize-definition', GLOBAL_BUDGET);
+    await expectBudget(root, 'define-work', 'refine-definition', GLOBAL_BUDGET);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('E15/A6: backward compatibility — absent, empty, or malformed settings leave global behavior untouched', async () => {
+  const variants: Array<Record<string, unknown>> = [
+    {},
+    { workflow_max_tokens: {} },
+    { workflow_max_tokens: { 'define-work/synthesize-definition': 0 } },
+    { workflow_max_tokens: { 'define-work/synthesize-definition': 1.5 } },
+    { workflow_max_tokens: { 'define-work/synthesize-definition': 'big' } },
+    { workflow_max_tokens: { 'define-work': 32768 } }, // legacy workflow-only key: not a valid step-scoped key
+    { workflow_max_tokens: { 'define-work/': 32768 } },
+    { workflow_max_tokens: 'define-work/synthesize-definition' },
+  ];
+  for (const extra of variants) {
+    const root = mkdtempSync(join(tmpdir(), 'e15-compat-'));
+    try {
+      writeSettings(root, extra);
+      await expectBudget(root, 'define-work', 'synthesize-definition', GLOBAL_BUDGET);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
