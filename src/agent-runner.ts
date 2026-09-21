@@ -1,4 +1,4 @@
-import { promises as nodeFsPromises } from 'fs';
+import { promises as nodeFsPromises, readFileSync as nodeReadFileSync } from 'fs';
 import path from 'path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AgentRole, AssembledContext } from './types.js';
@@ -156,6 +156,13 @@ export interface AgentRunnerConfig {
   model: string;
   temperature?: number;
   max_tokens?: number;
+  // E15/A6 — optional per-workflow completion-budget overrides, keyed by
+  // workflowId (e.g. { 'define-work': 32768 }). Declarative project setting
+  // (settings.json `workflow_max_tokens`) or explicit composition-root
+  // config; absent = the global max_tokens everywhere, byte-for-byte.
+  // Deliberately NOT a budget-policy framework: one lookup, no defaults
+  // beyond the existing global budget.
+  workflowMaxTokens?: Record<string, number>;
   // D.3d.5 commit 1 — result transport override (tests, future structured
   // adapters). Defaults to the textual SLE-OUTPUT fallback transport; see
   // transport/step-result.ts for the seam contract.
@@ -202,15 +209,45 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
+
+// E15/A6 — strict per-field reader for the optional settings.json
+// `workflow_max_tokens` map (the declarative project-level completion-budget
+// override, e.g. { "define-work": 32768 }). Lives here rather than in
+// application.ts because the composition root's established call shape
+// passes no new arguments: the runner resolves the override from its own
+// projectRoot when config does not carry one explicitly. Absent file,
+// absent key, or ANY invalid entry → no override (the existing global
+// budget applies); never an error, never a partial map.
+function resolveWorkflowBudgetOverridesFromSettings(
+  projectRoot: string,
+): Record<string, number> | undefined {
+  try {
+    const raw = nodeReadFileSync(path.join(projectRoot, '.sle', 'settings.json'), 'utf8');
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    const map = saved.workflow_max_tokens;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return undefined;
+    const out: Record<string, number> = {};
+    for (const [workflowId, value] of Object.entries(map as Record<string, unknown>)) {
+      if (typeof value === 'number' && Number.isInteger(value) && value > 0) out[workflowId] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export class AgentRunner {
   private fs: typeof import('fs').promises;
   // D.3d.5 commit 1 — the resolved result transport (serialization seam).
   private resultTransport: ResultTransport;
+  // E15/A6 — resolved per-workflow completion-budget overrides (explicit
+  // config wins; else the declarative project settings). Undefined = the
+  // global budget everywhere, exactly as before.
+  private workflowBudgets: Record<string, number> | undefined;
 
   constructor(
     private contextManager: ContextManager,
@@ -226,6 +263,15 @@ export class AgentRunner {
   ) {
     this.fs = fsModule ?? nodeFsPromises;
     this.resultTransport = resolveResultTransport(llmProvider, runnerConfig.resultTransport);
+    this.workflowBudgets =
+      runnerConfig.workflowMaxTokens ?? resolveWorkflowBudgetOverridesFromSettings(projectRoot);
+  }
+
+  // E15/A6 — the completion budget for THIS step's workflow: the declared
+  // per-workflow override when present, else the existing global budget.
+  // One lookup — no policy framework, no provider/model branching.
+  private completionBudgetFor(workflowId: string): number | undefined {
+    return this.workflowBudgets?.[workflowId] ?? this.runnerConfig.max_tokens;
   }
 
   async run(role: AgentRole, ctx: StepRunContext): Promise<AgentRunResult> {
@@ -364,7 +410,9 @@ export class AgentRunner {
         this.llmProvider as any,
         {
           model: this.runnerConfig.model,
-          max_tokens: this.runnerConfig.max_tokens,
+          // E15/A6 — per-workflow completion budget (define-work scoped
+          // override via declarative settings; else the global budget).
+          max_tokens: this.completionBudgetFor(ctx.workflowId),
           // E3b — sampling parity: the multi-turn wire runs the SAME
           // sampling configuration the single-turn/structured wires get
           // (C6 review closure 3 semantics).
@@ -639,7 +687,7 @@ export class AgentRunner {
                       { role: 'assistant' as const, content: raw },
                       { role: 'user' as const, content: repairMessage },
                     ],
-              max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+              max_tokens: this.completionBudgetFor(ctx.workflowId) ?? RUNNER_DEFAULTS.max_tokens,
               // C6 review closure 3 — the SAME sampling configuration the
               // textual wire gets; switching wires must not change it.
               temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
@@ -670,7 +718,7 @@ export class AgentRunner {
                       { role: 'user', content: repairMessage },
                     ],
               temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
-              max_tokens: this.runnerConfig.max_tokens ?? RUNNER_DEFAULTS.max_tokens,
+              max_tokens: this.completionBudgetFor(ctx.workflowId) ?? RUNNER_DEFAULTS.max_tokens,
             });
           } catch (err) {
             providerError = `LLM call failed: ${err instanceof Error ? err.message : String(err)}`;
