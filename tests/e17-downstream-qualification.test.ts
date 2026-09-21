@@ -26,6 +26,7 @@ import type { AuthoritativeDefinition } from '../src/execution/definition-source
 import type { StepRunContext } from '../src/workflow/types.js';
 import type { AgentRole } from '../src/types.js';
 import { WorkService } from '../src/services/work-service.js';
+import { MAX_AUTHORITATIVE_DEFINITION_BYTES } from '../src/execution/definition-source.js';
 import { openDatabase } from '../src/storage/database.js';
 import { WorkspaceRepository, ProjectRepository } from '../src/storage/repositories.js';
 
@@ -72,15 +73,29 @@ test('E17: an A7-sized authoritative Definition assembles at the 4000-token ordi
   assert.strictEqual(assembled.truncated.length, 0);
 });
 
-test('E17: the reserved lane is derived from the resolver byte contract — a Definition beyond it fails closed', async () => {
-  const tooBig = makeDefinition(131_073 * 4); // beyond MAX_AUTHORITATIVE_DEFINITION_BYTES-equivalent tokens
+test('E17: resolver boundary, byte-exact — 131,072 ASCII bytes fits the lane (content-only measurement)', async () => {
+  // The lane measures ONLY def.content, at the same 4 chars/token estimate
+  // the resolver byte contract assumes: 131,072 bytes → exactly 32,768
+  // estimated tokens → fits the default lane by construction, envelope and all.
+  const atBoundary = makeDefinition(131_072);
+  assert.ok(Buffer.byteLength(atBoundary, 'utf-8') === MAX_AUTHORITATIVE_DEFINITION_BYTES);
   const def: AuthoritativeDefinition = {
     sourceWorkItemId: 'wi-x', artifactId: 'a', ref: 'definition:obj-108',
-    path: '.sle/work/w/definition.md', sha256: 'b'.repeat(64), content: tooBig,
+    path: '.sle/work/w/definition.md', sha256: 'b'.repeat(64), content: atBoundary,
+  };
+  const assembled = await assembleWith({}, def);
+  assert.ok(assembled.task.includes(atBoundary), 'resolver-maximal Definition must assemble verbatim');
+});
+
+test('E17: one byte beyond the resolver contract — 131,073 bytes fails closed on the content lane', async () => {
+  const beyond = makeDefinition(131_073);
+  const def: AuthoritativeDefinition = {
+    sourceWorkItemId: 'wi-x', artifactId: 'a', ref: 'definition:obj-108',
+    path: '.sle/work/w/definition.md', sha256: 'b'.repeat(64), content: beyond,
   };
   await assert.rejects(
     () => assembleWith({}, def),
-    (e: any) => e.name === 'ContextBudgetExceededError' && /reserved context lane/.test(e.message),
+    (e: any) => e.name === 'ContextBudgetExceededError' && /content tokens/.test(e.message) && /reserved/.test(e.message),
   );
 });
 
@@ -138,7 +153,7 @@ test('E17: createWorkItem accepts validated dependencies (exists, not self, dedu
   }
 });
 
-test('E17: createWorkItem rejects unknown and self dependencies', () => {
+test('E17: createWorkItem rejects unknown dependency ids', () => {
   const { ws, dir } = makeService();
   try {
     assert.throws(

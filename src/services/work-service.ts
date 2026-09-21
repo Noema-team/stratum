@@ -140,8 +140,9 @@ export interface CreateWorkItemRequest {
   // gate (assertDependenciesCompleted) reads dependency edges, but until now
   // nothing could WRITE them through a service — pilots/clients resorted to
   // direct repository manipulation, which is how stale-reference state
-  // reached the store (A7 postmortem). Validated like the dispatch gate:
-  // each dependency must exist and differ from the new item.
+  // reached the store (A7 postmortem). The invariant is existing dependency
+  // IDs + deduplication (self-reference is structurally unavailable: the new
+  // item's id is generated here after validation).
   dependencies?: string[];
 }
 
@@ -235,15 +236,14 @@ export class WorkService {
       }
     }
 
-    // E17 — dependency validation mirrors the dispatch gate's expectations:
-    // dependencies must exist and must not reference the item itself. (The
-    // dispatch gate additionally requires them to be 'completed' before
+    // E17 — dependency validation: existing dependency IDs + deduplication.
+    // (The dispatch gate additionally requires them to be 'completed' before
     // dispatch; creation only checks referential integrity.)
-    const dependencies = req.dependencies ?? [];
+    const dependencies = [...new Set(req.dependencies ?? [])];
     if (dependencies.includes('')) {
       throw new WorkServiceError('dependencies must not contain empty ids', 'INVALID_DEPENDENCY');
     }
-    for (const depId of new Set(dependencies)) {
+    for (const depId of dependencies) {
       if (!this.items.findById(depId)) {
         throw new WorkServiceError(`Dependency '${depId}' not found`, 'DEPENDENCY_NOT_FOUND');
       }
@@ -251,10 +251,7 @@ export class WorkService {
 
     const now = new Date().toISOString();
     const id = randomUUID();
-    if (dependencies.includes(id)) {
-      throw new WorkServiceError('a WorkItem cannot depend on itself', 'SELF_DEPENDENCY');
-    }
-    const uniqueDependencies = [...new Set(dependencies)];
+    const uniqueDependencies = dependencies;
     const workItem: WorkItem = {
       id,
       projectId: req.projectId,

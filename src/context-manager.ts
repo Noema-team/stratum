@@ -681,12 +681,19 @@ export class ContextManager {
     //
     //   lane 1 (ordinary focus):  system + state + task-minus-Definition +
     //                             failureContext must fit `hard_ceiling`;
-    //   lane 2 (authoritative):   the verbatim Definition must fit
+    //   lane 2 (authoritative):   the canonical Definition CONTENT must fit
     //                             `authoritative_definition_ceiling_tokens`
     //                             (default derived from the resolver's
     //                             MAX_AUTHORITATIVE_DEFINITION_BYTES byte
     //                             contract, so every Definition the resolver
     //                             accepts fits its lane by construction).
+    //                             The lane measures exactly the content bytes
+    //                             the resolver admits — NOT the formatted
+    //                             block, whose header/provenance/instruction
+    //                             envelope is ordinary framing and stays in
+    //                             lane 1. An exactly-at-the-byte-boundary
+    //                             Definition therefore fits: resolver and
+    //                             context contract agree at the boundary.
     //
     // Both lanes fail closed with diagnosable errors BEFORE any artifact
     // slicing or model call — the Definition is never truncated or
@@ -696,31 +703,38 @@ export class ContextManager {
     let artifactBudget: number;
     if (carriesAuthority) {
       const def = ctx.authoritativeDefinition!;
-      const definitionBlock = this.formatAuthoritativeDefinition(def);
-      const definitionTokens = charsToTokens(definitionBlock.length);
-      const ordinaryFixedTokens = fixedTokens - definitionTokens;
+      // The authoritative lane measures ONLY the canonical Definition content
+      // — the exact bytes the resolver's MAX_AUTHORITATIVE_DEFINITION_BYTES
+      // contract admits — so "resolver-accepted ⇒ lane-fitting" holds at the
+      // boundary too. The formatted block's envelope (authority header,
+      // provenance, instructions) is ordinary framing and stays in lane 1.
+      const definitionContentTokens = charsToTokens(def.content.length);
+      const definitionBlockTokens = charsToTokens(this.formatAuthoritativeDefinition(def).length);
+      const envelopeTokens = definitionBlockTokens - definitionContentTokens;
+      const ordinaryFixedTokens = fixedTokens - definitionContentTokens;
 
-      if (definitionTokens > this.config.authoritative_definition_ceiling_tokens) {
+      if (definitionContentTokens > this.config.authoritative_definition_ceiling_tokens) {
         throw new ContextBudgetExceededError(
           `The AUTHORITATIVE DEFINITION (${Buffer.byteLength(def.content, 'utf-8')} bytes, ` +
-          `~${definitionTokens} tokens, sha256 ${def.sha256.slice(0, 12)}…) exceeds its reserved context lane ` +
-          `(${this.config.authoritative_definition_ceiling_tokens} tokens) for role='${role}' step='${ctx.stepId}'. ` +
-          `The Definition is never truncated or summarized by design; it must fit the lane or execution fails ` +
-          `explicitly. The lane default is derived from the definition-source resolver's byte contract ` +
-          `(MAX_AUTHORITATIVE_DEFINITION_BYTES), so this indicates content beyond that contract.`
+          `~${definitionContentTokens} content tokens, sha256 ${def.sha256.slice(0, 12)}…) exceeds its reserved ` +
+          `context lane (${this.config.authoritative_definition_ceiling_tokens} tokens) for role='${role}' ` +
+          `step='${ctx.stepId}'. The Definition is never truncated or summarized by design; it must fit the ` +
+          `lane or execution fails explicitly. The lane default is derived from the definition-source ` +
+          `resolver's byte contract (MAX_AUTHORITATIVE_DEFINITION_BYTES), so this indicates content beyond ` +
+          `that contract.`
         );
       }
       if (ordinaryFixedTokens > this.config.hard_ceiling) {
         const breakdown = [
           `system=${charsToTokens(systemPrompt.length)}`,
           `state=${charsToTokens(stateSummary.length)}`,
-          `task=${charsToTokens(task.length) - definitionTokens}`,
+          `task=${charsToTokens(task.length) - definitionContentTokens} (incl. ~${envelopeTokens} authority-envelope tokens)`,
           `failureContext=${failureContext ? charsToTokens(failureContext.length) : 0}`,
         ].join(' ');
         throw new ContextBudgetExceededError(
           `Fixed context components (${breakdown}; total ${ordinaryFixedTokens} ordinary tokens) exceed the ` +
           `configured hard_ceiling of ${this.config.hard_ceiling} tokens for role='${role}' step='${ctx.stepId}'. ` +
-          `The AUTHORITATIVE DEFINITION (~${definitionTokens} tokens, sha256 ${def.sha256.slice(0, 12)}…) rides its ` +
+          `The AUTHORITATIVE DEFINITION (~${definitionContentTokens} content tokens, sha256 ${def.sha256.slice(0, 12)}…) rides its ` +
           `own reserved lane and does not count against this ceiling — the ordinary focus material itself is ` +
           `over budget. Reduce the ordinary context or raise the configured boundary.`
         );
