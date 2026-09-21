@@ -642,19 +642,22 @@ function definitionCtx(over: { root: string; sourceWiId: string; definitionPath:
   };
 }
 
-test('ddr041: a valid Definition that cannot fit the configured context ceiling fails closed — no truncation', async () => {
+test('ddr041: a valid Definition that cannot fit its reserved context lane fails closed — no truncation', async () => {
   const s = seed();
   try {
-    // Small configured boundary: the canonical Definition (a few thousand
-    // tokens) cannot fit, exactly the review's scenario.
-    const smallConfig = { ...DEFAULT_CONFIG, hard_ceiling: 300 };
+    // E17 two-lane contract: the Definition rides its OWN reserved lane
+    // (default derived from the resolver's 128 KiB byte contract) and no
+    // longer competes with the ordinary focus ceiling. Fail-closed now
+    // belongs to the lane: a Definition beyond the lane boundary is rejected
+    // before any model call, still without truncation or summarization.
+    const smallConfig = { ...DEFAULT_CONFIG, hard_ceiling: 300, authoritative_definition_ceiling_tokens: 100 };
     const cm = new ContextManager(s.root, smallConfig);
     await assert.rejects(
       cm.assemble('builder', definitionCtx(s)),
       (err: unknown) => {
         assert.ok(err instanceof ContextBudgetExceededError);
         assert.equal(err.code, 'context_budget_exceeded');
-        assert.ok(err.message.includes('hard_ceiling of 300'), err.message);
+        assert.ok(err.message.includes('reserved context lane'), err.message);
         assert.ok(err.message.includes('AUTHORITATIVE DEFINITION'), err.message);
         assert.ok(err.message.includes('never'), err.message);
         return true;
@@ -673,12 +676,14 @@ test('ddr041: a Definition that fits assembles within the configured hard ceilin
     const assembled = await cm.assemble('builder', definitionCtx(s));
     // Verbatim bytes present...
     assert.ok(assembled.task.includes(FIXTURE_DEFINITION));
-    // ...and the assembled total respects the configured ceiling, allowing
-    // only the estimator tolerance the existing ContextManager contract uses
-    // (testHardCeilingEnforced allows +5%).
+    // E17 two-lane contract: the Definition rides its reserved lane, so the
+    // assembled TOTAL legitimately exceeds the ordinary focus ceiling; the
+    // invariant is total ≤ ordinary ceiling + definition lane (estimator
+    // tolerance +5%, as testHardCeilingEnforced allows).
+    const defTokens = Math.ceil(FIXTURE_DEFINITION.length / 4);
     assert.ok(
-      assembled.token_count <= config.hard_ceiling * 1.05,
-      `token_count ${assembled.token_count} exceeds ceiling ${config.hard_ceiling}`,
+      assembled.token_count <= (config.hard_ceiling + defTokens) * 1.05,
+      `token_count ${assembled.token_count} exceeds ordinary ceiling ${config.hard_ceiling} + definition lane ~${defTokens}`,
     );
   } finally { s.cleanup(); }
 });
@@ -694,7 +699,7 @@ test('ddr041: context-budget overflow fails the step with ZERO model calls — n
       },
     };
     const runArtifacts = new SpyRunArtifacts();
-    const cm = new ContextManager(s.root, { ...DEFAULT_CONFIG, hard_ceiling: 300 });
+    const cm = new ContextManager(s.root, { ...DEFAULT_CONFIG, hard_ceiling: 300, authoritative_definition_ceiling_tokens: 100 });
     const runner = new AgentRunner(cm, provider, s.root, runArtifacts as never, { model: 'test-model' });
     const result = await runner.run('builder', definitionCtx(s));
 

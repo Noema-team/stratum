@@ -871,6 +871,16 @@ export interface ContextManagerConfig {
   summary_max_tokens: number;
   system_prompt_max_tokens: number;
   hard_ceiling: number;
+  // E17 — reserved context lane for the AUTHORITATIVE DEFINITION on
+  // DDR-041-carrying runs. The Definition is a binding scope specification,
+  // never truncated or summarized; it must not compete with the ordinary
+  // focus budget in `hard_ceiling`. Default is derived from the
+  // definition-source resolver's byte contract
+  // (MAX_AUTHORITATIVE_DEFINITION_BYTES = 131_072) at the same 4-chars/token
+  // estimate the budget arithmetic uses: 131_072 / 4 = 32_768. A Definition
+  // the resolver accepts therefore always fits its lane; anything larger
+  // fails closed before any model call.
+  authoritative_definition_ceiling_tokens: number;
 }
 
 export const ContextManagerConfigSchema = z.object({
@@ -878,6 +888,7 @@ export const ContextManagerConfigSchema = z.object({
   summary_max_tokens: z.number().positive(),
   system_prompt_max_tokens: z.number().positive(),
   hard_ceiling: z.number().positive(),
+  authoritative_definition_ceiling_tokens: z.number().positive(),
 });
 
 // ============================================================================

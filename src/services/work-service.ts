@@ -136,6 +136,13 @@ export interface CreateWorkItemRequest {
   workflowParameters?: Record<string, unknown>;
   objectiveId?: string;
   parentId?: string;
+  // E17 — supported dependency-creation surface. The scheduler's dispatch
+  // gate (assertDependenciesCompleted) reads dependency edges, but until now
+  // nothing could WRITE them through a service — pilots/clients resorted to
+  // direct repository manipulation, which is how stale-reference state
+  // reached the store (A7 postmortem). Validated like the dispatch gate:
+  // each dependency must exist and differ from the new item.
+  dependencies?: string[];
 }
 
 export class WorkService {
@@ -228,8 +235,26 @@ export class WorkService {
       }
     }
 
+    // E17 — dependency validation mirrors the dispatch gate's expectations:
+    // dependencies must exist and must not reference the item itself. (The
+    // dispatch gate additionally requires them to be 'completed' before
+    // dispatch; creation only checks referential integrity.)
+    const dependencies = req.dependencies ?? [];
+    if (dependencies.includes('')) {
+      throw new WorkServiceError('dependencies must not contain empty ids', 'INVALID_DEPENDENCY');
+    }
+    for (const depId of new Set(dependencies)) {
+      if (!this.items.findById(depId)) {
+        throw new WorkServiceError(`Dependency '${depId}' not found`, 'DEPENDENCY_NOT_FOUND');
+      }
+    }
+
     const now = new Date().toISOString();
     const id = randomUUID();
+    if (dependencies.includes(id)) {
+      throw new WorkServiceError('a WorkItem cannot depend on itself', 'SELF_DEPENDENCY');
+    }
+    const uniqueDependencies = [...new Set(dependencies)];
     const workItem: WorkItem = {
       id,
       projectId: req.projectId,
@@ -244,7 +269,7 @@ export class WorkService {
       acceptanceCriteria: req.acceptanceCriteria ?? [],
       constraints: req.constraints ?? [],
       requiredEvidence: req.requiredEvidence ?? [],
-      dependencies: [],
+      dependencies: uniqueDependencies,
       workflowParameters: req.workflowParameters,
       createdAt: now,
       updatedAt: now,

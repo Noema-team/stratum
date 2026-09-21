@@ -71,6 +71,10 @@ export const DEFAULT_CONFIG: ContextManagerConfig = {
   summary_max_tokens: 300,
   system_prompt_max_tokens: 500,
   hard_ceiling: 4000,
+  // E17 — the authoritative-Definition lane: MAX_AUTHORITATIVE_DEFINITION_BYTES
+  // (131_072) / CHARS_PER_TOKEN (4). Keeps the resolver's acceptance contract
+  // and the context contract in exact agreement.
+  authoritative_definition_ceiling_tokens: 32_768,
 };
 
 // ─── Node Task Descriptions ───────────────────────────────────────────────────
@@ -666,46 +670,74 @@ export class ContextManager {
       (failureContext ? charsToTokens(failureContext.length) : 0);
 
     // DDR-041 review — when this invocation carries an AUTHORITATIVE
-    // DEFINITION, the fixed (non-truncatable) components alone may not
-    // exceed the configured hard ceiling: previously an oversized task (the
-    // verbatim Definition) silently survived via the max(..., 500) budget
-    // floor, violating the hard-context-ceiling invariant. Fail closed with
-    // a diagnosable error BEFORE any artifact slicing or model call — the
-    // authoritative Definition is never truncated or summarized; it either
-    // fits the configured boundary or execution fails explicitly.
+    // DEFINITION, the fixed (non-truncatable) components may not silently
+    // exceed the configured boundaries: previously an oversized task (the
+    // verbatim Definition) either silently survived via the max(..., 500)
+    // budget floor or — after the first fail-closed fix — collided with the
+    // ordinary focus ceiling, since the Definition rides inside `task` yet is
+    // a different KIND of content: a binding, integrity-pinned scope
+    // specification rather than optional focus material. E17 therefore
+    // separates the two contracts explicitly:
     //
-    // Deliberately scoped to Definition-carrying runs: every run without one
-    // keeps its exact legacy budget behavior (byte-for-byte), and the known
-    // pre-existing over-ceiling instructions elsewhere are a separate latent
-    // issue to be addressed on evidence, not inside this boundary fix.
+    //   lane 1 (ordinary focus):  system + state + task-minus-Definition +
+    //                             failureContext must fit `hard_ceiling`;
+    //   lane 2 (authoritative):   the verbatim Definition must fit
+    //                             `authoritative_definition_ceiling_tokens`
+    //                             (default derived from the resolver's
+    //                             MAX_AUTHORITATIVE_DEFINITION_BYTES byte
+    //                             contract, so every Definition the resolver
+    //                             accepts fits its lane by construction).
+    //
+    // Both lanes fail closed with diagnosable errors BEFORE any artifact
+    // slicing or model call — the Definition is never truncated or
+    // summarized. Non-Definition runs keep their exact legacy behavior
+    // (byte-for-byte).
     const carriesAuthority = ctx.authoritativeDefinition !== undefined;
-    if (carriesAuthority && fixedTokens > this.config.hard_ceiling) {
+    let artifactBudget: number;
+    if (carriesAuthority) {
       const def = ctx.authoritativeDefinition!;
-      const breakdown = [
-        `system=${charsToTokens(systemPrompt.length)}`,
-        `state=${charsToTokens(stateSummary.length)}`,
-        `task=${charsToTokens(task.length)}`,
-        `failureContext=${failureContext ? charsToTokens(failureContext.length) : 0}`,
-      ].join(' ');
-      throw new ContextBudgetExceededError(
-        `Fixed context components (${breakdown}; total ${fixedTokens} tokens) exceed the configured ` +
-        `hard_ceiling of ${this.config.hard_ceiling} tokens for role='${role}' step='${ctx.stepId}'.` +
-        ` The task carries an AUTHORITATIVE DEFINITION (${Buffer.byteLength(def.content, 'utf-8')} bytes, ` +
-        `~${charsToTokens(def.content.length)} tokens, sha256 ${def.sha256.slice(0, 12)}…) which is never ` +
-        `truncated or summarized by design — it cannot fit this invocation's configured context boundary. ` +
-        `Raise the configured context boundary or produce a smaller canonical Definition.`
-      );
-    }
+      const definitionBlock = this.formatAuthoritativeDefinition(def);
+      const definitionTokens = charsToTokens(definitionBlock.length);
+      const ordinaryFixedTokens = fixedTokens - definitionTokens;
 
-    // For Definition-carrying runs the slice budget is the ceiling MINUS the
-    // fixed components — floored at zero, never at a positive minimum (a
-    // positive floor could push the assembled total past the ceiling; the
-    // ceiling is the authority, slices may be empty). Non-carrying runs keep
-    // the legacy floor.
-    const artifactBudget = Math.max(
-      this.config.hard_ceiling - fixedTokens,
-      carriesAuthority ? 0 : 500,
-    );
+      if (definitionTokens > this.config.authoritative_definition_ceiling_tokens) {
+        throw new ContextBudgetExceededError(
+          `The AUTHORITATIVE DEFINITION (${Buffer.byteLength(def.content, 'utf-8')} bytes, ` +
+          `~${definitionTokens} tokens, sha256 ${def.sha256.slice(0, 12)}…) exceeds its reserved context lane ` +
+          `(${this.config.authoritative_definition_ceiling_tokens} tokens) for role='${role}' step='${ctx.stepId}'. ` +
+          `The Definition is never truncated or summarized by design; it must fit the lane or execution fails ` +
+          `explicitly. The lane default is derived from the definition-source resolver's byte contract ` +
+          `(MAX_AUTHORITATIVE_DEFINITION_BYTES), so this indicates content beyond that contract.`
+        );
+      }
+      if (ordinaryFixedTokens > this.config.hard_ceiling) {
+        const breakdown = [
+          `system=${charsToTokens(systemPrompt.length)}`,
+          `state=${charsToTokens(stateSummary.length)}`,
+          `task=${charsToTokens(task.length) - definitionTokens}`,
+          `failureContext=${failureContext ? charsToTokens(failureContext.length) : 0}`,
+        ].join(' ');
+        throw new ContextBudgetExceededError(
+          `Fixed context components (${breakdown}; total ${ordinaryFixedTokens} ordinary tokens) exceed the ` +
+          `configured hard_ceiling of ${this.config.hard_ceiling} tokens for role='${role}' step='${ctx.stepId}'. ` +
+          `The AUTHORITATIVE DEFINITION (~${definitionTokens} tokens, sha256 ${def.sha256.slice(0, 12)}…) rides its ` +
+          `own reserved lane and does not count against this ceiling — the ordinary focus material itself is ` +
+          `over budget. Reduce the ordinary context or raise the configured boundary.`
+        );
+      }
+
+      // Slice budget: the ordinary ceiling minus ORDINARY fixed components —
+      // floored at zero, never at a positive minimum (the ceiling is the
+      // authority, slices may be empty).
+      artifactBudget = Math.max(
+        this.config.hard_ceiling - ordinaryFixedTokens,
+        0,
+      );
+    } else {
+      // Legacy floor for runs without an authoritative Definition — kept
+      // byte-for-byte.
+      artifactBudget = Math.max(this.config.hard_ceiling - fixedTokens, 500);
+    }
 
     const runDir = ctx.failureReport?.run_dir;
     const sliceDefs = this.resolveSliceDefs(role, ctx, runDir);
