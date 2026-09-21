@@ -64,7 +64,7 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
         if (step.id === 'critique') return this.executeCritique(step, ctx);
         if (step.id === 'validation_gate') return this.executeValidationGate(ctx);
       }
-      if (step.id === 'scoping.produce') return this.executeScopingProduce(ctx);
+      if (step.id === 'scoping.produce') return this.executeScopingProduce(step, ctx);
       if (step.id === 'summarise') return this.executeSummarise(ctx);
       if (step.id === 'debug') return this.executeDebug(step, ctx);
     }
@@ -389,14 +389,22 @@ export class FullBuildStepRunner implements StepRunner, CheckpointResolver {
 
   // -- produce helpers -------------------------------------------------------
 
-  private async executeScopingProduce(ctx: StepRunContext): Promise<StepRunOutcome> {
+  private async executeScopingProduce(
+    step: WorkflowStep,
+    ctx: StepRunContext,
+  ): Promise<StepRunOutcome> {
     if (!this.deps.scopingService) {
-      return this.deps.agentStepRunner.run(
-        { id: 'scoping.produce', kind: 'produce', agentRole: 'facilitator', templateId: 'scoping' },
-        ctx,
-      );
+      // E19 — pass the DECLARED step through (its outputArtifact now reaches
+      // AgentRunner's enforcement); the former bare literal silently dropped
+      // the declaration this step is required to carry.
+      return this.deps.agentStepRunner.run(step, ctx);
     }
     const start = Date.now();
+    // E19 — begin() now fails closed (missing file / structurally invalid
+    // charter) BEFORE any approval state, so a resolved begin() guarantees
+    // the charter exists and validates. Reporting it afterwards is truthful
+    // — previously this line reported artifacts_written unconditionally,
+    // which is exactly how A8 reached a checkpoint for a file nobody wrote.
     await this.deps.scopingService.begin(ctx);
     return {
       success: true,

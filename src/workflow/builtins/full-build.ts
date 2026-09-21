@@ -1,4 +1,21 @@
-import type { WorkflowDefinition } from '../types.js';
+import type { DeclaredOutputArtifact, WorkflowDefinition } from '../types.js';
+
+// E19 — scoping.produce's exact, narrow output contract (D.1b). Before A8,
+// this step declared NO outputArtifact: the facilitator chose its own output
+// path inside the transport envelope (A8 declared .sle/work/<wi>/scoping.md),
+// the step runner REPORTED docs/cycle-charter.md as written regardless, and
+// ScopingService.approve later failed no_scoping_draft because nothing had
+// materialized the file. Declaring the artifact wires the step into the
+// machinery every define-work step already uses: exact-one-section
+// enforcement, exact-path matching against the declared path (the path is
+// also taught in the assembled context — ContextManager), facilitator role
+// ceiling (ROLE_OUTPUT_PATHS.facilitator already allows exactly this path),
+// filesystem materialization, honest artifacts_written, and D.1 provenance.
+export const CYCLE_CHARTER_OUTPUT: DeclaredOutputArtifact = {
+  type: 'cycle-charter',
+  ref: 'doc:cycle-charter',
+  path: 'docs/cycle-charter.md',
+};
 
 // full-build: the canonical 15-stage pipeline expressed as a WorkflowDefinition.
 // Step graph is the DAG_SEQUENCE from dag-runner.ts, now declarative (DDR-031 §Table 1).
@@ -28,6 +45,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'SCOPING produce',
       agentRole: 'facilitator',
       templateId: 'scoping',
+      outputArtifact: CYCLE_CHARTER_OUTPUT,
     },
     {
       id: 'scoping.checkpoint',

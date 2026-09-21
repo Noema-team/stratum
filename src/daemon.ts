@@ -24,6 +24,7 @@ import type { PromptService, RoleName } from './prompt-service.js';
 import { ChatService } from './chat-service.js';
 import { EventBus } from './event-bus.js';
 import { RuntimeMapManagerImpl, type RuntimeMap } from './runtime-map.js';
+import { CYCLE_CHARTER_OUTPUT } from './workflow/builtins/full-build.js';
 import yaml from 'js-yaml';
 
 interface DaemonConfig {
@@ -664,6 +665,10 @@ export class DaemonServer {
             workflowParameters: { planning_depth: result.planning_depth },
             goal: result.intent,
             projectRoot: this.config.projectRoot ?? process.cwd(),
+            // E19 — same declared output contract as FULL_BUILD.scoping.produce:
+            // without it AgentRunner neither enforces nor materializes the
+            // charter, and begin() now fails closed by design.
+            outputArtifact: CYCLE_CHARTER_OUTPUT,
           });
         } catch {
           // scoping draft generation failure doesn't abort the start response
@@ -789,6 +794,8 @@ export class DaemonServer {
             goal: cycle.intent ?? '',
             projectRoot: this.config.projectRoot ?? process.cwd(),
             facilitatorMode: 'scoping' as const,
+            // E19 — same declared output contract as the start path.
+            outputArtifact: CYCLE_CHARTER_OUTPUT,
           },
         );
         this.sendResponse(res, {
