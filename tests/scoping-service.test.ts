@@ -135,7 +135,7 @@ function makeFsMock(files: Record<string, string> = {}): {
 
 test('testBeginCallsAgentRunnerWithScopingNode', async () => {
   const root = makeTempDir();
-  const charterContent = '# Cycle Charter: 1\n\n## Intent\nBuild a widget system';
+  const charterContent = '# Cycle Charter: 1\n\n## Scope\nBuild a widget system\n\n## Purpose\nWhy it is needed';
   const charterPath = join(root, 'docs', 'cycle-charter.md');
   await fs.mkdir(join(root, 'docs'), { recursive: true });
   await fs.writeFile(charterPath, charterContent, 'utf-8');
@@ -164,7 +164,7 @@ test('testBeginForcesCurrentNodeToScoping', async () => {
   const root = makeTempDir();
   const charterPath = join(root, 'docs', 'cycle-charter.md');
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(charterPath, '# Charter', 'utf-8');
+  await fs.writeFile(charterPath, '# Charter\n\n## Scope\nscope\n\n## Purpose\npurpose', 'utf-8');
 
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/cycle-charter.md'],
@@ -182,7 +182,7 @@ test('testBeginForcesCurrentNodeToScoping', async () => {
 test('testBeginSetsAwaitingScopingTrueInMap', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter\n\n## Scope\nscope\n\n## Purpose\npurpose', 'utf-8');
 
   const runner = new MockAgentRunner({
     success: true, artifacts_written: ['docs/cycle-charter.md'],
@@ -308,7 +308,7 @@ test('testApproveClearsPendingResponse', async () => {
 test('testBeginLoadsNextCycleTaggedRefsIntoEphemeral', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter\n\n## Scope\nscope\n\n## Purpose\npurpose', 'utf-8');
 
   const mgr = new InMemoryMapManager();
   const tagService = new TagService(mgr);
@@ -331,7 +331,7 @@ test('testBeginLoadsNextCycleTaggedRefsIntoEphemeral', async () => {
 test('testBeginWithoutTagServiceOmitsTaggedContext', async () => {
   const root = makeTempDir();
   await fs.mkdir(join(root, 'docs'), { recursive: true });
-  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter', 'utf-8');
+  await fs.writeFile(join(root, 'docs', 'cycle-charter.md'), '# Charter\n\n## Scope\nscope\n\n## Purpose\npurpose', 'utf-8');
 
   const mgr = new InMemoryMapManager();
   const runner = new MockAgentRunner({

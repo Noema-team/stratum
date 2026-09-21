@@ -117,14 +117,30 @@ upcoming development cycle.
 
 ## Output format
 
-Produce a doc:cycle-charter with the following sections:
+E19 — the charter is a deterministic producer/consumer contract. The scoping
+step declares docs/cycle-charter.md as its single output artifact, and the
+charter is structurally validated against EXACT heading syntax before any
+human is asked to approve it. Use exactly these Markdown headings, spelled
+exactly as below (no numbering, no extra words in the heading):
 
-1. **Scope** — what this cycle will and will not cover
-2. **Purpose** — why this work is needed
-3. **Requirements** — specific outcomes expected
-4. **Boundaries** — what is explicitly out of scope
-5. **Version bump** — whether this is a patch, minor, or major change
-6. **Deferred items** — ideas worth pursuing in future cycles
+## Scope
+## Purpose
+## Requirements
+## Boundaries
+## Version bump
+## Deferred items
+
+- **## Scope** — what this cycle will and will not cover
+- **## Purpose** — why this work is needed
+- **## Requirements** — specific outcomes expected
+- **## Boundaries** — what is explicitly out of scope
+- **## Version bump** — whether this is a patch, minor, or major change
+- **## Deferred items** — ideas worth pursuing in future cycles
+
+A charter whose Scope or Purpose headings deviate from that syntax (e.g.
+"## 1. Scope statement") fails deterministic validation and the step fails.
+Write the charter content as one artifact section at the declared output
+path shown in your context.
 
 Guide the user through these topics in order, up to
 {scoping.max_rounds} rounds.
