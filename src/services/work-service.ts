@@ -136,6 +136,14 @@ export interface CreateWorkItemRequest {
   workflowParameters?: Record<string, unknown>;
   objectiveId?: string;
   parentId?: string;
+  // E17 — supported dependency-creation surface. The scheduler's dispatch
+  // gate (assertDependenciesCompleted) reads dependency edges, but until now
+  // nothing could WRITE them through a service — pilots/clients resorted to
+  // direct repository manipulation, which is how stale-reference state
+  // reached the store (A7 postmortem). The invariant is existing dependency
+  // IDs + deduplication (self-reference is structurally unavailable: the new
+  // item's id is generated here after validation).
+  dependencies?: string[];
 }
 
 export class WorkService {
@@ -228,8 +236,22 @@ export class WorkService {
       }
     }
 
+    // E17 — dependency validation: existing dependency IDs + deduplication.
+    // (The dispatch gate additionally requires them to be 'completed' before
+    // dispatch; creation only checks referential integrity.)
+    const dependencies = [...new Set(req.dependencies ?? [])];
+    if (dependencies.includes('')) {
+      throw new WorkServiceError('dependencies must not contain empty ids', 'INVALID_DEPENDENCY');
+    }
+    for (const depId of dependencies) {
+      if (!this.items.findById(depId)) {
+        throw new WorkServiceError(`Dependency '${depId}' not found`, 'DEPENDENCY_NOT_FOUND');
+      }
+    }
+
     const now = new Date().toISOString();
     const id = randomUUID();
+    const uniqueDependencies = dependencies;
     const workItem: WorkItem = {
       id,
       projectId: req.projectId,
@@ -244,7 +266,7 @@ export class WorkService {
       acceptanceCriteria: req.acceptanceCriteria ?? [],
       constraints: req.constraints ?? [],
       requiredEvidence: req.requiredEvidence ?? [],
-      dependencies: [],
+      dependencies: uniqueDependencies,
       workflowParameters: req.workflowParameters,
       createdAt: now,
       updatedAt: now,
