@@ -4,7 +4,7 @@
 **Purpose:** Track which specs have been implemented, by which phase, and what remains.
 
 > **Current work pointer (2026-09-21):** the supervised-pilot series on
-> magtheo/student-platform#108 has run A2–A6 under the Era II roadmap
+> magtheo/student-platform#108 has run A2–A8 under the Era II roadmap
 > ([post-d34-roadmap.md](post-d34-roadmap.md), current through the "close the
 > first real single-task pilot" gate). Authoritative per-pilot history lives in
 > [docs/pilots/](../pilots/) and the merged PRs; summary:
@@ -15,19 +15,28 @@
 > 24-turn exploration exhaustion (38 unique reads, no repeats); **A5**
 > completion-budget death (`stop_reason=max_tokens`, turn 19, 16,384) → PR #29;
 > **A6** (PR #30): step-scoped `define-work/synthesize-definition` budget
-> 32,768 — **first successful synthesis (9 turns), first accepted submission
-> (zero rejections), first materialized canonical Definition with D.1
-> provenance**, then a NEW terminal class: the post-step map sync
-> (`RuntimeMapSchema.parse`) rejected the pilot driver's unvalidated seed
-> (`project.type: 'python'`, `task_store.type: 'sqlite'`). Stratum `main`:
-> `6f9e6c9`. **Next:** A7 preregistration
-> ([pilot-a7.md](../pilots/pilot-a7.md)) — the mechanical seed correction
-> (new frozen driver hash `718374b4…`); per the A6 decision boundary the
-> limiting factor is this control-plane defect, not define-work model
-> capability. DDR-041 Definition → `full-build` handoff remains tested
-> mechanically only; the live demonstration is the next capability milestone.
-> Per-run evidence lives in `~/Documents/repos/pilot-a/evidence/`, not this
-> repo. The phase table below is historical.
+> 32,768 — first successful synthesis, first accepted submission, first
+> materialized canonical Definition with D.1 provenance, then the map-sync
+> seed defect → corrected driver (PR #31); **A7**: define-work completed
+> end-to-end and DDR-041 `gate_b_resolved` on a real Definition, then the
+> context-ceiling mismatch → **PR #32 (E17 two-lane context invariant +
+> dependency surface)**; **A8** (PR #33): **H1 CROSSED** — clean autonomous
+> define-work (`wi_completed_by_driver`, zero intervention), Gate B PASS
+> (4,213 tokens incl. verbatim Definition at ceiling 4,000 via the reserved
+> lane), real full-build `scoping.produce` model execution produced a
+> 12,426-byte charter, then died at the scoping publication seam
+> (undeclared output artifact + untruthful `artifacts_written` + charter
+> grammar mismatch) → **PR #34 (E19 scoping publication contract)**:
+> declared `cycle-charter` output, fail-closed `begin()` before any
+> approval state, exact charter grammar taught, zero-model qualification
+> (6 tests) proving the A8 shapes fail closed and the canonical charter
+> flows materialize → validate → approve. Stratum `main`: `37c3acd`.
+> **Next:** A9 preregistration ([pilot-a9.md](../pilots/pilot-a9.md)) —
+> clean frozen rerun of the H1 transition (driver `d9d699c2…`, zero
+> operator repairs), then deeper into full-build; if BUILD executes, the
+> pivot criterion is reached and H2 (implementation quality) evaluation
+> begins. Per-run evidence lives in `~/Documents/repos/pilot-a/evidence/`,
+> not this repo. The phase table below is historical.
 >
 > ---
 >
