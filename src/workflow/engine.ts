@@ -833,6 +833,8 @@ export class WorkflowEngine {
       // exactly as `role` is already copied from step.agentRole above.
       instruction: step.instruction,
       outputArtifact: step.outputArtifact,
+      // E21 — copied the same way as instruction/outputArtifact.
+      synthesisGate: step.synthesisGate,
       inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
       // D.3b0 — WorkItem snapshot passed straight through from run()'s own

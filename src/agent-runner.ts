@@ -441,6 +441,9 @@ export class AgentRunner {
           // D.3d.5 closure — real execution metadata on this path too:
           // the multi-turn transport must never fall back to generic
           // placeholders when the step declares an actual output artifact.
+          // E21 — the engine-copied synthesis gate (WorkflowStep.synthesisGate),
+          // forwarded only when declared; every ungated step is untouched.
+          ...(ctx.synthesisGate ? { synthesisGate: ctx.synthesisGate } : {}),
           declaredArtifactId: ctx.outputArtifact?.type,
           declaredOutputPath: ctx.outputArtifact?.path,
           expectedArtifacts: ctx.outputArtifact ? 1 : undefined,

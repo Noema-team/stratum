@@ -17,6 +17,23 @@ export const CYCLE_CHARTER_OUTPUT: DeclaredOutputArtifact = {
   path: 'docs/cycle-charter.md',
 };
 
+// E21 — the frozen experimental threshold for the two-phase convergence
+// gate (turns 1..18 investigation with repository read tools; from turn 19
+// the read tools are withdrawn and the remaining turns are reserved for
+// synthesis). An experimental setting, frozen before testing — deliberately
+// NOT a measured optimum — and deliberately NOT accompanied by any change
+// to MAX_AGENT_TURNS or the repair budgets: a successful run must attribute
+// its success to the synthesis gate, not to extra capacity.
+export const SYNTHESIS_GATE_TURNS = 18;
+
+// E21 — applied ONLY to full-build's broad-access artifact-production steps
+// (scoping/design/plan/test). define-work and BUILD are deliberately
+// unchanged: BUILD has different tool and workspace-mutation requirements
+// and needs separate assessment.
+function synthesisGate(): { thresholdTurns: number } {
+  return { thresholdTurns: SYNTHESIS_GATE_TURNS };
+}
+
 // full-build: the canonical 15-stage pipeline expressed as a WorkflowDefinition.
 // Step graph is the DAG_SEQUENCE from dag-runner.ts, now declarative (DDR-031 §Table 1).
 //
@@ -46,6 +63,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       agentRole: 'facilitator',
       templateId: 'scoping',
       outputArtifact: CYCLE_CHARTER_OUTPUT,
+      synthesisGate: synthesisGate(),
     },
     {
       id: 'scoping.checkpoint',
@@ -60,6 +78,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'DESIGN',
       agentRole: 'designer',
       templateId: 'design',
+      synthesisGate: synthesisGate(),
     },
 
     // ── CRITIQUE (conditional: deep | research only) ───────────────────────
@@ -81,6 +100,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'PLAN',
       agentRole: 'planner',
       templateId: 'plan',
+      synthesisGate: synthesisGate(),
     },
 
     // ── TEST ──────────────────────────────────────────────────────────────
@@ -90,6 +110,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'TEST',
       agentRole: 'tester',
       templateId: 'test',
+      synthesisGate: synthesisGate(),
     },
 
     // ── SHARDING_APPROVAL (conditional: only if a sharding proposal exists) ─
