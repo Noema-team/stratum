@@ -43,7 +43,7 @@ import {
   toJsonSchema,
   validateSchemaAnnotations,
 } from '../src/workflow/contracts.js';
-import { TextualSleOutputTransport, SLE_OPEN, SLE_CLOSE } from '../src/transport/textual-sle-output.js';
+import { TextualSleOutputTransport, SLE_OPEN, SLE_CLOSE, SLE_ARTIFACT_OPEN } from '../src/transport/textual-sle-output.js';
 import { SubmitResultTransport } from '../src/transport/submit-result-transport.js';
 import { AgentRunner } from '../src/agent-runner.js';
 import { buildAgentRunner } from '../src/application.js';
@@ -478,7 +478,9 @@ test('D.34.C4 MT TRANSPORT: legacy multi-turn bytes path is byte-for-byte unchan
   const t = new TextualSleOutputTransport();
   const legacyCtx = { role: 'explorer' as const, requiresReviewVerdict: false, execution: 'multi-turn' as const };
   const teaching = t.formatInstruction(legacyCtx);
-  assert.ok(teaching.includes('### '), 'legacy section teaching intact');
+  // E22 — teaching is marker-framed (content-opaque); legacy '### <path>'
+  // replies remain parseable through the compatibility fallback below.
+  assert.ok(teaching.includes(SLE_ARTIFACT_OPEN), 'artifact-marker teaching intact on the multi-turn bytes path');
   assert.ok(!teaching.includes('JSON object'), 'no proposal framing on the legacy path');
   const raw = `${SLE_OPEN}\n### .sle/work/w/x.md\nbytes here\n${SLE_CLOSE}`;
   const result = t.extractProduce(raw, legacyCtx);

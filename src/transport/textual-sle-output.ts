@@ -2,8 +2,11 @@
 //
 // This module OWNS every textual wire shape the execution layer consumes:
 //
-//   multi-turn produce:   <<<SLE-OUTPUT>>> / '### <path>' sections /
-//                         <<<END-SLE-OUTPUT>>>   (parseAgentOutputV3)
+//   multi-turn produce:   <<<SLE-OUTPUT>>> / explicit <<<SLE-ARTIFACT
+//                         path="...">>> ... <<<END-SLE-ARTIFACT>>> artifact
+//                         markers (content is opaque — E22) with the legacy
+//                         '### <path>' framing accepted as a fallback
+//                         (parseAgentOutputV3)
 //   single-turn produce:  '<!-- SLE-OUTPUT' YAML preamble + '## <path>'
 //                         headers                  (parseAgentOutput)
 //   single-turn review:   same preamble shape, plus the `verdict:` line
@@ -27,7 +30,11 @@
 // verdict requirement only for review steps.
 import yaml from 'js-yaml';
 import type { AgentRole } from '../types.js';
-import { parseAgentOutputV3, ParseError } from '../output-parser.js';
+import { parseAgentOutputV3, ParseError, SLE_ARTIFACT_OPEN, SLE_ARTIFACT_CLOSE } from '../output-parser.js';
+// E22 — re-exported for adapters and tests: the artifact-marker constants
+// belong to the parser (single syntax owner) but travel with the transport's
+// wire-shape vocabulary.
+export { SLE_ARTIFACT_OPEN, SLE_ARTIFACT_CLOSE };
 import {
   type ResultTransport,
   type StepResult,
@@ -206,17 +213,21 @@ function multiTurnFormatInstruction(ctx: TransportContext): string {
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 End your final message with the artifact wrapped in exactly these literal delimiters, as ${
     singleArtifact
-      ? `a single '### <path>' section whose path is the declared output artifact path named in the task:`
-      : `one '### <path>' section per declared output artifact, each with its own declared path:`
+      ? `a single artifact block whose path is the declared output artifact path named in the task:`
+      : `one artifact block per declared output artifact, each with its own declared path:`
   }
 
 ${SLE_OPEN}
-### ${examplePath}
+${SLE_ARTIFACT_OPEN}path="${examplePath}">>>
 <the full artifact content>
+${SLE_ARTIFACT_CLOSE}
 ${SLE_CLOSE}
 
 - Use the declared output artifact path exactly as named in the task — never a path you
-  invented.${singleArtifact ? '\n- Never emit more than one artifact section.' : ''}
+  invented.${singleArtifact ? '\n- Never emit more than one artifact block.' : ''}
+- Inside the artifact markers the content is opaque: any Markdown headings ('#', '##', '###',
+  numbered subheadings like '### 4.1 …') are plain content. The ONLY structural lines are the
+  exact '${SLE_ARTIFACT_OPEN}path="...">>>' and '${SLE_ARTIFACT_CLOSE}' marker lines.
 - The delimiters are literal structural requirements: a reply without them cannot be parsed
   and fails the step regardless of content quality. Never reply in prose alone, in any other
   comment or preamble style, or with any wrapper other than these exact delimiters.`;
@@ -500,7 +511,7 @@ export class TextualSleOutputTransport implements ResultTransport {
     // never cross-teach (a single-turn preamble reply must not be repaired
     // with multi-turn delimiter instructions, or vice versa).
     const shape = ctx.execution === 'multi-turn'
-      ? ` (${SLE_OPEN} ... ${SLE_CLOSE} around a '### <path>' section)`
+      ? ` (${SLE_OPEN} ... ${SLE_CLOSE} around a '${SLE_ARTIFACT_OPEN}path="...">>> ... ${SLE_ARTIFACT_CLOSE}' artifact block)`
       : ` (an '${SLE_PREAMBLE_MARK} ... -->' HTML-comment YAML preamble followed by a '## <path>' body header)`;
     if (kind === 'absent') {
       return (

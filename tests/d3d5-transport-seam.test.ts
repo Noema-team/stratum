@@ -583,9 +583,9 @@ test('D.3d.5.1c: the multi-turn loop teaches from the step\'s REAL declared outp
   const result = await loop.run('System', 'Produce.');
   assert.equal(result.success, true, result.error);
   const firstUser = seen[0].messages[0].content as string;
-  assert.ok(firstUser.includes('### .sle/work/wi-9/definition.md'), 'teaching renders the actual declared path');
+  assert.ok(firstUser.includes('<<<SLE-ARTIFACT path=".sle/work/wi-9/definition.md">>>'), 'teaching renders the actual declared path in the artifact marker');
   assert.ok(!firstUser.includes('workItemId'), 'no generic placeholder when real metadata exists');
-  assert.ok(firstUser.includes('Never emit more than one artifact section'), 'single-declared-artifact step gets the single-artifact restriction');
+  assert.ok(firstUser.includes('Never emit more than one artifact block'), 'single-declared-artifact step gets the single-artifact restriction');
 });
 
 // ─── Closure: artifact cardinality reflects the executing step ───────────────
@@ -597,17 +597,17 @@ test('D.3d.5.1c: the one-artifact restriction is NOT a transport-wide law', () =
     nodeId: 'synthesize-definition', declaredArtifactId: 'definition',
     declaredOutputPath: '.sle/work/w/definition.md', expectedArtifacts: 1,
   });
-  assert.ok(constrained.includes('Never emit more than one artifact section'), 'a single-declared-artifact step requires exactly that artifact');
+  assert.ok(constrained.includes('Never emit more than one artifact block'), 'a single-declared-artifact step requires exactly that artifact');
 
   const unconstrained = t.formatInstruction({
     role: 'builder', requiresReviewVerdict: false, execution: 'multi-turn',
     nodeId: 'implement', expectedArtifacts: undefined,
   });
   assert.ok(
-    !unconstrained.includes('Never emit more than one artifact section'),
+    !unconstrained.includes('Never emit more than one artifact block'),
     'a multi-artifact-compatible execution must not have a false one-artifact restriction taught',
   );
-  assert.ok(unconstrained.includes("one '### <path>' section per declared output artifact"), 'multi-artifact teaching asks for one section per declared artifact');
+  assert.ok(unconstrained.includes('one artifact block per declared output artifact'), 'multi-artifact teaching asks for one marker block per declared artifact');
 });
 
 // ─── D.3d.5 commit-1 final closure: three repair-mechanics defects ───────────

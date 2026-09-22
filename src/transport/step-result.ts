@@ -164,10 +164,12 @@ export interface ResultTransport {
   /**
    * Transport syntax teaching, injected by the execution layer — never by
    * workflow methodology. Shape follows TransportContext.execution: the
-   * multi-turn path parses '### <path>' delimiter sections; the single-turn
-   * path parses the YAML preamble + '## <path>' headers. Teaching must match
-   * the parser that will actually consume the reply, and artifact
-   * cardinality must reflect the executing step, not a transport-wide law.
+   * multi-turn path parses explicit artifact markers (E22 — content is
+   * opaque inside them; the legacy '### <path>' framing is accepted as a
+   * fallback); the single-turn path parses the YAML preamble + '## <path>'
+   * headers. Teaching must match the parser that will actually consume the
+   * reply, and artifact cardinality must reflect the executing step, not a
+   * transport-wide law.
    */
   formatInstruction(ctx: TransportContext): string;
   /** Convert a multi-turn produce reply into a StepResult. Throws TransportParseError. */
