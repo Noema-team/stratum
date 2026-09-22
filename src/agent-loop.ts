@@ -27,6 +27,19 @@ import { resolveResultTransport } from './transport/textual-sle-output.js';
 // (the workflow-level refinement cap, which stays 4).
 export const MAX_AGENT_TURNS = 24;
 
+// E21 — the synthesis-phase announcement, appended ONCE as a user turn on
+// the first turn after the gate threshold. Loop-owned protocol text (taught
+// by the loop exactly like the transport instruction), never workflow
+// methodology: the boundary is enforced by the tool protocol — the read
+// tools are no longer offered — and this instruction tells the model what
+// that means for it: produce the contracted artifact now, from verified
+// evidence, preserving unknowns as unknown.
+export const SYNTHESIS_PHASE_INSTRUCTION =
+  'Investigation phase is over: repository read tools are no longer available. ' +
+  'Produce your contracted artifact NOW from the evidence you have already verified. ' +
+  'Work only from that verified evidence — preserve anything unverified as unknown, ' +
+  'and never invent repository facts. Your remaining turns are for producing the artifact.';
+
 // E10/A3 — bounded transport retry: the ONLY eligible error is undici's
 // HeadersTimeoutError (UND_ERR_HEADERS_TIMEOUT), and at most ONE retry may
 // occur within a step execution. A repeated timeout fails closed. Do not
@@ -103,6 +116,12 @@ export interface AgentLoopOptions {
   // tests inject a synthetic tracked-file list instead of requiring a real
   // git repository.
   listTrackedFiles?: TrackedFilesLister;
+  // E21 — two-phase convergence gate (WorkflowStep.synthesisGate, copied to
+  // the StepRunContext by the engine). When set, repository read tools are
+  // withdrawn from the tool protocol from the threshold turn on and the
+  // synthesis instruction is announced once; the turn cap, validators, and
+  // repair budgets are untouched.
+  synthesisGate?: { thresholdTurns: number };
   // D.3d.5 commit 1 (closure) — the executing step's actual output contract,
   // so the transport teaches from REAL metadata on this path too (never a
   // generic placeholder when the step has a declared output artifact).
@@ -328,7 +347,17 @@ export class AgentLoop {
     // result-submission tool when the negotiated transport provides one
     // (schema-carrying contract steps). Absent on every legacy path.
     const submissionTool = this.transport.resultSubmissionTool?.(this.transportCtx);
-    const tools = submissionTool ? [...AGENT_TOOLS, submissionTool] : [...AGENT_TOOLS];
+    // E21 — with the two-phase convergence gate, the tool set becomes
+    // PER-TURN: investigation turns offer the full set; synthesis turns
+    // offer ONLY the result-submission channel (repository read tools are
+    // withdrawn at the protocol level — the requests themselves no longer
+    // carry them — never by ignoring or faking results). Without the gate
+    // this is the exact legacy set, computed once, as before.
+    const fullTools = submissionTool ? [...AGENT_TOOLS, submissionTool] : [...AGENT_TOOLS];
+    const synthesisOnlyTools = submissionTool ? [submissionTool] : [];
+    const repositoryToolNames = new Set(AGENT_TOOLS.map(t => t.name as string));
+    const synthesisGate = this.opts.synthesisGate;
+    let synthesisAnnounced = false;
     // E3a — the most recent provider turn, in bounded observation form.
     // Set after every provider call; attached by fail() so a failed step's
     // evidence explains itself (never reply text, never reasoning text).
@@ -377,6 +406,14 @@ export class AgentLoop {
 
     while (turns < MAX_AGENT_TURNS) {
       turns++;
+      // E21 — one-way phase transition: on the FIRST synthesis turn, append
+      // the synthesis instruction as a user turn so the same request that
+      // stops offering read tools also carries the instruction to produce
+      // the contracted artifact now. Once only — never re-announced.
+      if (synthesisGate && turns > synthesisGate.thresholdTurns && !synthesisAnnounced) {
+        synthesisAnnounced = true;
+        messages.push({ role: 'user', content: SYNTHESIS_PHASE_INSTRUCTION });
+      }
       let result: MultiTurnResult;
       // E8/A2 preflight — per-call timing so a provider failure records how
       // long the failed request ran before dying (Pilot A: NOT PERSISTED).
@@ -391,7 +428,11 @@ export class AgentLoop {
         max_tokens: this.opts.max_tokens ?? 4096,
         // E3b — sampling parity across wires.
         ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
-        tools,
+        // E21 — the tool set is computed PER TURN under the synthesis gate:
+        // investigation turns offer the full set, synthesis turns offer only
+        // the result channel. Without the gate this is the exact legacy set
+        // every turn (fullTools === the old static list).
+        tools: synthesisGate && turns > synthesisGate.thresholdTurns ? synthesisOnlyTools : fullTools,
       };
       try {
         result = await this.provider.completeMultiTurn(multiTurnParams);
@@ -563,6 +604,15 @@ export class AgentLoop {
         messages.push({ role: 'assistant', content: result.tool_uses });
         const resultBlocks: ToolResultBlock[] = [];
         for (const tu of result.tool_uses) {
+          // E21 — protocol safety: a tool call naming a repository read
+          // tool during the synthesis phase is a boundary violation. It is
+          // NEVER executed and NEVER answered with a fabricated result; the
+          // step fails closed with an explicit, auditable error.
+          if (synthesisGate && turns > synthesisGate.thresholdTurns && repositoryToolNames.has(tu.name)) {
+            return fail(
+              `Synthesis-phase tool-protocol violation: model invoked withdrawn repository tool '${tu.name}' at turn ${turns} — failing closed (no execution, no fabricated result).`,
+            );
+          }
           const toolResult = await handleToolCall(
             tu.name as ToolName,
             tu.input,

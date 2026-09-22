@@ -41,6 +41,17 @@ export interface WorkflowStep {
   // the produced output to be exactly one section at this path (cardinality
   // + exact-match), still subject to the role's write-path ceiling.
   outputArtifact?: DeclaredOutputArtifact;
+  // E21 — two-phase convergence gate for artifact-production steps with
+  // broad repository access. Before the threshold turn the step runs exactly
+  // as before (repository read tools offered). From the threshold turn on,
+  // the loop WITHDRAWS the read tools at the tool-protocol level (enforced
+  // per-request, not by prompt text alone), announces the synthesis phase
+  // once as a user turn, and reserves the remaining turns for producing the
+  // contracted artifact. The turn cap, output validation, path enforcement,
+  // and repair budgets are untouched: invalid or missing output still fails
+  // closed. An attempt to invoke a withdrawn tool fails the step explicitly
+  // — never executed, never fabricated.
+  synthesisGate?: { thresholdTurns: number };
   // D.1b — explicit artifact refs this step's context is built from. When
   // set, ContextManager loads exactly these refs instead of the role's
   // default slice set (getRoleSlices()).
@@ -345,6 +356,8 @@ export interface StepRunContext {
   // same way `role` is already copied from step.agentRole. See DeclaredOutputArtifact.
   instruction?: string;
   outputArtifact?: DeclaredOutputArtifact;
+  // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
+  synthesisGate?: { thresholdTurns: number };
   inputArtifactRefs?: string[];
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
   workflowParameters?: Record<string, unknown>;
