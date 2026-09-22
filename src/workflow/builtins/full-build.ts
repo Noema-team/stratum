@@ -30,8 +30,19 @@ export const SYNTHESIS_GATE_TURNS = 18;
 // (scoping/design/plan/test). define-work and BUILD are deliberately
 // unchanged: BUILD has different tool and workspace-mutation requirements
 // and needs separate assessment.
-function synthesisGate(): { thresholdTurns: number } {
-  return { thresholdTurns: SYNTHESIS_GATE_TURNS };
+// E23 — preregistered synthesis read-result budget (bytes), from the
+// zero-model replay of the A10 attempt-13 test-step history: 12 read_file
+// calls totaling 274,736 bytes (~68.7k tokens) left the synthesis request
+// without completion headroom (live cut at 27,984 chars under a
+// probe-verified 65,536-token request). A 49,152-byte newest-first budget
+// retains 9/12 payloads spanning investigation turns 3–18 (including ALL
+// turn-18 evidence), elides the 3 largest oldest reads, cuts the read
+// payload by 83%, and frees ~57k tokens of request headroom. Frozen for the
+// attempt-14 live comparison; do not tune from live outcomes.
+export const SYNTHESIS_READ_RESULT_BUDGET_BYTES = 49152;
+
+function synthesisGate(): { thresholdTurns: number; readResultBudgetBytes: number } {
+  return { thresholdTurns: SYNTHESIS_GATE_TURNS, readResultBudgetBytes: SYNTHESIS_READ_RESULT_BUDGET_BYTES };
 }
 
 // full-build: the canonical 15-stage pipeline expressed as a WorkflowDefinition.

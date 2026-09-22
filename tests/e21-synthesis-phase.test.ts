@@ -29,7 +29,7 @@ import { join } from 'node:path';
 
 import { AgentLoop, MAX_AGENT_TURNS, SYNTHESIS_PHASE_INSTRUCTION } from '../src/agent-loop.js';
 import { RunArtifactManager } from '../src/run-artifacts.js';
-import { FULL_BUILD } from '../src/workflow/builtins/full-build.js';
+import { FULL_BUILD, SYNTHESIS_READ_RESULT_BUDGET_BYTES } from '../src/workflow/builtins/full-build.js';
 import { DEFINE_WORK } from '../src/workflow/builtins/define-work.js';
 import { CYCLE_CHARTER_OUTPUT } from '../src/workflow/builtins/full-build.js';
 import type { MultiTurnParams, MultiTurnResult, ToolUseBlock } from '../src/agent-loop.js';
@@ -268,7 +268,13 @@ test('E21: only full-build scoping/design/plan/test declare the gate, frozen at 
   const gated = ['scoping.produce', 'design', 'plan', 'test'];
   for (const step of FULL_BUILD.steps) {
     if (gated.includes(step.id)) {
-      assert.deepStrictEqual(step.synthesisGate, { thresholdTurns: THRESHOLD }, `${step.id} must carry the frozen gate`);
+      // E23 — the gate carries the preregistered synthesis read-result
+      // budget next to the frozen threshold.
+      assert.deepStrictEqual(
+        step.synthesisGate,
+        { thresholdTurns: THRESHOLD, readResultBudgetBytes: SYNTHESIS_READ_RESULT_BUDGET_BYTES },
+        `${step.id} must carry the frozen gate`,
+      );
     } else {
       assert.strictEqual(step.synthesisGate, undefined, `${step.id} must NOT be gated`);
     }

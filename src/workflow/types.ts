@@ -51,7 +51,7 @@ export interface WorkflowStep {
   // and repair budgets are untouched: invalid or missing output still fails
   // closed. An attempt to invoke a withdrawn tool fails the step explicitly
   // — never executed, never fabricated.
-  synthesisGate?: { thresholdTurns: number };
+  synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   // D.1b — explicit artifact refs this step's context is built from. When
   // set, ContextManager loads exactly these refs instead of the role's
   // default slice set (getRoleSlices()).
@@ -357,7 +357,7 @@ export interface StepRunContext {
   instruction?: string;
   outputArtifact?: DeclaredOutputArtifact;
   // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
-  synthesisGate?: { thresholdTurns: number };
+  synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   inputArtifactRefs?: string[];
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
   workflowParameters?: Record<string, unknown>;
