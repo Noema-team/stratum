@@ -506,6 +506,11 @@ export class AgentRunner {
                   : {}),
                 // E10/A3 — bounded transport-retry record on the failure path
                 // (success-path metadata is written by the loop itself).
+                // E23 — synthesis-boundary compaction evidence on the
+                // failure path (success-path metadata is written by the loop).
+                ...(loopResult.context_compaction
+                  ? { context_compaction: loopResult.context_compaction }
+                  : {}),
                 ...(loopResult.transport_retry
                   ? { transport_retry: loopResult.transport_retry }
                   : {}),

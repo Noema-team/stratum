@@ -1,5 +1,6 @@
 import { promises as nodeFsPromises } from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import type { AgentRole } from './types.js';
 import type { RunArtifactManager } from './run-artifacts.js';
 import { handleToolCall, AGENT_TOOLS, listGitTrackedFiles, type ToolName, type TrackedFilesLister } from './tools.js';
@@ -39,6 +40,116 @@ export const SYNTHESIS_PHASE_INSTRUCTION =
   'Produce your contracted artifact NOW from the evidence you have already verified. ' +
   'Work only from that verified evidence — preserve anything unverified as unknown, ' +
   'and never invent repository facts. Your remaining turns are for producing the artifact.';
+
+// ─── E23 — synthesis-boundary tool-result compaction ──────────────────────────
+//
+// Live evidence (A10 attempts 12–13) showed the gated steps reaching
+// synthesis cleanly (zero repairs) while the provider truncated the
+// synthesis completion against REMAINING CONTEXT: the cut point moved DOWN
+// (31,997 → 27,984 chars) as the requested completion budget moved UP
+// (32,768 → 65,536, probe-verified on the wire). The mechanism is the loop
+// itself: investigation retains every full read_file payload, so after ~18
+// investigation turns the synthesis request inherits ~68k+ tokens of raw
+// repository bytes and the artifact cannot fit the remainder.
+//
+// E23 compacts ONLY at the synthesis transition and ONLY old read_file
+// payloads, by a frozen newest-first byte budget: recent evidence stays
+// verbatim, older payloads are replaced by a deterministic elision marker
+// (path, bytes, sha256) so the model knows WHAT it inspected, that the
+// elision was deliberate, and must not infer details no longer visible.
+// Investigation turns are byte-for-byte unchanged; without the gate (or
+// without a budget) nothing is ever compacted. Original bytes stay
+// recoverable: the marker pins the sha256 of the exact payload, and the
+// target repo at the pinned commit is the evidence source of truth.
+export interface SynthesisCompactionRecord {
+  phase: 'synthesis';
+  policy: 'newest-first';
+  budget_bytes: number;
+  original_read_result_bytes: number;
+  retained_read_result_bytes: number;
+  elided_result_count: number;
+  retained_result_count: number;
+  elided: Array<{ path: string; bytes: number; sha256: string }>;
+}
+
+export function compactReadHistoryForSynthesis(
+  messages: MultiTurnMessage[],
+  budgetBytes: number,
+): SynthesisCompactionRecord | null {
+  // tool_use id → { tool, path }: assistant messages carry the calls. The
+  // wire shape is structural: some providers/typed blocks may omit the
+  // literal `type: 'tool_use'` tag, so detect by the id+name+input shape
+  // (the loop itself and handleToolCall never require the tag either).
+  const callById = new Map<string, { tool: string; path: string }>();
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      for (const tu of m.content) {
+        const b = tu as Partial<ToolUseBlock>;
+        if (typeof b.id === 'string' && typeof b.name === 'string') {
+          callById.set(b.id, {
+            tool: b.name,
+            path: (b.input as Record<string, string> | undefined)?.path ?? '',
+          });
+        }
+      }
+    }
+  }
+
+  // Completed read_file results in conversation order (oldest first).
+  interface Candidate { block: ToolResultBlock; path: string; bytes: number }
+  const candidates: Candidate[] = [];
+  for (const m of messages) {
+    if (m.role === 'user' && Array.isArray(m.content)) {
+      for (const block of m.content) {
+        const b = block as Partial<ToolResultBlock>;
+        const isResult = b.type === 'tool_result' || typeof b.tool_use_id === 'string';
+        if (!isResult) continue;
+        const call = callById.get(b.tool_use_id!);
+        if (!call || call.tool !== 'read_file') continue; // never touch other tools' results
+        candidates.push({ block: block as ToolResultBlock, path: call.path, bytes: Buffer.byteLength(String(b.content ?? ''), 'utf-8') });
+      }
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  // Newest-first fill: retain while the payload fits the remaining budget.
+  const originalTotal = candidates.reduce((a, c) => a + c.bytes, 0);
+  const elided = new Set<Candidate>();
+  const elidedHashes = new Map<Candidate, string>();
+  let used = 0;
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const c = candidates[i];
+    if (used + c.bytes <= budgetBytes) {
+      used += c.bytes;
+    } else {
+      elided.add(c);
+    }
+  }
+
+  for (const c of elided) {
+    const original = String(c.block.content);
+    const sha256 = createHash('sha256').update(original, 'utf-8').digest('hex');
+    elidedHashes.set(c, sha256);
+    c.block.content =
+      '[earlier read_file result elided for synthesis context:\n' +
+      ` path=${c.path}\n` +
+      ` bytes=${c.bytes}\n` +
+      ` sha256=${sha256}]\n` +
+      'This result was inspected earlier in this step and is deliberately not repeated here. ' +
+      'Do not infer its detailed contents; treat specifics from it as unknown.';
+  }
+
+  return {
+    phase: 'synthesis',
+    policy: 'newest-first',
+    budget_bytes: budgetBytes,
+    original_read_result_bytes: originalTotal,
+    retained_read_result_bytes: used,
+    elided_result_count: elided.size,
+    retained_result_count: candidates.length - elided.size,
+    elided: [...elided].map((c) => ({ path: c.path, bytes: c.bytes, sha256: elidedHashes.get(c) ?? '' })),
+  };
+}
 
 // E10/A3 — bounded transport retry: the ONLY eligible error is undici's
 // HeadersTimeoutError (UND_ERR_HEADERS_TIMEOUT), and at most ONE retry may
@@ -120,8 +231,11 @@ export interface AgentLoopOptions {
   // the StepRunContext by the engine). When set, repository read tools are
   // withdrawn from the tool protocol from the threshold turn on and the
   // synthesis instruction is announced once; the turn cap, validators, and
-  // repair budgets are untouched.
-  synthesisGate?: { thresholdTurns: number };
+  // repair budgets are untouched. E23 — readResultBudgetBytes additionally
+  // enables synthesis-boundary compaction of OLD read_file payloads
+  // (newest-first byte budget; investigation turns byte-for-byte unchanged;
+  // never runs without the gate or without a budget).
+  synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   // D.3d.5 commit 1 (closure) — the executing step's actual output contract,
   // so the transport teaches from REAL metadata on this path too (never a
   // generic placeholder when the step has a declared output artifact).
@@ -220,6 +334,11 @@ export interface AgentLoopResult {
   result_repairs: number;
   error?: string;
   rawText?: string;
+  // E23 — synthesis-boundary compaction evidence: bounded metadata only
+  // (byte totals, counts, elided paths + sha256). Never carries payloads.
+  // Present only when a gated step with a read-result budget reached the
+  // synthesis transition.
+  context_compaction?: SynthesisCompactionRecord;
   // E10/A3 — bounded transport-retry observability, present ONLY when the
   // retry policy fired. Records the first attempt's bounded cause, the
   // retried request's duration, and the final outcome, so a retried call is
@@ -358,6 +477,9 @@ export class AgentLoop {
     const repositoryToolNames = new Set(AGENT_TOOLS.map(t => t.name as string));
     const synthesisGate = this.opts.synthesisGate;
     let synthesisAnnounced = false;
+    // E23 — set once at the synthesis transition; carried on the result and
+    // the persisted turn metadata so the compaction is auditable per run.
+    let contextCompaction: SynthesisCompactionRecord | null = null;
     // E3a — the most recent provider turn, in bounded observation form.
     // Set after every provider call; attached by fail() so a failed step's
     // evidence explains itself (never reply text, never reasoning text).
@@ -402,6 +524,7 @@ export class AgentLoop {
         : {}),
       ...(lastRejectedPayload ? { rejected_result_payload: lastRejectedPayload } : {}),
       ...(transportRetry ? { transport_retry: transportRetry } : {}),
+      ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
     });
 
     while (turns < MAX_AGENT_TURNS) {
@@ -412,6 +535,13 @@ export class AgentLoop {
       // the contracted artifact now. Once only — never re-announced.
       if (synthesisGate && turns > synthesisGate.thresholdTurns && !synthesisAnnounced) {
         synthesisAnnounced = true;
+        // E23 — synthesis-boundary compaction: compact OLD read_file payloads
+        // per the frozen newest-first byte budget BEFORE the synthesis
+        // instruction is appended. Investigation turns are byte-for-byte
+        // unchanged; without a budget this never runs.
+        if (synthesisGate.readResultBudgetBytes !== undefined) {
+          contextCompaction = compactReadHistoryForSynthesis(messages, synthesisGate.readResultBudgetBytes);
+        }
         messages.push({ role: 'user', content: SYNTHESIS_PHASE_INSTRUCTION });
       }
       let result: MultiTurnResult;
@@ -587,7 +717,7 @@ export class AgentLoop {
             // record too: define-work succeeds through THIS branch, so a
             // retried-then-accepted Definition would otherwise lose its
             // retry evidence.
-            await this.writeTurnMetadata(turns, toolCallLog, transportRetry);
+            await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction);
             return {
               success: true,
               proposal: { value: submission.value },
@@ -596,6 +726,7 @@ export class AgentLoop {
               format_repairs: formatRepairs,
               result_repairs: resultRepairs,
               ...(transportRetry ? { transport_retry: transportRetry } : {}),
+              ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
               rawText: result.text,
             };
           }
@@ -701,7 +832,7 @@ export class AgentLoop {
       }
 
       // Write turn metadata to run artifacts
-      await this.writeTurnMetadata(turns, toolCallLog, transportRetry);
+      await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction);
 
       // D.34 C1 — kind-split return: a proposal replaces parsedOutput; the
       // runner decodes it against the workflow-declared contract.
@@ -715,6 +846,7 @@ export class AgentLoop {
           result_repairs: resultRepairs,
           rawText: result.text,
           ...(transportRetry ? { transport_retry: transportRetry } : {}),
+          ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
         };
       }
       return {
@@ -728,6 +860,7 @@ export class AgentLoop {
         result_repairs: resultRepairs,
         rawText: result.text,
         ...(transportRetry ? { transport_retry: transportRetry } : {}),
+        ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
       };
     }
 
@@ -740,7 +873,10 @@ export class AgentLoop {
     // E10/A3 — present only when the bounded transport retry fired; persisted
     // on the success path too, so a retried call is visible in evidence even
     // when the step ultimately succeeded.
-    transportRetry?: AgentLoopResult['transport_retry']
+    transportRetry?: AgentLoopResult['transport_retry'],
+    // E23 — synthesis-boundary compaction evidence, persisted when the gate
+    // carried a read-result budget and the transition ran.
+    contextCompaction?: SynthesisCompactionRecord | null
   ): Promise<void> {
     try {
       const { workflowRunId, iteration, nodeId, runArtifacts } = this.opts;
@@ -761,6 +897,7 @@ export class AgentLoop {
             turns_taken,
             tool_calls,
             ...(transportRetry ? { transport_retry: transportRetry } : {}),
+            ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
           },
           null,
           2,
