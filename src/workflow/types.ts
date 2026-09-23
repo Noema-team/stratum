@@ -49,6 +49,14 @@ export interface WorkflowStep {
   // step-authorized path as satisfying the role ceiling — the ceiling table
   // remains the default bound only where no step contract exists.
   authorizedOutputs?: string[];
+  // E27 — bounded source-edit policy: repository-relative prefixes this
+  // step must never modify via SLE-PATCH (fail closed). Task-scoped, but
+  // declared on the workflow step like every other contract.
+  editDenyPrefixes?: string[];
+  // E27 — when true, the step must publish at least one authorized source
+  // change (an applied SLE-PATCH or a new non-docs file); a docs-only or
+  // empty changeset fails the step instead of completing it.
+  requiresSourceEdit?: boolean;
   // E21 — two-phase convergence gate for artifact-production steps with
   // broad repository access. Before the threshold turn the step runs exactly
   // as before (repository read tools offered). From the threshold turn on,
@@ -366,6 +374,9 @@ export interface StepRunContext {
   outputArtifact?: DeclaredOutputArtifact;
   // E26 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
   authorizedOutputs?: string[];
+  // E27 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
+  editDenyPrefixes?: string[];
+  requiresSourceEdit?: boolean;
   // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   inputArtifactRefs?: string[];

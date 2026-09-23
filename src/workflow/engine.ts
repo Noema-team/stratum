@@ -835,6 +835,9 @@ export class WorkflowEngine {
       outputArtifact: step.outputArtifact,
       // E26 — copied the same way as instruction/outputArtifact.
       authorizedOutputs: step.authorizedOutputs,
+      // E27 — copied the same way.
+      editDenyPrefixes: step.editDenyPrefixes,
+      requiresSourceEdit: step.requiresSourceEdit,
       // E21 — copied the same way as instruction/outputArtifact.
       synthesisGate: step.synthesisGate,
       inputArtifactRefs: step.inputArtifactRefs,

@@ -60,6 +60,9 @@ class RecordingArtifactRepository implements Partial<ArtifactRepository> {
   findByWorkflowRunRefAndHash(_runId: string, ref: string, hash: string): ArtifactRecord | undefined {
     return this.saved.find((r) => r.ref === ref && r.hash === hash);
   }
+  listByWorkflowRun(runId: string): ArtifactRecord[] {
+    return this.saved.filter((r) => r.workflowRunId === runId);
+  }
   save(record: ArtifactRecord): void {
     this.saved.push(record);
   }

@@ -862,6 +862,7 @@ export class AgentLoop {
         parsedOutput: {
           sections: stepResult.artifacts,
           warnings: stepResult.kind === 'materialized' ? (stepResult.warnings ?? []) : [],
+          ...(stepResult.kind === 'materialized' && stepResult.patches?.length ? { patches: stepResult.patches } : {}),
         },
         turns_taken: turns,
         tokens_used: totalTokens,
