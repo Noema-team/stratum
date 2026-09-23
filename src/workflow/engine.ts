@@ -833,6 +833,8 @@ export class WorkflowEngine {
       // exactly as `role` is already copied from step.agentRole above.
       instruction: step.instruction,
       outputArtifact: step.outputArtifact,
+      // E26 — copied the same way as instruction/outputArtifact.
+      authorizedOutputs: step.authorizedOutputs,
       // E21 — copied the same way as instruction/outputArtifact.
       synthesisGate: step.synthesisGate,
       inputArtifactRefs: step.inputArtifactRefs,

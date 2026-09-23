@@ -115,6 +115,45 @@ const ROLE_OUTPUT_PATHS: Partial<Record<AgentRole, string[]>> = {
 // Builder can write anywhere except system dirs and docs (which belong to agent roles).
 const BUILDER_DENY_PREFIXES = ['.sle/', 'docs/'];
 
+// E26 — producer-contract matching: an entry ending '/' authorizes any
+// path under that directory (at least one such file required); any other
+// entry authorizes exactly that path (mandatory). Returns the mandatory
+// entries missing from `produced` and whether `path` is authorized.
+export function matchesAuthorizedOutput(path: string, entry: string): boolean {
+  return entry.endsWith('/') ? path.startsWith(entry) : path === entry;
+}
+
+export function checkAuthorizedOutputs(
+  produced: string[],
+  authorized: string[],
+): { ok: true } | { ok: false; error: string } {
+  const missing = authorized.filter(
+    (e) => !e.endsWith('/') && !produced.some((p) => p === e),
+  );
+  const deadPrefixes = authorized.filter(
+    (e) => e.endsWith('/') && !produced.some((p) => p.startsWith(e)),
+  );
+  const extras = produced.filter((p) => !authorized.some((e) => matchesAuthorizedOutput(p, e)));
+  if (missing.length > 0 || deadPrefixes.length > 0) {
+    return {
+      ok: false,
+      error:
+        `Step's producer contract is unsatisfied — produced: [${produced.join(', ') || 'none'}]; ` +
+        `missing mandatory outputs: [${missing.join(', ')}]` +
+        (deadPrefixes.length ? `; no file produced under: [${deadPrefixes.join(', ')}]` : ''),
+    };
+  }
+  if (extras.length > 0) {
+    return {
+      ok: false,
+      error:
+        `Step produced sections outside its authorized output set: [${extras.join(', ')}]; ` +
+        `authorized: [${authorized.join(', ')}]`,
+    };
+  }
+  return { ok: true };
+}
+
 // filePath must already be the canonical value from toSafeRelativePath() —
 // callers must canonicalize (and reject on null) before reaching here.
 export function validateOutputPath(filePath: string, role: AgentRole): boolean {
@@ -449,6 +488,8 @@ export class AgentRunner {
           declaredArtifactId: ctx.outputArtifact?.type,
           declaredOutputPath: ctx.outputArtifact?.path,
           expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
+          // E26 — the step's producer contract, forwarded for teaching.
+          ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
           // D.34 C1 — schema projections + the result-repair seam. Both are
           // absent on the legacy path, leaving it byte-for-byte unchanged.
           ...(contract
@@ -633,6 +674,8 @@ export class AgentRunner {
         declaredArtifactId: ctx.outputArtifact?.type,
         declaredOutputPath: ctx.outputArtifact?.path,
         expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
+        // E26 — teaching input for the producer contract.
+        ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
         // D.34 C1 — runner-generated projections; absent on the legacy path.
         ...(contract
           ? {
@@ -989,10 +1032,34 @@ export class AgentRunner {
     // 6c. The role's broad ceiling (DDR-019), checked against the same
     // canonical path used everywhere else. A declared output only narrows
     // §6b above — it never bypasses this: the declared path must also fall
-    // within ROLE_OUTPUT_PATHS.
+    // within ROLE_OUTPUT_PATHS. E26: a path explicitly authorized by the
+    // STEP's producer contract (authorizedOutputs) satisfies the ceiling —
+    // the table remains the default bound only where no step contract
+    // exists, so a step can grant exactly the paths it declares without
+    // globally widening the role.
     for (const section of canonicalSections) {
-      if (!validateOutputPath(section.path, role)) {
+      const stepAuthorized =
+        ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(section.path, e)) ?? false;
+      if (!validateOutputPath(section.path, role) && !stepAuthorized) {
         return fail(`Role '${role}' is not permitted to write '${section.path}'`);
+      }
+    }
+
+    // 6b2. E26 — enforce the step's producer contract: every section must
+    // sit inside the authorized set, every exact (mandatory) output must be
+    // present, and every directory prefix must receive at least one file.
+    // This is what makes the contract producer- AND consumer-real: PLAN and
+    // BUILD can rely on the published requirements/architecture/plans
+    // actually existing. The zero-section fail (§6d) still fires first for
+    // the fully-empty case.
+    if (ctx.authorizedOutputs?.length) {
+      const check = checkAuthorizedOutputs(
+        canonicalSections.map((s) => s.path),
+        ctx.authorizedOutputs,
+      );
+      if (!check.ok) {
+        const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
+        return fail(check.error + why);
       }
     }
 

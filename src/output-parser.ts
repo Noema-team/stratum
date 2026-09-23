@@ -1,5 +1,5 @@
 import type { AgentRole } from './types.js';
-import { validateOutputPath } from './agent-runner.js';
+import { validateOutputPath, matchesAuthorizedOutput } from './agent-runner.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +46,15 @@ const ARTIFACT_MARKER_RE = /^<<<SLE-ARTIFACT path="([^"]+)">>>\s*$/;
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
-export function parseAgentOutputV3(raw: string, role: AgentRole): ParsedOutput {
+export function parseAgentOutputV3(
+  raw: string,
+  role: AgentRole,
+  // E26 — the step's authorized output set. A path the role ceiling forbids
+  // but the STEP's producer contract explicitly authorizes is NOT dropped:
+  // the contract is the narrower, later authority (attempt-17 class bug —
+  // the tester's authorized executable-test dir must survive parsing).
+  authorizedOutputs?: string[]
+): ParsedOutput {
   const openIdx = raw.indexOf(SLE_OPEN);
   const closeIdx = raw.indexOf(SLE_CLOSE);
 
@@ -112,7 +120,7 @@ export function parseAgentOutputV3(raw: string, role: AgentRole): ParsedOutput {
             raw
           );
         }
-        const section = finalizeSection(rawPath, contentLines, raw, role, warnings);
+        const section = finalizeSection(rawPath, contentLines, raw, role, warnings, authorizedOutputs);
         if (section === null) continue;
         sections.push(section);
         continue;
@@ -151,7 +159,7 @@ export function parseAgentOutputV3(raw: string, role: AgentRole): ParsedOutput {
         i++;
       }
 
-      const section = finalizeSection(rawPath, contentLines, raw, role, warnings);
+      const section = finalizeSection(rawPath, contentLines, raw, role, warnings, authorizedOutputs);
       if (section === null) continue;
       sections.push(section);
     }
@@ -174,7 +182,8 @@ function finalizeSection(
   contentLines: string[],
   raw: string,
   role: AgentRole,
-  warnings: string[]
+  warnings: string[],
+  authorizedOutputs?: string[]
 ): ParsedSection | null {
   const content = contentLines.join('\n').trim();
   if (!content) {
@@ -187,7 +196,8 @@ function finalizeSection(
     );
   }
 
-  if (!validateOutputPath(rawPath, role)) {
+  const stepAuthorized = authorizedOutputs?.some((e) => matchesAuthorizedOutput(rawPath, e)) ?? false;
+  if (!validateOutputPath(rawPath, role) && !stepAuthorized) {
     warnings.push(`Path not permitted for role '${role}': ${rawPath} (section dropped)`);
     return null;
   }

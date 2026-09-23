@@ -41,6 +41,14 @@ export interface WorkflowStep {
   // the produced output to be exactly one section at this path (cardinality
   // + exact-match), still subject to the role's write-path ceiling.
   outputArtifact?: DeclaredOutputArtifact;
+  // E26 — producer-consumer contract for open-set produce steps: the exact
+  // output paths (mandatory, all must be produced) and/or directory prefixes
+  // (entries ending '/', at least one file required) this step is authorized
+  // to publish. Teaching renders the set; the runner enforces it (no
+  // unauthorized extra sections, no missing mandatory outputs) and treats a
+  // step-authorized path as satisfying the role ceiling — the ceiling table
+  // remains the default bound only where no step contract exists.
+  authorizedOutputs?: string[];
   // E21 — two-phase convergence gate for artifact-production steps with
   // broad repository access. Before the threshold turn the step runs exactly
   // as before (repository read tools offered). From the threshold turn on,
@@ -356,6 +364,8 @@ export interface StepRunContext {
   // same way `role` is already copied from step.agentRole. See DeclaredOutputArtifact.
   instruction?: string;
   outputArtifact?: DeclaredOutputArtifact;
+  // E26 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
+  authorizedOutputs?: string[];
   // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   inputArtifactRefs?: string[];

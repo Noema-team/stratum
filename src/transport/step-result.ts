@@ -83,6 +83,10 @@ export interface TransportContext {
   /** The declared output artifact's semantic id (StepKinds-declared `type`). */
   declaredArtifactId?: string;
   /** The declared output artifact's physical path — rendered into teaching. */
+  // E26 — open-set producer contract: the authorized output path set
+  // (exact paths and/or '/'-suffixed directory prefixes) rendered into
+  // teaching when the step has no single declared outputArtifact.
+  authorizedOutputs?: string[];
   declaredOutputPath?: string;
   /**
    * How many artifacts the executing step's output contract expects. The

@@ -49,16 +49,20 @@ class QueueLLM implements ILLMProvider {
 
 // Standard role output format (designer, planner, tester, evaluator, debugger)
 function sleStd(filePath: string, content: string): string {
-  return [
+  return sleStdMulti([[filePath, content]]);
+}
+
+// E26 — contracted steps publish a SET of documents in one reply.
+function sleStdMulti(docs: Array<[string, string]>): string {
+  const preamble = [
     `<!-- SLE-OUTPUT`,
     `artifacts:`,
-    `  - path: ${filePath}`,
-    `    type: document`,
+    ...docs.map(([p]) => `  - path: ${p}\n    type: document`),
     `-->`,
     ``,
-    `## ${filePath}`,
-    content,
   ].join('\n');
+  const body = docs.map(([p, c]) => `## ${p}\n${c}`).join('\n\n---\n\n');
+  return `${preamble}\n${body}`;
 }
 
 // Builder role output format (uses ## File: header + fenced code)
@@ -235,9 +239,9 @@ function makeCycleCtx(projectRoot: string): CycleStateContext {
 
 test('e2eHappyPathArtifactsReachDisk', async () => {
   const responses = [
-    sleStd('docs/requirements.md', '# Requirements\nTest feature.'),  // DESIGN
-    sleStd('docs/plan.md', '# Plan\nStep 1.'),                        // PLAN
-    sleStd('docs/test-plan.md', '# Tests\nTest A.'),                  // TEST
+    sleStdMulti([['docs/requirements.md', '# Requirements\nTest feature.'], ['docs/architecture.md', '# Architecture\nModular.']]), // DESIGN
+    sleStdMulti([['docs/plan.md', '# Plan\nStep 1.'], ['docs/test-plan.md', '# Tests\nTest A.']]),                                  // PLAN
+    sleStd('apps/ai-server/tests/integration/test_e2e.py', 'def test_e2e():\n    assert True'),                                     // TEST (executable)
     sleBuilder('src/index.ts', 'export const x = 1;'),                // BUILD
     sleStd('docs/evaluation.md', '# Evaluation\nPassed.'),            // EVALUATE
   ];
@@ -254,8 +258,10 @@ test('e2eHappyPathArtifactsReachDisk', async () => {
 
     // Artifacts reach disk
     assert.ok(existsSync(path.join(projectRoot, 'docs/requirements.md')), 'docs/requirements.md missing');
+    assert.ok(existsSync(path.join(projectRoot, 'docs/architecture.md')), 'docs/architecture.md missing');
     assert.ok(existsSync(path.join(projectRoot, 'docs/plan.md')), 'docs/plan.md missing');
     assert.ok(existsSync(path.join(projectRoot, 'docs/test-plan.md')), 'docs/test-plan.md missing');
+    assert.ok(existsSync(path.join(projectRoot, 'apps/ai-server/tests/integration/test_e2e.py')), 'executable test missing');
     assert.ok(existsSync(path.join(projectRoot, 'src/index.ts')), 'src/index.ts missing');
     assert.ok(existsSync(path.join(projectRoot, 'docs/evaluation.md')), 'docs/evaluation.md missing');
 
@@ -288,13 +294,13 @@ test('e2eValidationFailPathDebugRunsWithFailureReport', async () => {
   // VGS fails iteration 1, passes on iteration 2.
   // LLM call sequence: DESIGN, PLAN, TEST, BUILD, DEBUG, PLAN, TEST, BUILD, EVALUATE
   const responses = [
-    sleStd('docs/requirements.md', '# Requirements'),                 // DESIGN (iter 1)
-    sleStd('docs/plan.md', '# Plan'),                                 // PLAN (iter 1)
-    sleStd('docs/test-plan.md', '# Tests'),                          // TEST (iter 1)
+    sleStdMulti([['docs/requirements.md', '# Requirements'], ['docs/architecture.md', '# Architecture']]), // DESIGN (iter 1)
+    sleStdMulti([['docs/plan.md', '# Plan'], ['docs/test-plan.md', '# Tests']]),                           // PLAN (iter 1)
+    sleStd('apps/ai-server/tests/integration/test_e2e.py', 'def test_e2e():\n    assert True'),           // TEST (iter 1)
     sleBuilder('src/index.ts', 'export const x = 1;'),               // BUILD (iter 1)
     sleStd('src/debug.md', '# Debug\nFixed the issue.'),             // DEBUG (iter 1)
-    sleStd('docs/plan.md', '# Plan v2'),                             // PLAN (iter 2)
-    sleStd('docs/test-plan.md', '# Tests v2'),                       // TEST (iter 2)
+    sleStdMulti([['docs/plan.md', '# Plan v2'], ['docs/test-plan.md', '# Tests v2']]),                     // PLAN (iter 2)
+    sleStd('apps/ai-server/tests/integration/test_e2e.py', 'def test_e2e_v2():\n    assert True'),        // TEST (iter 2)
     sleBuilder('src/index.ts', 'export const x = 2;'),               // BUILD (iter 2)
     sleStd('docs/evaluation.md', '# Evaluation\nAll passed.'),       // EVALUATE (iter 2)
   ];
