@@ -607,7 +607,10 @@ test('D.3d.5.1c: the one-artifact restriction is NOT a transport-wide law', () =
     !unconstrained.includes('Never emit more than one artifact block'),
     'a multi-artifact-compatible execution must not have a false one-artifact restriction taught',
   );
-  assert.ok(unconstrained.includes('one artifact block per declared output artifact'), 'multi-artifact teaching asks for one marker block per declared artifact');
+  // E25 — undeclared teaching asks for one marker block per actual produced
+  // file (the old 'per declared output artifact' copy was semantically
+  // wrong for an open artifact set and taught an unwritable example path).
+  assert.ok(unconstrained.includes('one artifact block per file you created or modified'), 'multi-artifact teaching asks for one marker block per produced file');
 });
 
 // ─── D.3d.5 commit-1 final closure: three repair-mechanics defects ───────────

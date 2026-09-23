@@ -377,7 +377,9 @@ export class AgentRunner {
       throw err;
     }
 
-    let parsed: { sections: Array<{ path: string; content: string }> };
+    // E25 — warnings carry the parse diagnostics (dropped sections) so a
+    // zero-usable-output step can fail closed with its reason.
+    let parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[] };
     let tokensUsed = 0;
     // D.3d.5 commit 1 — bounded format-repair attempts (multi-turn only).
     let formatRepairs: number | undefined;
@@ -840,7 +842,7 @@ export class AgentRunner {
       // reply remains the debugging record regardless of parse outcome.
       rawPath = await this.writeRaw(ctx, nodeId, raw);
       if (stepResult.kind === 'materialized') {
-        parsed = { sections: stepResult.artifacts };
+        parsed = { sections: stepResult.artifacts, warnings: stepResult.warnings };
         reviewVerdictRaw = stepResult.review?.verdict;
       } else {
         // D.34 C1 — contract path: the acceptor gated the proposal inside
@@ -994,6 +996,19 @@ export class AgentRunner {
       }
     }
 
+    // 6d. E25 — a produce step that yields zero usable sections fails
+    // closed BEFORE any downstream step executes. A role-forbidden path is
+    // dropped by the parser with a warning; if every section was dropped
+    // (the attempt-16 pilot failure), the step must NOT become a silent
+    // zero-file success that EXEC and validation then run against an
+    // unchanged tree. The parse warnings ARE the diagnostic. A plan or
+    // prose file never counts as code: it was either a permitted section
+    // (and would appear here) or a dropped one (and appears in warnings).
+    if (canonicalSections.length === 0) {
+      const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
+      return fail(`Step produced no usable output sections${why}`);
+    }
+
     // 7. Write artifacts — canonical paths only.
     const artifactsWritten: string[] = [];
     for (const section of canonicalSections) {
@@ -1005,6 +1020,35 @@ export class AgentRunner {
         await this.fs.writeFile(filePath, section.content, 'utf-8');
       }
       artifactsWritten.push(section.path);
+    }
+
+    // 7b. E25 — publication is observable: every reported write must exist
+    // (through the SAME fs layer that performed the writes) with exactly
+    // the produced byte count. A write that silently no-ops (permissions,
+    // path traversal normalized away, wrapper bugs) must fail the step
+    // here rather than surface as a downstream validation failure against
+    // an unchanged tree. Production always uses fs.promises; an injected
+    // fs layer without a stat capability (test stubs modeling writes
+    // in memory) is verification-incompatible and skips the check rather
+    // than failing every legacy harness.
+    if (typeof (this.fs as { stat?: unknown }).stat === 'function') {
+      for (const section of canonicalSections) {
+        const filePath = path.join(this.projectRoot, section.path);
+        let st;
+        try {
+          st = await this.fs.stat(filePath);
+        } catch {
+          return fail(`Materialized file '${section.path}' is missing from disk after write — publication integrity failure`);
+        }
+        const expected = Buffer.byteLength(section.content, 'utf-8');
+        if (APPEND_ONLY_PATHS.has(section.path)) {
+          if (st.size < expected) {
+            return fail(`Appended file '${section.path}' is ${st.size} bytes on disk, shorter than the ${expected}-byte produced content — publication integrity failure`);
+          }
+        } else if (st.size !== expected) {
+          return fail(`Materialized file '${section.path}' is ${st.size} bytes on disk but ${expected} bytes were produced — publication integrity failure`);
+        }
+      }
     }
 
     // 8. D.1b/D.1c — record provenance for a declared output. Deduped by
@@ -1036,6 +1080,35 @@ export class AgentRunner {
           hash,
           createdAt: new Date().toISOString(),
         });
+      }
+    }
+
+    // 8b. E25 — open-set provenance: an undeclared produce step (e.g. a
+    // build step's multi-file changeset) records one hashed artifact row
+    // per written file, so publication is auditable per path without
+    // inventing a fake static output path for a dynamic changeset. The
+    // declared single-output recording above is unchanged.
+    if (!ctx.outputArtifact && this.artifactRepository) {
+      for (const section of canonicalSections) {
+        const hash = createHash('sha256').update(section.content).digest('hex');
+        const ref = `produced-file:${section.path}`;
+        const already = this.artifactRepository.findByWorkflowRunRefAndHash(
+          ctx.workflowRunId,
+          ref,
+          hash,
+        );
+        if (!already) {
+          this.artifactRepository.save({
+            id: randomUUID(),
+            workItemId: ctx.workItemId,
+            workflowRunId: ctx.workflowRunId,
+            type: 'produced-file',
+            ref,
+            path: section.path,
+            hash,
+            createdAt: new Date().toISOString(),
+          });
+        }
       }
     }
 
