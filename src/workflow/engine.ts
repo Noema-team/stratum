@@ -13,10 +13,33 @@ import type {
   ObjectiveContext,
   DecisionContext,
   AuthoritativeDefinition,
+  EditPolicy,
 } from './types.js';
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
 import { materializeStepRunContext } from './artifact-refs.js';
+
+// E27r (merge review) — resolve the task's edit authorization from the run's
+// FROZEN resolvedParameters ('editPolicy' key). Present-but-malformed fails
+// at dispatch rather than silently degrading to "no policy" — a weaker
+// policy must never be the result of a typo.
+function resolveEditPolicy(resolvedParameters?: Record<string, unknown>): EditPolicy | undefined {
+  const raw = resolvedParameters?.['editPolicy'];
+  if (raw === undefined || raw === null) return undefined;
+  const isStringArray = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((e) => typeof e === 'string');
+  const p = raw as Partial<EditPolicy>;
+  if (
+    typeof p !== 'object' ||
+    !isStringArray(p.allowedEditPaths) ||
+    !isStringArray(p.requiredEditPaths)
+  ) {
+    throw new Error(
+      'Invalid workflowParameters.editPolicy: expected { allowedEditPaths: string[], requiredEditPaths: string[] } with exact repository-relative paths',
+    );
+  }
+  return { allowedEditPaths: p.allowedEditPaths, requiredEditPaths: p.requiredEditPaths };
+}
 
 // ============================================================================
 // WorkflowEngine dependencies
@@ -835,9 +858,8 @@ export class WorkflowEngine {
       outputArtifact: step.outputArtifact,
       // E26 — copied the same way as instruction/outputArtifact.
       authorizedOutputs: step.authorizedOutputs,
-      // E27 — copied the same way.
-      editDenyPrefixes: step.editDenyPrefixes,
-      requiresSourceEdit: step.requiresSourceEdit,
+      // E27r — task-scoped edit authorization from the frozen parameters.
+      editPolicy: resolveEditPolicy(resolvedParameters),
       // E21 — copied the same way as instruction/outputArtifact.
       synthesisGate: step.synthesisGate,
       inputArtifactRefs: step.inputArtifactRefs,

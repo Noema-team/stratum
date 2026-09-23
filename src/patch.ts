@@ -27,6 +27,10 @@ interface Hunk {
 
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
+// The ONLY accepted no-newline marker. Any other '\'-led line is malformed
+// diff content and must fail closed — never silently treated as a marker.
+const NO_NEWLINE_MARKER = '\\ No newline at end of file';
+
 /** Split file content into logical lines; a trailing newline is not a line. */
 function toLines(content: string): { lines: string[]; trailingNewline: boolean } {
   if (content === '') return { lines: [], trailingNewline: false };
@@ -71,10 +75,9 @@ function parseHunks(diff: string): Hunk[] {
       if (line === undefined) {
         throw new PatchApplyError(`Hunk at original line ${hunk.oldStart} is truncated: declared -${hunk.oldCount},+${hunk.newCount} but the diff ends at old=${seenOld}, new=${seenNew}`);
       }
-      if (line.startsWith('\\')) {
-        // "\ No newline at end of file" — attaches to the line immediately
-        // preceding it (git semantics): '-' or ' ' → old side; '+' → new
-        // side; ' ' (context) → both sides.
+      if (line === NO_NEWLINE_MARKER) {
+        // Attaches to the line immediately preceding it (git semantics):
+        // '-' or ' ' → old side; '+' → new side; ' ' (context) → both sides.
         const lastTag = hunk.entries.length ? hunk.entries[hunk.entries.length - 1].tag : ' ';
         if (lastTag === '-') hunk.oldNoNewline = true;
         else if (lastTag === '+') hunk.newNoNewline = true;
@@ -91,8 +94,8 @@ function parseHunks(diff: string): Hunk[] {
       else throw new PatchApplyError(`Malformed diff line ${i + 1} (expected ' ', '-', or '+'): '${line.slice(0, 60)}'`);
       i++;
     }
-    // a "\ No newline at end of file" marker AFTER the hunk's last line
-    if (lines[i] !== undefined && lines[i].startsWith('\\')) {
+    // the no-newline marker AFTER the hunk's last line
+    if (lines[i] !== undefined && lines[i] === NO_NEWLINE_MARKER) {
       const lastTag = hunk.entries.length ? hunk.entries[hunk.entries.length - 1].tag : ' ';
       if (lastTag === '-') hunk.oldNoNewline = true;
       else if (lastTag === '+') hunk.newNoNewline = true;

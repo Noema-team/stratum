@@ -1127,10 +1127,19 @@ export class AgentRunner {
       return row && row.stepId !== ctx.stepId ? row : undefined;
     };
 
-    // sections: conflict detection + unchanged classification
+    // sections: conflict detection + unchanged classification. E27r — when
+    // the task declares an edit policy, file writes outside the authorized
+    // edit set fail closed: an unrelated new file cannot dodge the required
+    // edits, and the task's scope is positive, not deny-by-prefix.
     const unchanged: string[] = [];
     const writableSections: Array<{ path: string; content: string }> = [];
     for (const section of canonicalSections) {
+      if (ctx.editPolicy && !ctx.editPolicy.allowedEditPaths.includes(section.path)) {
+        return fail(
+          `File '${section.path}' is outside this task's authorized edit set ` +
+          `[${ctx.editPolicy.allowedEditPaths.join(', ')}] — publishing it would exceed the task's scope.`,
+        );
+      }
       const other = ownedByOther(section.path);
       if (other) {
         const incoming = sha256Hex(section.content);
@@ -1157,9 +1166,14 @@ export class AgentRunner {
       if (canonicalSections.some((s) => s.path === canonical)) {
         return fail(`Ambiguous changeset: '${canonical}' appears both as a file section and as an SLE-PATCH target`);
       }
-      const denied = ctx.editDenyPrefixes?.find((p) => canonical.startsWith(p));
-      if (denied) {
-        return fail(`Patch target '${canonical}' is outside this step's permitted modification scope (denied prefix '${denied}')`);
+      // E27r — positive authorization: with an edit policy, a patch target
+      // must be EXACTLY one of the task's allowed edit paths (a deny-prefix
+      // formulation still permitted patching unrelated files).
+      if (ctx.editPolicy && !ctx.editPolicy.allowedEditPaths.includes(canonical)) {
+        return fail(
+          `Patch target '${canonical}' is outside this task's authorized edit set ` +
+          `[${ctx.editPolicy.allowedEditPaths.join(', ')}] — only explicitly authorized paths may be modified.`,
+        );
       }
       const stepAuthorized = ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(canonical, e)) ?? false;
       if (!validateOutputPath(canonical, role) && !stepAuthorized) {
@@ -1200,16 +1214,18 @@ export class AgentRunner {
       stagedPatches.push({ path: canonical, baseHash: diskHash, resultContent: result, resultHash, diffBytes: Buffer.byteLength(patch.diff, 'utf-8') });
     }
 
-    // requiresSourceEdit — a docs-only or empty changeset cannot complete a
-    // step whose task requires an actual source change.
-    if (ctx.requiresSourceEdit) {
-      const sourceChanges =
-        stagedPatches.length +
-        writableSections.filter((s) => !s.path.startsWith('docs/')).length;
-      if (sourceChanges === 0) {
+    // E27r — editPolicy.requiredEditPaths: each named path must receive an
+    // applied SLE-PATCH in this step. A docs-only or empty changeset, or an
+    // adjacent new file, cannot substitute for the edit the task exists to
+    // make (the previous weak "any new non-docs file" formulation could).
+    if (ctx.editPolicy && ctx.editPolicy.requiredEditPaths.length > 0) {
+      const patchedPaths = new Set(stagedPatches.map((s) => s.path));
+      const missing = ctx.editPolicy.requiredEditPaths.filter((p) => !patchedPaths.has(p));
+      if (missing.length > 0) {
         return fail(
-          'This step requires an authorized source change, but the changeset contains none ' +
-          '(no applied SLE-PATCH and no new non-docs file). Documentation alone cannot complete it.',
+          `This task requires an authorized edit to [${missing.join(', ')}], but the changeset ` +
+          `contains no applied SLE-PATCH for ${missing.length === 1 ? 'it' : 'each of them'}. ` +
+          `New files, documentation, or unrelated edits cannot substitute.`,
         );
       }
     }

@@ -93,8 +93,6 @@ interface RunnerOpts {
   repository: RecordingArtifactRepository;
   stepId: string;
   runId?: string;
-  editDenyPrefixes?: string[];
-  requiresSourceEdit?: boolean;
   fsOverride?: typeof import('fs').promises;
 }
 
@@ -128,8 +126,7 @@ function ctx(root: string, opts: RunnerCtxOpts) {
     projectRoot: root,
     instruction: 'Publish.',
     ...(opts.authorizedOutputs ? { authorizedOutputs: opts.authorizedOutputs } : {}),
-    ...(opts.editDenyPrefixes ? { editDenyPrefixes: opts.editDenyPrefixes } : {}),
-    ...(opts.requiresSourceEdit !== undefined ? { requiresSourceEdit: opts.requiresSourceEdit } : {}),
+    ...(opts.editPolicy ? { editPolicy: opts.editPolicy } : {}),
   } as never;
 }
 
@@ -137,8 +134,9 @@ interface RunnerCtxOpts {
   stepId: string;
   runId?: string;
   authorizedOutputs?: string[];
-  editDenyPrefixes?: string[];
-  requiresSourceEdit?: boolean;
+  // E27r — task-scoped edit authorization (exact paths), threaded the way
+  // the engine threads resolvedParameters.editPolicy.
+  editPolicy?: { allowedEditPaths: string[]; requiredEditPaths: string[] };
 }
 
 // ─── 1+2. TEST ownership ─────────────────────────────────────────────────────
@@ -191,8 +189,8 @@ test('E27.3+8: a valid patch applies against the pinned worker file; result hash
   writeFileSync(join(root, WORKER_PATH), WORKER_ORIGINAL);
   const reply = envelope([], [{ path: WORKER_PATH, base: sha256(WORKER_ORIGINAL), diff: WORKER_PATCH }]);
   try {
-    const result = await makeRunner(root, reply, { repository, stepId: 'build', requiresSourceEdit: true })
-      .run('builder', ctx(root, { stepId: 'build', requiresSourceEdit: true }));
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' })
+      .run('builder', ctx(root, { stepId: 'build', editPolicy: { allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] } }));
     assert.equal(result.success, true, result.error);
     assert.equal(readFileSync(join(root, WORKER_PATH), 'utf-8'), WORKER_PATCHED);
     assert.deepEqual(result.artifacts_written, [WORKER_PATH]);
@@ -264,10 +262,9 @@ test('E27.6: a patch targeting rag-api (denied prefix) is rejected', async () =>
   try {
     const result = await makeRunner(root, reply, {
       repository: new RecordingArtifactRepository(), stepId: 'build',
-      editDenyPrefixes: ['apps/ai-server/rag-api-service/'],
-    }).run('builder', ctx(root, { stepId: 'build', editDenyPrefixes: ['apps/ai-server/rag-api-service/'] }));
+    }).run('builder', ctx(root, { stepId: 'build', editPolicy: { allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] } }));
     assert.equal(result.success, false);
-    assert.match(result.error!, /denied prefix/);
+    assert.match(result.error!, /outside this task's authorized edit set/);
     assert.equal(readFileSync(join(root, ragApiPath), 'utf-8'), 'def run_transactional_update():\n    pass\n');
   } finally {
     cleanup();
@@ -304,10 +301,12 @@ test('E27.9: BUILD cannot complete on a byte-identical protected republication �
   // BUILD re-ships TEST's file byte-identical and nothing else.
   const reply = envelope([{ path: testPath, content: TEST_SUITE_ORIGINAL }]);
   try {
-    const result = await makeRunner(root, reply, { repository, stepId: 'build', requiresSourceEdit: true })
-      .run('builder', ctx(root, { stepId: 'build', requiresSourceEdit: true }));
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' })
+      .run('builder', ctx(root, { stepId: 'build', editPolicy: { allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] } }));
     assert.equal(result.success, false);
-    assert.match(result.error!, /requires an authorized source change/);
+    // the edit policy rejects the out-of-scope section before anything else:
+    // byte-identical or not, TEST's file is not in BUILD's edit set
+    assert.match(result.error!, /outside this task's authorized edit set/);
     assert.equal(result.artifacts_written.length, 0);
   } finally {
     cleanup();
@@ -364,6 +363,88 @@ test('E27.P2: a disk error mid-write fails explicitly with complete partial-publ
     assert.match(result.error!, new RegExp(fileB));
     // fileA really is on disk (partial publication honestly reported)
     assert.ok(existsSync(join(root, fileA)));
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── E27r (merge review) — task-scoped edit authorization ────────────────────
+
+test('E27.R1: an adjacent new file cannot dodge the required edit — and is not published', async () => {
+  const { root, cleanup } = makeRoot();
+  mkdirSync(join(root, 'apps/ai-server/rag-worker-service'), { recursive: true });
+  writeFileSync(join(root, WORKER_PATH), WORKER_ORIGINAL);
+  // The old weak formulation counted ANY new non-docs file as a "source
+  // change": BUILD could ship helper.py and leave main.py untouched. The
+  // edit policy must reject the section pre-write AND fail the required edit.
+  const reply = envelope([{ path: 'apps/ai-server/rag-worker-service/helper.py', content: 'VALUE = 1\n' }]);
+  try {
+    const result = await makeRunner(root, reply, { repository: new RecordingArtifactRepository(), stepId: 'build' })
+      .run('builder', ctx(root, { stepId: 'build', editPolicy: { allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] } }));
+    assert.equal(result.success, false);
+    assert.match(result.error!, /outside this task's authorized edit set/);
+    assert.ok(!existsSync(join(root, 'apps/ai-server/rag-worker-service/helper.py')), 'no out-of-scope publication');
+    assert.equal(readFileSync(join(root, WORKER_PATH), 'utf-8'), WORKER_ORIGINAL);
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── E27r (merge review) — legacy artifact restore + ownership ───────────────
+
+test('E27.R2: a restored attempt-18 TEST artifact seeded through E27 ownership is protected', async () => {
+  const { root, cleanup } = makeRoot();
+  const repository = new RecordingArtifactRepository();
+  const testPath = 'apps/ai-server/tests/integration/test_seam.py';
+  // What the driver's restore-test-artifact operation does: restore the
+  // archived ORIGINAL bytes and insert an owned-by-test provenance row in
+  // E27's produced-file:<stepId>:<path> format — because attempt 18's own
+  // provenance predates E27 and confers no ownership.
+  const originalHash = sha256(TEST_SUITE_ORIGINAL.trimEnd());
+  repository.save({
+    id: 'art-a18-test-restore', workItemId: 'wi-exec-108',
+    workflowRunId: 'e27-run', type: 'produced-file',
+    ref: `produced-file:test:${testPath}`, path: testPath, hash: originalHash,
+    createdAt: new Date().toISOString(),
+  });
+  mkdirSync(join(root, 'apps/ai-server/tests/integration'), { recursive: true });
+  writeFileSync(join(root, testPath), TEST_SUITE_ORIGINAL.trimEnd());
+  // BUILD ships a narrower replacement for the restored artifact.
+  const reply = envelope([{ path: testPath, content: TEST_SUITE_NARROWER }]);
+  try {
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' }).run('builder', ctx(root, { stepId: 'build' }));
+    assert.equal(result.success, false);
+    assert.match(result.error!, /Protected artifact conflict/);
+    assert.match(result.error!, /published by step 'test'/);
+    // the restored ORIGINAL bytes are untouched on disk
+    assert.equal(readFileSync(join(root, testPath), 'utf-8'), TEST_SUITE_ORIGINAL.trimEnd());
+  } finally {
+    cleanup();
+  }
+});
+
+test('E27.R3: a legacy-format provenance row alone does NOT protect — the restore op must seed E27 ownership', async () => {
+  const { root, cleanup } = makeRoot();
+  const repository = new RecordingArtifactRepository();
+  const testPath = 'apps/ai-server/tests/integration/test_seam.py';
+  // attempt 18 recorded produced-file:<path> (no stepId). ownedByOther()
+  // cannot recognize ownership from this format — which is exactly why the
+  // continuation must run the explicit restore operation instead of merely
+  // keeping the old rows. This test pins that gap as documented behavior.
+  repository.save({
+    id: 'art-a18-legacy', workItemId: 'wi-exec-108',
+    workflowRunId: 'e27-run', type: 'produced-file',
+    ref: `produced-file:${testPath}`, path: testPath, hash: sha256(TEST_SUITE_ORIGINAL.trimEnd()),
+    createdAt: new Date().toISOString(),
+  });
+  mkdirSync(join(root, 'apps/ai-server/tests/integration'), { recursive: true });
+  writeFileSync(join(root, testPath), TEST_SUITE_ORIGINAL.trimEnd());
+  const reply = envelope([{ path: testPath, content: TEST_SUITE_NARROWER }]);
+  try {
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' }).run('builder', ctx(root, { stepId: 'build' }));
+    // the overwrite SUCCEEDS without E27 ownership — the gap is real
+    assert.equal(result.success, true, result.error);
+    assert.equal(readFileSync(join(root, testPath), 'utf-8'), TEST_SUITE_NARROWER.trimEnd());
   } finally {
     cleanup();
   }

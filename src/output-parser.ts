@@ -30,6 +30,11 @@ const ALLOWED_EXTENSIONS = new Set([
 ]);
 const MAX_SECTIONS = 20;
 const MAX_SECTION_BYTES = 100 * 1024; // 100 KB
+// E27r — patch transport bounds: a bounded source edit is small by
+// construction. The count bound is shared with sections (the changeset as a
+// whole stays bounded); the byte ceiling matches the "small hunks" teaching.
+const MAX_PATCHES_TOTAL = MAX_SECTIONS;
+const MAX_PATCH_BYTES = 32 * 1024; // 32 KB
 
 const SLE_OPEN = '<<<SLE-OUTPUT>>>';
 const SLE_CLOSE = '<<<END-SLE-OUTPUT>>>';
@@ -135,7 +140,22 @@ export function parseAgentOutputV3(
         if (patches.some((p) => p.path === patchPath) || sections.some((sec) => sec.path === patchPath)) {
           throw new ParseError(`Duplicate path in output: ${patchPath}`, raw);
         }
-        patches.push({ path: patchPath, base: pm[2].toLowerCase(), diff: diffLines.join('\n').trim() + '\n' });
+        // E27r — the diff payload is preserved BYTE-FOR-BYTE: never trim it.
+        // A trailing-whitespace '+' line is meaningful diff content, and the
+        // zero-fuzz applier downstream must see exactly what the model sent.
+        // Only a single final newline is normalized (appended when absent).
+        const joinedDiff = diffLines.join('\n');
+        if (Buffer.byteLength(joinedDiff, 'utf-8') > MAX_PATCH_BYTES) {
+          throw new ParseError(
+            `Patch content exceeds ${MAX_PATCH_BYTES / 1024} KB limit: ${patchPath} — keep hunks small and bounded`,
+            raw
+          );
+        }
+        patches.push({
+          path: patchPath,
+          base: pm[2].toLowerCase(),
+          diff: joinedDiff.endsWith('\n') ? joinedDiff : joinedDiff + '\n',
+        });
         continue;
       }
       if (line.startsWith(SLE_ARTIFACT_OPEN)) {
@@ -219,9 +239,11 @@ export function parseAgentOutputV3(
     }
   }
 
-  if (sections.length + warnings.length > MAX_SECTIONS) {
+  // E27r — patches count toward the same changeset bound as sections: the
+  // "bounded source edit" path must not become an unbounded side channel.
+  if (sections.length + patches.length + warnings.length > MAX_PATCHES_TOTAL) {
     throw new ParseError(
-      `Output contains more than ${MAX_SECTIONS} sections`,
+      `Output contains more than ${MAX_PATCHES_TOTAL} sections+patches`,
       raw
     );
   }

@@ -165,12 +165,12 @@ export const FULL_BUILD: WorkflowDefinition = {
       // the one the gate was qualified for. It still declares NO
       // outputArtifact: multiple code sections materialize from the final
       // artifact response.
-      // E27 — bounded source-edit policy (task-scoped, declared like every
-      // other contract): rag-api is outside BUILD's modification scope per
-      // the Definition's must-constraint, and a docs-only changeset cannot
-      // complete BUILD — an authorized source change is required.
-      editDenyPrefixes: ['apps/ai-server/rag-api-service/'],
-      requiresSourceEdit: true,
+      // E27r (merge review) — source-edit authorization is deliberately NOT
+      // declared here: issue-specific edit scope (allowed/required paths,
+      // e.g. the pilot's worker main.py) is task configuration carried by
+      // the dispatching WorkItem's workflowParameters.editPolicy — frozen
+      // per run and enforced by the publication boundary. FULL_BUILD must
+      // stay project-agnostic.
       synthesisGate: synthesisGate(),
     },
 

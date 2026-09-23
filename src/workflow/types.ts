@@ -49,14 +49,10 @@ export interface WorkflowStep {
   // step-authorized path as satisfying the role ceiling — the ceiling table
   // remains the default bound only where no step contract exists.
   authorizedOutputs?: string[];
-  // E27 — bounded source-edit policy: repository-relative prefixes this
-  // step must never modify via SLE-PATCH (fail closed). Task-scoped, but
-  // declared on the workflow step like every other contract.
-  editDenyPrefixes?: string[];
-  // E27 — when true, the step must publish at least one authorized source
-  // change (an applied SLE-PATCH or a new non-docs file); a docs-only or
-  // empty changeset fails the step instead of completing it.
-  requiresSourceEdit?: boolean;
+  // E27r (merge review) — bounded source-edit authorization moved OUT of the
+  // reusable workflow definition: pilot/project-specific edit scope is task
+  // configuration (WorkflowRun.resolvedParameters.editPolicy → StepRunContext.editPolicy),
+  // never FULL_BUILD or any other builtin step, which must stay project-agnostic.
   // E21 — two-phase convergence gate for artifact-production steps with
   // broad repository access. Before the threshold turn the step runs exactly
   // as before (repository read tools offered). From the threshold turn on,
@@ -374,9 +370,10 @@ export interface StepRunContext {
   outputArtifact?: DeclaredOutputArtifact;
   // E26 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
   authorizedOutputs?: string[];
-  // E27 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
-  editDenyPrefixes?: string[];
-  requiresSourceEdit?: boolean;
+  // E27r (merge review) — task-scoped edit authorization, resolved by the
+  // engine from the run's FROZEN resolvedParameters.editPolicy (present-but-
+  // malformed fails at dispatch — never a silently weaker policy).
+  editPolicy?: EditPolicy;
   // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   inputArtifactRefs?: string[];
@@ -449,4 +446,30 @@ export interface AuthoritativeDefinition {
   path: string;
   sha256: string;
   content: string;
+}
+
+// ============================================================================
+// E27r (merge review) — EditPolicy: the task's authorized edit set.
+//
+// Positively authorizes EXACT repository-relative paths for bounded source
+// edits (SLE-PATCH) and file writes, and requires the edits the task exists
+// to make. Everything outside `allowedEditPaths` is forbidden — the previous
+// negative-deny-prefix + weak `requiresSourceEdit` formulation let BUILD
+// satisfy a "source change" requirement with an unrelated new file, or patch
+// files the task never authorized.
+//
+// Threading: declared on the dispatching WorkItem's workflowParameters under
+// the `editPolicy` key → frozen into WorkflowRun.resolvedParameters at
+// dispatch → resolved once per step by WorkflowEngine.makeStepRunContext →
+// enforced by AgentRunner at the publication boundary. It is task
+// configuration, never builtin-workflow logic.
+// ============================================================================
+export interface EditPolicy {
+  // Exact repository-relative paths this task may modify. A staged patch or
+  // a file write to any other path fails the step closed.
+  allowedEditPaths: string[];
+  // Exact paths that MUST each receive an applied SLE-PATCH for the step to
+  // complete. A docs-only changeset, an empty changeset, or a new adjacent
+  // file cannot substitute.
+  requiredEditPaths: string[];
 }

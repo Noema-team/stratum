@@ -277,7 +277,10 @@ ${SLE_PATCH_OPEN}path="apps/<service>/<file>.py" base="<sha256 of the current fi
 <unified diff: --- a/… +++ b/… @@ hunks with full context>
 ${SLE_PATCH_CLOSE}
   The diff applies only against the exact pinned content — any drift fails the step. Keep
-  hunks small and include enough context lines to locate them unambiguously.`
+   hunks small and include enough context lines to locate them unambiguously.
+ - For a large file, do NOT rely on an earlier full read: use the read_source_slice tool
+   to fetch the exact lines around your edit. Its sha256 field is the authoritative base
+   digest for the patch, and its content lines are the exact context your hunks must carry.`
       : ''
   }
 - Inside the artifact markers the content is opaque: any Markdown headings ('#', '##', '###',
