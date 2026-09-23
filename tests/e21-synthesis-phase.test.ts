@@ -264,8 +264,11 @@ test('E21: an ungated step is byte-for-byte legacy — same tools every turn, no
   }
 });
 
-test('E21: only full-build scoping/design/plan/test declare the gate, frozen at 18 — define-work and BUILD untouched', () => {
-  const gated = ['scoping.produce', 'design', 'plan', 'test'];
+test('E21+E24: full-build scoping.produce/design/plan/test/build declare the gate, frozen at 18 — define-work untouched', () => {
+  // E24 — BUILD joins the gated set: it runs the same AgentLoop with the
+  // same read tools, and its attempt-14 failure signature is the one the
+  // gate was qualified for. define-work remains frozen out (A9/A10 ruling).
+  const gated = ['scoping.produce', 'design', 'plan', 'test', 'build'];
   for (const step of FULL_BUILD.steps) {
     if (gated.includes(step.id)) {
       // E23 — the gate carries the preregistered synthesis read-result
