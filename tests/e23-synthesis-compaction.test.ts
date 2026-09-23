@@ -141,7 +141,7 @@ function makeLoop(
     iteration: 1,
     nodeId: builder ? 'build' : 'scoping.produce',
     runArtifacts: new RunArtifactManager({ projectRoot: root }),
-    listTrackedFiles: async () => ['src/big.ts', 'src/mid.ts', 'src/small.ts', 'src'],
+    listTrackedFiles: async () => ['src/big.ts', 'src/mid.ts', 'src/small.ts', 'src/heavy.ts', 'src'],
     ...(builder ? {} : { declaredArtifactId: 'cycle_charter', declaredOutputPath: CHARTER.path, expectedArtifacts: 1 }),
     ...(gate ? { synthesisGate: gate } : {}),
   });
