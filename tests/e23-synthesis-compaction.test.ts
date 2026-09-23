@@ -123,20 +123,26 @@ function makeRoot(files: Record<string, string>): { root: string; cleanup: () =>
 
 const CHARTER = { path: 'docs/cycle-charter.md', content: '## Scope\ns\n\n## Purpose\np' };
 
-function makeLoop(root: string, provider: unknown, gate?: { thresholdTurns: number; readResultBudgetBytes?: number }): AgentLoop {
+function makeLoop(
+  root: string,
+  provider: unknown,
+  gate?: { thresholdTurns: number; readResultBudgetBytes?: number },
+  role: 'facilitator' | 'builder' = 'facilitator',
+): AgentLoop {
+  // E24 — builder flavor mirrors the real build step: builder role, NO
+  // declared single artifact, open artifact set.
+  const builder = role === 'builder';
   return new AgentLoop(provider as never, {
     model: 'e23-model',
     max_tokens: 512,
     projectRoot: root,
-    role: 'facilitator',
+    role,
     workflowRunId: 'e23-run',
     iteration: 1,
-    nodeId: 'scoping.produce',
+    nodeId: builder ? 'build' : 'scoping.produce',
     runArtifacts: new RunArtifactManager({ projectRoot: root }),
-    listTrackedFiles: async () => ['src/big.ts', 'src/mid.ts', 'src/small.ts', 'src'],
-    declaredArtifactId: 'cycle_charter',
-    declaredOutputPath: CHARTER.path,
-    expectedArtifacts: 1,
+    listTrackedFiles: async () => ['src/big.ts', 'src/mid.ts', 'src/small.ts', 'src/heavy.ts', 'src'],
+    ...(builder ? {} : { declaredArtifactId: 'cycle_charter', declaredOutputPath: CHARTER.path, expectedArtifacts: 1 }),
     ...(gate ? { synthesisGate: gate } : {}),
   });
 }
@@ -369,10 +375,10 @@ test('E23.8: without a gate the loop is byte-for-byte legacy — full payloads e
 
 // ─── 9+10. E21/E22 constants and scope pinned ────────────────────────────────
 
-test('E23.9: E21 threshold 18; the preregistered 49152-byte budget rides exactly the four full-build artifact steps', () => {
+test('E23.9: E21 threshold 18; the preregistered 49152-byte budget rides the full-build artifact steps — BUILD included since E24', () => {
   assert.equal(SYNTHESIS_GATE_TURNS, 18);
   assert.equal(SYNTHESIS_READ_RESULT_BUDGET_BYTES, 49152);
-  const gated = ['scoping.produce', 'design', 'plan', 'test'];
+  const gated = ['scoping.produce', 'design', 'plan', 'test', 'build'];
   for (const step of FULL_BUILD.steps) {
     if (gated.includes(step.id)) {
       assert.deepEqual(step.synthesisGate, { thresholdTurns: 18, readResultBudgetBytes: 49152 }, `step ${step.id}`);
@@ -389,4 +395,105 @@ test('E23.10: E22 marker framing unchanged — still taught and still the parsin
   });
   assert.ok(teaching.includes('<<<SLE-ARTIFACT path="docs/cycle-charter.md">>>'));
   assert.ok(teaching.includes('the content is opaque'));
+});
+
+// ─── E24: BUILD joins the gated set ──────────────────────────────────────────
+// Operator preregistration: BUILD runs the same AgentLoop with the same read
+// tools; code materializes from the final artifact response; its attempt-14
+// failure signature is the one E21/E23 were qualified for. Pins: no single
+// outputArtifact assumption; multi-artifact synthesis through the ordinary
+// textual channel; compaction never touches code/output artifacts.
+
+class ScriptedBuilder {
+  calls: RecordedCall[] = [];
+  private turn = 0;
+  constructor(
+    private readonly reads: string[],
+    private readonly sections: Array<{ path: string; content: string }>,
+  ) {}
+  async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
+    this.turn++;
+    const payloadByToolUseId = new Map<string, string>();
+    for (const m of params.messages) {
+      if (m.role === 'user' && Array.isArray(m.content)) {
+        for (const b of m.content) {
+          if (b.type === 'tool_result') payloadByToolUseId.set(b.tool_use_id, b.content);
+        }
+      }
+    }
+    this.calls.push({
+      turn: this.turn,
+      toolNames: params.tools.map((t) => t.name),
+      system: params.system,
+      messages: structuredClone(params.messages),
+      payloadByToolUseId,
+    });
+    if (this.turn <= this.reads.length) {
+      const spec = this.reads[this.turn - 1];
+      const [kind, p] = [spec.slice(0, spec.indexOf(':')), spec.slice(spec.indexOf(':') + 1)];
+      const tu: ToolUseBlock = {
+        id: `tu-${this.turn}`,
+        name: kind === 'read' ? 'read_file' : 'list_directory',
+        input: { path: p },
+      };
+      return { stop_reason: 'tool_use', text: '', tool_uses: [tu], tokens_used: 10 };
+    }
+    const body = this.sections
+      .map((s) => `<<<SLE-ARTIFACT path="${s.path}">>>\n${s.content}\n<<<END-SLE-ARTIFACT>>>`)
+      .join('\n');
+    return {
+      stop_reason: 'end_turn',
+      text: `<<<SLE-OUTPUT>>>\n${body}\n<<<END-SLE-OUTPUT>>>`,
+      tool_uses: [],
+      tokens_used: 50,
+    };
+  }
+}
+
+test('E24.1: BUILD carries the frozen gate but still declares NO outputArtifact — no single-artifact assumption', () => {
+  const build = FULL_BUILD.steps.find((s) => s.id === 'build') as
+    | { id: string; kind: string; agentRole: string; templateId: string; outputArtifact?: unknown; synthesisGate?: unknown }
+    | undefined;
+  assert.ok(build, 'build step exists');
+  assert.deepEqual(build.synthesisGate, { thresholdTurns: 18, readResultBudgetBytes: 49152 });
+  assert.equal(build.outputArtifact, undefined, 'BUILD must keep its open artifact set');
+  assert.equal(build.kind, 'produce');
+  assert.equal(build.agentRole, 'builder');
+  assert.equal(build.templateId, 'build');
+});
+
+test('E24.2: gated BUILD-style run — read tools vanish at synthesis, multiple code sections materialize byte-exact, compaction runs but never touches code', async () => {
+  const CODE_A = 'def reconcile(event):\n    return {"error": event.get("error_message"), "stage": "consume"}';
+  const CODE_B = 'RETRYABLE_CODES = {" throttlingexception", " timeoutexception"}';
+  const provider = new ScriptedBuilder(['read:src/heavy.ts', 'list:src'], [
+    { path: 'apps/ai-server/rag-worker-service/reconcile.py', content: CODE_A },
+    { path: 'apps/ai-server/rag-worker-service/codes.py', content: CODE_B },
+  ]);
+  const { root, cleanup } = makeRoot({ 'src/heavy.ts': 'H'.repeat(20000) });
+  try {
+    const loop = makeLoop(root, provider, { thresholdTurns: 2, readResultBudgetBytes: 8192 }, 'builder');
+    const res = await loop.run('build the fix for issue #108');
+    assert.ok(res.success, 'gated build run ships through the ordinary textual channel');
+
+    // E21 at BUILD: tools withdrawn at the synthesis turn…
+    const shipTurn = provider.calls[provider.calls.length - 1];
+    assert.deepEqual(shipTurn.toolNames, [], 'synthesis turn offers no read tools');
+
+    // …and the multi-section artifact materializes byte-exact (E22 framing).
+    const sections = (res as unknown as { parsedOutput: { sections: Array<{ path: string; content: string }> } }).parsedOutput.sections;
+    assert.equal(sections.length, 2, 'multiple code sections materialize');
+    assert.equal(sections[0].path, 'apps/ai-server/rag-worker-service/reconcile.py');
+    assert.equal(sections[0].content, CODE_A, 'code section A byte-exact — never compacted');
+    assert.equal(sections[1].path, 'apps/ai-server/rag-worker-service/codes.py');
+    assert.equal(sections[1].content, CODE_B, 'code section B byte-exact — never compacted');
+
+    // E23 at BUILD: compaction ran, only the old read payload was elided,
+    // and the evidence record carries no code/output payload bytes.
+    const rec = (res as unknown as { context_compaction?: SynthesisCompactionRecord }).context_compaction;
+    assert.ok(rec, 'compaction evidence present on the build path');
+    assert.deepEqual(rec!.elided.map((e) => e.path), ['src/heavy.ts']);
+    assert.ok(!JSON.stringify(rec).includes('reconcile'), 'record carries no code payload');
+  } finally {
+    cleanup();
+  }
 });

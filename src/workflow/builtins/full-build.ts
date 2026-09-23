@@ -146,6 +146,14 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'BUILD',
       agentRole: 'builder',
       templateId: 'build',
+      // E24 — BUILD gets the already-qualified synthesis gate (E21 threshold
+      // + E23 read-result compaction). It runs the same AgentLoop with the
+      // same repository-read tools as every other produce step, and its
+      // failure signature (exploration without transition to production) is
+      // the one the gate was qualified for. It still declares NO
+      // outputArtifact: multiple code sections materialize from the final
+      // artifact response.
+      synthesisGate: synthesisGate(),
     },
 
     // ── EXEC ──────────────────────────────────────────────────────────────
