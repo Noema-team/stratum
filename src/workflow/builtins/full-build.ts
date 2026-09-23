@@ -89,6 +89,10 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'DESIGN',
       agentRole: 'designer',
       templateId: 'design',
+      // E26 — the producer contract: PLAN and BUILD consume the published
+      // requirements and architecture from these paths (artifact-registry
+      // document references already point here).
+      authorizedOutputs: ['docs/requirements.md', 'docs/architecture.md'],
       synthesisGate: synthesisGate(),
     },
 
@@ -111,6 +115,8 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'PLAN',
       agentRole: 'planner',
       templateId: 'plan',
+      // E26 — TEST and BUILD receive the published plans from these paths.
+      authorizedOutputs: ['docs/plan.md', 'docs/test-plan.md'],
       synthesisGate: synthesisGate(),
     },
 
@@ -121,6 +127,12 @@ export const FULL_BUILD: WorkflowDefinition = {
       label: 'TEST',
       agentRole: 'tester',
       templateId: 'test',
+      // E26 — the executable-test destination, resolved explicitly: the
+      // intended regression tests must exist in the repository tree where
+      // EXEC/validation run them. The step contract authorizes exactly this
+      // directory (at least one file) without globally widening the tester
+      // role ceiling. Writing another plan document does NOT satisfy this.
+      authorizedOutputs: ['apps/ai-server/tests/'],
       synthesisGate: synthesisGate(),
     },
 

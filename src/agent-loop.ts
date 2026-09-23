@@ -241,6 +241,9 @@ export interface AgentLoopOptions {
   // generic placeholder when the step has a declared output artifact).
   declaredArtifactId?: string;
   declaredOutputPath?: string;
+  // E26 — the step's authorized output set for open-set produce steps
+  // (exact paths and/or '/'-suffixed prefixes); rendered into teaching.
+  authorizedOutputs?: string[];
   // D.3d.5 commit 1 (closure) — the step's declared artifact cardinality.
   // Absent = unconstrained: the transport must not impose a one-artifact law
   // that the step's own contract does not state.
@@ -427,6 +430,8 @@ export class AgentLoop {
       declaredArtifactId: opts.declaredArtifactId,
       declaredOutputPath: opts.declaredOutputPath,
       expectedArtifacts: opts.expectedArtifacts,
+      // E26 — the step's authorized output set (teaching input).
+      ...(opts.authorizedOutputs?.length ? { authorizedOutputs: opts.authorizedOutputs } : {}),
       // D.34 C1 — runner-generated projections; absent on the legacy path.
       ...(opts.resultSchemaText !== undefined ? { resultSchemaText: opts.resultSchemaText } : {}),
       ...(opts.resultSchemaJson !== undefined ? { resultSchemaJson: opts.resultSchemaJson } : {}),

@@ -211,6 +211,9 @@ function parseBuilderSections(body: string): Array<{ path: string; content: stri
 // with a declared path never reach this fallback.
 function teachingExamplePath(ctx: TransportContext): string {
   if (ctx.declaredOutputPath) return ctx.declaredOutputPath;
+  // E26 — a contracted step's example is one of ITS authorized paths.
+  const firstExact = ctx.authorizedOutputs?.find((e) => !e.endsWith('/'));
+  if (firstExact) return firstExact;
   return ctx.role === 'builder' ? 'src/<module>.<ext>' : '.sle/work/<workItemId>/<artifact>.md';
 }
 
@@ -219,16 +222,29 @@ function multiTurnFormatInstruction(ctx: TransportContext): string {
   // transport-wide law: impose it only when the step actually declares one
   // expected artifact; teach generically otherwise.
   const declared = ctx.declaredOutputPath !== undefined;
+  // E26 — an explicit multi-path producer contract (exact mandatory paths
+  // and/or '/'-prefixed directories) outranks the generic undeclared copy.
+  const authorized = ctx.authorizedOutputs ?? [];
   const singleArtifact = ctx.expectedArtifacts === 1 || (ctx.expectedArtifacts === undefined && declared);
   const examplePath = teachingExamplePath(ctx);
   const blockRule = declared
     ? singleArtifact
       ? `a single artifact block whose path is the declared output artifact path named in the task:`
       : `one artifact block per declared output artifact, each with its own declared path:`
-    : // E25 — an open artifact set (e.g. a build step's multi-file changeset)
-      // is taught as one block per actual file, never as a single prose
-      // implementation note at a path the role cannot write.
-      `one artifact block per file you created or modified in this step, each with its repository-relative path:`;
+    : authorized.length > 0
+      ? // E26 — teach the exact contract: which paths this step publishes.
+        `artifact blocks covering EXACTLY this authorized output set:\n${authorized
+          .map((e) =>
+            e.endsWith('/')
+              ? `- at least one new file under ${e} (one block per file, repository-relative path)`
+              : `- ${e}`,
+          )
+          .join('\n')}`
+      : // E25 — an open artifact set (e.g. a build step's multi-file changeset)
+        // is taught as one block per actual file, never as a single prose
+        // implementation note at a path the role cannot write.
+        `one artifact block per file you created or modified in this step, each with its repository-relative path:`;
+  const authorizedList = authorized.filter((e) => !e.endsWith('/'));
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 End your final message with the artifact wrapped in exactly these literal delimiters, as ${
     blockRule
@@ -242,7 +258,14 @@ ${SLE_CLOSE}
 
 - Use the declared output artifact path exactly as named in the task — never a path you
   invented.${singleArtifact ? '\n- Never emit more than one artifact block.' : ''}${
-    !declared
+    authorizedList.length
+      ? `
+- Emit exactly one artifact block for EACH of these paths, in full:
+${authorizedList.map((p) => `  ${p}`).join('\n')}
+  A missing mandatory output fails the step; never merge several documents into one block.`
+      : ''
+  }${
+    !declared && authorized.length === 0
       ? `
 - Each artifact block must contain the COMPLETE final contents of one real source or test
   file (full file, ready to write to disk) — never a description, plan, summary, or diff
@@ -458,7 +481,7 @@ export class TextualSleOutputTransport implements ResultTransport {
     let sections: Array<{ path: string; content: string }>;
     let parseWarnings: string[];
     try {
-      const parsed = parseAgentOutputV3(raw, ctx.role);
+      const parsed = parseAgentOutputV3(raw, ctx.role, ctx.authorizedOutputs);
       sections = parsed.sections;
       parseWarnings = parsed.warnings;
     } catch (err) {
