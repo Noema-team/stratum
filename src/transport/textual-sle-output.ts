@@ -204,17 +204,34 @@ function parseBuilderSections(body: string): Array<{ path: string; content: stri
 
 // ─── Teaching generation (metadata-driven — no workflow-specific examples) ────
 
+// E25 — the teaching example must be WRITABLE by the step's role. 'builder'
+// is forbidden '.sle/' and 'docs/' (BUILDER_DENY_PREFIXES in agent-runner),
+// so the generic '.sle/work/…' fallback would teach the builder an example
+// the consumer is guaranteed to drop — the exact attempt-16 failure. Steps
+// with a declared path never reach this fallback.
+function teachingExamplePath(ctx: TransportContext): string {
+  if (ctx.declaredOutputPath) return ctx.declaredOutputPath;
+  return ctx.role === 'builder' ? 'src/<module>.<ext>' : '.sle/work/<workItemId>/<artifact>.md';
+}
+
 function multiTurnFormatInstruction(ctx: TransportContext): string {
   // The single-artifact restriction is the STEP's output contract, not a
   // transport-wide law: impose it only when the step actually declares one
   // expected artifact; teach generically otherwise.
-  const singleArtifact = ctx.expectedArtifacts === 1 || (ctx.expectedArtifacts === undefined && ctx.declaredOutputPath !== undefined);
-  const examplePath = ctx.declaredOutputPath ?? '.sle/work/<workItemId>/<artifact>.md';
-  return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
-End your final message with the artifact wrapped in exactly these literal delimiters, as ${
-    singleArtifact
+  const declared = ctx.declaredOutputPath !== undefined;
+  const singleArtifact = ctx.expectedArtifacts === 1 || (ctx.expectedArtifacts === undefined && declared);
+  const examplePath = teachingExamplePath(ctx);
+  const blockRule = declared
+    ? singleArtifact
       ? `a single artifact block whose path is the declared output artifact path named in the task:`
       : `one artifact block per declared output artifact, each with its own declared path:`
+    : // E25 — an open artifact set (e.g. a build step's multi-file changeset)
+      // is taught as one block per actual file, never as a single prose
+      // implementation note at a path the role cannot write.
+      `one artifact block per file you created or modified in this step, each with its repository-relative path:`;
+  return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
+End your final message with the artifact wrapped in exactly these literal delimiters, as ${
+    blockRule
   }
 
 ${SLE_OPEN}
@@ -224,7 +241,14 @@ ${SLE_ARTIFACT_CLOSE}
 ${SLE_CLOSE}
 
 - Use the declared output artifact path exactly as named in the task — never a path you
-  invented.${singleArtifact ? '\n- Never emit more than one artifact block.' : ''}
+  invented.${singleArtifact ? '\n- Never emit more than one artifact block.' : ''}${
+    !declared
+      ? `
+- Each artifact block must contain the COMPLETE final contents of one real source or test
+  file (full file, ready to write to disk) — never a description, plan, summary, or diff
+  of intended changes, and never a path under '.sle/' or 'docs/'.`
+      : ''
+  }
 - Inside the artifact markers the content is opaque: any Markdown headings ('#', '##', '###',
   numbered subheadings like '### 4.1 …') are plain content. The ONLY structural lines are the
   exact '${SLE_ARTIFACT_OPEN}path="...">>>' and '${SLE_ARTIFACT_CLOSE}' marker lines.
@@ -361,7 +385,7 @@ function singleTurnFormatInstruction(ctx: TransportContext): string {
   const roleLine = `role: ${ctx.role}`;
   const nodeLine = `node: ${ctx.nodeId ?? '<this step\'s id, shown in Current State above>'}`;
   const artifactId = ctx.declaredArtifactId ?? 'artifact';
-  const artifactPath = ctx.declaredOutputPath ?? '.sle/work/<workItemId>/<artifact>.md';
+  const artifactPath = teachingExamplePath(ctx);
   const verdictBlock = ctx.requiresReviewVerdict
     ? `verdict: pass
 -->
@@ -432,8 +456,11 @@ export class TextualSleOutputTransport implements ResultTransport {
       );
     }
     let sections: Array<{ path: string; content: string }>;
+    let parseWarnings: string[];
     try {
-      sections = parseAgentOutputV3(raw, ctx.role).sections;
+      const parsed = parseAgentOutputV3(raw, ctx.role);
+      sections = parsed.sections;
+      parseWarnings = parsed.warnings;
     } catch (err) {
       if (err instanceof ParseError) {
         throw new TransportParseError(err.message, raw, err.message, 'malformed');
@@ -444,7 +471,14 @@ export class TextualSleOutputTransport implements ResultTransport {
     // path: it yields the materialized kind. A proposal-kind result can
     // only come from a negotiated semantic channel (the schema-injected
     // paths above, or C5's submit_result / C6's completeStructured).
-    return { kind: 'materialized', artifacts: sections };
+    // E25 — warnings ride along when present: dropped sections must be
+    // visible to the consumer so a zero-section result can fail closed
+    // with a reason. Absent when empty (legacy wire shape unchanged).
+    return {
+      kind: 'materialized',
+      artifacts: sections,
+      ...(parseWarnings.length > 0 ? { warnings: parseWarnings } : {}),
+    };
   }
 
   extractSingleTurn(raw: string, ctx: TransportContext): StepResult {

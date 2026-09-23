@@ -59,6 +59,11 @@ export type StepResult =
       kind: 'materialized';
       artifacts: StepResultArtifact[];
       review?: StepReviewProposal;
+      // E25 — parse diagnostics (e.g. role-forbidden section paths that were
+      // dropped). The consumer must be able to distinguish "valid envelope,
+      // zero usable sections" from "nothing parsed"; a silent empty set
+      // became a false-positive step success in the attempt-16 pilot run.
+      warnings?: string[];
     }
   | {
       kind: 'proposal';

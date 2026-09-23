@@ -851,9 +851,13 @@ export class AgentLoop {
       }
       return {
         success: true,
-        // Backward-compatible shape for AgentRunner: artifacts + (never
-        // present on this path) warnings.
-        parsedOutput: { sections: stepResult.artifacts, warnings: [] },
+        // Backward-compatible shape for AgentRunner: artifacts + warnings.
+        // E25 — warnings are the parse diagnostics (dropped sections);
+        // the runner fails closed when zero usable sections survive.
+        parsedOutput: {
+          sections: stepResult.artifacts,
+          warnings: stepResult.kind === 'materialized' ? (stepResult.warnings ?? []) : [],
+        },
         turns_taken: turns,
         tokens_used: totalTokens,
         format_repairs: formatRepairs,
