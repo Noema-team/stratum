@@ -31,7 +31,9 @@ const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex
 
 // attempt-18 shape: the worker source is far larger than the synthesis
 // read-result budget (49,152 bytes) — reproduced with a deterministic
-// fixture of exactly the same byte size.
+// fixture comfortably above that budget (chunked construction can overshoot
+// the nominal size slightly; only "well above the budget" matters to the
+// mechanism under test, and it is asserted explicitly below).
 const WORKER_PATH = 'apps/ai-server/rag-worker-service/main.py';
 function buildWorkerFixture(): string {
   const lines: string[] = [];
@@ -46,6 +48,10 @@ function buildWorkerFixture(): string {
   return lines.join('');
 }
 const WORKER = buildWorkerFixture();
+assert.ok(
+  Buffer.byteLength(WORKER, 'utf-8') > 95897,
+  'fixture must sit above the attempt-18 source size (and therefore far above the 49,152-byte budget)',
+);
 const WORKER_LINES = WORKER.split('\n');
 // an edit region deep in the file — exactly where E23's elision bites
 const EDIT_LINE = 1200; // 1-based

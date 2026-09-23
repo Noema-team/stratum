@@ -36,6 +36,32 @@ import { AgentRunner, type AgentRunnerConfig } from '../src/agent-runner.js';
 import type { RunArtifactManager } from '../src/run-artifacts.js';
 import type { ArtifactRepository, ArtifactRecord } from '../src/storage/repositories.js';
 import { ContextManager, DEFAULT_CONFIG } from '../src/context-manager.js';
+import { WorkflowEngine, registerWorkflow } from '../src/workflow/index.js';
+import type { WorkflowEngineDeps } from '../src/workflow/index.js';
+
+// Engine harness for the step-scoping tests: captures every StepRunContext
+// handed to the stub step runner, keyed by step id (the same stub shape as
+// tests/workflow-engine.test.ts).
+function scopeCapturingDeps(captured: Map<string, { editPolicy?: unknown }>): WorkflowEngineDeps {
+  return {
+    stepRunner: {
+      run: async (step: { id: string }, stepCtx: { editPolicy?: unknown }) => {
+        captured.set(step.id, stepCtx);
+        return { success: true, artifacts_written: [], tokens_used: 0, duration_ms: 1 };
+      },
+    } as unknown as WorkflowEngineDeps['stepRunner'],
+    mapManager: {
+      read: async () => ({ cycle: { iteration: 1, max_iterations: 3 } }),
+      update: async () => {},
+    } as unknown as WorkflowEngineDeps['mapManager'],
+    runArtifacts: {
+      updateNodeStatus: async () => {},
+      createRunDir: async () => {},
+      createManifest: async () => {},
+    } as unknown as WorkflowEngineDeps['runArtifacts'],
+    projectRoot: '/tmp',
+  };
+}
 
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
@@ -445,6 +471,133 @@ test('E27.R3: a legacy-format provenance row alone does NOT protect — the rest
     // the overwrite SUCCEEDS without E27 ownership — the gap is real
     assert.equal(result.success, true, result.error);
     assert.equal(readFileSync(join(root, testPath), 'utf-8'), TEST_SUITE_NARROWER.trimEnd());
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── E27r round 2 — step-scoped policy + current-run ownership ───────────────
+
+test('E27.R4: the edit policy binds ONLY its declared steps — upstream producers unaffected, build receives it', async () => {
+  const captured = new Map<string, { editPolicy?: unknown }>();
+  registerWorkflow({
+    id: 'e27r-scope-wf', label: 'E27R scope',
+    steps: (['design', 'plan', 'test', 'build'] as const).map((id) => ({ id, kind: 'produce' as const })),
+  });
+  const engine = new WorkflowEngine(scopeCapturingDeps(captured), { onCheckpoint: async () => 'approve' });
+  const policy = { appliesToSteps: ['build'], allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] };
+  await engine.run('e27r-scope-wf', 'e27r-run', 'scope probe', undefined, 'wi-e27r', undefined, { editPolicy: policy });
+  assert.equal(captured.get('design')!.editPolicy, undefined, 'DESIGN must be unaffected');
+  assert.equal(captured.get('plan')!.editPolicy, undefined, 'PLAN must be unaffected');
+  assert.equal(captured.get('test')!.editPolicy, undefined, 'TEST must be unaffected');
+  assert.deepEqual(captured.get('build')!.editPolicy, policy, 'BUILD receives the exact task policy');
+});
+
+test('E27.R4b: malformed edit policies fail at dispatch — never a silently weaker policy', async () => {
+  const runWith = async (params: unknown): Promise<void> => {
+    registerWorkflow({
+      id: 'e27r-malformed-wf', label: 'E27R malformed',
+      steps: [{ id: 'build', kind: 'produce' }],
+    });
+    const engine = new WorkflowEngine(scopeCapturingDeps(new Map()), { onCheckpoint: async () => 'approve' });
+    await engine.run('e27r-malformed-wf', 'e27r-run', 'g', undefined, undefined, undefined, params as Record<string, unknown>);
+  };
+  // null is malformed; only undefined means genuinely absent
+  await assert.rejects(() => runWith({ editPolicy: null }), /Invalid workflowParameters\.editPolicy/);
+  await assert.rejects(() => runWith({ editPolicy: 'worker-only' }), /Invalid workflowParameters\.editPolicy/);
+  // missing / empty appliesToSteps
+  await assert.rejects(
+    () => runWith({ editPolicy: { allowedEditPaths: [WORKER_PATH], requiredEditPaths: [WORKER_PATH] } }),
+    /appliesToSteps/,
+  );
+  await assert.rejects(
+    () => runWith({ editPolicy: { appliesToSteps: [], allowedEditPaths: [WORKER_PATH], requiredEditPaths: [] } }),
+    /appliesToSteps/,
+  );
+  // empty allowed set
+  await assert.rejects(
+    () => runWith({ editPolicy: { appliesToSteps: ['build'], allowedEditPaths: [], requiredEditPaths: [] } }),
+    /allowedEditPaths/,
+  );
+  // required must be a subset of allowed
+  await assert.rejects(
+    () => runWith({ editPolicy: { appliesToSteps: ['build'], allowedEditPaths: [WORKER_PATH], requiredEditPaths: ['other.py'] } }),
+    /subset/,
+  );
+  // unsafe and duplicate paths
+  await assert.rejects(
+    () => runWith({ editPolicy: { appliesToSteps: ['build'], allowedEditPaths: ['../escape.py'], requiredEditPaths: [] } }),
+    /unsafe/,
+  );
+  await assert.rejects(
+    () => runWith({ editPolicy: { appliesToSteps: ['build'], allowedEditPaths: [WORKER_PATH, WORKER_PATH], requiredEditPaths: [] } }),
+    /duplicate/,
+  );
+  // genuinely absent → no policy anywhere
+  const captured = new Map<string, { editPolicy?: unknown }>();
+  registerWorkflow({
+    id: 'e27r-absent-wf', label: 'E27R absent',
+    steps: [{ id: 'build', kind: 'produce' }],
+  });
+  await new WorkflowEngine(scopeCapturingDeps(captured), { onCheckpoint: async () => 'approve' })
+    .run('e27r-absent-wf', 'e27r-run', 'g', undefined, undefined, undefined, {});
+  assert.equal(captured.get('build')!.editPolicy, undefined, 'absent policy stays absent');
+});
+
+test('E27.R5: restored ownership protects in the CURRENT run — attempt-18 rows are a different provenance scope', async () => {
+  const { root, cleanup } = makeRoot();
+  const repository = new RecordingArtifactRepository();
+  const testPath = 'apps/ai-server/tests/integration/test_seam.py';
+  const originalHash = sha256(TEST_SUITE_ORIGINAL.trimEnd());
+  // Attempt 18's historical scope: legacy-format TEST row + BUILD's later
+  // replacement row — the two-hashes-for-one-path situation from the review.
+  // These rows belong to a DIFFERENT run and must never protect attempt 19
+  // (nor be mutated by the restore op).
+  repository.save({ id: 'a18-legacy', workflowRunId: 'a18-run', type: 'produced-file', ref: `produced-file:${testPath}`, path: testPath, hash: originalHash, createdAt: '2026-09-23T12:51:34Z' });
+  repository.save({ id: 'a18-build', workflowRunId: 'a18-run', type: 'produced-file', ref: `produced-file:build:${testPath}`, path: testPath, hash: sha256(TEST_SUITE_NARROWER.trimEnd()), createdAt: '2026-09-23T13:02:41Z' });
+  // Attempt 19's CURRENT run: the restore op seeds the ORIGINAL TEST bytes
+  // with test ownership HERE. A historical row alone would protect nothing.
+  repository.save({ id: 'restore-row', workflowRunId: 'a19-run', type: 'produced-file', ref: `produced-file:test:${testPath}`, path: testPath, hash: originalHash, createdAt: '2026-09-23T14:00:00Z' });
+  mkdirSync(join(root, 'apps/ai-server/tests/integration'), { recursive: true });
+  writeFileSync(join(root, testPath), TEST_SUITE_ORIGINAL.trimEnd());
+  const reply = envelope([{ path: testPath, content: TEST_SUITE_NARROWER }]);
+  try {
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' })
+      .run('builder', ctx(root, { stepId: 'build', runId: 'a19-run' }));
+    assert.equal(result.success, false);
+    assert.match(result.error!, /Protected artifact conflict/);
+    assert.match(result.error!, /published by step 'test'/);
+    // protected BEFORE any write: the restored original bytes are untouched
+    assert.equal(readFileSync(join(root, testPath), 'utf-8'), TEST_SUITE_ORIGINAL.trimEnd());
+    // attempt 18's historical rows remain untouched evidence (2 rows, incl.
+    // BUILD's replacement — tolerated, never mutated)
+    assert.equal(repository.saved.filter((r) => r.workflowRunId === 'a18-run').length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test('E27.R6: ownership resolves to the LATEST row per path even when created_at ties', async () => {
+  const { root, cleanup } = makeRoot();
+  const repository = new RecordingArtifactRepository();
+  const testPath = 'apps/ai-server/tests/integration/test_seam.py';
+  // TEST publishes v1, then republishes v2 within the same millisecond:
+  // the protected hash must be the later-inserted v2, never the stale v1.
+  const v1 = TEST_SUITE_ORIGINAL.trimEnd();
+  const v2 = v1 + '\n# iteration-2 pin\n';
+  const tie = '2026-09-23T12:51:34.999Z';
+  repository.save({ id: 'r6-v1', workflowRunId: 'e27-run', type: 'produced-file', ref: `produced-file:test:${testPath}`, path: testPath, hash: sha256(v1), createdAt: tie });
+  repository.save({ id: 'r6-v2', workflowRunId: 'e27-run', type: 'produced-file', ref: `produced-file:test:${testPath}`, path: testPath, hash: sha256(v2), createdAt: tie });
+  mkdirSync(join(root, 'apps/ai-server/tests/integration'), { recursive: true });
+  writeFileSync(join(root, testPath), v2);
+  const reply = envelope([{ path: testPath, content: v1 }]); // BUILD ships the STALE v1
+  try {
+    const result = await makeRunner(root, reply, { repository, stepId: 'build' }).run('builder', ctx(root, { stepId: 'build' }));
+    assert.equal(result.success, false);
+    assert.match(result.error!, /Protected artifact conflict/);
+    // the conflict is against v2 (the latest), not v1
+    assert.match(result.error!, new RegExp(sha256(v2).slice(0, 12)));
+    assert.equal(readFileSync(join(root, testPath), 'utf-8'), v2);
   } finally {
     cleanup();
   }

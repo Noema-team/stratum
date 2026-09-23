@@ -458,18 +458,29 @@ export interface AuthoritativeDefinition {
 // satisfy a "source change" requirement with an unrelated new file, or patch
 // files the task never authorized.
 //
+// STEP-SCOPED (second merge review): the policy applies ONLY to the steps
+// named in `appliesToSteps` (e.g. exactly ['build']). Upstream artifact
+// producers (design/plan/test) are unaffected — they must keep publishing
+// docs and tests regardless of what the implementation step may edit. Later
+// steps (e.g. debug) can be added explicitly when a task decides they share
+// the same authority.
+//
 // Threading: declared on the dispatching WorkItem's workflowParameters under
 // the `editPolicy` key → frozen into WorkflowRun.resolvedParameters at
-// dispatch → resolved once per step by WorkflowEngine.makeStepRunContext →
-// enforced by AgentRunner at the publication boundary. It is task
+// dispatch → resolved once per step by WorkflowEngine.makeStepRunContext
+// (fail-closed validation; steps not named in appliesToSteps receive NO
+// policy) → enforced by AgentRunner at the publication boundary. It is task
 // configuration, never builtin-workflow logic.
 // ============================================================================
 export interface EditPolicy {
-  // Exact repository-relative paths this task may modify. A staged patch or
-  // a file write to any other path fails the step closed.
+  // Which step ids this policy binds. Every other step of the run is
+  // unaffected (ctx.editPolicy stays undefined for them).
+  appliesToSteps: string[];
+  // Exact repository-relative paths the named steps may modify. A staged
+  // patch or a file write to any other path fails the step closed.
   allowedEditPaths: string[];
-  // Exact paths that MUST each receive an applied SLE-PATCH for the step to
-  // complete. A docs-only changeset, an empty changeset, or a new adjacent
-  // file cannot substitute.
+  // Exact paths that MUST each receive an applied SLE-PATCH for a named
+  // step to complete. A docs-only changeset, an empty changeset, or a new
+  // adjacent file cannot substitute. Must be a subset of allowedEditPaths.
   requiredEditPaths: string[];
 }

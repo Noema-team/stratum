@@ -1115,11 +1115,18 @@ export class AgentRunner {
     if (repo?.listByWorkflowRun) {
       for (const row of repo.listByWorkflowRun(ctx.workflowRunId)) {
         if (!row.ref?.startsWith('produced-file:')) continue;
-        const rest = row.ref.slice('produced-file:'.length);
-        const sep = rest.indexOf(':');
-        if (sep === -1 || !row.path || !row.hash) continue;
-        // created_at ordering: later rows overwrite earlier ones per path
-        protectedLatest.set(row.path, { stepId: rest.slice(0, sep), path: row.path, hash: row.hash });
+        if (!row.path || !row.hash) continue;
+        // The ref encodes produced-file:<stepId>:<path>, but row.path is the
+        // AUTHORITATIVE path (and either field may itself contain ':').
+        // Verify by exact suffix instead of splitting on the first colon,
+        // and skip malformed rows explicitly — a malformed row can never
+        // silently grant or deny ownership.
+        if (!row.ref.endsWith(`:${row.path}`)) continue;
+        const stepId = row.ref.slice('produced-file:'.length, row.ref.length - row.path.length - 1);
+        if (stepId === '') continue;
+        // rowid (insertion) ordering: later rows overwrite earlier ones per
+        // path — deterministic even when created_at timestamps tie.
+        protectedLatest.set(row.path, { stepId, path: row.path, hash: row.hash });
       }
     }
     const ownedByOther = (p: string): ProtectedRow | undefined => {
