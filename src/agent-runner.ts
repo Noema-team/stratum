@@ -10,6 +10,7 @@ import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
 import { toSafeRelativePath } from './path-safety.js';
 import { AgentLoop } from './agent-loop.js';
+import { applyUnifiedDiff, PatchApplyError } from './patch.js';
 import {
   type ResultTransport,
   type StepResult,
@@ -79,6 +80,12 @@ export interface AgentRunResult {
   // workflow refine). A result repair never consumes a workflow refinement
   // iteration; exhaustion fails the step closed before any write.
   result_repairs?: number;
+  // E27 — bounded source edits: one entry per applied SLE-PATCH, with the
+  // pinned base hash and the verified resulting hash.
+  patches_applied?: Array<{ path: string; base_hash: string; result_hash: string; diff_bytes: number }>;
+  // E27 — protected paths republished with byte-identical content: not
+  // rewritten, recorded here instead.
+  artifacts_unchanged?: string[];
 }
 
 // ─── Write-path validation (DDR-019) ─────────────────────────────────────────
@@ -418,7 +425,11 @@ export class AgentRunner {
 
     // E25 — warnings carry the parse diagnostics (dropped sections) so a
     // zero-usable-output step can fail closed with its reason.
-    let parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[] };
+    let parsed: {
+      sections: Array<{ path: string; content: string }>;
+      warnings?: string[];
+      patches?: Array<{ path: string; base: string; diff: string }>;
+    };
     let tokensUsed = 0;
     // D.3d.5 commit 1 — bounded format-repair attempts (multi-turn only).
     let formatRepairs: number | undefined;
@@ -1071,22 +1082,190 @@ export class AgentRunner {
     // unchanged tree. The parse warnings ARE the diagnostic. A plan or
     // prose file never counts as code: it was either a permitted section
     // (and would appear here) or a dropped one (and appears in warnings).
-    if (canonicalSections.length === 0) {
+    const hasPatches = Array.isArray(parsed.patches) && parsed.patches.length > 0;
+    if (canonicalSections.length === 0 && !hasPatches) {
       const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
       return fail(`Step produced no usable output sections${why}`);
     }
 
-    // 7. Write artifacts — canonical paths only.
-    const artifactsWritten: string[] = [];
-    for (const section of canonicalSections) {
-      const filePath = path.join(this.projectRoot, section.path);
-      await this.fs.mkdir(path.dirname(filePath), { recursive: true });
-      if (APPEND_ONLY_PATHS.has(section.path)) {
-        await this.fs.appendFile(filePath, section.content, 'utf-8');
-      } else {
-        await this.fs.writeFile(filePath, section.content, 'utf-8');
+    // 6e. E27 — inter-step ownership + bounded source-edit staging.
+    //
+    // OWNERSHIP: a `produced-file:<stepId>:<path>` provenance row from a
+    // DIFFERENT step of this run makes that path protected — a later step
+    // (e.g. BUILD) may not replace it with different content (attempt-18:
+    // BUILD overwrote TEST's independent regression suite). Byte-identical
+    // republication is allowed and is NOT rewritten. The same step may
+    // revise its own file across iterations (debug/refine loops).
+    //
+    // PATCHES: SLE-PATCH blocks are validated and staged IN MEMORY here —
+    // deny prefixes, ceiling/step authorization, ownership, base-hash pin,
+    // strict zero-fuzz apply. Nothing touches the disk until EVERY file in
+    // the changeset (sections + staged patches) has passed validation, so a
+    // rejected patch can never leave a partial publication behind. Disk
+    // errors mid-write are NOT transactional: they fail the step with the
+    // exact list of files already written.
+    const patches = 'patches' in parsed && Array.isArray(parsed.patches) ? parsed.patches : [];
+    const sha256Hex = (content: string): string => createHash('sha256').update(content).digest('hex');
+
+    interface ProtectedRow { stepId: string; path: string; hash: string }
+    const protectedLatest = new Map<string, ProtectedRow>();
+    const repo = this.artifactRepository as
+      | { listByWorkflowRun?: (id: string) => Array<{ ref?: string; path?: string; hash?: string }> }
+      | undefined;
+    if (repo?.listByWorkflowRun) {
+      for (const row of repo.listByWorkflowRun(ctx.workflowRunId)) {
+        if (!row.ref?.startsWith('produced-file:')) continue;
+        if (!row.path || !row.hash) continue;
+        // The ref encodes produced-file:<stepId>:<path>, but row.path is the
+        // AUTHORITATIVE path (and either field may itself contain ':').
+        // Verify by exact suffix instead of splitting on the first colon,
+        // and skip malformed rows explicitly — a malformed row can never
+        // silently grant or deny ownership.
+        if (!row.ref.endsWith(`:${row.path}`)) continue;
+        const stepId = row.ref.slice('produced-file:'.length, row.ref.length - row.path.length - 1);
+        if (stepId === '') continue;
+        // rowid (insertion) ordering: later rows overwrite earlier ones per
+        // path — deterministic even when created_at timestamps tie.
+        protectedLatest.set(row.path, { stepId, path: row.path, hash: row.hash });
       }
-      artifactsWritten.push(section.path);
+    }
+    const ownedByOther = (p: string): ProtectedRow | undefined => {
+      const row = protectedLatest.get(p);
+      return row && row.stepId !== ctx.stepId ? row : undefined;
+    };
+
+    // sections: conflict detection + unchanged classification. E27r — when
+    // the task declares an edit policy, file writes outside the authorized
+    // edit set fail closed: an unrelated new file cannot dodge the required
+    // edits, and the task's scope is positive, not deny-by-prefix.
+    const unchanged: string[] = [];
+    const writableSections: Array<{ path: string; content: string }> = [];
+    for (const section of canonicalSections) {
+      if (ctx.editPolicy && !ctx.editPolicy.allowedEditPaths.includes(section.path)) {
+        return fail(
+          `File '${section.path}' is outside this task's authorized edit set ` +
+          `[${ctx.editPolicy.allowedEditPaths.join(', ')}] — publishing it would exceed the task's scope.`,
+        );
+      }
+      const other = ownedByOther(section.path);
+      if (other) {
+        const incoming = sha256Hex(section.content);
+        if (incoming !== other.hash) {
+          return fail(
+            `Protected artifact conflict: '${section.path}' was published by step '${other.stepId}' ` +
+            `(sha256 ${other.hash.slice(0, 12)}…) and is protected — this step attempted to replace it with ` +
+            `content sha256 ${incoming.slice(0, 12)}… A protected test or artifact can only be changed by the step ` +
+            `that owns it, or by an explicitly authorized revision.`,
+          );
+        }
+        unchanged.push(section.path); // byte-identical: preserve without rewriting
+        continue;
+      }
+      writableSections.push(section);
+    }
+
+    // patches: validate + stage (pure in-memory; no disk mutation)
+    interface StagedPatch { path: string; baseHash: string; resultContent: string; resultHash: string; diffBytes: number }
+    const stagedPatches: StagedPatch[] = [];
+    for (const [pi, patch] of patches.entries()) {
+      const canonical = toSafeRelativePath(patch.path);
+      if (canonical === null) return fail(`Unsafe patch path '${patch.path}'`);
+      if (canonicalSections.some((s) => s.path === canonical)) {
+        return fail(`Ambiguous changeset: '${canonical}' appears both as a file section and as an SLE-PATCH target`);
+      }
+      // E27r — positive authorization: with an edit policy, a patch target
+      // must be EXACTLY one of the task's allowed edit paths (a deny-prefix
+      // formulation still permitted patching unrelated files).
+      if (ctx.editPolicy && !ctx.editPolicy.allowedEditPaths.includes(canonical)) {
+        return fail(
+          `Patch target '${canonical}' is outside this task's authorized edit set ` +
+          `[${ctx.editPolicy.allowedEditPaths.join(', ')}] — only explicitly authorized paths may be modified.`,
+        );
+      }
+      const stepAuthorized = ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(canonical, e)) ?? false;
+      if (!validateOutputPath(canonical, role) && !stepAuthorized) {
+        return fail(`Role '${role}' is not permitted to modify '${canonical}'`);
+      }
+      const other = ownedByOther(canonical);
+      let current: string;
+      try {
+        current = await this.fs.readFile(path.join(this.projectRoot, canonical), 'utf-8');
+      } catch {
+        return fail(`Patch target '${canonical}' does not exist on disk — SLE-PATCH modifies existing files; publish new files as complete-file sections instead`);
+      }
+      const diskHash = sha256Hex(current);
+      if (diskHash !== patch.base.toLowerCase()) {
+        return fail(
+          `Patch ${pi + 1}/${patches.length} for '${canonical}' is stale: pinned base sha256 ${patch.base.slice(0, 12)}… ` +
+          `does not match the file on disk (sha256 ${diskHash.slice(0, 12)}…). The patch applies only against the ` +
+          `expected source version — re-read the file and regenerate the diff.`,
+        );
+      }
+      let result: string;
+      try {
+        result = applyUnifiedDiff(current, patch.diff);
+      } catch (err) {
+        if (err instanceof PatchApplyError) {
+          return fail(`Patch ${pi + 1}/${patches.length} for '${canonical}' rejected: ${err.message}`);
+        }
+        throw err;
+      }
+      const resultHash = sha256Hex(result);
+      if (other && resultHash !== other.hash) {
+        return fail(
+          `Protected artifact conflict: '${canonical}' was published by step '${other.stepId}' and is protected — ` +
+          `a patch may only reproduce it byte-for-byte or must target a different path.`,
+        );
+      }
+      if (resultHash === diskHash) continue; // no-op patch: nothing to publish
+      stagedPatches.push({ path: canonical, baseHash: diskHash, resultContent: result, resultHash, diffBytes: Buffer.byteLength(patch.diff, 'utf-8') });
+    }
+
+    // E27r — editPolicy.requiredEditPaths: each named path must receive an
+    // applied SLE-PATCH in this step. A docs-only or empty changeset, or an
+    // adjacent new file, cannot substitute for the edit the task exists to
+    // make (the previous weak "any new non-docs file" formulation could).
+    if (ctx.editPolicy && ctx.editPolicy.requiredEditPaths.length > 0) {
+      const patchedPaths = new Set(stagedPatches.map((s) => s.path));
+      const missing = ctx.editPolicy.requiredEditPaths.filter((p) => !patchedPaths.has(p));
+      if (missing.length > 0) {
+        return fail(
+          `This task requires an authorized edit to [${missing.join(', ')}], but the changeset ` +
+          `contains no applied SLE-PATCH for ${missing.length === 1 ? 'it' : 'each of them'}. ` +
+          `New files, documentation, or unrelated edits cannot substitute.`,
+        );
+      }
+    }
+
+    // 7. Write artifacts — canonical paths only; staged patches last. Disk
+    // errors here are NOT transactional: fail explicitly with the exact
+    // partial-publication evidence.
+    const artifactsWritten: string[] = [];
+    const writeOne = async (relPath: string, content: string, append: boolean): Promise<void> => {
+      const filePath = path.join(this.projectRoot, relPath);
+      await this.fs.mkdir(path.dirname(filePath), { recursive: true });
+      if (append) {
+        await this.fs.appendFile(filePath, content, 'utf-8');
+      } else {
+        await this.fs.writeFile(filePath, content, 'utf-8');
+      }
+    };
+    try {
+      for (const section of writableSections) {
+        await writeOne(section.path, section.content, APPEND_ONLY_PATHS.has(section.path));
+        artifactsWritten.push(section.path);
+      }
+      for (const staged of stagedPatches) {
+        await writeOne(staged.path, staged.resultContent, false);
+        artifactsWritten.push(staged.path);
+      }
+    } catch (err) {
+      return fail(
+        `Publication failed partway through (disk error: ${err instanceof Error ? err.message : String(err)}). ` +
+        `Files already written in this step — NOT rolled back: [${artifactsWritten.join(', ') || 'none'}]. ` +
+        `Not yet written: sections [${writableSections.map((s) => s.path).filter((p) => !artifactsWritten.includes(p)).join(', ') || 'none'}], ` +
+        `patches [${stagedPatches.map((s) => s.path).filter((p) => !artifactsWritten.includes(p)).join(', ') || 'none'}].`,
+      );
     }
 
     // 7b. E25 — publication is observable: every reported write must exist
@@ -1099,7 +1278,18 @@ export class AgentRunner {
     // in memory) is verification-incompatible and skips the check rather
     // than failing every legacy harness.
     if (typeof (this.fs as { stat?: unknown }).stat === 'function') {
-      for (const section of canonicalSections) {
+      for (const staged of stagedPatches) {
+        const filePath = path.join(this.projectRoot, staged.path);
+        try {
+          const onDisk = await this.fs.readFile(filePath, 'utf-8');
+          if (sha256Hex(onDisk) !== staged.resultHash) {
+            return fail(`Patched file '${staged.path}' on disk does not match the verified patch result (sha256 ${staged.resultHash.slice(0, 12)}…) — publication integrity failure`);
+          }
+        } catch {
+          return fail(`Patched file '${staged.path}' is missing from disk after write — publication integrity failure`);
+        }
+      }
+      for (const section of writableSections) {
         const filePath = path.join(this.projectRoot, section.path);
         let st;
         try {
@@ -1156,9 +1346,11 @@ export class AgentRunner {
     // inventing a fake static output path for a dynamic changeset. The
     // declared single-output recording above is unchanged.
     if (!ctx.outputArtifact && this.artifactRepository) {
-      for (const section of canonicalSections) {
+      for (const section of writableSections) {
         const hash = createHash('sha256').update(section.content).digest('hex');
-        const ref = `produced-file:${section.path}`;
+        // E27 — the publishing step rides in the ref: ownership is derived
+        // from these rows, so the step identity is part of the provenance.
+        const ref = `produced-file:${ctx.stepId}:${section.path}`;
         const already = this.artifactRepository.findByWorkflowRunRefAndHash(
           ctx.workflowRunId,
           ref,
@@ -1179,6 +1371,28 @@ export class AgentRunner {
       }
     }
 
+    // 8c. E27 — applied-patch provenance: one hashed row per bounded edit,
+    // keyed by (run, step, path), hash of the VERIFIED resulting content.
+    // The diff text itself persists in the step's raw node output.
+    if (this.artifactRepository) {
+      for (const staged of stagedPatches) {
+        const ref = `applied-patch:${ctx.stepId}:${staged.path}`;
+        const already = this.artifactRepository.findByWorkflowRunRefAndHash(ctx.workflowRunId, ref, staged.resultHash);
+        if (!already) {
+          this.artifactRepository.save({
+            id: randomUUID(),
+            workItemId: ctx.workItemId,
+            workflowRunId: ctx.workflowRunId,
+            type: 'applied-patch',
+            ref,
+            path: staged.path,
+            hash: staged.resultHash,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
     return {
       success: true,
       artifacts_written: artifactsWritten,
@@ -1187,6 +1401,17 @@ export class AgentRunner {
       raw_output_path: rawPath,
       reviewVerdict,
       reviewRoute,
+      ...(stagedPatches.length > 0
+        ? {
+            patches_applied: stagedPatches.map((p) => ({
+              path: p.path,
+              base_hash: p.baseHash,
+              result_hash: p.resultHash,
+              diff_bytes: p.diffBytes,
+            })),
+          }
+        : {}),
+      ...(unchanged.length > 0 ? { artifacts_unchanged: unchanged } : {}),
       ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
       // C1 review fix — result_repairs is externally visible only when an
       // actual result repair occurred (which is only possible on the

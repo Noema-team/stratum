@@ -65,6 +65,9 @@ class RecordingArtifactRepository implements Partial<ArtifactRepository> {
   findByWorkflowRunRefAndHash(_runId: string, ref: string, hash: string): ArtifactRecord | undefined {
     return this.saved.find((r) => r.ref === ref && r.hash === hash);
   }
+  listByWorkflowRun(runId: string): ArtifactRecord[] {
+    return this.saved.filter((r) => r.workflowRunId === runId);
+  }
   save(record: ArtifactRecord): void {
     this.saved.push(record);
   }
@@ -127,9 +130,11 @@ test('E25.1: undeclared builder teaching — per-file blocks, repo-relative, no 
   const teaching = new TextualSleOutputTransport().formatInstruction(UNDECLARED_BUILDER_CTX);
   assert.ok(!teaching.includes('.sle/work/'), 'must never teach .sle/work to the builder (role-forbidden)');
   assert.ok(
-    teaching.includes('one artifact block per file you created or modified'),
-    'open artifact set is taught as one block per actual file',
+    teaching.includes('one artifact block per NEW file you created'),
+    'open artifact set is taught as one block per actual new file',
   );
+  assert.ok(teaching.includes('<<<SLE-PATCH path='), 'bounded source edits are taught via the patch block');
+  assert.ok(teaching.includes('unified diff'), 'patch teaching names the diff format');
   assert.ok(
     teaching.includes('COMPLETE final contents of one real source or test'),
     'blocks are taught as complete file contents, never a plan or description',
@@ -209,7 +214,7 @@ test('E25.3: two permitted code/test files materialize byte-exact, reported accu
       ['apps/ai-server/rag-worker-service/main.py', mainOnDisk],
       ['apps/ai-server/tests/integration/test_failure_payload.py', testOnDisk],
     ] as const) {
-      const row = byRef.get(`produced-file:${p}`);
+      const row = byRef.get(`produced-file:build:${p}`);
       assert.ok(row, `provenance row for ${p}`);
       assert.equal(row!.type, 'produced-file');
       assert.equal(row!.path, p);

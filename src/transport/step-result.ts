@@ -50,6 +50,13 @@ export interface StepResultArtifact {
   content: string;
 }
 
+// E27 — a bounded source-edit proposal parsed from an SLE-PATCH block.
+export interface StepResultPatch {
+  path: string;
+  base: string; // sha256 of the base content the diff was computed against
+  diff: string;
+}
+
 export interface StepReviewProposal {
   verdict: 'pass' | 'fail';
 }
@@ -64,6 +71,9 @@ export type StepResult =
       // zero usable sections" from "nothing parsed"; a silent empty set
       // became a false-positive step success in the attempt-16 pilot run.
       warnings?: string[];
+      // E27 — bounded source-edit proposals; applied and verified by the
+      // runner, never written as raw bytes.
+      patches?: StepResultPatch[];
     }
   | {
       kind: 'proposal';

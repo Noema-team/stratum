@@ -30,7 +30,7 @@
 // verdict requirement only for review steps.
 import yaml from 'js-yaml';
 import type { AgentRole } from '../types.js';
-import { parseAgentOutputV3, ParseError, SLE_ARTIFACT_OPEN, SLE_ARTIFACT_CLOSE } from '../output-parser.js';
+import { parseAgentOutputV3, ParseError, SLE_ARTIFACT_OPEN, SLE_ARTIFACT_CLOSE, SLE_PATCH_OPEN, SLE_PATCH_CLOSE, type ParsedPatch } from '../output-parser.js';
 // E22 — re-exported for adapters and tests: the artifact-marker constants
 // belong to the parser (single syntax owner) but travel with the transport's
 // wire-shape vocabulary.
@@ -243,7 +243,7 @@ function multiTurnFormatInstruction(ctx: TransportContext): string {
       : // E25 — an open artifact set (e.g. a build step's multi-file changeset)
         // is taught as one block per actual file, never as a single prose
         // implementation note at a path the role cannot write.
-        `one artifact block per file you created or modified in this step, each with its repository-relative path:`;
+        `one artifact block per NEW file you created in this step, each with its repository-relative path — plus one patch block per EXISTING file you modified:`;
   const authorizedList = authorized.filter((e) => !e.endsWith('/'));
   return `OUTPUT FORMAT (mandatory — your reply is consumed by a machine):
 End your final message with the artifact wrapped in exactly these literal delimiters, as ${
@@ -269,7 +269,18 @@ ${authorizedList.map((p) => `  ${p}`).join('\n')}
       ? `
 - Each artifact block must contain the COMPLETE final contents of one real source or test
   file (full file, ready to write to disk) — never a description, plan, summary, or diff
-  of intended changes, and never a path under '.sle/' or 'docs/'.`
+  of intended changes, and never a path under '.sle/' or 'docs/'.
+- To MODIFY an existing file, do not re-emit its full contents: emit a patch block carrying
+  a strict unified diff against the file's CURRENT content, with the sha256 of that content
+  as the pinned base:
+${SLE_PATCH_OPEN}path="apps/<service>/<file>.py" base="<sha256 of the current file content>">>>
+<unified diff: --- a/… +++ b/… @@ hunks with full context>
+${SLE_PATCH_CLOSE}
+  The diff applies only against the exact pinned content — any drift fails the step. Keep
+   hunks small and include enough context lines to locate them unambiguously.
+ - For a large file, do NOT rely on an earlier full read: use the read_source_slice tool
+   to fetch the exact lines around your edit. Its sha256 field is the authoritative base
+   digest for the patch, and its content lines are the exact context your hunks must carry.`
       : ''
   }
 - Inside the artifact markers the content is opaque: any Markdown headings ('#', '##', '###',
@@ -480,10 +491,12 @@ export class TextualSleOutputTransport implements ResultTransport {
     }
     let sections: Array<{ path: string; content: string }>;
     let parseWarnings: string[];
+    let patchProposals: ParsedPatch[] | undefined;
     try {
       const parsed = parseAgentOutputV3(raw, ctx.role, ctx.authorizedOutputs);
       sections = parsed.sections;
       parseWarnings = parsed.warnings;
+      patchProposals = parsed.patches;
     } catch (err) {
       if (err instanceof ParseError) {
         throw new TransportParseError(err.message, raw, err.message, 'malformed');
@@ -497,10 +510,13 @@ export class TextualSleOutputTransport implements ResultTransport {
     // E25 — warnings ride along when present: dropped sections must be
     // visible to the consumer so a zero-section result can fail closed
     // with a reason. Absent when empty (legacy wire shape unchanged).
+    // E27 — bounded source-edit proposals ride to the runner for staged,
+    // verified application.
     return {
       kind: 'materialized',
       artifacts: sections,
       ...(parseWarnings.length > 0 ? { warnings: parseWarnings } : {}),
+      ...(patchProposals && patchProposals.length > 0 ? { patches: patchProposals } : {}),
     };
   }
 

@@ -661,7 +661,12 @@ export class ArtifactRepository {
     `);
     this.byId = db.prepare('SELECT * FROM artifacts WHERE id = ?');
     this.byWorkItem = db.prepare('SELECT * FROM artifacts WHERE work_item_id = ? ORDER BY created_at');
-    this.byWorkflowRun = db.prepare('SELECT * FROM artifacts WHERE workflow_run_id = ? ORDER BY created_at');
+    this.byWorkflowRun = db.prepare(
+      // rowid (insertion) order, not created_at: ownership boundaries and
+      // "latest version" consumers need a deterministic total order, and
+      // created_at's millisecond resolution can tie (D.1c same rationale).
+      'SELECT * FROM artifacts WHERE workflow_run_id = ? ORDER BY rowid'
+    );
     this.byWorkflowRunRefAndHash = db.prepare(
       'SELECT * FROM artifacts WHERE workflow_run_id = ? AND ref = ? AND hash = ? ORDER BY created_at LIMIT 1'
     );

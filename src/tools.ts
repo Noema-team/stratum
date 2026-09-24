@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 
 // ─── Tool definitions (passed to Anthropic SDK) ───────────────────────────────
 
@@ -13,6 +14,31 @@ export const AGENT_TOOLS = [
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'Relative path from project root' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    // E27r — bounded source-view for large files. A full read_file of a file
+    // larger than the synthesis read-result budget is elided at the
+    // synthesis boundary (E23), leaving the model a digest WITHOUT the exact
+    // source lines a zero-fuzz unified diff requires. This tool returns a
+    // bounded exact excerpt plus the authoritative full-file digest; the
+    // small result is always retained through synthesis, so the model can
+    // author a patch (base digest + exact context lines) at the synthesis
+    // turn even for files it can never re-read in full.
+    name: 'read_source_slice' as const,
+    description:
+      "Read a bounded line range from a file, with the file's authoritative byte count and full-content sha256. Use this instead of read_file for large files: the returned excerpt carries the exact lines a patch diff needs, and the sha256 field is the authoritative base digest to pin in the patch block.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative path from project root' },
+        startLine: { type: 'integer', description: '1-based first line to return (default 1)' },
+        lineCount: {
+          type: 'integer',
+          description: 'Maximum number of lines to return (default 120, hard-capped at 400)',
+        },
       },
       required: ['path'],
     },
@@ -165,7 +191,16 @@ async function resolveTrackedRealPath(
 
 export interface ToolInput {
   path?: string;
+  startLine?: number;
+  lineCount?: number;
 }
+
+// read_source_slice bounds — the result must stay small enough to survive
+// synthesis untouched (E23 never elides non-read_file results, but a huge
+// slice would still crowd the request) and to keep the model working on a
+// bounded edit region rather than re-consuming the whole file.
+export const DEFAULT_SLICE_LINES = 120;
+export const MAX_SLICE_LINES = 400;
 
 // ─── Tool handlers ────────────────────────────────────────────────────────────
 
@@ -204,6 +239,51 @@ export async function handleToolCall(
     } catch {
       return { content: JSON.stringify({ error: 'file not found' }) };
     }
+  }
+
+  if (toolName === 'read_source_slice') {
+    const relPath = inp.path;
+    if (!relPath || typeof relPath !== 'string') {
+      return { content: JSON.stringify({ error: 'invalid input: path is required' }) };
+    }
+    const normalized = normalizeRelPath(relPath);
+    if (normalized === null || normalized === '' || !isPermittedReadPath(normalized, trackedFiles, false)) {
+      return { content: JSON.stringify({ error: 'path not permitted' }) };
+    }
+    const realTargetPath = await resolveTrackedRealPath(fsModule, projectRoot, normalized, trackedFiles);
+    if (realTargetPath === null) {
+      return { content: JSON.stringify({ error: 'path not permitted' }) };
+    }
+    let text: string;
+    try {
+      text = await fsModule.readFile(realTargetPath, 'utf-8');
+    } catch {
+      return { content: JSON.stringify({ error: 'file not found' }) };
+    }
+    const physicalLines = text.split('\n');
+    const totalLines = text.endsWith('\n') ? physicalLines.length - 1 : physicalLines.length;
+    const startLine = typeof inp.startLine === 'number' && Number.isInteger(inp.startLine) && inp.startLine > 0 ? inp.startLine : 1;
+    if (totalLines > 0 && startLine > totalLines) {
+      return { content: JSON.stringify({ error: `startLine ${startLine} is beyond the end of the file (${totalLines} lines)` }) };
+    }
+    const requested = typeof inp.lineCount === 'number' && Number.isInteger(inp.lineCount) && inp.lineCount > 0 ? inp.lineCount : DEFAULT_SLICE_LINES;
+    const count = Math.min(requested, MAX_SLICE_LINES);
+    const slice = physicalLines.slice(startLine - 1, startLine - 1 + count);
+    return {
+      content: JSON.stringify({
+        path: normalized,
+        totalLines,
+        totalBytes: Buffer.byteLength(text, 'utf-8'),
+        // Authoritative full-file digest — computed by Stratum from the bytes
+        // on disk, never claimed by the model. This is the value to pin as
+        // the base of an SLE-PATCH block.
+        sha256: createHash('sha256').update(text, 'utf-8').digest('hex'),
+        startLine,
+        endLine: startLine - 1 + slice.length,
+        truncated: startLine - 1 + slice.length < totalLines,
+        content: slice.join('\n'),
+      }),
+    };
   }
 
   if (toolName === 'list_directory') {
