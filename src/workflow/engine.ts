@@ -3,6 +3,7 @@ import type { RunArtifactManager } from '../run-artifacts.js';
 import type { WorkflowRunRepository, WorkItemRepository } from '../storage/repositories.js';
 import type {
   CapHitAction,
+  WorkflowDefinition,
   WorkflowRun,
   WorkflowRunResult,
   WorkflowStep,
@@ -75,6 +76,38 @@ function resolveEditPolicy(
   return p.appliesToSteps.includes(stepId)
     ? { appliesToSteps: p.appliesToSteps, allowedEditPaths: allowed, requiredEditPaths: required }
     : undefined;
+}
+
+// E27r (final merge review) — the one invariant that needs the DEFINITION:
+// every appliesToSteps entry must name an exact existing step id of the
+// selected workflow. A misspelled target ('buid') would otherwise leave all
+// steps unpolicied — the exact typo-induced silent weakening this contract
+// exists to eliminate. Empty and duplicate entries are rejected here too.
+// Runs ONCE in run(), before any step executes.
+function validateEditPolicyTargets(resolvedParameters: Record<string, unknown> | undefined, def: WorkflowDefinition): void {
+  const raw = resolvedParameters?.['editPolicy'];
+  if (raw === undefined) return;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return; // shape errors surface in resolveEditPolicy
+  const targets = (raw as Partial<EditPolicy>).appliesToSteps;
+  if (targets === undefined) return; // shape errors surface in resolveEditPolicy
+  if (!Array.isArray(targets)) return; // shape errors surface in resolveEditPolicy
+  const stepIds = new Set(def.steps.map((s) => s.id));
+  const seen = new Set<string>();
+  for (const id of targets) {
+    if (typeof id !== 'string' || id === '') {
+      throw new Error("Invalid workflowParameters.editPolicy: appliesToSteps contains an empty or non-string step id");
+    }
+    if (seen.has(id)) {
+      throw new Error(`Invalid workflowParameters.editPolicy: appliesToSteps contains duplicate step id '${id}'`);
+    }
+    seen.add(id);
+    if (!stepIds.has(id)) {
+      throw new Error(
+        `Invalid workflowParameters.editPolicy: references unknown workflow step '${id}' — ` +
+        `an unknown target would silently disable the policy everywhere (known steps: ${[...stepIds].join(', ')})`,
+      );
+    }
+  }
 }
 
 // ============================================================================
@@ -276,6 +309,16 @@ export class WorkflowEngine {
         error: `Unknown workflow '${workflowId}'`,
       };
     }
+
+    // E27r (final merge review) — an appliesToSteps entry naming a
+    // NONEXISTENT step would leave every step unpolicied (each per-step
+    // resolveEditPolicy yields undefined), silently disabling the
+    // authorization boundary on a typo. Validate the targets ONCE against
+    // the selected definition, before any step executes. Shape errors
+    // (missing fields, unsafe paths, subset violations) still surface from
+    // the per-step resolution; this check owns exactly what needs the
+    // definition: target existence, plus no empty or duplicate entries.
+    validateEditPolicyTargets(resolvedParameters, def);
 
     const startIndex = startStepId
       ? def.steps.findIndex(s => s.id === startStepId)

@@ -544,6 +544,41 @@ test('E27.R4b: malformed edit policies fail at dispatch — never a silently wea
   assert.equal(captured.get('build')!.editPolicy, undefined, 'absent policy stays absent');
 });
 
+test('E27.R4c: an appliesToSteps typo fails at dispatch BEFORE any step runs — never a silently unpolicied run', async () => {
+  // 'buid' is not a step of the workflow. Without this check every real step
+  // would receive editPolicy === undefined — the boundary would vanish on a
+  // typo. The run must reject before the first step-runner invocation.
+  const captured = new Map<string, { editPolicy?: unknown }>();
+  registerWorkflow({
+    id: 'e27r-typo-wf', label: 'E27R typo',
+    steps: [{ id: 'design', kind: 'produce' }, { id: 'build', kind: 'produce' }],
+  });
+  const engine = new WorkflowEngine(scopeCapturingDeps(captured), { onCheckpoint: async () => 'approve' });
+  await assert.rejects(
+    () => engine.run('e27r-typo-wf', 'e27r-run', 'g', undefined, undefined, undefined, {
+      editPolicy: {
+        appliesToSteps: ['buid'],
+        allowedEditPaths: [WORKER_PATH],
+        requiredEditPaths: [WORKER_PATH],
+      },
+    }),
+    /unknown workflow step 'buid'/,
+  );
+  assert.equal(captured.size, 0, 'no step runner was ever invoked');
+  // duplicate targets are equally rejected
+  registerWorkflow({
+    id: 'e27r-dup-target-wf', label: 'E27R dup target',
+    steps: [{ id: 'build', kind: 'produce' }],
+  });
+  await assert.rejects(
+    () => new WorkflowEngine(scopeCapturingDeps(new Map()), { onCheckpoint: async () => 'approve' }).run(
+      'e27r-dup-target-wf', 'e27r-run', 'g', undefined, undefined, undefined,
+      { editPolicy: { appliesToSteps: ['build', 'build'], allowedEditPaths: [WORKER_PATH], requiredEditPaths: [] } },
+    ),
+    /duplicate step id 'build'/,
+  );
+});
+
 test('E27.R5: restored ownership protects in the CURRENT run — attempt-18 rows are a different provenance scope', async () => {
   const { root, cleanup } = makeRoot();
   const repository = new RecordingArtifactRepository();
