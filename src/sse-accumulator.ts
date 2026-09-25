@@ -15,7 +15,9 @@
 //     later deltas append function.arguments fragments, keyed by `index`
 //     (tool-call arguments fragmented across deltas; multiple tool calls
 //     interleaved in one turn)
-//   • finish_reason captured (last value wins)
+//   • finish_reason captured — FIRST value wins and is terminal; an
+//     IDENTICAL repeat is an idempotent trailer/usage carrier (real
+//     OpenRouter wire); a DIFFERENT repeat is a contract violation
 //   • usage captured from whichever chunk carries it (OpenRouter sends a
 //     final usage-only chunk; no stream_options required)
 //   • `data: [DONE]` termination handled
@@ -143,24 +145,102 @@ export class SseStreamAccumulator {
       );
     }
 
+    // Post-finish trust boundary — STRUCTURAL containers first. After the
+    // terminal finish_reason, ANY malformed shape must fail closed as an
+    // SseParseError: a plain TypeError here (e.g. `'content' in 123`, or
+    // `.choices` on a null payload) would be misclassified by the provider's
+    // catch as benign post-finish transport loss and return success. Validate
+    // chunk → choices → choice → delta containers BEFORE any field access;
+    // the field-level checks below are then safe. JSON.parse's `as` types are
+    // compile-time only — the wire can send any JSON shape.
+    if (this.finishReason !== null) {
+      const describe = (v: unknown): string =>
+        v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+      if (chunk === null || typeof chunk !== 'object' || Array.isArray(chunk)) {
+        throw new SseParseError(
+          `malformed post-finish chunk payload (expected object, got ${describe(chunk)}) — stream contract violation`,
+        );
+      }
+      const choices: unknown = (chunk as { choices?: unknown }).choices;
+      if (choices !== undefined && choices !== null && !Array.isArray(choices)) {
+        throw new SseParseError(
+          `malformed post-finish choices field (expected absent|null|array, got ${describe(choices)}) — stream contract violation`,
+        );
+      }
+      const c: unknown = Array.isArray(choices) ? choices[0] : undefined;
+      if (c !== undefined && (c === null || typeof c !== 'object' || Array.isArray(c))) {
+        throw new SseParseError(
+          `malformed post-finish choice (expected object, got ${describe(c)}) — stream contract violation`,
+        );
+      }
+      const d: unknown = (c as { delta?: unknown } | undefined)?.delta;
+      if (d !== undefined && d !== null && (typeof d !== 'object' || Array.isArray(d))) {
+        throw new SseParseError(
+          `malformed post-finish delta (expected object, got ${describe(d)}) — stream contract violation`,
+        );
+      }
+    }
+
     const choice = chunk.choices?.[0];
     // Terminal semantic state: the FIRST non-null finish_reason completes the
     // model's generation. The provider treats "finish_reason seen" as the
     // boundary that makes a subsequent transport failure benign — that claim
     // is only true if the accumulator can no longer change semantic state
-    // afterwards. Enforce it: after finish_reason only non-semantic trailing
-    // data is legal (usage-only chunks, empty keep-alive choices). A second
-    // finish_reason or any content/tool delta is a contract violation.
+    // afterwards. Enforce it: after finish_reason only inert trailing data is
+    // legal. What is inert is defined by the REAL OpenRouter wire (captured
+    // live, see tests/openrouter-streaming.test.ts production fixture):
+    //   • delta.content absent | null | "" (the finish chunk itself and the
+    //     usage carrier both carry content:"" — the literal empty string only;
+    //     whitespace is NEVER normalized and stays semantic)
+    //   • delta.tool_calls absent or empty
+    //   • finish_reason absent/null, or EXACTLY equal to the recorded value
+    //     (an identical repeat is an idempotent trailer/usage carrier, not a
+    //     new semantic event; a DIFFERENT reason means a second terminal
+    //     boundary — a violation)
+    //   • role/usage metadata; [DONE]; EOF
+    // Anything else — non-empty content, tool-call deltas, a changed finish
+    // reason — is a contract violation.
     if (this.finishReason !== null) {
       const delta = choice?.delta;
-      const semanticDelta =
-        delta !== undefined
-        && ((delta.content !== undefined && delta.content !== null) || (delta.tool_calls !== undefined && delta.tool_calls.length > 0));
-      if (semanticDelta) {
-        throw new SseParseError('semantic delta (content/tool_calls) after finish_reason — stream contract violation');
+      // RUNTIME-STRICT validation of the inert post-finish field set. JSON.parse
+      // types are compile-time lies — the network can send ANY JSON type, and a
+      // malformed value here must (a) never mutate semantic state and (b) always
+      // be an SseParseError (never a plain TypeError, which the provider would
+      // misclassify as benign post-finish transport loss).
+      if (delta && 'content' in delta && delta.content != null) {
+        if (typeof delta.content !== 'string') {
+          throw new SseParseError(
+            `malformed post-finish content field (expected absent|null|"", got ${typeof delta.content}) — stream contract violation`,
+          );
+        }
+        if (delta.content !== '') {
+          throw new SseParseError(
+            `non-empty content delta after finish_reason (${JSON.stringify(delta.content.slice(0, 40))}) — stream contract violation (empty string is inert; whitespace is content)`,
+          );
+        }
       }
-      if (choice?.finish_reason) {
-        throw new SseParseError('second finish_reason after the terminal finish_reason — stream contract violation');
+      if (delta && 'tool_calls' in delta) {
+        if (!Array.isArray(delta.tool_calls)) {
+          throw new SseParseError(
+            `malformed post-finish tool_calls field (expected absent or array, got ${delta.tool_calls === null ? 'null' : typeof delta.tool_calls}) — stream contract violation`,
+          );
+        }
+        if (delta.tool_calls.length > 0) {
+          throw new SseParseError('tool-call delta after finish_reason — stream contract violation');
+        }
+      }
+      const repeatedFinish = choice?.finish_reason;
+      if (repeatedFinish != null) {
+        if (typeof repeatedFinish !== 'string') {
+          throw new SseParseError(
+            `malformed post-finish finish_reason field (expected string, got ${typeof repeatedFinish}) — stream contract violation`,
+          );
+        }
+        if (repeatedFinish !== this.finishReason) {
+          throw new SseParseError(
+            `finish_reason changed after the terminal finish_reason (${JSON.stringify(this.finishReason)} → ${JSON.stringify(repeatedFinish)}) — stream contract violation`,
+          );
+        }
       }
     }
 

@@ -28,7 +28,7 @@ import { OpenAICompatibleMultiTurnProvider } from '../src/llm-provider.js';
 import { SseStreamAccumulator, SseParseError } from '../src/sse-accumulator.js';
 import { AgentLoop, type AgentLoopResult } from '../src/agent-loop.js';
 import { RunArtifactManager } from '../src/run-artifacts.js';
-import { sseResponse, jsonResponse, failingResponse, chunk, type SseEvent } from './sse-test-utils.js';
+import { sseResponse, jsonResponse, failingResponse, chunk, openrouterProductionFixture, type SseEvent } from './sse-test-utils.js';
 import type { MultiTurnParams } from '../src/agent-loop.js';
 
 process.env.STREAMING_TEST_API_KEY = 'test-key';
@@ -432,21 +432,21 @@ test('accumulator: index-less fragment after an existing call attaches to NOTHIN
   assert.notEqual(a.toolCalls[0].arguments, '{"path":"secret.md"}');
 });
 
-test('accumulator: content delta AFTER finish_reason is a contract violation', () => {
+test('accumulator: NON-EMPTY content delta AFTER finish_reason is a contract violation', () => {
   const acc = new SseStreamAccumulator();
   acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
   assert.throws(
     () => acc.feed(`data: ${JSON.stringify(chunk({ content: 'sneaky extra' }))}\n\n`),
-    /semantic delta .* after finish_reason/,
+    /non-empty content delta after finish_reason/,
   );
 });
 
-test('accumulator: a SECOND finish_reason is a contract violation (terminal value never replaced)', () => {
+test('accumulator: a DIFFERENT second finish_reason is a contract violation (terminal value never replaced)', () => {
   const acc = new SseStreamAccumulator();
   acc.feed(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
   assert.throws(
     () => acc.feed(`data: ${JSON.stringify(chunk({ content: null }, 'tool_calls'))}\n\n`),
-    /second finish_reason/,
+    /finish_reason changed after the terminal finish_reason/,
   );
 });
 
@@ -621,4 +621,201 @@ test('accumulator: abandonTrailingBytesAfterFinish refuses to run before finish 
   const acc = new SseStreamAccumulator();
   acc.feed(`data: ${JSON.stringify(chunk({ content: 'real semantic bytes' }))}\n\n`);
   assert.throws(() => acc.abandonTrailingBytesAfterFinish(), /before finish_reason/);
+});
+
+// ─── Wire-compat fix: the REAL OpenRouter terminal shape (captured live) ──────
+// f215272's accumulator failed this exact stream 2/2 in live qualification:
+// the finish chunk carries content:"" and the usage carrier REPEATS
+// finish_reason. Fixture is a sanitized clone of the captured bytes.
+
+test('PRODUCTION WIRE: captured OpenRouter stream assembles end-to-end (finish chunk with content:"" + repeated finish_reason usage carrier)', async () => {
+  const fixture = openrouterProductionFixture();
+  withFetch(() => sseResponse(fixture.events, { splitEvery: 7 })); // odd byte split: framing stress too
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const result = await provider.completeMultiTurn(baseParams({
+      tools: [{ name: 'read_file', description: 'Read a file', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }],
+    }));
+    assert.equal(result.stop_reason, 'tool_use', 'finish_reason tool_calls maps to tool_use');
+    assert.equal(result.tool_uses.length, 1, 'streamed tool call assembles');
+    assert.equal(result.tool_uses[0].name, 'read_file');
+    assert.deepEqual(result.tool_uses[0].input, fixture.expected.arguments, 'arguments parse correctly');
+    assert.equal(result.tool_uses[0].id, fixture.expected.toolId);
+    assert.equal(result.tokens_used, 234, 'usage from the REPEATED-finish carrier is recorded');
+    assert.equal(result.text, ' ', 'pre-finish leading whitespace content preserved; empty-string trailer content contributes nothing');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('PRODUCTION WIRE: accumulator accepts the captured terminal shape and reports exactly one terminal state', () => {
+  const fixture = openrouterProductionFixture();
+  const acc = new SseStreamAccumulator();
+  for (const e of fixture.events) {
+    if (e === '[DONE]') acc.feed('data: [DONE]\n\n');
+    else acc.feed(`data: ${JSON.stringify(e)}\n\n`);
+  }
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.finishReason, 'tool_calls', 'repeated identical finish_reason does not replace the terminal value');
+  assert.equal(a.totalTokens, 234);
+  assert.equal(a.sawDone, true);
+  assert.equal(a.text, ' ');
+  assert.deepEqual(JSON.parse(a.toolCalls[0].arguments), fixture.expected.arguments);
+});
+
+test('adversarial: non-empty content after finish_reason rejects', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(() => acc.feed(`data: ${JSON.stringify(chunk({ content: 'x' }))}\n\n`), /non-empty content delta after finish_reason/);
+});
+
+test('adversarial: tool-call delta after finish_reason rejects (finish is terminal for tools too)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: [{ index: 0, function: { arguments: '{"late":true}' } }] }))}\n\n`),
+    /tool-call delta after finish_reason/,
+  );
+});
+
+test('adversarial: a DIFFERENT second finish_reason rejects', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(() => acc.feed(`data: ${JSON.stringify(chunk({ content: '' }, 'stop'))}\n\n`), /finish_reason changed after the terminal finish_reason/);
+});
+
+test('adversarial: REPEATED identical finish_reason with empty content accepts (OpenRouter usage carrier)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  acc.feed(`data: ${JSON.stringify(chunk({ content: '' }, 'tool_calls', { total_tokens: 234 }))}\n\n`);
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.finishReason, 'tool_calls');
+  assert.equal(a.totalTokens, 234);
+});
+
+test('adversarial: literal content:"" after finish_reason accepts (inert, per captured wire)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  acc.feed(`data: ${JSON.stringify(chunk({ content: '' }))}\n\n`);
+  acc.end();
+  assert.equal(acc.assemble().finishReason, 'tool_calls');
+});
+
+test('adversarial: whitespace-only content after finish_reason REMAINS semantic and rejects (no trim normalization)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(() => acc.feed(`data: ${JSON.stringify(chunk({ content: ' ' }))}\n\n`), /non-empty content delta after finish_reason/);
+});
+
+// ─── P1 fix: runtime-strict post-finish field types (JSON.parse `as` is a lie) ─
+
+test('adversarial: post-finish content of WRONG TYPE (number) rejects as SseParseError and mutates NOTHING', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: 123 as unknown as string }))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, 'must be SseParseError, never a plain TypeError');
+      assert.match((err as Error).message, /malformed post-finish content field/);
+      return true;
+    },
+  );
+  // The malformed value must not have touched the semantic result before throwing.
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.text, 'done', 'assembled text unchanged — malformed data cannot mutate post-finish state');
+  assert.equal(a.finishReason, 'stop');
+});
+
+test('adversarial: post-finish tool_calls: null rejects as SseParseError (never a TypeError the provider would call benign)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: null as unknown as Array<never> }))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish tool_calls field/);
+      return true;
+    },
+  );
+});
+
+test('adversarial: post-finish finish_reason of WRONG TYPE (number) rejects as SseParseError', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: '' }, 123 as unknown as string))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish finish_reason field/);
+      return true;
+    },
+  );
+});
+
+// ─── P1 fix 2: structural containers at the post-finish boundary ──────────────
+// chunk/choice/delta themselves can be arbitrary JSON — a plain TypeError
+// there would be misclassified by the provider as benign post-finish loss.
+
+test('adversarial: post-finish payload `null` rejects as SseParseError (never `.choices` on null)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: null\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish chunk payload/);
+      return true;
+    },
+  );
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.text, 'done', 'semantic state untouched by the malformed container');
+  assert.equal(a.finishReason, 'stop');
+});
+
+test('adversarial: post-finish choice: 123 rejects as SseParseError', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: {"choices":[123]}\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish choice/);
+      return true;
+    },
+  );
+});
+
+test('adversarial: post-finish delta: 123 rejects as SseParseError (never `in` on a primitive)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: {"choices":[{"delta":123}]}\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish delta/);
+      return true;
+    },
+  );
+});
+
+// ─── P2 fix: the `choices` container itself is runtime-validated ──────────────
+
+test('adversarial: post-finish choices: 123 and choices: {} reject as SseParseError (container chain complete)', () => {
+  for (const wire of ['data: {"choices":123}\n\n', 'data: {"choices":{}}\n\n']) {
+    const acc = new SseStreamAccumulator();
+    acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+    assert.throws(
+      () => acc.feed(wire),
+      (err: unknown) => {
+        assert.ok(err instanceof SseParseError, `expected SseParseError for ${wire.trim()}, got ${(err as Error).name}: ${(err as Error).message}`);
+        assert.match((err as Error).message, /malformed post-finish choices field/);
+        return true;
+      },
+      `choices container must fail closed: ${wire.trim()}`,
+    );
+  }
 });
