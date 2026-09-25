@@ -75,6 +75,8 @@ export const FULL_BUILD: WorkflowDefinition = {
       templateId: 'scoping',
       outputArtifact: CYCLE_CHARTER_OUTPUT,
       synthesisGate: synthesisGate(),
+      // V3 — one bounded structural repair turn on deterministic rejection.
+      structuralRepair: true,
     },
     {
       id: 'scoping.checkpoint',
@@ -94,6 +96,8 @@ export const FULL_BUILD: WorkflowDefinition = {
       // document references already point here).
       authorizedOutputs: ['docs/requirements.md', 'docs/architecture.md'],
       synthesisGate: synthesisGate(),
+      // V3 — one bounded structural repair turn on deterministic rejection.
+      structuralRepair: true,
     },
 
     // ── CRITIQUE (conditional: deep | research only) ───────────────────────
@@ -118,6 +122,8 @@ export const FULL_BUILD: WorkflowDefinition = {
       // E26 — TEST and BUILD receive the published plans from these paths.
       authorizedOutputs: ['docs/plan.md', 'docs/test-plan.md'],
       synthesisGate: synthesisGate(),
+      // V3 — one bounded structural repair turn on deterministic rejection.
+      structuralRepair: true,
     },
 
     // ── TEST ──────────────────────────────────────────────────────────────

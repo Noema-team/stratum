@@ -942,6 +942,10 @@ export class WorkflowEngine {
       editPolicy: resolveEditPolicy(resolvedParameters, step.id),
       // E21 — copied the same way as instruction/outputArtifact.
       synthesisGate: step.synthesisGate,
+      // V3 — copied the same way: the bounded structural repair is a
+      // workflow-declared per-step policy, never inferred and never
+      // globally on.
+      structuralRepair: step.structuralRepair === true ? true : undefined,
       inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
       // D.3b0 — WorkItem snapshot passed straight through from run()'s own

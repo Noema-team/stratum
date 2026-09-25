@@ -64,6 +64,16 @@ export interface WorkflowStep {
   // closed. An attempt to invoke a withdrawn tool fails the step explicitly
   // — never executed, never fabricated.
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
+  // V3 — bounded structural repair. When a workflow declares this on a
+  // produce step, a deterministic structural rejection of an otherwise
+  // completed stage output (producer-contract shortfall / charter structure)
+  // grants EXACTLY ONE validator-driven repair turn before the stage fails.
+  // The validator reruns unchanged and remains authoritative; evidence
+  // (original output, findings, repair output, second validation) is
+  // preserved and never overwritten. Absent/false = byte-for-byte legacy
+  // behavior. Generic by construction — never special-cased to any
+  // particular requirement.
+  structuralRepair?: boolean;
   // D.1b — explicit artifact refs this step's context is built from. When
   // set, ContextManager loads exactly these refs instead of the role's
   // default slice set (getRoleSlices()).
@@ -376,6 +386,8 @@ export interface StepRunContext {
   editPolicy?: EditPolicy;
   // Copied from WorkflowStep.synthesisGate by WorkflowEngine.makeStepRunContext.
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
+  // Copied from WorkflowStep.structuralRepair by WorkflowEngine.makeStepRunContext.
+  structuralRepair?: boolean;
   inputArtifactRefs?: string[];
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
   workflowParameters?: Record<string, unknown>;
