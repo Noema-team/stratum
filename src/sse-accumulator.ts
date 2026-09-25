@@ -145,6 +145,36 @@ export class SseStreamAccumulator {
       );
     }
 
+    // Post-finish trust boundary — STRUCTURAL containers first. After the
+    // terminal finish_reason, ANY malformed shape must fail closed as an
+    // SseParseError: a plain TypeError here (e.g. `'content' in 123`, or
+    // `.choices` on a null payload) would be misclassified by the provider's
+    // catch as benign post-finish transport loss and return success. Validate
+    // chunk → choice → delta containers BEFORE any field access; the
+    // field-level checks below are then safe. JSON.parse's `as` types are
+    // compile-time only — the wire can send any JSON shape.
+    if (this.finishReason !== null) {
+      const describe = (v: unknown): string =>
+        v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+      if (chunk === null || typeof chunk !== 'object' || Array.isArray(chunk)) {
+        throw new SseParseError(
+          `malformed post-finish chunk payload (expected object, got ${describe(chunk)}) — stream contract violation`,
+        );
+      }
+      const c: unknown = (chunk as { choices?: Array<unknown> | null }).choices?.[0];
+      if (c !== undefined && (c === null || typeof c !== 'object' || Array.isArray(c))) {
+        throw new SseParseError(
+          `malformed post-finish choice (expected object, got ${describe(c)}) — stream contract violation`,
+        );
+      }
+      const d: unknown = (c as { delta?: unknown } | undefined)?.delta;
+      if (d !== undefined && d !== null && (typeof d !== 'object' || Array.isArray(d))) {
+        throw new SseParseError(
+          `malformed post-finish delta (expected object, got ${describe(d)}) — stream contract violation`,
+        );
+      }
+    }
+
     const choice = chunk.choices?.[0];
     // Terminal semantic state: the FIRST non-null finish_reason completes the
     // model's generation. The provider treats "finish_reason seen" as the

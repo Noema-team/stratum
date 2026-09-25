@@ -754,3 +754,50 @@ test('adversarial: post-finish finish_reason of WRONG TYPE (number) rejects as S
     },
   );
 });
+
+// ─── P1 fix 2: structural containers at the post-finish boundary ──────────────
+// chunk/choice/delta themselves can be arbitrary JSON — a plain TypeError
+// there would be misclassified by the provider as benign post-finish loss.
+
+test('adversarial: post-finish payload `null` rejects as SseParseError (never `.choices` on null)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: null\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish chunk payload/);
+      return true;
+    },
+  );
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.text, 'done', 'semantic state untouched by the malformed container');
+  assert.equal(a.finishReason, 'stop');
+});
+
+test('adversarial: post-finish choice: 123 rejects as SseParseError', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: {"choices":[123]}\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish choice/);
+      return true;
+    },
+  );
+});
+
+test('adversarial: post-finish delta: 123 rejects as SseParseError (never `in` on a primitive)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed('data: {"choices":[{"delta":123}]}\n\n'),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish delta/);
+      return true;
+    },
+  );
+});
