@@ -549,3 +549,76 @@ test('AgentLoop boundary: streamed UND_ERR_SOCKET reaches failure_observation.tr
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ─── Review fix 2: partial trailing-event bytes + post-finish disconnect ──────
+
+test('provider: HALF-received trailing usage event + disconnect after finish STILL SUCCEEDS (review blocker)', async () => {
+  // Complete generation, then the connection drops MID-usage-event: the
+  // buffered truncated event must be abandoned, not parsed into a failure.
+  const halfUsage = `data: {"choices":[],"usage":{"to`;
+  withFetch(() => failingResponse(
+    Object.assign(new TypeError('terminated'), { cause: { name: 'SocketError', code: 'UND_ERR_SOCKET', message: 'other side closed' } }),
+    `data: ${JSON.stringify(chunk({ content: 'the full result' }, 'stop'))}\n\n${halfUsage}`,
+  ));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const result = await provider.completeMultiTurn(baseParams());
+    assert.equal(result.text, 'the full result', 'completed text preserved');
+    assert.equal(result.stop_reason, 'end_turn', 'stop_reason preserved');
+    assert.equal(result.tokens_used, 0, 'no completely observed usage → 0');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('provider: disconnect mid-SECOND usage event keeps the last completely observed usage', async () => {
+  withFetch(() => failingResponse(
+    new Error('trailing connection lost'),
+    `data: ${JSON.stringify(chunk({ content: 'result' }, 'stop', { total_tokens: 55 }))}\n\ndata: {"choices":[],"usage":{"total_tok`,
+  ));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const result = await provider.completeMultiTurn(baseParams());
+    assert.equal(result.text, 'result');
+    assert.equal(result.tokens_used, 55, 'last COMPLETELY observed usage wins; the partial re-send is abandoned');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('provider: partially received [DONE] after finish + disconnect still SUCCEEDS', async () => {
+  withFetch(() => failingResponse(new Error('connection reset'), `data: ${JSON.stringify(chunk({ content: 'ok' }, 'stop'))}\n\ndata: [DO`));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const result = await provider.completeMultiTurn(baseParams());
+    assert.equal(result.text, 'ok');
+    assert.equal(result.stop_reason, 'end_turn');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('provider: clean EOF mid-trailing-usage-event after finish also SUCCEEDS (same invariant, no error)', async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      controller.enqueue(enc.encode(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop', { total_tokens: 9 }))}\n\ndata: {"choices":[],"usage":{"tot`));
+      controller.close(); // clean EOF mid-trailing-event
+    },
+  });
+  withFetch(() => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const result = await provider.completeMultiTurn(baseParams());
+    assert.equal(result.text, 'done');
+    assert.equal(result.tokens_used, 9, 'last completely observed usage preserved');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('accumulator: abandonTrailingBytesAfterFinish refuses to run before finish (misuse guard)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'real semantic bytes' }))}\n\n`);
+  assert.throws(() => acc.abandonTrailingBytesAfterFinish(), /before finish_reason/);
+});

@@ -234,6 +234,11 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
     const accumulator = new SseStreamAccumulator();
     const decoder = new TextDecoder();
     const reader = response.body.getReader();
+    // Set when a post-finish transport error is committed as benign: the
+    // semantic result is complete and any UNPARSED trailing bytes (e.g. a
+    // HALF-received usage event still sitting in the accumulator's buffers)
+    // are deliberately abandoned instead of flushed+parsed.
+    let trailingTransportLost = false;
     try {
       for (;;) {
         try {
@@ -252,10 +257,16 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
           // Remote disconnect / socket error. After finish_reason the
           // accumulator is in its terminal semantic state (enforced in
           // SseStreamAccumulator: only usage-only chunks are legal after the
-          // terminal finish_reason), so nothing semantic can be lost — only
-          // trailing bytes (usage) were at risk. Before it, this is a hard
-          // transport failure.
-          if (accumulator.hasFinishReason) break;
+          // terminal finish_reason), so nothing semantic can be lost — but
+          // the disconnect can land MID-trailing-event: partially received
+          // usage bytes may sit buffered and would fail to parse if flushed.
+          // Commit the completed semantic result and abandon those bytes
+          // explicitly rather than letting end() fail the turn.
+          if (accumulator.hasFinishReason) {
+            accumulator.abandonTrailingBytesAfterFinish();
+            trailingTransportLost = true;
+            break;
+          }
           const cause = (err as { cause?: { code?: string; message?: string } }).cause;
           // Preserve the original error as `cause`: AgentLoop's
           // describeTransportFailure extracts evidence from
@@ -270,8 +281,18 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
           );
         }
       }
-      accumulator.feed(decoder.decode()); // flush any buffered multibyte tail
-      accumulator.end();
+      if (!trailingTransportLost) {
+        accumulator.feed(decoder.decode()); // flush any buffered multibyte tail
+        try {
+          accumulator.end();
+        } catch (err) {
+          // A clean EOF can equally land mid-trailing-event (server sends
+          // half the usage event, then closes). By the terminal-state
+          // invariant such bytes are non-semantic — a parse failure there
+          // must not fail a completed generation either.
+          if (!(err instanceof SseParseError && accumulator.hasFinishReason)) throw err;
+        }
+      }
     } finally {
       reader.releaseLock();
     }

@@ -208,6 +208,26 @@ export class SseStreamAccumulator {
     return this.finishReason !== null;
   }
 
+  /**
+   * Explicitly discard unparsed trailing transport bytes after the terminal
+   * finish_reason — e.g. a HALF-received usage event left in the line/event
+   * buffer when the connection dropped mid-trailer. Failing to call this
+   * before `end()` would parse the truncated event and turn a COMPLETED
+   * generation into a failure. Safe by the terminal-state invariant: fully
+   * parsed post-finish events are rejected on arrival, so buffered-but-
+   * unparsed bytes can never carry semantic weight. Misuse guard: calling
+   * this before semantic completion would discard real bytes — fail loudly.
+   */
+  abandonTrailingBytesAfterFinish(): void {
+    if (this.finishReason === null) {
+      throw new SseParseError(
+        'abandonTrailingBytesAfterFinish() called before finish_reason — refusing to discard possibly-semantic bytes',
+      );
+    }
+    this.lineBuffer = '';
+    this.eventLines = [];
+  }
+
   assemble(): AssembledStream {
     if (this.finishReason === null) {
       throw new SseParseError(

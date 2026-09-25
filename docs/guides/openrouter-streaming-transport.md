@@ -51,12 +51,17 @@ partial generation is ever returned as a successful completed model turn.**
 
 Disconnect **after** `finish_reason` (e.g. the trailing usage chunk is lost):
 the generation itself completed; the assembled result is returned with
-whatever usage was captured (`tokens_used: 0` if none arrived). This is
-mechanically safe because the accumulator enforces a terminal semantic
-state: after the first non-null `finish_reason`, only non-semantic trailing
-data (usage-only chunks, empty keep-alive choices, `[DONE]`, EOF) is
-accepted — a semantic delta or second finish reason is a parse error. Once
-`[DONE]` has arrived, any further data event is a parse error.
+whatever usage was **completely observed** before the disconnect (`tokens_used: 0`
+if none arrived). This is mechanically safe because the accumulator enforces a
+terminal semantic state: after the first non-null `finish_reason`, only
+non-semantic trailing data (usage-only chunks, empty keep-alive choices,
+`[DONE]`, EOF) is accepted — a semantic delta or second finish reason is a
+parse error. Once `[DONE]` has arrived, any further data event is a parse
+error. If the disconnect lands **mid-trailing-event** (e.g. half a usage event
+still buffered), the provider commits the completed result and explicitly
+abandons the unparsed trailing bytes (`abandonTrailingBytesAfterFinish()`)
+instead of flushing them into a parse failure — the same rule applies on a
+clean EOF that lands mid-trailing-event.
 
 **Explicit caller cancellation is a separate category from both failure
 modes:** an `AbortError` raised by a caller-supplied signal propagates
