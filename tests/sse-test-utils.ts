@@ -86,3 +86,80 @@ export function chunk(
     ...(usage !== undefined ? { usage } : {}),
   };
 }
+
+/**
+ * SANITIZED DETERMINISTIC CLONE of a real captured OpenRouter stream
+ * (z-ai/glm-5.3-flash, captured live 2026-09-25 during V2 transport
+ * qualification; raw bytes preserved in the pilot evidence repo as
+ * raw-sse-capture-run3.txt). Ids/model name replaced; structure and byte
+ * shapes preserved exactly — including the terminal shape that broke the
+ * original PR #45 accumulator:
+ *   • the finish chunk itself carries delta.content:""
+ *   • the usage carrier REPEATS finish_reason and also carries content:""
+ *   • every delta carries role:"assistant"
+ * This fixture pins the actual production wire, not a synthetic idealization.
+ */
+export function openrouterProductionFixture(): { events: SseEvent[]; expected: { toolId: string; arguments: object; totalTokens: number } } {
+  const envelope = { id: 'chatcmpl-sanitized0001', model: 'sanitized-model', created: 0 };
+  const events: SseEvent[] = [
+    // e0 — role + leading whitespace content (real wire opens this way)
+    { ...envelope, choices: [{ index: 0, delta: { role: 'assistant', content: ' ' }, finish_reason: null }] },
+    // e1 — tool-call identity delta (content:null alongside tool_calls)
+    {
+      ...envelope,
+      choices: [{
+        index: 0,
+        delta: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ index: 0, id: 'chatcmpl-tool-sanitized0001', type: 'function', function: { name: 'read_file', arguments: '' } }],
+        },
+        finish_reason: null,
+      }],
+    },
+    // e2 — arguments fragment 1
+    {
+      ...envelope,
+      choices: [{
+        index: 0,
+        delta: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ index: 0, function: { arguments: '{"path": "pkg/QUALIFICATION-TARGET.md"' } }],
+        },
+        finish_reason: null,
+      }],
+    },
+    // e3 — arguments fragment 2 (completes the JSON)
+    {
+      ...envelope,
+      choices: [{
+        index: 0,
+        delta: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ index: 0, function: { arguments: '}' } }],
+        },
+        finish_reason: null,
+      }],
+    },
+    // e4 — THE FINISH CHUNK: carries content:"" (empty string, not absent)
+    { ...envelope, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: 'tool_calls' }] },
+    // e5 — USAGE CARRIER: REPEATS finish_reason, again with content:""
+    {
+      ...envelope,
+      choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: 'tool_calls' }],
+      usage: { prompt_tokens: 210, completion_tokens: 24, total_tokens: 234 },
+    },
+    // e6 — terminal
+    '[DONE]' as SseEvent,
+  ];
+  return {
+    events,
+    expected: {
+      toolId: 'chatcmpl-tool-sanitized0001',
+      arguments: { path: 'pkg/QUALIFICATION-TARGET.md' },
+      totalTokens: 234,
+    },
+  };
+}
