@@ -20,9 +20,14 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { OpenAICompatibleMultiTurnProvider } from '../src/llm-provider.js';
 import { SseStreamAccumulator, SseParseError } from '../src/sse-accumulator.js';
+import { AgentLoop, type AgentLoopResult } from '../src/agent-loop.js';
+import { RunArtifactManager } from '../src/run-artifacts.js';
 import { sseResponse, jsonResponse, failingResponse, chunk, type SseEvent } from './sse-test-utils.js';
 import type { MultiTurnParams } from '../src/agent-loop.js';
 
@@ -396,3 +401,151 @@ test('provider: multibyte UTF-8 split across network chunks decodes losslessly',
 function sseEventize(events: SseEvent[]): string {
   return events.map((e) => `data: ${typeof e === 'string' ? e : JSON.stringify(e)}\n\n`).join('');
 }
+
+// ─── Review fixes: terminal semantic state, strict index, cancellation, cause chain ──
+
+test('accumulator: tool-call delta WITHOUT an index fails closed (never coerced to index 0)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'x' }))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: [{ id: 'c', function: { name: 'read_file', arguments: '{}' } }] }))}\n\n`),
+    SseParseError,
+  );
+});
+
+test('accumulator: index-less fragment after an existing call attaches to NOTHING (review scenario)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: [{ index: 0, id: 'call_0', function: { name: 'read_file', arguments: '{"path":"' } }] }))}\n\n`);
+  // Malformed fragment for a DIFFERENT call arrives without an index — must
+  // throw, never silently merge into call_0's arguments.
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: [{ function: { arguments: 'secret.md"}' } }] }))}\n\n`),
+    SseParseError,
+  );
+  // The regression this pins: call_0 carries ONLY its own original fragment —
+  // the index-less 'secret.md"}' fragment must not have been merged into it.
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.toolCalls.length, 1);
+  assert.equal(a.toolCalls[0].arguments, '{"path":"');
+  assert.notEqual(a.toolCalls[0].arguments, '{"path":"secret.md"}');
+});
+
+test('accumulator: content delta AFTER finish_reason is a contract violation', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: 'sneaky extra' }))}\n\n`),
+    /semantic delta .* after finish_reason/,
+  );
+});
+
+test('accumulator: a SECOND finish_reason is a contract violation (terminal value never replaced)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: null }, 'tool_calls'))}\n\n`),
+    /second finish_reason/,
+  );
+});
+
+test('accumulator: usage-only chunk after finish_reason stays legal (terminal state permits non-semantic data)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+  acc.feed(`data: ${JSON.stringify({ choices: [], usage: { total_tokens: 55 } })}\n\n`);
+  acc.feed('data: [DONE]\n\n');
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.totalTokens, 55);
+  assert.equal(a.sawDone, true);
+});
+
+test('accumulator: data event after [DONE] is a contract violation', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
+  acc.feed('data: [DONE]\n\n');
+  assert.throws(() => acc.feed(`data: ${JSON.stringify(chunk({ content: 'late' }))}\n\n`), /after \[DONE\]/);
+});
+
+const abortErr = (): Error => new DOMException('This operation was aborted', 'AbortError');
+
+test('provider: explicit cancellation mid-stream (before finish) propagates the AbortError — not a transport wrap', async () => {
+  withFetch(() => failingResponse(abortErr(), `data: ${JSON.stringify(chunk({ content: 'partial' }))}\n\n`));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    await assert.rejects(provider.completeMultiTurn(baseParams()), (err: unknown) => {
+      assert.equal((err as Error).name, 'AbortError');
+      assert.ok(!String((err as Error).message).includes('LLM stream failed'), 'cancellation must not be rebranded as remote transport failure');
+      return true;
+    });
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('provider: explicit cancellation AFTER finish_reason still cancels — never downgraded to success', async () => {
+  withFetch(() => failingResponse(abortErr(), `data: ${JSON.stringify(chunk({ content: 'complete' }, 'stop', { total_tokens: 4 }))}\n\n`));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    await assert.rejects(provider.completeMultiTurn(baseParams()), (err: unknown) => {
+      assert.equal((err as Error).name, 'AbortError', 'caller cancellation wins over the post-finish benign-disconnect rule');
+      return true;
+    });
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('provider: mid-stream transport failure preserves the original error as `cause` (evidence chain)', async () => {
+  // Mirror the undici shape seen in pilot attempts 20/21:
+  // TypeError(terminated) -> cause SocketError(UND_ERR_SOCKET) -> cause 'other side closed'
+  const streamErr = Object.assign(new TypeError('terminated'), {
+    cause: { name: 'SocketError', code: 'UND_ERR_SOCKET', message: 'other side closed' },
+  });
+  let thrown: unknown;
+  withFetch(() => failingResponse(streamErr, `data: ${JSON.stringify(chunk({ content: 'partial' }))}\n\n`));
+  try {
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    await provider.completeMultiTurn(baseParams()).catch((e) => { thrown = e; });
+    assert.ok(thrown instanceof Error, 'provider must throw');
+    assert.match(thrown.message, /LLM stream failed before completion \(transport\)/);
+    // The chain must survive: describeTransportFailure reads cause.{name,cause.code}.
+    const cause = (thrown as { cause?: { name?: string; cause?: { code?: string } } }).cause;
+    assert.equal(cause?.name, 'TypeError', 'original error retained as cause');
+    assert.equal(cause?.cause?.code, 'UND_ERR_SOCKET', 'undici cause code retained');
+  } finally {
+    (globalThis as { __restoreFetch?: () => void }).__restoreFetch?.();
+  }
+});
+
+test('AgentLoop boundary: streamed UND_ERR_SOCKET reaches failure_observation.transport_failure.cause_code', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'streaming-loop-'));
+  const originalFetch = globalThis.fetch;
+  try {
+    const streamErr = Object.assign(new TypeError('terminated'), {
+      cause: { name: 'SocketError', code: 'UND_ERR_SOCKET', message: 'other side closed' },
+    });
+    globalThis.fetch = (async () =>
+      failingResponse(streamErr, `data: ${JSON.stringify(chunk({ content: 'partial' }))}\n\n`)) as typeof fetch;
+    const provider = new OpenAICompatibleMultiTurnProvider(CONFIG);
+    const loop = new AgentLoop(provider, {
+      model: 'test-model',
+      projectRoot: root,
+      role: 'explorer',
+      workflowRunId: 'r',
+      iteration: 1,
+      nodeId: 'build',
+      runArtifacts: new RunArtifactManager({ projectRoot: root }),
+    });
+    const result: AgentLoopResult = await loop.run('system', 'user task');
+    assert.equal(result.success, false);
+    const tf = result.failure_observation!.transport_failure!;
+    assert.ok(tf, 'transport_failure must be present on the observation');
+    assert.equal(tf.cause_code, 'UND_ERR_SOCKET', 'the evidence machinery must see the undici cause code through the streaming wrapper');
+    assert.equal(tf.cause_name, 'TypeError');
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

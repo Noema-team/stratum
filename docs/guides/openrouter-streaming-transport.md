@@ -43,9 +43,22 @@ Non-2xx responses keep the exact legacy error contract
 
 Remote disconnect or malformed/truncated SSE **before** `finish_reason`:
 thrown as `LLM stream failed before completion (transport) … — no partial
-generation is returned`. **No partial generation is ever returned as a
-successful completed model turn.**
+generation is returned`. The original error travels as the wrapper's
+`cause`, so AgentLoop's `describeTransportFailure` still extracts
+`cause_code` (e.g. `UND_ERR_SOCKET`) — the evidence chain that classified
+pilot attempts 20/21 is preserved through the streaming wrapper. **No
+partial generation is ever returned as a successful completed model turn.**
 
 Disconnect **after** `finish_reason` (e.g. the trailing usage chunk is lost):
 the generation itself completed; the assembled result is returned with
-whatever usage was captured (`tokens_used: 0` if none arrived).
+whatever usage was captured (`tokens_used: 0` if none arrived). This is
+mechanically safe because the accumulator enforces a terminal semantic
+state: after the first non-null `finish_reason`, only non-semantic trailing
+data (usage-only chunks, empty keep-alive choices, `[DONE]`, EOF) is
+accepted — a semantic delta or second finish reason is a parse error. Once
+`[DONE]` has arrived, any further data event is a parse error.
+
+**Explicit caller cancellation is a separate category from both failure
+modes:** an `AbortError` raised by a caller-supplied signal propagates
+unchanged (original error object) — it is never wrapped as a transport
+failure and never downgraded to a success, including after `finish_reason`.

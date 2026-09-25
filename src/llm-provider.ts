@@ -241,17 +241,32 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
           if (readResult.done) break;
           accumulator.feed(decoder.decode(readResult.value, { stream: true }));
         } catch (err) {
+          // Explicit caller cancellation is NEVER converted to success — not
+          // even after finish_reason. "finish_reason seen ⇒ disconnect is
+          // benign" is a statement about REMOTE trailing loss, not a license
+          // to override the caller's cancel: rethrow the abort as-is (the
+          // original error object, so cause chains and identity survive).
+          if (isAbortError(err)) throw err;
           // SSE contract violations keep their own (fail-closed) error type.
           if (err instanceof SseParseError) throw err;
           // Remote disconnect / socket error. After finish_reason the
-          // generation itself is complete — only trailing bytes (usage) were
-          // at risk; before it, this is a hard transport failure.
+          // accumulator is in its terminal semantic state (enforced in
+          // SseStreamAccumulator: only usage-only chunks are legal after the
+          // terminal finish_reason), so nothing semantic can be lost — only
+          // trailing bytes (usage) were at risk. Before it, this is a hard
+          // transport failure.
           if (accumulator.hasFinishReason) break;
           const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+          // Preserve the original error as `cause`: AgentLoop's
+          // describeTransportFailure extracts evidence from
+          // err.cause / err.cause.code / err.cause.cause.code — the exact
+          // machinery that classified pilot attempts 20/21. Dropping the
+          // chain would regress transport-failure evidence to a bare message.
           throw new Error(
             `LLM stream failed before completion (transport): ${(err as Error).message}`
             + `${cause?.code ? ` [${cause.code}]` : ''}`
             + ` — no partial generation is returned`,
+            { cause: err },
           );
         }
       }
@@ -282,6 +297,16 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
       tokens_used: assembled.totalTokens ?? 0,
     };
   }
+}
+
+// Cancellation detection for the streaming read loop: undici/Node surface an
+// aborted request as a DOMException named 'AbortError', or as an error whose
+// `code` (own or on the cause) is 'ABORT_ERR'. Distinct from remote disconnects
+// so caller cancellation can never be downgraded to a benign trailing loss.
+function isAbortError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string; cause?: { code?: string } } | null;
+  if (!e) return false;
+  return e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.cause?.code === 'ABORT_ERR';
 }
 
 // A malformed tool_call.function.arguments string (not valid JSON) fails

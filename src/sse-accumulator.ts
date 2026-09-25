@@ -123,8 +123,16 @@ export class SseStreamAccumulator {
   private handleEvent(dataLines: string[]): void {
     const payload = dataLines.join('\n');
     if (payload === '[DONE]') {
+      // [DONE] is TERMINAL: any further data event is a stream-contract
+      // violation, not a tolerable trailing artifact.
+      if (this.sawDone) {
+        throw new SseParseError('data event after [DONE] — stream already terminated');
+      }
       this.sawDone = true;
       return;
+    }
+    if (this.sawDone) {
+      throw new SseParseError('data event after [DONE] — stream already terminated');
     }
     let chunk: StreamedChatChunk;
     try {
@@ -136,6 +144,26 @@ export class SseStreamAccumulator {
     }
 
     const choice = chunk.choices?.[0];
+    // Terminal semantic state: the FIRST non-null finish_reason completes the
+    // model's generation. The provider treats "finish_reason seen" as the
+    // boundary that makes a subsequent transport failure benign — that claim
+    // is only true if the accumulator can no longer change semantic state
+    // afterwards. Enforce it: after finish_reason only non-semantic trailing
+    // data is legal (usage-only chunks, empty keep-alive choices). A second
+    // finish_reason or any content/tool delta is a contract violation.
+    if (this.finishReason !== null) {
+      const delta = choice?.delta;
+      const semanticDelta =
+        delta !== undefined
+        && ((delta.content !== undefined && delta.content !== null) || (delta.tool_calls !== undefined && delta.tool_calls.length > 0));
+      if (semanticDelta) {
+        throw new SseParseError('semantic delta (content/tool_calls) after finish_reason — stream contract violation');
+      }
+      if (choice?.finish_reason) {
+        throw new SseParseError('second finish_reason after the terminal finish_reason — stream contract violation');
+      }
+    }
+
     const delta = choice?.delta;
     if (delta?.content) this.textParts.push(delta.content);
     for (const tc of delta?.tool_calls ?? []) this.applyToolCallDelta(tc);
@@ -150,7 +178,16 @@ export class SseStreamAccumulator {
     id?: string;
     function?: { name?: string; arguments?: string };
   }): void {
-    const index = tc.index ?? 0;
+    // Fail closed on index: tool calls are assembled BY INDEX (OpenAI/
+    // OpenRouter streaming contract). A delta without a valid non-negative
+    // integer index must never be coerced to index 0 — a malformed fragment
+    // would otherwise silently merge into an unrelated tool call.
+    const index = tc.index;
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+      throw new SseParseError(
+        `tool_call delta without a valid non-negative integer index (got ${JSON.stringify(tc.index ?? null)}) — refusing to attach it to an existing tool call`,
+      );
+    }
     let entry = this.toolCalls.get(index);
     if (!entry) {
       // First delta for this tool call: carries the identity. An arguments
