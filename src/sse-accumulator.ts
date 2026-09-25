@@ -150,8 +150,8 @@ export class SseStreamAccumulator {
     // SseParseError: a plain TypeError here (e.g. `'content' in 123`, or
     // `.choices` on a null payload) would be misclassified by the provider's
     // catch as benign post-finish transport loss and return success. Validate
-    // chunk → choice → delta containers BEFORE any field access; the
-    // field-level checks below are then safe. JSON.parse's `as` types are
+    // chunk → choices → choice → delta containers BEFORE any field access;
+    // the field-level checks below are then safe. JSON.parse's `as` types are
     // compile-time only — the wire can send any JSON shape.
     if (this.finishReason !== null) {
       const describe = (v: unknown): string =>
@@ -161,7 +161,13 @@ export class SseStreamAccumulator {
           `malformed post-finish chunk payload (expected object, got ${describe(chunk)}) — stream contract violation`,
         );
       }
-      const c: unknown = (chunk as { choices?: Array<unknown> | null }).choices?.[0];
+      const choices: unknown = (chunk as { choices?: unknown }).choices;
+      if (choices !== undefined && choices !== null && !Array.isArray(choices)) {
+        throw new SseParseError(
+          `malformed post-finish choices field (expected absent|null|array, got ${describe(choices)}) — stream contract violation`,
+        );
+      }
+      const c: unknown = Array.isArray(choices) ? choices[0] : undefined;
       if (c !== undefined && (c === null || typeof c !== 'object' || Array.isArray(c))) {
         throw new SseParseError(
           `malformed post-finish choice (expected object, got ${describe(c)}) — stream contract violation`,

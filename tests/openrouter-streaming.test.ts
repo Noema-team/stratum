@@ -801,3 +801,21 @@ test('adversarial: post-finish delta: 123 rejects as SseParseError (never `in` o
     },
   );
 });
+
+// ─── P2 fix: the `choices` container itself is runtime-validated ──────────────
+
+test('adversarial: post-finish choices: 123 and choices: {} reject as SseParseError (container chain complete)', () => {
+  for (const wire of ['data: {"choices":123}\n\n', 'data: {"choices":{}}\n\n']) {
+    const acc = new SseStreamAccumulator();
+    acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+    assert.throws(
+      () => acc.feed(wire),
+      (err: unknown) => {
+        assert.ok(err instanceof SseParseError, `expected SseParseError for ${wire.trim()}, got ${(err as Error).name}: ${(err as Error).message}`);
+        assert.match((err as Error).message, /malformed post-finish choices field/);
+        return true;
+      },
+      `choices container must fail closed: ${wire.trim()}`,
+    );
+  }
+});
