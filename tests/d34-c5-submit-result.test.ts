@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { resolveResultTransport, TextualSleOutputTransport, SLE_OPEN, SLE_CLOSE } from '../src/transport/textual-sle-output.js';
 import { SubmitResultTransport } from '../src/transport/submit-result-transport.js';
 import { SUBMIT_RESULT_TOOL_NAME } from '../src/transport/step-result.js';
+import { sseResponse, chunk } from './sse-test-utils.js';
 import { toJsonSchema, renderSchemaTeaching } from '../src/workflow/contracts.js';
 import { DEFINITION_PROPOSAL_SCHEMA, renderDefinition, type DefinitionProposal } from '../src/workflow/methodology/definition-contract.js';
 import { buildAgentRunner } from '../src/application.js';
@@ -427,16 +428,11 @@ test('D.34.C5 WIRE (OpenRouter/OpenAI): the submission tool maps onto function t
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: any, init: any) => {
     captured.push(JSON.parse(init.body));
-    return {
-      ok: true,
-      json: async () => ({
-        choices: [{
-          message: { content: null, tool_calls: [{ id: 'call_1', function: { name: SUBMIT_RESULT_TOOL_NAME, arguments: JSON.stringify(VALID_PROPOSAL) } }] },
-          finish_reason: 'tool_calls',
-        }],
-        usage: { total_tokens: 7 },
-      }),
-    } as never;
+    return sseResponse([
+      chunk({ tool_calls: [{ index: 0, id: 'call_1', function: { name: SUBMIT_RESULT_TOOL_NAME, arguments: JSON.stringify(VALID_PROPOSAL) } }] }),
+      chunk({}, 'tool_calls', { total_tokens: 7 }),
+      '[DONE]',
+    ]);
   }) as never;
   try {
     const provider = new OpenAICompatibleMultiTurnProvider({

@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AgentLLMConfig } from './types.js';
 import type { IMultiTurnProvider, MultiTurnParams, MultiTurnResult, MultiTurnMessage } from './agent-loop.js';
 import { AnthropicSDKProvider } from './anthropic-provider.js';
+import { SseStreamAccumulator, SseParseError } from './sse-accumulator.js';
 
 export interface LLMCompletionParams {
   model: string;
@@ -164,6 +165,39 @@ export class OpenAICompatibleProvider implements ILLMProvider {
 // itself) so plain openai_compatible/glm configurations — whose target
 // model or endpoint may not support tool calling — are unaffected; only
 // the 'openrouter' case in createLLMProvider() below opts into it.
+//
+// ─── Transport regime: streaming (transport-hardening PR) ─────────────────────
+//
+// completeMultiTurn uses `stream: true` (SSE). Regimes, by contrast:
+//
+//   1. NON-STREAMING LEGACY (all other providers/wires): one HTTP request,
+//      zero response bytes until the entire generation completes. A flow that
+//      sits byte-idle for the full generation time is exposed to idle-flow
+//      termination anywhere on the path (see pilot-a evidence/
+//      transport-investigation/ — attempts 20/21 died this way at 8.8/13.1 min,
+//      cause unattributed). Failure before any bytes or mid-JSON-body is a
+//      thrown fetch/parse error — never a partial success.
+//
+//   2. STREAMING (this class): response bytes flow continuously during
+//      generation (SSE deltas; measured largest inter-chunk gap 0.28 s on the
+//      pilot route), so the flow is never byte-idle mid-generation.
+//      • Failure BEFORE FIRST BYTE (connect/TLS/request-reject): thrown before
+//        any content exists — identical in kind to regime 1.
+//      • Failure MID-STREAM (remote disconnect, malformed/truncated SSE):
+//        thrown as a transport error. If a finish_reason was already received,
+//        the generation itself is complete and only trailing bytes (e.g. the
+//        usage chunk) were lost — the assembled result is still valid; a
+//        disconnect BEFORE finish_reason never yields a result (no partial
+//        generation is ever returned as a successful completed model turn).
+//
+// REGIME BOUNDARY (comparability): switching a wire between regimes 1 and 2
+// changes transport semantics and failure modes; it must never be done
+// silently inside an experiment — see pilot journal transport_investigation_closed.
+//
+// The SSE parse/assembly itself lives in src/sse-accumulator.ts — a pure,
+// deterministically testable state machine (framing splits, multi-event
+// chunks, fragmented tool-call arguments, usage capture, fail-closed
+// truncation/malformation semantics).
 export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider implements IMultiTurnProvider {
   async completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult> {
     const model = params.model || this.defaultModel;
@@ -181,46 +215,119 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
         // E3b — sampling parity: forward the temperature the runner runs
         // everywhere else; absent leaves the provider default (legacy).
         ...(params.temperature !== undefined && { temperature: params.temperature }),
+        // Transport regime 2 — SSE streaming (see regime boundary above).
+        stream: true,
       }),
+      // Transport-boundary cancellation: honored only when the caller supplies
+      // a signal (MultiTurnParams.signal); no orchestrator caller does today.
+      ...(params.signal && { signal: params.signal }),
     });
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => 'unknown error');
       throw new Error(`LLM API request failed: ${response.status} ${response.statusText} — ${errorBody}`);
     }
+    if (!response.body) {
+      throw new Error('LLM API request failed: streaming response has no body');
+    }
 
-    const data = await response.json() as {
-      choices: Array<{
-        message: { content: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
-        finish_reason: string;
-      }>;
-      usage?: { total_tokens: number };
-    };
+    const accumulator = new SseStreamAccumulator();
+    const decoder = new TextDecoder();
+    const reader = response.body.getReader();
+    // Set when a post-finish transport error is committed as benign: the
+    // semantic result is complete and any UNPARSED trailing bytes (e.g. a
+    // HALF-received usage event still sitting in the accumulator's buffers)
+    // are deliberately abandoned instead of flushed+parsed.
+    let trailingTransportLost = false;
+    try {
+      for (;;) {
+        try {
+          const readResult = await reader.read();
+          if (readResult.done) break;
+          accumulator.feed(decoder.decode(readResult.value, { stream: true }));
+        } catch (err) {
+          // Explicit caller cancellation is NEVER converted to success — not
+          // even after finish_reason. "finish_reason seen ⇒ disconnect is
+          // benign" is a statement about REMOTE trailing loss, not a license
+          // to override the caller's cancel: rethrow the abort as-is (the
+          // original error object, so cause chains and identity survive).
+          if (isAbortError(err)) throw err;
+          // SSE contract violations keep their own (fail-closed) error type.
+          if (err instanceof SseParseError) throw err;
+          // Remote disconnect / socket error. After finish_reason the
+          // accumulator is in its terminal semantic state (enforced in
+          // SseStreamAccumulator: only usage-only chunks are legal after the
+          // terminal finish_reason), so nothing semantic can be lost — but
+          // the disconnect can land MID-trailing-event: partially received
+          // usage bytes may sit buffered and would fail to parse if flushed.
+          // Commit the completed semantic result and abandon those bytes
+          // explicitly rather than letting end() fail the turn.
+          if (accumulator.hasFinishReason) {
+            accumulator.abandonTrailingBytesAfterFinish();
+            trailingTransportLost = true;
+            break;
+          }
+          const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+          // Preserve the original error as `cause`: AgentLoop's
+          // describeTransportFailure extracts evidence from
+          // err.cause / err.cause.code / err.cause.cause.code — the exact
+          // machinery that classified pilot attempts 20/21. Dropping the
+          // chain would regress transport-failure evidence to a bare message.
+          throw new Error(
+            `LLM stream failed before completion (transport): ${(err as Error).message}`
+            + `${cause?.code ? ` [${cause.code}]` : ''}`
+            + ` — no partial generation is returned`,
+            { cause: err },
+          );
+        }
+      }
+      if (!trailingTransportLost) {
+        accumulator.feed(decoder.decode()); // flush any buffered multibyte tail
+        try {
+          accumulator.end();
+        } catch (err) {
+          // A clean EOF can equally land mid-trailing-event (server sends
+          // half the usage event, then closes). By the terminal-state
+          // invariant such bytes are non-semantic — a parse failure there
+          // must not fail a completed generation either.
+          if (!(err instanceof SseParseError && accumulator.hasFinishReason)) throw err;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
 
-    const choice = data.choices?.[0];
-    const message = choice?.message;
-    const finishReason = choice?.finish_reason ?? 'stop';
-    const rawToolCalls = message?.tool_calls ?? [];
+    const assembled = accumulator.assemble(); // throws if finish_reason never arrived
 
-    const toolUses = rawToolCalls.map((tc) => ({
+    const toolUses = assembled.toolCalls.map((tc) => ({
       type: 'tool_use' as const,
       id: tc.id,
-      name: tc.function.name,
-      input: parseToolArguments(tc.function.arguments),
+      name: tc.name,
+      input: parseToolArguments(tc.arguments),
     }));
 
     const stopReason =
-      finishReason === 'length' ? 'max_tokens'
-      : (finishReason === 'tool_calls' || toolUses.length > 0) ? 'tool_use'
+      assembled.finishReason === 'length' ? 'max_tokens'
+      : (assembled.finishReason === 'tool_calls' || toolUses.length > 0) ? 'tool_use'
       : 'end_turn';
 
     return {
       stop_reason: stopReason,
-      text: message?.content ?? '',
+      text: assembled.text,
       tool_uses: toolUses,
-      tokens_used: data.usage?.total_tokens ?? 0,
+      tokens_used: assembled.totalTokens ?? 0,
     };
   }
+}
+
+// Cancellation detection for the streaming read loop: undici/Node surface an
+// aborted request as a DOMException named 'AbortError', or as an error whose
+// `code` (own or on the cause) is 'ABORT_ERR'. Distinct from remote disconnects
+// so caller cancellation can never be downgraded to a benign trailing loss.
+function isAbortError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string; cause?: { code?: string } } | null;
+  if (!e) return false;
+  return e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.cause?.code === 'ABORT_ERR';
 }
 
 // A malformed tool_call.function.arguments string (not valid JSON) fails

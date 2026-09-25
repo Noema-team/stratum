@@ -8,7 +8,8 @@
 // silent fallback), the multi-turn wire carries temperature when the caller
 // sets it (sampling parity with the single-turn/structured wires — C6 review
 // closure 3 semantics), and the legacy wire shape (temperature unset) stays
-// byte-for-byte unchanged.
+// byte-for-byte unchanged. NOTE (transport-hardening PR): the multi-turn wire
+// now streams (`stream: true`) — stubs speak SSE via tests/sse-test-utils.ts.
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -17,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createLLMProvider } from '../src/llm-provider.js';
+import { sseResponse, chunk } from './sse-test-utils.js';
 
 test('E11: the glm (Z.ai Coding Plan) provider kind is rejected by the factory', () => {
   const root = mkdtempSync(join(tmpdir(), 'e3b-'));
@@ -40,13 +42,7 @@ test('E3b: the multi-turn wire forwards the runner temperature (sampling parity)
   let capturedBody: Record<string, unknown> | undefined;
   globalThis.fetch = (async (_url: unknown, init: { body: string }) => {
     capturedBody = JSON.parse(init.body);
-    return {
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
-        usage: { total_tokens: 1 },
-      }),
-    } as unknown as Response;
+    return sseResponse([chunk({ content: 'done' }, 'stop', { total_tokens: 1 }), '[DONE]']);
   }) as typeof fetch;
   try {
     const { OpenAICompatibleMultiTurnProvider } = await import('../src/llm-provider.js');
@@ -78,13 +74,7 @@ test('E3b: temperature absent on the multi-turn wire keeps legacy byte-for-byte 
   let capturedBody: Record<string, unknown> | undefined;
   globalThis.fetch = (async (_url: unknown, init: { body: string }) => {
     capturedBody = JSON.parse(init.body);
-    return {
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
-        usage: { total_tokens: 1 },
-      }),
-    } as unknown as Response;
+    return sseResponse([chunk({ content: 'done' }, 'stop', { total_tokens: 1 }), '[DONE]']);
   }) as typeof fetch;
   try {
     const { OpenAICompatibleMultiTurnProvider } = await import('../src/llm-provider.js');

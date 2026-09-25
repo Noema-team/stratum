@@ -15,6 +15,7 @@ import {
 import type { MultiTurnParams } from '../src/agent-loop.js';
 import { AnthropicSDKProvider } from '../src/anthropic-provider.js';
 import type { AgentLLMConfig } from '../src/types.js';
+import { sseResponse, chunk } from './sse-test-utils.js';
 
 const TEST_CONFIG: AgentLLMConfig = {
   provider: 'openai_compatible',
@@ -518,16 +519,11 @@ test('testOpenAICompatibleMultiTurnProviderMapsToolCallsToToolUse', async () => 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
     capturedBody = JSON.parse(init!.body as string);
-    return new Response(JSON.stringify({
-      choices: [{
-        message: {
-          content: null,
-          tool_calls: [{ id: 'call_1', function: { name: 'read_file', arguments: '{"path":"docs/architecture.md"}' } }],
-        },
-        finish_reason: 'tool_calls',
-      }],
-      usage: { total_tokens: 42 },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return sseResponse([
+      chunk({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read_file', arguments: '{"path":"docs/architecture.md"}' } }] }),
+      chunk({}, 'tool_calls', { total_tokens: 42 }),
+      '[DONE]',
+    ]);
   };
   try {
     const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
@@ -553,20 +549,20 @@ test('testOpenAICompatibleMultiTurnProviderMapsEndTurnAndMaxTokens', async () =>
   process.env.TEST_LLM_API_KEY = 'test-key';
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = async () => new Response(JSON.stringify({
-      choices: [{ message: { content: '<<<SLE-OUTPUT>>>...' }, finish_reason: 'stop' }],
-      usage: { total_tokens: 5 },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    globalThis.fetch = async () => sseResponse([
+      chunk({ content: '<<<SLE-OUTPUT>>>...' }, 'stop', { total_tokens: 5 }),
+      '[DONE]',
+    ]);
     const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
     const endTurn = await provider.completeMultiTurn(baseMultiTurnParams());
     assert.equal(endTurn.stop_reason, 'end_turn');
     assert.equal(endTurn.tool_uses.length, 0);
     assert.equal(endTurn.text, '<<<SLE-OUTPUT>>>...');
 
-    globalThis.fetch = async () => new Response(JSON.stringify({
-      choices: [{ message: { content: 'truncated' }, finish_reason: 'length' }],
-      usage: { total_tokens: 100 },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    globalThis.fetch = async () => sseResponse([
+      chunk({ content: 'truncated' }, 'length', { total_tokens: 100 }),
+      '[DONE]',
+    ]);
     const maxTokens = await provider.completeMultiTurn(baseMultiTurnParams());
     assert.equal(maxTokens.stop_reason, 'max_tokens');
   } finally {
@@ -581,10 +577,7 @@ test('testOpenAICompatibleMultiTurnProviderConvertsToolUseAndToolResultMessagesT
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
     capturedBody = JSON.parse(init!.body as string);
-    return new Response(JSON.stringify({
-      choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
-      usage: { total_tokens: 1 },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return sseResponse([chunk({ content: 'ok' }, 'stop', { total_tokens: 1 }), '[DONE]']);
   };
   try {
     const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
@@ -616,13 +609,11 @@ test('testOpenAICompatibleMultiTurnProviderConvertsToolUseAndToolResultMessagesT
 test('testOpenAICompatibleMultiTurnProviderMalformedToolArgumentsFailClosedToEmptyObject', async () => {
   process.env.TEST_LLM_API_KEY = 'test-key';
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    choices: [{
-      message: { content: null, tool_calls: [{ id: 'call_1', function: { name: 'read_file', arguments: 'not-json' } }] },
-      finish_reason: 'tool_calls',
-    }],
-    usage: { total_tokens: 1 },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  globalThis.fetch = async () => sseResponse([
+    chunk({ tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read_file', arguments: 'not-json' } }] }),
+    chunk({}, 'tool_calls', { total_tokens: 1 }),
+    '[DONE]',
+  ]);
   try {
     const provider = new OpenAICompatibleMultiTurnProvider(MULTI_TURN_CONFIG);
     const result = await provider.completeMultiTurn(baseMultiTurnParams());

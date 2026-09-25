@@ -203,6 +203,12 @@ export interface MultiTurnParams {
     description: string;
     input_schema: Record<string, unknown>;
   }>;
+  // Transport-boundary cancellation (streaming PR): forwarded to the provider's
+  // fetch as the AbortSignal, enabling explicit timeout/cancel behavior at the
+  // wire. OPTIONAL and additive — no orchestrator caller supplies one today;
+  // absent, behavior is byte-for-byte unchanged. Providers that do not support
+  // cancellation ignore it.
+  signal?: AbortSignal;
 }
 
 export interface IMultiTurnProvider {
