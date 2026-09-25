@@ -708,3 +708,49 @@ test('adversarial: whitespace-only content after finish_reason REMAINS semantic 
   acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
   assert.throws(() => acc.feed(`data: ${JSON.stringify(chunk({ content: ' ' }))}\n\n`), /non-empty content delta after finish_reason/);
 });
+
+// ─── P1 fix: runtime-strict post-finish field types (JSON.parse `as` is a lie) ─
+
+test('adversarial: post-finish content of WRONG TYPE (number) rejects as SseParseError and mutates NOTHING', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({ content: 'done' }, 'stop'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: 123 as unknown as string }))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, 'must be SseParseError, never a plain TypeError');
+      assert.match((err as Error).message, /malformed post-finish content field/);
+      return true;
+    },
+  );
+  // The malformed value must not have touched the semantic result before throwing.
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.text, 'done', 'assembled text unchanged — malformed data cannot mutate post-finish state');
+  assert.equal(a.finishReason, 'stop');
+});
+
+test('adversarial: post-finish tool_calls: null rejects as SseParseError (never a TypeError the provider would call benign)', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ tool_calls: null as unknown as Array<never> }))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish tool_calls field/);
+      return true;
+    },
+  );
+});
+
+test('adversarial: post-finish finish_reason of WRONG TYPE (number) rejects as SseParseError', () => {
+  const acc = new SseStreamAccumulator();
+  acc.feed(`data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\n`);
+  assert.throws(
+    () => acc.feed(`data: ${JSON.stringify(chunk({ content: '' }, 123 as unknown as string))}\n\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof SseParseError, `expected SseParseError, got ${(err as Error).name}: ${(err as Error).message}`);
+      assert.match((err as Error).message, /malformed post-finish finish_reason field/);
+      return true;
+    },
+  );
+});

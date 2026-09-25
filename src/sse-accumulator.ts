@@ -166,18 +166,45 @@ export class SseStreamAccumulator {
     // reason — is a contract violation.
     if (this.finishReason !== null) {
       const delta = choice?.delta;
-      if (typeof delta?.content === 'string' && delta.content !== '') {
-        throw new SseParseError(
-          `non-empty content delta after finish_reason (${JSON.stringify(delta.content.slice(0, 40))}) — stream contract violation (empty string is inert; whitespace is content)`,
-        );
+      // RUNTIME-STRICT validation of the inert post-finish field set. JSON.parse
+      // types are compile-time lies — the network can send ANY JSON type, and a
+      // malformed value here must (a) never mutate semantic state and (b) always
+      // be an SseParseError (never a plain TypeError, which the provider would
+      // misclassify as benign post-finish transport loss).
+      if (delta && 'content' in delta && delta.content != null) {
+        if (typeof delta.content !== 'string') {
+          throw new SseParseError(
+            `malformed post-finish content field (expected absent|null|"", got ${typeof delta.content}) — stream contract violation`,
+          );
+        }
+        if (delta.content !== '') {
+          throw new SseParseError(
+            `non-empty content delta after finish_reason (${JSON.stringify(delta.content.slice(0, 40))}) — stream contract violation (empty string is inert; whitespace is content)`,
+          );
+        }
       }
-      if (delta?.tool_calls !== undefined && delta.tool_calls.length > 0) {
-        throw new SseParseError('tool-call delta after finish_reason — stream contract violation');
+      if (delta && 'tool_calls' in delta) {
+        if (!Array.isArray(delta.tool_calls)) {
+          throw new SseParseError(
+            `malformed post-finish tool_calls field (expected absent or array, got ${delta.tool_calls === null ? 'null' : typeof delta.tool_calls}) — stream contract violation`,
+          );
+        }
+        if (delta.tool_calls.length > 0) {
+          throw new SseParseError('tool-call delta after finish_reason — stream contract violation');
+        }
       }
-      if (choice?.finish_reason && choice.finish_reason !== this.finishReason) {
-        throw new SseParseError(
-          `finish_reason changed after the terminal finish_reason (${JSON.stringify(this.finishReason)} → ${JSON.stringify(choice.finish_reason)}) — stream contract violation`,
-        );
+      const repeatedFinish = choice?.finish_reason;
+      if (repeatedFinish != null) {
+        if (typeof repeatedFinish !== 'string') {
+          throw new SseParseError(
+            `malformed post-finish finish_reason field (expected string, got ${typeof repeatedFinish}) — stream contract violation`,
+          );
+        }
+        if (repeatedFinish !== this.finishReason) {
+          throw new SseParseError(
+            `finish_reason changed after the terminal finish_reason (${JSON.stringify(this.finishReason)} → ${JSON.stringify(repeatedFinish)}) — stream contract violation`,
+          );
+        }
       }
     }
 
