@@ -366,10 +366,12 @@ test('V3.10: a REJECTED repair never replaces the workspace charter (validator h
 
 test('V3.12: adversarial — a VALID repair envelope plus a tool request is rejected for the tool use, not the text', async () => {
   const root = mkdtempSync(join(tmpdir(), 'v3-'));
-  // The repair text is byte-for-byte the envelope the original turn should
-  // have produced: it WOULD satisfy the producer contract. The rejection
-  // must come from the tool request alone — that is the one-shot boundary.
-  const provider = new ScriptedProvider([MISSING, MISSING]);
+  // The repair text is byte-for-byte the COMPLETE envelope the original
+  // turn should have produced — both contract artifacts present, so it
+  // WOULD satisfy the producer contract. The rejection must come from the
+  // tool request alone — that is the one-shot boundary. (Counterfactual:
+  // the same bytes without the tool use are the adopted-repair case, V3.3.)
+  const provider = new ScriptedProvider([MISSING, COMPLETE]);
   provider.repairToolUses[1] = [{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'apps/ai-server/rag-worker-service/main.py' } }];
   try {
     const result = await makeRunner(root, provider).run('designer', ctx(root, { structuralRepair: true }));
@@ -388,9 +390,11 @@ test('V3.12: adversarial — a VALID repair envelope plus a tool request is reje
   }
 });
 
-test('V3.13: a provider-declared incomplete repair (max_tokens) is rejected even with a parseable COMPLETE envelope', async () => {
+test('V3.13: a provider-declared incomplete repair (max_tokens) is rejected even with a contract-satisfying COMPLETE envelope', async () => {
   const root = mkdtempSync(join(tmpdir(), 'v3-'));
-  const provider = new ScriptedProvider([MISSING, MISSING]);
+  // Same COMPLETE bytes as V3.3's adopted repair: only the stop_reason
+  // differs, so the rejection is attributable to the terminal state alone.
+  const provider = new ScriptedProvider([MISSING, COMPLETE]);
   provider.stopReasons[1] = 'max_tokens';
   try {
     const result = await makeRunner(root, provider).run('designer', ctx(root, { structuralRepair: true }));
