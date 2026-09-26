@@ -44,18 +44,26 @@ function envelope(sections: Array<{ path: string; content: string }>): string {
 class ScriptedProvider {
   calls = 0;
   instructions: string[] = [];
+  toolsOffered: Array<unknown[]> = [];
+  repairToolUses: unknown[][] = [];
   constructor(private scripts: Array<string | Error>) {}
   async complete() {
     throw new Error('v3: single-turn path not expected');
   }
-  async completeMultiTurn(params: { messages: Array<{ role: string; content: unknown }> }) {
+  async completeMultiTurn(params: {
+    messages: Array<{ role: string; content: unknown }>;
+    tools?: unknown[];
+  }) {
     const script = this.scripts[Math.min(this.calls, this.scripts.length - 1)];
+    const callIndex = this.calls;
     this.calls += 1;
+    this.toolsOffered.push(params.tools ?? []);
     // capture the LAST user message (the repair instruction on the repair turn)
     const last = params.messages[params.messages.length - 1];
     this.instructions.push(typeof last.content === 'string' ? last.content : JSON.stringify(last.content));
     if (script instanceof Error) throw script;
-    return { stop_reason: 'end_turn', text: script, tool_uses: [], tokens_used: 10 };
+    const toolUses = this.repairToolUses[callIndex] ?? [];
+    return { stop_reason: 'end_turn', text: script, tool_uses: toolUses, tokens_used: 10 };
   }
 }
 
@@ -119,6 +127,9 @@ test('V3.1: producer-contract shortfall triggers ONE repair turn; repaired outpu
     assert.match(ev.output_contract, /docs\/architecture\.md/);
     assert.equal(ev.repair_output, COMPLETE, 'repair output preserved verbatim');
     assert.deepEqual(ev.second_validation, { ok: true, error: null });
+    // ONE model inference for the repair, with NO repository tools offered:
+    assert.equal(provider.toolsOffered[1].length, 0, 'repair completion is tool-less by construction');
+    assert.ok(provider.instructions[1].includes(MISSING.trimEnd()));
     // the instruction carried the exact validator error + contract + original
     assert.match(ev.repair_instruction, /producer contract is unsatisfied/);
     assert.match(ev.repair_instruction, /docs\/architecture\.md/);
@@ -145,6 +156,9 @@ test('V3.2: repair that fails the same validator fails the stage — never a thi
     assert.match(ev.second_validation.error!, /architecture/);
     assert.equal(ev.original_output, MISSING);
     assert.equal(ev.repair_output, MISSING);
+    // P2 — truthful accounting: the rejected repair's tokens count toward
+    // the stage total (10 original + 10 repair).
+    assert.equal(result.tokens_used, 20, 'failed repair tokens are still accounted');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -219,6 +233,7 @@ test('V3.6: provider failure ON the repair turn fails the stage with the origina
     assert.equal(ev.repair_output, '');
     assert.match(ev.repair_invocation_error!, /transport died mid-repair/);
     assert.equal(ev.second_validation.ok, false);
+    assert.equal(result.tokens_used, 10, 'a completion that never happened costs nothing');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -267,10 +282,13 @@ test('V3.8: evidence persistence never overwrites an existing record', async () 
 // ─── 8. charter gate (scoping) ───────────────────────────────────────────────
 
 const CHARTER_NO_PURPOSE = envelope([
-  { path: 'docs/cycle-charter.md', content: '# Cycle Charter\n\n## Scope\n\nFix the failure payload.\n' },
+  { path: 'docs/cycle-charter.md', content: '# Cycle Charter\n\n## Scope\n\nORIGINAL scope text.\n' },
 ]);
 const CHARTER_FIXED = envelope([
-  { path: 'docs/cycle-charter.md', content: `# Cycle Charter\n\n## Scope\n\nFix the failure payload.\n\n${PURPOSE}\n` },
+  { path: 'docs/cycle-charter.md', content: `# Cycle Charter\n\n## Scope\n\nORIGINAL scope text.\n\n${PURPOSE}\n` },
+]);
+const CHARTER_CHANGED_STILL_INVALID = envelope([
+  { path: 'docs/cycle-charter.md', content: '# Cycle Charter\n\n## Scope\n\nCHANGED scope text, still no Purpose heading.\n' },
 ]);
 
 function makeScoping(root: string, provider: ScriptedProvider): ScopingService {
@@ -305,9 +323,11 @@ test('V3.9: charter missing ## Purpose → one repair turn → validator passes 
     assert.equal(provider.calls, 2);
     const onDisk = readFileSync(join(root, 'docs/cycle-charter.md'), 'utf-8');
     assert.match(onDisk, /## Purpose/, 'the repaired charter is the published material');
+    assert.match(onDisk, /ORIGINAL scope text/, 'accepted candidate kept the original scope');
+    assert.ok(onDisk.includes('Make RAG failures diagnosable'), 'the ACCEPTED candidate bytes are what got published');
     const ev = JSON.parse(readFileSync(evidencePath(root, 'scoping.produce.structural-repair.json'), 'utf-8'));
     assert.equal(ev.validator, 'charter-structure');
-    assert.match(ev.original_output, /Fix the failure payload/);
+    assert.match(ev.original_output, /ORIGINAL scope text/);
     assert.doesNotMatch(ev.original_output, /## Purpose/);
     assert.match(ev.validation_error, /Scope and\/or Purpose/);
     assert.deepEqual(ev.second_validation, { ok: true, error: null });
@@ -316,9 +336,9 @@ test('V3.9: charter missing ## Purpose → one repair turn → validator passes 
   }
 });
 
-test('V3.10: charter repair that still lacks ## Purpose fails closed with evidence', async () => {
+test('V3.10: a REJECTED repair never replaces the workspace charter (validator has publication authority)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'v3-'));
-  const provider = new ScriptedProvider([CHARTER_NO_PURPOSE, CHARTER_NO_PURPOSE]);
+  const provider = new ScriptedProvider([CHARTER_NO_PURPOSE, CHARTER_CHANGED_STILL_INVALID]);
   try {
     const service = makeScoping(root, provider);
     await assert.rejects(
@@ -329,8 +349,37 @@ test('V3.10: charter repair that still lacks ## Purpose fails closed with eviden
       },
     );
     assert.equal(provider.calls, 2);
+    // The repair candidate said CHANGED — and was rejected — so the workspace
+    // artifact must still carry the ORIGINAL bytes.
+    const onDisk = readFileSync(join(root, 'docs/cycle-charter.md'), 'utf-8');
+    assert.match(onDisk, /ORIGINAL scope text/, 'original charter intact');
+    assert.doesNotMatch(onDisk, /CHANGED scope text/, 'rejected repair was never published');
     const ev = JSON.parse(readFileSync(evidencePath(root, 'scoping.produce.structural-repair.json'), 'utf-8'));
     assert.equal(ev.second_validation.ok, false);
+    assert.match(ev.repair_output, /CHANGED scope text/, 'the rejected repair is preserved as evidence');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V3.12: adversarial — a repair reply that requests repository tools gets NO execution and NO second turn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v3-'));
+  const provider = new ScriptedProvider([MISSING, 'No envelope here at all, just prose.']);
+  provider.repairToolUses[1] = [{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'apps/ai-server/rag-worker-service/main.py' } }];
+  try {
+    const result = await makeRunner(root, provider).run('designer', ctx(root, { structuralRepair: true }));
+    assert.equal(result.success, false, 'a tool-requesting, envelope-less repair reply fails the stage');
+    assert.equal(provider.calls, 2, 'exactly one repair completion — no continuation');
+    assert.equal(provider.toolsOffered[1].length, 0, 'no tools were offered to the repair completion');
+    assert.match(result.error!, /bounded structural repair/);
+    const ev = JSON.parse(readFileSync(evidencePath(root), 'utf-8'));
+    // The tool request is irrelevant by construction: with tools:[] the
+    // reply is plain text, the transport rejects it, and no tool can run.
+    assert.match(ev.repair_invocation_error!, /unparseable/);
+    // nothing was read or written by any tool: the fixture tree has no
+    // requirements.md anywhere — a tool execution would have no observable
+    // write path, and the artifacts_written list stays empty.
+    assert.equal(result.artifacts_written.length, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

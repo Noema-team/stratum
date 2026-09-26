@@ -119,12 +119,16 @@ export class ScopingService {
         'facilitator', scopingCtx, 'scoping.produce',
         { validator: 'charter-structure', validatorError, contractText, originalOutput: draft },
       );
-      const secondDraft = repair.ok
-        ? await this.materializeRepairedCharterAndReread(ctx, repair.parsed)
+      // Publication authority: the candidate charter bytes are validated
+      // IN MEMORY first. docs/cycle-charter.md is written ONLY when the
+      // validator accepts the repair — a rejected repair is preserved as
+      // evidence and the workspace artifact keeps the original bytes.
+      const candidate = repair.ok
+        ? this.repairedCharterCandidate(ctx, repair.parsed)
         : null;
       const second: { ok: boolean; error: string | null } = repair.ok
-        ? (secondDraft !== null
-            ? (() => { const v = validateCharterStructure(secondDraft); return v.ok ? { ok: true, error: null } : { ok: false, error: v.error }; })()
+        ? (candidate !== null
+            ? (() => { const v = validateCharterStructure(candidate); return v.ok ? { ok: true, error: null } : { ok: false, error: v.error }; })()
             : { ok: false, error: 'repair turn produced no charter artifact' })
         : { ok: false, error: `repair invocation failed: ${repair.error}` };
       await persistStructuralRepairEvidence(
@@ -143,9 +147,10 @@ export class ScopingService {
         },
         this.fs,
       );
-      if (second.ok && secondDraft !== null) {
+      if (second.ok && candidate !== null) {
+        await this.writeCharter(ctx, candidate);
         structural = { ok: true };
-        draft = secondDraft;
+        draft = candidate;
         // The repaired charter is the material the checkpoint publishes.
       } else {
         throw Object.assign(
@@ -175,25 +180,31 @@ export class ScopingService {
 
 
   /**
-   * V3 — write the repair turn's charter material and re-read it for the
-   * second validation. Fails closed unless the repair output is EXACTLY the
-   * declared single artifact at a safe canonical path: any unsafe path, any
-   * extra section, or a missing charter section returns null (the repair
-   * then fails with the evidence preserved). The charter path is the step's
-   * declared output artifact — never a hardcoded constant.
+   * V3 — extract the repair turn's charter CANDIDATE bytes WITHOUT writing
+   * anything. Fails closed unless the repair output is EXACTLY the declared
+   * single artifact at a safe canonical path: any unsafe path, any extra
+   * section, or a missing charter section returns null. The validator runs
+   * on the candidate BEFORE anything touches the workspace — publication
+   * happens only via writeCharter after acceptance. The charter path is the
+   * step's declared output artifact — never a hardcoded constant.
    */
-  private async materializeRepairedCharterAndReread(
+  private repairedCharterCandidate(
     ctx: StepRunContext,
     parsed: { sections: Array<{ path: string; content: string }> },
-  ): Promise<string | null> {
+  ): string | null {
     const declared = ctx.outputArtifact?.path ?? 'docs/cycle-charter.md';
     const canonical = parsed.sections.map((s) => ({ safe: toSafeRelativePath(s.path), content: s.content }));
     if (canonical.some((s) => s.safe === null)) return null;
     if (canonical.length !== 1 || canonical[0].safe !== declared) return null;
+    return canonical[0].content;
+  }
+
+  /** V3 — publish ACCEPTED charter bytes to the declared artifact path. */
+  private async writeCharter(ctx: StepRunContext, content: string): Promise<void> {
+    const declared = ctx.outputArtifact?.path ?? 'docs/cycle-charter.md';
     const target = path.join(this.projectRoot, declared);
     await this.fs.mkdir(path.dirname(target), { recursive: true });
-    await this.fs.writeFile(target, canonical[0].content);
-    return this.getDraft();
+    await this.fs.writeFile(target, content);
   }
 
   async getDraft(): Promise<string | null> {

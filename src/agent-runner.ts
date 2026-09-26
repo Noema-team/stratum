@@ -9,7 +9,7 @@ import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
 import { toSafeRelativePath } from './path-safety.js';
-import { AgentLoop } from './agent-loop.js';
+import { AgentLoop, type MultiTurnParams, type MultiTurnResult } from './agent-loop.js';
 import { applyUnifiedDiff, PatchApplyError } from './patch.js';
 import {
   type ResultTransport,
@@ -23,6 +23,7 @@ import {
 } from './transport/step-result.js';
 import {
   resolveResultTransport,
+  TextualSleOutputTransport,
 } from './transport/textual-sle-output.js';
 import {
   buildStructuralRepairInstruction,
@@ -344,11 +345,10 @@ export class AgentRunner {
     return this.workflowBudgets?.[`${ctx.workflowId}/${ctx.stepId}`] ?? this.runnerConfig.max_tokens;
   }
 
-  // V3 — the multi-turn loop construction, extracted verbatim from run() so
-  // the bounded structural repair turn drives an IDENTICAL loop (same
-  // budget, sampling, transport, contract teaching, synthesis gate). No
-  // option differs between the original and repair invocations except the
-  // caller's choice of nodeId for evidence-file separation.
+  // V3 — the multi-turn loop construction, extracted verbatim from run()
+  // (single call site: the step's own investigation loop). The bounded
+  // structural repair deliberately does NOT go through this — it is one
+  // direct provider completion, never a fresh loop.
   private constructLoop(
     role: AgentRole,
     ctx: StepRunContext,
@@ -468,47 +468,88 @@ export class AgentRunner {
     return { ok: true, canonicalSections };
   }
 
-  // V3 — the bounded structural repair turn. Runs EXACTLY ONE additional
-  // loop invocation (identical construction: constructLoop) whose first and
-  // only user message is the generic validator-derived repair instruction.
-  // The repair loop uses a suffixed nodeId so its raw output and turn
-  // metadata land in SEPARATE evidence files — the original's failure
-  // evidence is never overwritten. Returns null when the repair invocation
-  // itself fails (provider/transport/no parsed output): the caller then
-  // fails the stage with the ORIGINAL rejection.
+  // V3 — the bounded structural repair turn: ONE provider completion, by
+  // construction. This is deliberately NOT an AgentLoop: no repository
+  // tools are offered (tools: []), no synthesis gate exists to restart,
+  // and no format-repair/result-repair continuation can grant a second
+  // completion. The repair question is answerable from the instruction
+  // alone (rejected output + exact validator error + frozen contract);
+  // the reply is parsed ONCE by the same textual transport the loop uses.
+  // Malformed, absent, or still-invalid output → repair failed, stage
+  // fails. Consumed tokens are always reported (P2: truthful accounting
+  // even when the repair is rejected or unparseable).
   async runStructuralRepairTurn(
     role: AgentRole,
     ctx: StepRunContext,
     nodeId: string,
     opts: { validator: string; validatorError: string; contractText: string; originalOutput: string },
-  ): Promise<{ ok: true; parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[]; patches?: Array<{ path: string; base: string; diff: string }> }; rawText: string; tokens_used: number; repairInstruction: string } | { ok: false; error: string; repairInstruction: string }> {
-    const repairNodeId = `${nodeId}.structural-repair`;
+  ): Promise<
+    | { ok: true; parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[] }; rawText: string; tokens_used: number; repairInstruction: string }
+    | { ok: false; error: string; repairInstruction: string; tokens_used: number }
+  > {
     const repairInstruction = buildStructuralRepairInstruction({
       validatorError: opts.validatorError,
       contractText: opts.contractText,
       originalOutput: opts.originalOutput,
     });
-    try {
-      const repairLoop = this.constructLoop(role, ctx, repairNodeId, undefined, {}, undefined);
-      const systemPrompt = 'You are performing a bounded structural repair of a rejected stage output. Follow the repair instruction exactly.';
-      const result = await repairLoop.run(systemPrompt, repairInstruction);
-      if (!result.success || !result.parsedOutput) {
-        return {
-          ok: false,
-          error: result.error ?? 'repair turn produced no parsable output',
-          repairInstruction,
-        };
-      }
-      return {
-        ok: true,
-        parsed: result.parsedOutput,
-        rawText: result.rawText || '',
-        tokens_used: result.tokens_used,
-        repairInstruction,
-      };
-    } catch (err) {
-      return { ok: false, error: `repair turn threw: ${(err as Error).message}`, repairInstruction };
+    const multiTurn = (this.llmProvider as { completeMultiTurn?: (p: MultiTurnParams) => Promise<MultiTurnResult> })
+      .completeMultiTurn?.bind(this.llmProvider);
+    if (multiTurn === undefined) {
+      return { ok: false, error: 'provider lacks multi-turn capability required for structural repair', repairInstruction, tokens_used: 0 };
     }
+    const params: MultiTurnParams = {
+      model: this.runnerConfig.model,
+      system: 'You are performing a bounded structural repair of a rejected stage output. Repair exactly the violations listed in the instruction without changing unrelated accepted material. Repository investigation is unavailable: repair from the provided material only, then re-submit the complete output.',
+      messages: [{ role: 'user', content: repairInstruction }],
+      // Identical budget bound to the loop's own default (agent-loop.ts:
+      // max_tokens ?? 4096) — the repair completion gets the SAME ceiling
+      // the step's completions get, nothing larger.
+      max_tokens: this.completionBudgetFor(ctx) ?? 4096,
+      temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+      tools: [],
+    };
+    let result: MultiTurnResult;
+    try {
+      result = await multiTurn(params);
+    } catch (err) {
+      return { ok: false, error: `repair completion failed: ${(err as Error).message}`, repairInstruction, tokens_used: 0 };
+    }
+    // Parse ONCE with the same transport extraction the loop uses. No
+    // format-repair continuation: an unparseable repair reply is a failed
+    // repair.
+    const transport = new TextualSleOutputTransport();
+    const transportCtx = {
+      role,
+      requiresReviewVerdict: false,
+      execution: 'multi-turn' as const,
+      nodeId,
+      ...(ctx.outputArtifact ? { declaredArtifactId: ctx.outputArtifact.type, declaredOutputPath: ctx.outputArtifact.path } : {}),
+      ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
+    };
+    let stepResult: StepResult;
+    try {
+      stepResult = transport.extractProduce(result.text, transportCtx);
+    } catch (err) {
+      return { ok: false, error: `repair reply was unparseable: ${err instanceof Error ? err.message : String(err)}`, repairInstruction, tokens_used: result.tokens_used };
+    }
+    if (stepResult.kind !== 'materialized' || stepResult.artifacts.length === 0) {
+      return {
+        ok: false,
+        error: `repair reply carried no usable artifacts (result kind: ${stepResult.kind}${result.tool_uses.length > 0 ? '; tool requests are not executable during structural repair' : ''})`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
+    return {
+      ok: true,
+      parsed: {
+        sections: stepResult.artifacts,
+        warnings: stepResult.warnings ?? [],
+      },
+      rawText: result.text,
+      tokens_used: result.tokens_used,
+      repairInstruction,
+    };
   }
 
   // V3 — runner-side wiring of the bounded repair for the producer-contract
@@ -544,6 +585,10 @@ export class AgentRunner {
       originalOutput,
     };
     const repair = await this.runStructuralRepairTurn(role, ctx, nodeId, opts);
+    // P2 — truthful accounting: tokens consumed by the repair completion are
+    // part of the stage's cost even when the repair is rejected or
+    // unparseable.
+    const tokensUsedTotal = tokensUsedSoFar + repair.tokens_used;
     // The SAME validator, unchanged, on the repair output.
     const second = this.validateProducedSections(role, ctx, repair.ok ? repair.parsed : originalParsed);
     const evidence: StructuralRepairEvidence = {
@@ -568,7 +613,7 @@ export class AgentRunner {
         ok: false,
         kind: 'producer-contract',
         error: `${rejection.error} — bounded structural repair was attempted but the repair turn itself failed: ${repair.error}`,
-        tokens_used_total: tokensUsedSoFar,
+        tokens_used_total: tokensUsedTotal,
       };
     }
     if (!second.ok) {
@@ -576,14 +621,14 @@ export class AgentRunner {
         ok: false,
         kind: 'producer-contract',
         error: `${rejection.error} — bounded structural repair was attempted and the same validator rejected the repair: ${second.error}`,
-        tokens_used_total: tokensUsedSoFar + repair.tokens_used,
+        tokens_used_total: tokensUsedTotal,
       };
     }
     return {
       ok: true,
       canonicalSections: second.canonicalSections,
       parsed: repair.parsed,
-      tokens_used_total: tokensUsedSoFar + repair.tokens_used,
+      tokens_used_total: tokensUsedTotal,
     };
   }
 
