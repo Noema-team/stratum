@@ -1,4 +1,6 @@
 import { promises as nodeFsPromises } from 'fs';
+import { toSafeRelativePath } from './path-safety.js';
+import { persistStructuralRepairEvidence } from './bounded-structural-repair.js';
 import path from 'path';
 import yaml from 'js-yaml';
 import type { AgentRunner } from './agent-runner.js';
@@ -90,15 +92,74 @@ export class ScopingService {
     // enforces and materializes it), so a missing file here is a failed
     // step — never an awaiting-approval state for a charter that does not
     // exist (the exact trap A8 died in at approve() time).
-    const draft = await this.getDraft();
+    let draft = await this.getDraft();
     if (draft === null) {
       throw Object.assign(
         new Error('Scoping produced no cycle charter at docs/cycle-charter.md.'),
         { code: 'no_scoping_draft' }
       );
     }
-    const structural = validateCharterStructure(draft);
-    if (!structural.ok) {
+    let structural = validateCharterStructure(draft);
+    // V3 — bounded structural repair for the charter gate: exactly ONE
+    // validator-driven repair turn when the workflow declared it. The SAME
+    // validator (validateCharterStructure) reruns on the repaired charter;
+    // its verdict is final. Evidence (original charter, validator error,
+    // repair instruction as issued, repair output, second validation) is
+    // persisted either way and never overwrites the original failure
+    // material. The contract text is derived from the step's declared
+    // output artifact and the validator's own error — nothing is
+    // special-cased to any particular requirement.
+    if (!structural.ok && ctx.structuralRepair === true) {
+      const validatorError = `Cycle charter failed structural validation: ${structural.error}`;
+      const contractText = [
+        `The step's declared output artifact (exact path): ${ctx.outputArtifact?.path ?? 'docs/cycle-charter.md'}`,
+        `The charter structural validator's requirement, verbatim: ${structural.error}`,
+      ].join('\n');
+      const repair = await this.agentRunner.runStructuralRepairTurn(
+        'facilitator', scopingCtx, 'scoping.produce',
+        { validator: 'charter-structure', validatorError, contractText, originalOutput: draft },
+      );
+      // Publication authority: the candidate charter bytes are validated
+      // IN MEMORY first. docs/cycle-charter.md is written ONLY when the
+      // validator accepts the repair — a rejected repair is preserved as
+      // evidence and the workspace artifact keeps the original bytes.
+      const candidate = repair.ok
+        ? this.repairedCharterCandidate(ctx, repair.parsed)
+        : null;
+      const second: { ok: boolean; error: string | null } = repair.ok
+        ? (candidate !== null
+            ? (() => { const v = validateCharterStructure(candidate); return v.ok ? { ok: true, error: null } : { ok: false, error: v.error }; })()
+            : { ok: false, error: 'repair turn produced no charter artifact' })
+        : { ok: false, error: `repair invocation failed: ${repair.error}` };
+      await persistStructuralRepairEvidence(
+        this.projectRoot, ctx.workflowRunId, ctx.iteration, 'scoping.produce',
+        {
+          stage_id: 'scoping.produce',
+          validator: 'charter-structure',
+          original_output: draft,
+          validation_error: validatorError,
+          output_contract: contractText,
+          repair_instruction: repair.repairInstruction,
+          repair_output: repair.ok ? repair.rawText : '',
+          second_validation: { ok: second.ok, error: second.ok ? null : second.error },
+          repair_invocation_error: repair.ok ? null : repair.error,
+          invoked_at: new Date().toISOString(),
+        },
+        this.fs,
+      );
+      if (second.ok && candidate !== null) {
+        await this.writeCharter(ctx, candidate);
+        structural = { ok: true };
+        draft = candidate;
+        // The repaired charter is the material the checkpoint publishes.
+      } else {
+        throw Object.assign(
+          new Error(`Cycle charter failed structural validation: ${structural.error}` +
+            ` — bounded structural repair was attempted and did not pass (${second.error})`),
+          { code: 'charter_validation_failed' }
+        );
+      }
+    } else if (!structural.ok) {
       throw Object.assign(
         new Error(`Cycle charter failed structural validation: ${structural.error}`),
         { code: 'charter_validation_failed' }
@@ -115,6 +176,35 @@ export class ScopingService {
       charter_path: 'docs/cycle-charter.md',
       awaiting_scoping: true,
     };
+  }
+
+
+  /**
+   * V3 — extract the repair turn's charter CANDIDATE bytes WITHOUT writing
+   * anything. Fails closed unless the repair output is EXACTLY the declared
+   * single artifact at a safe canonical path: any unsafe path, any extra
+   * section, or a missing charter section returns null. The validator runs
+   * on the candidate BEFORE anything touches the workspace — publication
+   * happens only via writeCharter after acceptance. The charter path is the
+   * step's declared output artifact — never a hardcoded constant.
+   */
+  private repairedCharterCandidate(
+    ctx: StepRunContext,
+    parsed: { sections: Array<{ path: string; content: string }> },
+  ): string | null {
+    const declared = ctx.outputArtifact?.path ?? 'docs/cycle-charter.md';
+    const canonical = parsed.sections.map((s) => ({ safe: toSafeRelativePath(s.path), content: s.content }));
+    if (canonical.some((s) => s.safe === null)) return null;
+    if (canonical.length !== 1 || canonical[0].safe !== declared) return null;
+    return canonical[0].content;
+  }
+
+  /** V3 — publish ACCEPTED charter bytes to the declared artifact path. */
+  private async writeCharter(ctx: StepRunContext, content: string): Promise<void> {
+    const declared = ctx.outputArtifact?.path ?? 'docs/cycle-charter.md';
+    const target = path.join(this.projectRoot, declared);
+    await this.fs.mkdir(path.dirname(target), { recursive: true });
+    await this.fs.writeFile(target, content);
   }
 
   async getDraft(): Promise<string | null> {

@@ -9,7 +9,7 @@ import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
 import { toSafeRelativePath } from './path-safety.js';
-import { AgentLoop } from './agent-loop.js';
+import { AgentLoop, type MultiTurnParams, type MultiTurnResult } from './agent-loop.js';
 import { applyUnifiedDiff, PatchApplyError } from './patch.js';
 import {
   type ResultTransport,
@@ -23,7 +23,13 @@ import {
 } from './transport/step-result.js';
 import {
   resolveResultTransport,
+  TextualSleOutputTransport,
 } from './transport/textual-sle-output.js';
+import {
+  buildStructuralRepairInstruction,
+  persistStructuralRepairEvidence,
+  type StructuralRepairEvidence,
+} from './bounded-structural-repair.js';
 import {
   type OutputContract,
   type OutputContractRegistry,
@@ -130,16 +136,30 @@ export function matchesAuthorizedOutput(path: string, entry: string): boolean {
   return entry.endsWith('/') ? path.startsWith(entry) : path === entry;
 }
 
+// V3 — the shortfall half of the producer contract, computed by the SAME
+// logic checkAuthorizedOutputs uses (which delegates here), so the bounded
+// structural repair's repairability classification can never diverge from
+// the validator's verdict. Shortfalls = mandatory outputs missing and/or
+// prefixes that received no file — the "incomplete submission" class.
+export function producerContractShortfalls(
+  produced: string[],
+  authorized: string[],
+): { missing: string[]; deadPrefixes: string[] } {
+  return {
+    missing: authorized.filter(
+      (e) => !e.endsWith('/') && !produced.some((p) => p === e),
+    ),
+    deadPrefixes: authorized.filter(
+      (e) => e.endsWith('/') && !produced.some((p) => p.startsWith(e)),
+    ),
+  };
+}
+
 export function checkAuthorizedOutputs(
   produced: string[],
   authorized: string[],
 ): { ok: true } | { ok: false; error: string } {
-  const missing = authorized.filter(
-    (e) => !e.endsWith('/') && !produced.some((p) => p === e),
-  );
-  const deadPrefixes = authorized.filter(
-    (e) => e.endsWith('/') && !produced.some((p) => p.startsWith(e)),
-  );
+  const { missing, deadPrefixes } = producerContractShortfalls(produced, authorized);
   const extras = produced.filter((p) => !authorized.some((e) => matchesAuthorizedOutput(p, e)));
   if (missing.length > 0 || deadPrefixes.length > 0) {
     return {
@@ -325,6 +345,316 @@ export class AgentRunner {
     return this.workflowBudgets?.[`${ctx.workflowId}/${ctx.stepId}`] ?? this.runnerConfig.max_tokens;
   }
 
+  // V3 — the multi-turn loop construction, extracted verbatim from run()
+  // (single call site: the step's own investigation loop). The bounded
+  // structural repair deliberately does NOT go through this — it is one
+  // direct provider completion, never a fresh loop.
+  private constructLoop(
+    role: AgentRole,
+    ctx: StepRunContext,
+    nodeId: string,
+    contract: OutputContract<unknown> | undefined,
+    contractCtx: OutputContractContext | undefined,
+    acceptor: ((value: unknown) => { ok: true } | { ok: false; repairInstruction: string }) | undefined,
+  ): AgentLoop {
+    return new AgentLoop(
+      this.llmProvider as any,
+      {
+        model: this.runnerConfig.model,
+        max_tokens: this.completionBudgetFor(ctx),
+        temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+        projectRoot: this.projectRoot,
+        role,
+        workflowRunId: ctx.workflowRunId,
+        iteration: ctx.iteration,
+        nodeId,
+        runArtifacts: this.runArtifacts,
+        fsModule: this.fs,
+        ...(this.runnerConfig.resultTransport ? { resultTransport: this.resultTransport } : {}),
+        ...(ctx.synthesisGate ? { synthesisGate: ctx.synthesisGate } : {}),
+        declaredArtifactId: ctx.outputArtifact?.type,
+        declaredOutputPath: ctx.outputArtifact?.path,
+        expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
+        ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
+        ...(contract
+          ? {
+              acceptResult: acceptor,
+              resultSchemaText: renderResultTeaching(contract, contractCtx),
+              resultSchemaJson: toJsonSchema(contract.modelSchema),
+            }
+          : {}),
+        ...(ctx.workflowId === 'define-work' ? { transportRetry: true } : {}),
+      }
+    );
+  }
+
+  // V3 — the §6a–§6b2 deterministic section gates, extracted VERBATIM from
+  // run() (same checks, same order, same error strings). `kind` classifies
+  // the rejection: only 'producer-contract' (an otherwise completed
+  // submission with missing mandatory outputs / dead prefixes — the
+  // incomplete-submission class) is repairable under the bounded structural
+  // repair; unsafe paths, declared-output mismatches, role-ceiling
+  // violations and extra outputs are authoring/abuse errors and are never
+  // repaired.
+  private validateProducedSections(
+    role: AgentRole,
+    ctx: StepRunContext,
+    parsed: {
+      sections: Array<{ path: string; content: string }>;
+      warnings?: string[];
+      patches?: Array<{ path: string; base: string; diff: string }>;
+    },
+  ): { ok: true; canonicalSections: Array<{ path: string; content: string }> }
+    | { ok: false; error: string; kind: 'unsafe-path' | 'declared-output' | 'role-ceiling' | 'producer-contract' | 'producer-contract-extras' } {
+    // 6a. D.1c — canonicalize every produced path exactly once.
+    const canonicalSections: Array<{ path: string; content: string }> = [];
+    for (const section of parsed.sections) {
+      const safe = toSafeRelativePath(section.path);
+      if (safe === null) {
+        return { ok: false, error: `Unsafe output path '${section.path}'`, kind: 'unsafe-path' };
+      }
+      canonicalSections.push({ path: safe, content: section.content });
+    }
+
+    // 6b. A declared output narrows what may be written.
+    if (ctx.outputArtifact) {
+      const declaredSafe = toSafeRelativePath(ctx.outputArtifact.path);
+      if (declaredSafe === null) {
+        return { ok: false, error: `Declared output path '${ctx.outputArtifact.path}' is not a safe project-root-relative path`, kind: 'declared-output' };
+      }
+      if (canonicalSections.length !== 1) {
+        return { ok: false, error: `Step declares exactly one output artifact ('${declaredSafe}') but produced ${canonicalSections.length} section(s)`, kind: 'declared-output' };
+      }
+      if (canonicalSections[0].path !== declaredSafe) {
+        return { ok: false, error: `Step declared output '${declaredSafe}' but produced '${canonicalSections[0].path}'`, kind: 'declared-output' };
+      }
+    }
+
+    // 6c. The role's broad ceiling (DDR-019).
+    for (const section of canonicalSections) {
+      const stepAuthorized =
+        ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(section.path, e)) ?? false;
+      if (!validateOutputPath(section.path, role) && !stepAuthorized) {
+        return { ok: false, error: `Role '${role}' is not permitted to write '${section.path}'`, kind: 'role-ceiling' };
+      }
+    }
+
+    // 6b2. E26 — the producer contract.
+    if (ctx.authorizedOutputs?.length) {
+      const check = checkAuthorizedOutputs(
+        canonicalSections.map((s) => s.path),
+        ctx.authorizedOutputs,
+      );
+      if (!check.ok) {
+        const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
+        const { missing, deadPrefixes } = producerContractShortfalls(
+          canonicalSections.map((s) => s.path),
+          ctx.authorizedOutputs,
+        );
+        const shortfall = missing.length > 0 || deadPrefixes.length > 0;
+        // V3 — repairable class: an OTHERWISE COMPLETED submission with
+        // shortfalls. A zero-section output (attempt-16 class: everything
+        // dropped at parse) submitted nothing to repair from — §6d fails it
+        // below, and it is never repairable.
+        const repairable = shortfall && canonicalSections.length > 0;
+        return {
+          ok: false,
+          error: check.error + why,
+          kind: repairable ? 'producer-contract' : 'producer-contract-extras',
+        };
+      }
+    }
+
+    return { ok: true, canonicalSections };
+  }
+
+  // V3 — the bounded structural repair turn: ONE provider completion, by
+  // construction. This is deliberately NOT an AgentLoop: no repository
+  // tools are offered (tools: []), no synthesis gate exists to restart,
+  // and no format-repair/result-repair continuation can grant a second
+  // completion. The repair question is answerable from the instruction
+  // alone (rejected output + exact validator error + frozen contract);
+  // the reply is parsed ONCE by the same textual transport the loop uses.
+  // Malformed, absent, or still-invalid output → repair failed, stage
+  // fails. Consumed tokens are always reported (P2: truthful accounting
+  // even when the repair is rejected or unparseable).
+  async runStructuralRepairTurn(
+    role: AgentRole,
+    ctx: StepRunContext,
+    nodeId: string,
+    opts: { validator: string; validatorError: string; contractText: string; originalOutput: string },
+  ): Promise<
+    | { ok: true; parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[] }; rawText: string; tokens_used: number; repairInstruction: string }
+    | { ok: false; error: string; repairInstruction: string; tokens_used: number }
+  > {
+    const repairInstruction = buildStructuralRepairInstruction({
+      validatorError: opts.validatorError,
+      contractText: opts.contractText,
+      originalOutput: opts.originalOutput,
+    });
+    const multiTurn = (this.llmProvider as { completeMultiTurn?: (p: MultiTurnParams) => Promise<MultiTurnResult> })
+      .completeMultiTurn?.bind(this.llmProvider);
+    if (multiTurn === undefined) {
+      return { ok: false, error: 'provider lacks multi-turn capability required for structural repair', repairInstruction, tokens_used: 0 };
+    }
+    const params: MultiTurnParams = {
+      model: this.runnerConfig.model,
+      system: 'You are performing a bounded structural repair of a rejected stage output. Repair exactly the violations listed in the instruction without changing unrelated accepted material. Repository investigation is unavailable: repair from the provided material only, then re-submit the complete output.',
+      messages: [{ role: 'user', content: repairInstruction }],
+      // Identical budget bound to the loop's own default (agent-loop.ts:
+      // max_tokens ?? 4096) — the repair completion gets the SAME ceiling
+      // the step's completions get, nothing larger.
+      max_tokens: this.completionBudgetFor(ctx) ?? 4096,
+      temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
+      tools: [],
+    };
+    let result: MultiTurnResult;
+    try {
+      result = await multiTurn(params);
+    } catch (err) {
+      return { ok: false, error: `repair completion failed: ${(err as Error).message}`, repairInstruction, tokens_used: 0 };
+    }
+    // Terminal-state prerequisite — checked BEFORE any parsing, and
+    // independently (a provider-declared non-terminal completion is a
+    // failure even if its partial text would parse; a tool request is a
+    // failure even if the accompanying text is a perfect envelope). The
+    // repair must be completed solely from the supplied material: the model
+    // did not finish, or tried to fetch unavailable evidence, the repair is
+    // rejected — the text is never read.
+    if (result.stop_reason !== 'end_turn') {
+      return {
+        ok: false,
+        error: `repair completion did not terminate normally: ${result.stop_reason}`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
+    if ((result.tool_uses?.length ?? 0) > 0) {
+      return {
+        ok: false,
+        error: `repair completion attempted tool use while structural repair is tool-less (${result.tool_uses.length} request(s))`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
+    // Parse ONCE with the same transport extraction the loop uses. No
+    // format-repair continuation: an unparseable repair reply is a failed
+    // repair.
+    const transport = new TextualSleOutputTransport();
+    const transportCtx = {
+      role,
+      requiresReviewVerdict: false,
+      execution: 'multi-turn' as const,
+      nodeId,
+      ...(ctx.outputArtifact ? { declaredArtifactId: ctx.outputArtifact.type, declaredOutputPath: ctx.outputArtifact.path } : {}),
+      ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
+    };
+    let stepResult: StepResult;
+    try {
+      stepResult = transport.extractProduce(result.text, transportCtx);
+    } catch (err) {
+      return { ok: false, error: `repair reply was unparseable: ${err instanceof Error ? err.message : String(err)}`, repairInstruction, tokens_used: result.tokens_used };
+    }
+    if (stepResult.kind !== 'materialized' || stepResult.artifacts.length === 0) {
+      return {
+        ok: false,
+        error: `repair reply carried no usable artifacts (result kind: ${stepResult.kind}${result.tool_uses.length > 0 ? '; tool requests are not executable during structural repair' : ''})`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
+    return {
+      ok: true,
+      parsed: {
+        sections: stepResult.artifacts,
+        warnings: stepResult.warnings ?? [],
+      },
+      rawText: result.text,
+      tokens_used: result.tokens_used,
+      repairInstruction,
+    };
+  }
+
+  // V3 — runner-side wiring of the bounded repair for the producer-contract
+  // gate. Runs the ONE repair turn, reruns the SAME validator
+  // (validateProducedSections) on the repair output, persists the complete
+  // evidence record, and returns the gate outcome the caller must honor:
+  // repair adopted, or the stage-failing error (original rejection +
+  // repair outcome). No path skips the evidence write.
+  private async maybeRunBoundedStructuralRepair(
+    role: AgentRole,
+    ctx: StepRunContext,
+    nodeId: string,
+    rejection: { error: string; kind: 'producer-contract' },
+    originalParsed: {
+      sections: Array<{ path: string; content: string }>;
+      warnings?: string[];
+      patches?: Array<{ path: string; base: string; diff: string }>;
+    },
+    originalOutput: string,
+    tokensUsedSoFar: number,
+  ): Promise<
+    | { ok: true; canonicalSections: Array<{ path: string; content: string }>; parsed: { sections: Array<{ path: string; content: string }>; warnings?: string[]; patches?: Array<{ path: string; base: string; diff: string }> }; tokens_used_total: number }
+    | { ok: false; error: string; kind: 'producer-contract'; tokens_used_total: number }
+  > {
+    const contractText = [
+      "The step's declared producer contract (mandatory outputs, exact paths):",
+      ...(ctx.authorizedOutputs ?? []).map((p) => `- ${p}`),
+    ].join('\n');
+    const opts = {
+      validator: 'producer-contract',
+      validatorError: rejection.error,
+      contractText,
+      originalOutput,
+    };
+    const repair = await this.runStructuralRepairTurn(role, ctx, nodeId, opts);
+    // P2 — truthful accounting: tokens consumed by the repair completion are
+    // part of the stage's cost even when the repair is rejected or
+    // unparseable.
+    const tokensUsedTotal = tokensUsedSoFar + repair.tokens_used;
+    // The SAME validator, unchanged, on the repair output.
+    const second = this.validateProducedSections(role, ctx, repair.ok ? repair.parsed : originalParsed);
+    const evidence: StructuralRepairEvidence = {
+      stage_id: nodeId,
+      validator: opts.validator,
+      original_output: originalOutput,
+      validation_error: opts.validatorError,
+      output_contract: opts.contractText,
+      repair_instruction: repair.repairInstruction,
+      repair_output: repair.ok ? repair.rawText : '',
+      second_validation: repair.ok
+        ? { ok: second.ok, error: second.ok ? null : second.error }
+        : { ok: false, error: `repair invocation failed: ${repair.error}` },
+      repair_invocation_error: repair.ok ? null : repair.error,
+      invoked_at: new Date().toISOString(),
+    };
+    await persistStructuralRepairEvidence(
+      this.projectRoot, ctx.workflowRunId, ctx.iteration, nodeId, evidence, this.fs,
+    );
+    if (!repair.ok) {
+      return {
+        ok: false,
+        kind: 'producer-contract',
+        error: `${rejection.error} — bounded structural repair was attempted but the repair turn itself failed: ${repair.error}`,
+        tokens_used_total: tokensUsedTotal,
+      };
+    }
+    if (!second.ok) {
+      return {
+        ok: false,
+        kind: 'producer-contract',
+        error: `${rejection.error} — bounded structural repair was attempted and the same validator rejected the repair: ${second.error}`,
+        tokens_used_total: tokensUsedTotal,
+      };
+    }
+    return {
+      ok: true,
+      canonicalSections: second.canonicalSections,
+      parsed: repair.parsed,
+      tokens_used_total: tokensUsedTotal,
+    };
+  }
+
   async run(role: AgentRole, ctx: StepRunContext): Promise<AgentRunResult> {
     const start = Date.now();
 
@@ -423,6 +753,10 @@ export class AgentRunner {
       throw err;
     }
 
+    // V3 — the model's submitted output bytes for the stage, captured from
+    // whichever execution path ran; the bounded structural repair embeds it
+    // verbatim in the repair instruction (evidence + context).
+    let submittedRawText = '';
     // E25 — warnings carry the parse diagnostics (dropped sections) so a
     // zero-usable-output step can fail closed with its reason.
     let parsed: {
@@ -463,60 +797,7 @@ export class AgentRunner {
       typeof (this.llmProvider as any).completeMultiTurn === 'function';
 
     if (isMultiTurn) {
-      const loop = new AgentLoop(
-        this.llmProvider as any,
-        {
-          model: this.runnerConfig.model,
-          // E15/A6 — per-(workflow,step) completion budget (declare-scoped
-          // override via declarative settings; else the global budget).
-          max_tokens: this.completionBudgetFor(ctx),
-          // E3b — sampling parity: the multi-turn wire runs the SAME
-          // sampling configuration the single-turn/structured wires get
-          // (C6 review closure 3 semantics).
-          temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
-          projectRoot: this.projectRoot,
-          role,
-          workflowRunId: ctx.workflowRunId,
-          iteration: ctx.iteration,
-          nodeId,
-          runArtifacts: this.runArtifacts,
-          fsModule: this.fs,
-          // D.3d.5 commit 1 — the loop delegates serialization (syntax
-          // teaching, extraction, bounded format repair) to the transport.
-          // D.34 C5 — ONLY an explicitly configured override is forwarded:
-          // forwarding the runner's resolved default would outrank the
-          // loop's negotiation and pin every multi-turn contract step to
-          // the textual channel. Without an explicit override, the loop
-          // negotiates (submit-result for schema-carrying steps on
-          // multi-turn-capable providers; textual everywhere else).
-          ...(this.runnerConfig.resultTransport ? { resultTransport: this.resultTransport } : {}),
-          // D.3d.5 closure — real execution metadata on this path too:
-          // the multi-turn transport must never fall back to generic
-          // placeholders when the step declares an actual output artifact.
-          // E21 — the engine-copied synthesis gate (WorkflowStep.synthesisGate),
-          // forwarded only when declared; every ungated step is untouched.
-          ...(ctx.synthesisGate ? { synthesisGate: ctx.synthesisGate } : {}),
-          declaredArtifactId: ctx.outputArtifact?.type,
-          declaredOutputPath: ctx.outputArtifact?.path,
-          expectedArtifacts: ctx.outputArtifact ? 1 : undefined,
-          // E26 — the step's producer contract, forwarded for teaching.
-          ...(ctx.authorizedOutputs?.length ? { authorizedOutputs: ctx.authorizedOutputs } : {}),
-          // D.34 C1 — schema projections + the result-repair seam. Both are
-          // absent on the legacy path, leaving it byte-for-byte unchanged.
-          ...(contract
-            ? {
-                acceptResult: acceptor,
-                resultSchemaText: renderResultTeaching(contract, contractCtx),
-                resultSchemaJson: toJsonSchema(contract.modelSchema),
-              }
-            : {}),
-          // E10/A3 — the bounded transport retry is a define-work
-          // step-execution policy ONLY (one re-issue of a headers-timeout
-          // request, fail closed on repeat). Every other workflow keeps the
-          // historical fail-fast behavior.
-          ...(ctx.workflowId === 'define-work' ? { transportRetry: true } : {}),
-        }
-      );
+      const loop = this.constructLoop(role, ctx, nodeId, contract, contractCtx, acceptor);
 
       const systemPrompt = context.system_prompt || 'You are a helpful software engineering assistant.';
       const userMessage = buildUserMessage(context);
@@ -606,7 +887,8 @@ export class AgentRunner {
       }
 
       // Write the final text as raw output (always, even on multi-turn success)
-      rawPath = await this.writeRaw(ctx, nodeId, loopResult.rawText || '');
+      submittedRawText = loopResult.rawText || '';
+      rawPath = await this.writeRaw(ctx, nodeId, submittedRawText);
 
       if (loopResult.proposal) {
         // D.34 C1 — contract path: the acceptor gated the proposal inside
@@ -897,6 +1179,7 @@ export class AgentRunner {
       rawPath = await this.writeRaw(ctx, nodeId, raw);
       if (stepResult.kind === 'materialized') {
         parsed = { sections: stepResult.artifacts, warnings: stepResult.warnings };
+        submittedRawText = raw;
         reviewVerdictRaw = stepResult.review?.verdict;
       } else {
         // D.34 C1 — contract path: the acceptor gated the proposal inside
@@ -1009,70 +1292,41 @@ export class AgentRunner {
       }
     }
 
-    // 6a. D.1c — canonicalize every produced path exactly once, before any
-    // other check. This is THE single value used from here on for exact
-    // matching, the role ceiling, the filesystem write, and (for a declared
-    // output) ArtifactRecord.path — validation and the write can never
-    // diverge, because there is only one path.safety.ts pass and everything
-    // downstream reads its output rather than the raw LLM string again.
-    const canonicalSections: Array<{ path: string; content: string }> = [];
-    for (const section of parsed.sections) {
-      const safe = toSafeRelativePath(section.path);
-      if (safe === null) {
-        return fail(`Unsafe output path '${section.path}'`);
-      }
-      canonicalSections.push({ path: safe, content: section.content });
-    }
-
-    // 6b. A declared output narrows what may be written: exactly one
-    // section, at exactly the declared (canonical) path. Compared against
-    // canonicalSections, never the raw parsed.sections.
-    if (ctx.outputArtifact) {
-      const declaredSafe = toSafeRelativePath(ctx.outputArtifact.path);
-      if (declaredSafe === null) {
-        return fail(`Declared output path '${ctx.outputArtifact.path}' is not a safe project-root-relative path`);
-      }
-      if (canonicalSections.length !== 1) {
-        return fail(`Step declares exactly one output artifact ('${declaredSafe}') but produced ${canonicalSections.length} section(s)`);
-      }
-      if (canonicalSections[0].path !== declaredSafe) {
-        return fail(`Step declared output '${declaredSafe}' but produced '${canonicalSections[0].path}'`);
-      }
-    }
-
-    // 6c. The role's broad ceiling (DDR-019), checked against the same
-    // canonical path used everywhere else. A declared output only narrows
-    // §6b above — it never bypasses this: the declared path must also fall
-    // within ROLE_OUTPUT_PATHS. E26: a path explicitly authorized by the
-    // STEP's producer contract (authorizedOutputs) satisfies the ceiling —
-    // the table remains the default bound only where no step contract
-    // exists, so a step can grant exactly the paths it declares without
-    // globally widening the role.
-    for (const section of canonicalSections) {
-      const stepAuthorized =
-        ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(section.path, e)) ?? false;
-      if (!validateOutputPath(section.path, role) && !stepAuthorized) {
-        return fail(`Role '${role}' is not permitted to write '${section.path}'`);
-      }
-    }
-
-    // 6b2. E26 — enforce the step's producer contract: every section must
-    // sit inside the authorized set, every exact (mandatory) output must be
-    // present, and every directory prefix must receive at least one file.
-    // This is what makes the contract producer- AND consumer-real: PLAN and
-    // BUILD can rely on the published requirements/architecture/plans
-    // actually existing. The zero-section fail (§6d) still fires first for
-    // the fully-empty case.
-    if (ctx.authorizedOutputs?.length) {
-      const check = checkAuthorizedOutputs(
-        canonicalSections.map((s) => s.path),
-        ctx.authorizedOutputs,
+    // 6a–6b2 (V3) — the deterministic section gates, extracted verbatim into
+    // validateProducedSections so the bounded structural repair can rerun
+    // the SAME validation on a repair output. Behavior is identical: the
+    // method returns the exact same error strings in the exact same order,
+    // and the caller turns rejections into failures exactly as before.
+    let sectionGate = this.validateProducedSections(role, ctx, parsed);
+    // V3 — the ONE bounded structural repair: only for a producer-contract
+    // shortfall (an otherwise completed submission missing mandatory
+    // outputs — the incomplete-submission class), only when the workflow
+    // declared it, and only once per step run. The SAME validator reruns on
+    // the repair output; its verdict is final either way, and the full
+    // evidence trail (original output, findings, instruction, repair
+    // output, second validation) is persisted before this gate resolves.
+    if (
+      !sectionGate.ok &&
+      sectionGate.kind === 'producer-contract' &&
+      ctx.structuralRepair === true
+    ) {
+      const repairGate = await this.maybeRunBoundedStructuralRepair(
+        role, ctx, nodeId,
+        { error: sectionGate.error, kind: 'producer-contract' },
+        parsed, submittedRawText, tokensUsed,
       );
-      if (!check.ok) {
-        const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
-        return fail(check.error + why);
+      tokensUsed = repairGate.tokens_used_total;
+      if (!repairGate.ok) {
+        return fail(repairGate.error);
       }
+      // The repair output replaces the rejected parse for ALL downstream
+      // gates — the stage continues on the repaired material only.
+      parsed = repairGate.parsed;
+      sectionGate = { ok: true as const, canonicalSections: repairGate.canonicalSections };
+    } else if (!sectionGate.ok) {
+      return fail(sectionGate.error);
     }
+    const canonicalSections = sectionGate.canonicalSections;
 
     // 6d. E25 — a produce step that yields zero usable sections fails
     // closed BEFORE any downstream step executes. A role-forbidden path is
