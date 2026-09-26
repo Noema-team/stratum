@@ -514,6 +514,29 @@ export class AgentRunner {
     } catch (err) {
       return { ok: false, error: `repair completion failed: ${(err as Error).message}`, repairInstruction, tokens_used: 0 };
     }
+    // Terminal-state prerequisite — checked BEFORE any parsing, and
+    // independently (a provider-declared non-terminal completion is a
+    // failure even if its partial text would parse; a tool request is a
+    // failure even if the accompanying text is a perfect envelope). The
+    // repair must be completed solely from the supplied material: the model
+    // did not finish, or tried to fetch unavailable evidence, the repair is
+    // rejected — the text is never read.
+    if (result.stop_reason !== 'end_turn') {
+      return {
+        ok: false,
+        error: `repair completion did not terminate normally: ${result.stop_reason}`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
+    if ((result.tool_uses?.length ?? 0) > 0) {
+      return {
+        ok: false,
+        error: `repair completion attempted tool use while structural repair is tool-less (${result.tool_uses.length} request(s))`,
+        repairInstruction,
+        tokens_used: result.tokens_used,
+      };
+    }
     // Parse ONCE with the same transport extraction the loop uses. No
     // format-repair continuation: an unparseable repair reply is a failed
     // repair.

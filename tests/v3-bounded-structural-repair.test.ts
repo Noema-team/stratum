@@ -46,6 +46,8 @@ class ScriptedProvider {
   instructions: string[] = [];
   toolsOffered: Array<unknown[]> = [];
   repairToolUses: unknown[][] = [];
+  /** per-call stop_reason override (call index → stop_reason); default end_turn */
+  stopReasons: Record<number, string> = {};
   constructor(private scripts: Array<string | Error>) {}
   async complete() {
     throw new Error('v3: single-turn path not expected');
@@ -63,7 +65,7 @@ class ScriptedProvider {
     this.instructions.push(typeof last.content === 'string' ? last.content : JSON.stringify(last.content));
     if (script instanceof Error) throw script;
     const toolUses = this.repairToolUses[callIndex] ?? [];
-    return { stop_reason: 'end_turn', text: script, tool_uses: toolUses, tokens_used: 10 };
+    return { stop_reason: this.stopReasons[callIndex] ?? 'end_turn', text: script, tool_uses: toolUses, tokens_used: 10 };
   }
 }
 
@@ -362,24 +364,45 @@ test('V3.10: a REJECTED repair never replaces the workspace charter (validator h
   }
 });
 
-test('V3.12: adversarial — a repair reply that requests repository tools gets NO execution and NO second turn', async () => {
+test('V3.12: adversarial — a VALID repair envelope plus a tool request is rejected for the tool use, not the text', async () => {
   const root = mkdtempSync(join(tmpdir(), 'v3-'));
-  const provider = new ScriptedProvider([MISSING, 'No envelope here at all, just prose.']);
+  // The repair text is byte-for-byte the envelope the original turn should
+  // have produced: it WOULD satisfy the producer contract. The rejection
+  // must come from the tool request alone — that is the one-shot boundary.
+  const provider = new ScriptedProvider([MISSING, MISSING]);
   provider.repairToolUses[1] = [{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'apps/ai-server/rag-worker-service/main.py' } }];
   try {
     const result = await makeRunner(root, provider).run('designer', ctx(root, { structuralRepair: true }));
-    assert.equal(result.success, false, 'a tool-requesting, envelope-less repair reply fails the stage');
+    assert.equal(result.success, false, 'a tool-requesting repair fails the stage even with a perfect envelope');
+    assert.match(result.error!, /attempted tool use/, 'rejection cites the tool use, not the text');
     assert.equal(provider.calls, 2, 'exactly one repair completion — no continuation');
     assert.equal(provider.toolsOffered[1].length, 0, 'no tools were offered to the repair completion');
-    assert.match(result.error!, /bounded structural repair/);
+    assert.equal(result.artifacts_written.length, 0, 'no repair artifacts adopted');
     const ev = JSON.parse(readFileSync(evidencePath(root), 'utf-8'));
-    // The tool request is irrelevant by construction: with tools:[] the
-    // reply is plain text, the transport rejects it, and no tool can run.
-    assert.match(ev.repair_invocation_error!, /unparseable/);
-    // nothing was read or written by any tool: the fixture tree has no
-    // requirements.md anywhere — a tool execution would have no observable
-    // write path, and the artifacts_written list stays empty.
-    assert.equal(result.artifacts_written.length, 0);
+    assert.match(ev.repair_invocation_error!, /attempted tool use/);
+    assert.equal(ev.second_validation.ok, false, 'the repair is rejected before any validation of its text');
+    assert.match(ev.second_validation.error, /attempted tool use/);
+    assert.equal(result.tokens_used, 20, 'the billable rejected repair completion is still counted');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V3.13: a provider-declared incomplete repair (max_tokens) is rejected even with a parseable COMPLETE envelope', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v3-'));
+  const provider = new ScriptedProvider([MISSING, MISSING]);
+  provider.stopReasons[1] = 'max_tokens';
+  try {
+    const result = await makeRunner(root, provider).run('designer', ctx(root, { structuralRepair: true }));
+    assert.equal(result.success, false, 'a non-terminal repair completion fails the stage');
+    assert.match(result.error!, /did not terminate normally: max_tokens/);
+    assert.equal(provider.calls, 2);
+    assert.equal(result.artifacts_written.length, 0, 'the truncated completion adopts nothing');
+    const ev = JSON.parse(readFileSync(evidencePath(root), 'utf-8'));
+    assert.match(ev.repair_invocation_error!, /did not terminate normally/);
+    assert.equal(ev.second_validation.ok, false);
+    assert.match(ev.second_validation.error, /did not terminate normally/);
+    assert.equal(result.tokens_used, 20, 'billable regardless of rejection');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
