@@ -74,6 +74,11 @@ export interface WorkflowStep {
   // behavior. Generic by construction — never special-cased to any
   // particular requirement.
   structuralRepair?: boolean;
+  // V4 — ONE bounded synthesis continuation for the E21 synthesis phase
+  // (max_tokens + non-empty visible text on the first post-boundary
+  // completion). Workflow-declared per-step policy; absent/false =
+  // byte-for-byte legacy behavior. See AgentLoopOpts.synthesisContinuation.
+  synthesisContinuation?: boolean;
   // D.1b — explicit artifact refs this step's context is built from. When
   // set, ContextManager loads exactly these refs instead of the role's
   // default slice set (getRoleSlices()).
@@ -388,6 +393,8 @@ export interface StepRunContext {
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
   // Copied from WorkflowStep.structuralRepair by WorkflowEngine.makeStepRunContext.
   structuralRepair?: boolean;
+  // Copied from WorkflowStep.synthesisContinuation by WorkflowEngine.makeStepRunContext.
+  synthesisContinuation?: boolean;
   inputArtifactRefs?: string[];
   // Workflow parameters frozen at dispatch time (from WorkflowRun.resolvedParameters).
   workflowParameters?: Record<string, unknown>;
