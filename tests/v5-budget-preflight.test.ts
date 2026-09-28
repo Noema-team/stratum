@@ -20,7 +20,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,10 +74,14 @@ function ctx(root: string, workflowRunId: string, stepId: string): Record<string
 
 async function captureStepBudgets(
   root: string,
-  settingsJson: string,
+  // Optional: when absent, NO settings.json exists at all (the truly-absent
+  // case, distinct from 'file present, workflow_max_tokens key absent').
+  settingsJson?: string,
 ): Promise<{ design: number | undefined; plan: number | undefined }> {
-  mkdirSync(join(root, '.sle'), { recursive: true });
-  writeFileSync(join(root, '.sle', 'settings.json'), settingsJson, 'utf8');
+  if (settingsJson !== undefined) {
+    mkdirSync(join(root, '.sle'), { recursive: true });
+    writeFileSync(join(root, '.sle', 'settings.json'), settingsJson, 'utf8');
+  }
   const captured: CapturedCall[] = [];
   const runner = makeCapturingRunner(root, captured);
   await runner.run('designer', ctx(root, 'v5-preflight-design', 'design') as never);
@@ -135,16 +139,13 @@ test('V5-PF.3: fail-closed — one invalid map entry discards the ENTIRE map', a
   }
 });
 
-test('V5-PF.4: absent settings → global budget everywhere (the actual V4 regime)', async () => {
+test('V5-PF.4: NO settings file at all → global budget everywhere (the actual V4 regime)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'v5pf-'));
   try {
-    mkdirSync(join(root, '.sle'), { recursive: true });
-    writeFileSync(
-      join(root, '.sle', 'settings.json'),
-      JSON.stringify({ provider: 'openrouter', model: 'z-ai/glm-5.3-flash', max_tokens: GLOBAL_BUDGET }),
-      'utf8',
-    );
-    const budgets = await captureStepBudgets(root, JSON.stringify({ provider: 'openrouter', max_tokens: GLOBAL_BUDGET }));
+    // no settings.json is written — the reader must find nothing and fall
+    // back to the global budget for every step
+    assert.ok(!existsSync(join(root, '.sle', 'settings.json')), 'precondition: settings file absent');
+    const budgets = await captureStepBudgets(root);
     assert.equal(budgets.design, GLOBAL_BUDGET);
     assert.equal(budgets.plan, GLOBAL_BUDGET);
   } finally {
