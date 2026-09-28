@@ -21,7 +21,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -433,6 +433,29 @@ test('V4.13-counterfactual: identical SEG-1 bytes with zero tool uses fire the c
     const result = await makeLoop(root, provider, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
     assert.ok(result.success, 'the same bytes without the tool requests are continuable (V4.1)');
     assert.equal(provider.calls.length, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V4.15: continuation evidence persistence is fail-closed — an evidence write failure fails the stage before adoption', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v4-'));
+  const provider = new RunnerSynthProvider();
+  try {
+    // Inject the write failure WITHOUT touching model behavior: the
+    // node-outputs directory path is pre-created as a regular FILE, so the
+    // evidence writer's mkdir fails. The merged candidate would otherwise
+    // pass the producer contract and publish both docs.
+    const sabotagePath = join(root, '.sle', 'runs', 'v4-run', '1', 'node-outputs');
+    mkdirSync(join(root, '.sle', 'runs', 'v4-run', '1'), { recursive: true });
+    writeFileSync(sabotagePath, 'not a directory');
+
+    const result = await makeRunner(root, provider).run('designer', ctx(root));
+    assert.equal(result.success, false, 'the stage fails when continuation evidence cannot be persisted');
+    assert.match(result.error!, /synthesis continuation evidence persistence failed/);
+    assert.equal(result.artifacts_written.length, 0, 'no artifacts adopted');
+    assert.equal(provider.calls.length, 2, 'no additional model calls — persistence happens after the continuation');
+    assert.ok(!existsSync(join(root, 'docs', 'requirements.md')), 'nothing published to the workspace');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

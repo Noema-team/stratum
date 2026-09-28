@@ -824,8 +824,14 @@ export class AgentRunner {
           segment2_bytes: Buffer.byteLength(sc.segment2, 'utf8'),
         }, null, 2);
         // Never-overwrite: pick the first unused `<node>.synthesis-continuation[-N].json`
-        // slot in the run's node-outputs directory. Best-effort observability,
-        // never control flow.
+        // slot in the run's node-outputs directory. V4 pre-execution
+        // hardening: this evidence is AUTHORITATIVE, not best-effort — the
+        // preregistered V4 outcome set (segments verbatim, terminal state,
+        // boundary position) is unreconstructable from the merged raw output
+        // alone, so a persistence failure fails the stage EXPLICITLY before
+        // any adoption or publication. The write happens before downstream
+        // materialization, so model behavior is unchanged.
+        let evidenceWriteError: string | null = null;
         try {
           const dir = path.join(this.projectRoot, '.sle', 'runs', ctx.workflowRunId, String(ctx.iteration), 'node-outputs');
           let name = `${nodeId.toLowerCase()}.synthesis-continuation.json`;
@@ -839,8 +845,18 @@ export class AgentRunner {
           }
           await this.fs.mkdir(dir, { recursive: true });
           await this.fs.writeFile(path.join(dir, name), evidence, 'utf-8');
-        } catch {
-          // evidence write failure must not affect the step outcome
+        } catch (err) {
+          evidenceWriteError = err instanceof Error ? err.message : String(err);
+        }
+        if (evidenceWriteError !== null) {
+          return {
+            success: false,
+            artifacts_written: [],
+            tokens_used: tokensUsed,
+            duration_ms: Date.now() - start,
+            raw_output_path: '',
+            error: `synthesis continuation evidence persistence failed: ${evidenceWriteError}`,
+          };
         }
       }
       tokensUsed = loopResult.tokens_used;
