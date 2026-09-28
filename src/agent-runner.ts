@@ -384,6 +384,9 @@ export class AgentRunner {
             }
           : {}),
         ...(ctx.workflowId === 'define-work' ? { transportRetry: true } : {}),
+        // V4 — the bounded synthesis continuation is a workflow-declared
+        // per-step policy, copied the same way as structuralRepair.
+        ...(ctx.synthesisContinuation === true ? { synthesisContinuation: true } : {}),
       }
     );
   }
@@ -803,6 +806,43 @@ export class AgentRunner {
       const userMessage = buildUserMessage(context);
 
       const loopResult = await loop.run(systemPrompt, userMessage);
+      // V4 — preserve the synthesis-continuation segments VERBATIM whenever
+      // the bounded continuation fired (success or failure alike). Written
+      // as a distinct node-output artifact, never overwriting: a suffixed
+      // name is used if the primary path already exists.
+      if (loopResult.synthesis_continuation) {
+        const sc = loopResult.synthesis_continuation;
+        const evidence = JSON.stringify({
+          node_id: nodeId,
+          workflow_run_id: ctx.workflowRunId,
+          iteration: ctx.iteration,
+          segment1: sc.segment1,
+          segment2: sc.segment2,
+          continuation_stop_reason: sc.continuation_stop_reason,
+          ...(sc.error ? { error: sc.error } : {}),
+          segment1_bytes: Buffer.byteLength(sc.segment1, 'utf8'),
+          segment2_bytes: Buffer.byteLength(sc.segment2, 'utf8'),
+        }, null, 2);
+        // Never-overwrite: pick the first unused `<node>.synthesis-continuation[-N].json`
+        // slot in the run's node-outputs directory. Best-effort observability,
+        // never control flow.
+        try {
+          const dir = path.join(this.projectRoot, '.sle', 'runs', ctx.workflowRunId, String(ctx.iteration), 'node-outputs');
+          let name = `${nodeId.toLowerCase()}.synthesis-continuation.json`;
+          for (let n = 2; ; n++) {
+            try {
+              await this.fs.access(path.join(dir, name));
+              name = `${nodeId.toLowerCase()}.synthesis-continuation-${n}.json`;
+            } catch {
+              break;
+            }
+          }
+          await this.fs.mkdir(dir, { recursive: true });
+          await this.fs.writeFile(path.join(dir, name), evidence, 'utf-8');
+        } catch {
+          // evidence write failure must not affect the step outcome
+        }
+      }
       tokensUsed = loopResult.tokens_used;
       formatRepairs = loopResult.format_repairs;
       resultRepairs = loopResult.result_repairs;

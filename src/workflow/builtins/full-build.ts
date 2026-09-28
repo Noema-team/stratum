@@ -77,6 +77,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       synthesisGate: synthesisGate(),
       // V3 — one bounded structural repair turn on deterministic rejection.
       structuralRepair: true,
+      synthesisContinuation: true,
     },
     {
       id: 'scoping.checkpoint',
@@ -98,6 +99,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       synthesisGate: synthesisGate(),
       // V3 — one bounded structural repair turn on deterministic rejection.
       structuralRepair: true,
+      synthesisContinuation: true,
     },
 
     // ── CRITIQUE (conditional: deep | research only) ───────────────────────
@@ -124,6 +126,7 @@ export const FULL_BUILD: WorkflowDefinition = {
       synthesisGate: synthesisGate(),
       // V3 — one bounded structural repair turn on deterministic rejection.
       structuralRepair: true,
+      synthesisContinuation: true,
     },
 
     // ── TEST ──────────────────────────────────────────────────────────────
@@ -140,6 +143,10 @@ export const FULL_BUILD: WorkflowDefinition = {
       // role ceiling. Writing another plan document does NOT satisfy this.
       authorizedOutputs: ['apps/ai-server/tests/'],
       synthesisGate: synthesisGate(),
+      // V4 — the bounded synthesis continuation (no structural repair here:
+      // the tester ceiling authorizes test-file writes, which the tool-less
+      // continuation could never produce).
+      synthesisContinuation: true,
     },
 
     // ── SHARDING_APPROVAL (conditional: only if a sharding proposal exists) ─
@@ -178,6 +185,12 @@ export const FULL_BUILD: WorkflowDefinition = {
       // per run and enforced by the publication boundary. FULL_BUILD must
       // stay project-agnostic.
       synthesisGate: synthesisGate(),
+      // V4 — the same bounded synthesis continuation as the other gated
+      // producers: BUILD's gate is the E24-qualified E21+E23 pair, and its
+      // V3-3 failure (turn-19 max_tokens truncation) is exactly the class
+      // this policy addresses. Same mechanism, same existing boundary —
+      // not a second intervention.
+      synthesisContinuation: true,
     },
 
     // ── EXEC ──────────────────────────────────────────────────────────────

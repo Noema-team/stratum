@@ -41,6 +41,15 @@ export const SYNTHESIS_PHASE_INSTRUCTION =
   'Work only from that verified evidence — preserve anything unverified as unknown, ' +
   'and never invent repository facts. Your remaining turns are for producing the artifact.';
 
+// V4 — deterministic continuation instruction for the ONE bounded synthesis
+// continuation. Mechanism-generic by construction: it says HOW to continue
+// (resume the interrupted serialization, no repetition, complete the whole
+// result) and nothing about WHAT the artifact must contain — contracts,
+// validators, and stage instructions are unchanged and are not repeated
+// here. Frozen text: run-to-run prompt tuning is forbidden.
+export const SYNTHESIS_CONTINUATION_INSTRUCTION =
+  'Your previous message was cut off by the completion limit. Continue exactly where it stopped. Do not repeat any content you already produced. Complete the full result.';
+
 // ─── E23 — synthesis-boundary tool-result compaction ──────────────────────────
 //
 // Live evidence (A10 attempts 12–13) showed the gated steps reaching
@@ -242,6 +251,17 @@ export interface AgentLoopOptions {
   // (newest-first byte budget; investigation turns byte-for-byte unchanged;
   // never runs without the gate or without a budget).
   synthesisGate?: { thresholdTurns: number; readResultBudgetBytes?: number };
+  // V4 — ONE bounded synthesis continuation: when the FIRST post-boundary
+  // synthesis completion terminates with stop_reason 'max_tokens' AND
+  // carries non-empty visible text, the loop may issue exactly ONE tool-less
+  // continuation of the same synthesis state (partial text preserved as the
+  // assistant turn; deterministic continuation instruction; identical
+  // sampling/budget; NO repository tools; no new investigation). The merged
+  // text then enters the ordinary parse path. Anything else — a second
+  // max_tokens, a non-terminal state, a tool request, a transport failure —
+  // fails closed. Zero-text syntheses are never continued (nothing
+  // meaningful to continue). Absent/false = byte-for-byte legacy behavior.
+  synthesisContinuation?: boolean;
   // D.3d.5 commit 1 (closure) — the executing step's actual output contract,
   // so the transport teaches from REAL metadata on this path too (never a
   // generic placeholder when the step has a declared output artifact).
@@ -348,6 +368,15 @@ export interface AgentLoopResult {
   // Present only when a gated step with a read-result budget reached the
   // synthesis transition.
   context_compaction?: SynthesisCompactionRecord;
+  // V4 — present when the bounded synthesis continuation fired: both
+  // segments VERBATIM (the runner persists them as never-overwritten
+  // evidence) plus the continuation's own terminal state.
+  synthesis_continuation?: {
+    segment1: string;
+    segment2: string;
+    continuation_stop_reason: string;
+    error?: string;
+  };
   // E10/A3 — bounded transport-retry observability, present ONLY when the
   // retry policy fired. Records the first attempt's bounded cause, the
   // retried request's duration, and the final outcome, so a retried call is
@@ -491,6 +520,10 @@ export class AgentLoop {
     // E23 — set once at the synthesis transition; carried on the result and
     // the persisted turn metadata so the compaction is auditable per run.
     let contextCompaction: SynthesisCompactionRecord | null = null;
+    // V4 — set when the ONE bounded synthesis continuation fires (or is
+    // attempted): both segments verbatim + the continuation's terminal
+    // state, carried on the result for the runner's evidence writer.
+    let synthesisContinuationRecord: NonNullable<AgentLoopResult['synthesis_continuation']> | null = null;
     // E3a — the most recent provider turn, in bounded observation form.
     // Set after every provider call; attached by fail() so a failed step's
     // evidence explains itself (never reply text, never reasoning text).
@@ -536,6 +569,7 @@ export class AgentLoop {
       ...(lastRejectedPayload ? { rejected_result_payload: lastRejectedPayload } : {}),
       ...(transportRetry ? { transport_retry: transportRetry } : {}),
       ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
+      ...(synthesisContinuationRecord ? { synthesis_continuation: synthesisContinuationRecord } : {}),
     });
 
     while (turns < MAX_AGENT_TURNS) {
@@ -645,7 +679,125 @@ export class AgentLoop {
       totalTokens += result.tokens_used;
 
       if (result.stop_reason === 'max_tokens') {
-        return fail('Agent exhausted max_tokens without producing a result block');
+        // V4 — ONE bounded synthesis continuation. Eligibility is narrow and
+        // mechanical: the synthesisContinuation policy is declared on the
+        // step; the truncated completion is the FIRST synthesis completion
+        // (past the E21 boundary — without a gate there is no synthesis
+        // boundary and this never fires); it carries NON-EMPTY visible text
+        // (a zero-text synthesis has nothing meaningful to continue); and
+        // the one-continuation budget is unspent. Everything else — second
+        // max_tokens, non-terminal state, tool request, transport failure —
+        // fails closed exactly as the legacy path does.
+        const partialText = result.text ?? '';
+        // EXACTLY the first synthesis completion (turn threshold+1): a
+        // max_tokens arriving on a LATER synthesis turn — e.g. after an
+        // ordinary format repair — is the legacy failure and is never
+        // continued. The continuation invocation must also stay inside the
+        // frozen turn cap.
+        const isFirstSynthesisTurn =
+          synthesisGate !== undefined &&
+          turns === synthesisGate.thresholdTurns + 1 &&
+          turns < MAX_AGENT_TURNS;
+        if (
+          this.opts.synthesisContinuation === true &&
+          isFirstSynthesisTurn &&
+          synthesisContinuationRecord === null &&
+          partialText.trim().length > 0
+        ) {
+          // The TRUNCATED synthesis completion must itself be tool-less.
+          // The provider can represent max_tokens + non-empty text + tool
+          // requests (finish_reason=length maps before tool calls are
+          // considered) — that mixed state is not a synthesis to continue:
+          // it failed closed WITHOUT any continuation call.
+          if ((result.tool_uses?.length ?? 0) > 0) {
+            return fail(
+              `synthesis completion terminated with max_tokens while carrying ${result.tool_uses.length} tool request(s) — a truncated synthesis that attempted tool use is not continuable (fail closed)`,
+            );
+          }
+          turns++;
+          // P2 — the continuation is timed on its OWN clock: its transport
+          // failure duration must describe the continuation call, never
+          // include the original synthesis generation.
+          const continuationStartedAt = Date.now();
+          const continuationParams = {
+            model: this.opts.model,
+            system,
+            // Same synthesis state: the full message history is unchanged,
+            // the truncated partial becomes the assistant turn it actually
+            // was, and ONE deterministic mechanism instruction asks the
+            // model to resume the interrupted serialization.
+            messages: [
+              ...messages,
+              { role: 'assistant' as const, content: partialText },
+              { role: 'user' as const, content: SYNTHESIS_CONTINUATION_INSTRUCTION },
+            ],
+            max_tokens: this.opts.max_tokens ?? 4096,
+            ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+            // NO repository tools and NO result channel: the continuation
+            // can only complete the interrupted TEXT. Nothing is offered
+            // that could smuggle in new investigation.
+            tools: [],
+          };
+          let continuationResult;
+          try {
+            continuationResult = await this.provider.completeMultiTurn(continuationParams);
+          } catch (err) {
+            const contFailure = describeTransportFailure(err, Date.now() - continuationStartedAt);
+            lastTransportFailure = contFailure;
+            synthesisContinuationRecord = {
+              segment1: partialText,
+              segment2: '',
+              continuation_stop_reason: 'provider_error',
+              error: `synthesis continuation transport failure: ${err instanceof Error ? err.message : String(err)}`,
+            };
+            return fail(`LLM call failed during synthesis continuation: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          totalTokens += continuationResult.tokens_used;
+          synthesisContinuationRecord = {
+            segment1: partialText,
+            segment2: continuationResult.text ?? '',
+            continuation_stop_reason: continuationResult.stop_reason,
+          };
+          // P2 — evidence invariant: failure_observation describes the MOST
+          // RECENT provider turn. After a continuation, that is the
+          // continuation itself, whatever its terminal state — the two
+          // evidence channels must not contradict each other.
+          lastObservation = {
+            ...lastObservation,
+            turns_taken: turns,
+            stop_reason: continuationResult.stop_reason,
+            text_length: Buffer.byteLength(continuationResult.text ?? '', 'utf8'),
+            tool_uses: (continuationResult.tool_uses ?? []).map((tu) => ({
+              name: tu.name,
+              argument_bytes: Buffer.byteLength(JSON.stringify(tu.input ?? {}), 'utf8'),
+            })),
+          };
+          // P1 — the continuation is tool-less by construction: its own
+          // invariant is enforced INDEPENDENTLY of the stop_reason (this
+          // seam is provider-agnostic and never trusts correlated fields).
+          // Both checks gate text adoption.
+          if ((continuationResult.tool_uses?.length ?? 0) > 0) {
+            return fail(
+              `synthesis continuation attempted tool use while continuation is tool-less (${continuationResult.tool_uses.length} request(s))`,
+            );
+          }
+          if (continuationResult.stop_reason !== 'end_turn') {
+            // Second truncation (or any other non-terminal state) — fail
+            // closed; the segments are preserved as evidence.
+            return fail(`synthesis continuation did not terminate normally: ${continuationResult.stop_reason}`);
+          }
+          // Deterministic candidate: the two segments concatenated in
+          // order. The merged text now enters the ORDINARY path below
+          // (parse, validation, repairs budget) exactly as a single
+          // end_turn completion would — same transport, same contract.
+          result = {
+            ...continuationResult,
+            text: partialText + (continuationResult.text ?? ''),
+            tool_uses: [],
+          };
+        } else {
+          return fail('Agent exhausted max_tokens without producing a result block');
+        }
       }
 
       if (result.stop_reason === 'tool_use') {
@@ -738,6 +890,7 @@ export class AgentLoop {
               result_repairs: resultRepairs,
               ...(transportRetry ? { transport_retry: transportRetry } : {}),
               ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
+              ...(synthesisContinuationRecord ? { synthesis_continuation: synthesisContinuationRecord } : {}),
               rawText: result.text,
             };
           }
@@ -858,6 +1011,7 @@ export class AgentLoop {
           rawText: result.text,
           ...(transportRetry ? { transport_retry: transportRetry } : {}),
           ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
+          ...(synthesisContinuationRecord ? { synthesis_continuation: synthesisContinuationRecord } : {}),
         };
       }
       return {
@@ -877,6 +1031,7 @@ export class AgentLoop {
         rawText: result.text,
         ...(transportRetry ? { transport_retry: transportRetry } : {}),
         ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
+        ...(synthesisContinuationRecord ? { synthesis_continuation: synthesisContinuationRecord } : {}),
       };
     }
 

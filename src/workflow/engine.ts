@@ -946,6 +946,9 @@ export class WorkflowEngine {
       // workflow-declared per-step policy, never inferred and never
       // globally on.
       structuralRepair: step.structuralRepair === true ? true : undefined,
+      // V4 — copied the same way: the bounded synthesis continuation is a
+      // workflow-declared per-step policy, never inferred and never globally on.
+      synthesisContinuation: step.synthesisContinuation === true ? true : undefined,
       inputArtifactRefs: step.inputArtifactRefs,
       workflowParameters: resolvedParameters,
       // D.3b0 — WorkItem snapshot passed straight through from run()'s own
