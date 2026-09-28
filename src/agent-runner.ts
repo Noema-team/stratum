@@ -806,6 +806,12 @@ export class AgentRunner {
       const userMessage = buildUserMessage(context);
 
       const loopResult = await loop.run(systemPrompt, userMessage);
+      // Accounting precedes every downstream branch: the loop's provider
+      // invocations are consumed facts regardless of what persistence or
+      // validation does afterwards.
+      tokensUsed = loopResult.tokens_used;
+      formatRepairs = loopResult.format_repairs;
+      resultRepairs = loopResult.result_repairs;
       // V4 — preserve the synthesis-continuation segments VERBATIM whenever
       // the bounded continuation fired (success or failure alike). Written
       // as a distinct node-output artifact, never overwriting: a suffixed
@@ -859,10 +865,6 @@ export class AgentRunner {
           };
         }
       }
-      tokensUsed = loopResult.tokens_used;
-      formatRepairs = loopResult.format_repairs;
-      resultRepairs = loopResult.result_repairs;
-
       if (!loopResult.success) {
         // E3a — a failed step's evidence must explain itself (C7/F6): the
         // raw node output carries the bounded last-turn observation (names,

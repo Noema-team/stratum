@@ -454,6 +454,7 @@ test('V4.15: continuation evidence persistence is fail-closed — an evidence wr
     assert.equal(result.success, false, 'the stage fails when continuation evidence cannot be persisted');
     assert.match(result.error!, /synthesis continuation evidence persistence failed/);
     assert.equal(result.artifacts_written.length, 0, 'no artifacts adopted');
+    assert.equal(result.tokens_used, 20, 'the consumed provider usage is truthfully reported even on the persistence failure');
     assert.equal(provider.calls.length, 2, 'no additional model calls — persistence happens after the continuation');
     assert.ok(!existsSync(join(root, 'docs', 'requirements.md')), 'nothing published to the workspace');
   } finally {
