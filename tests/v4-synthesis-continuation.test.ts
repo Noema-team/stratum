@@ -64,6 +64,8 @@ interface CallRecord {
 
 class SynthProvider {
   calls: CallRecord[] = [];
+  /** per-call injected tool_uses (call index → blocks); default none */
+  injectToolUses: Array<unknown[] | null> = [];
   constructor(
     private plan: Array<{ stop?: string; text: string; throw?: Error }>,
   ) {}
@@ -79,7 +81,7 @@ class SynthProvider {
     });
     const step = this.plan[Math.min(i, this.plan.length - 1)];
     if (step.throw) throw step.throw;
-    return { stop_reason: step.stop ?? 'end_turn', text: step.text, tool_uses: [], tokens_used: 10 };
+    return { stop_reason: step.stop ?? 'end_turn', text: step.text, tool_uses: (this.injectToolUses[i] ?? []) as never, tokens_used: 10 };
   }
 }
 
@@ -342,14 +344,67 @@ test('V4.9: runner adopts the continued output and persists both segments verbat
   }
 });
 
+test('V4.11: adversarial — max_tokens on a LATER synthesis turn (after an ordinary format repair) is never continued', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v4-'));
+  const provider = new SynthProvider([
+    { stop: 'end_turn', text: 'first synthesis attempt, unparseable prose' },
+    { stop: 'max_tokens', text: 'partial text on the SECOND synthesis turn' },
+    { text: 'NEVER REACHED' },
+  ]);
+  try {
+    const result = await makeLoop(root, provider, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
+    assert.equal(result.success, false);
+    assert.match(result.error!, /Agent exhausted max_tokens without producing a result block/, 'the legacy failure fires — the continuation belongs to the FIRST synthesis completion only');
+    assert.equal(provider.calls.length, 2, 'one ordinary format repair consumed the second slot; NO continuation call');
+    assert.equal(result.synthesis_continuation, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V4.12: adversarial — a tool request beside a VALID continuation segment is rejected independently of stop_reason', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v4-'));
+  // Same plan as V4.1's success, but the continuation smuggles a read_file
+  // request BESIDE the perfectly valid segment 2. The seam must enforce its
+  // own tool-less invariant, not trust the correlated stop_reason.
+  const provider = new SynthProvider([
+    { stop: 'max_tokens', text: SEG1 },
+    { text: SEG2 },
+  ]);
+  provider.injectToolUses = [null, [{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'src/index.ts' } }]];
+  try {
+    const result = await makeLoop(root, provider, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
+    assert.equal(result.success, false);
+    assert.match(result.error!, /synthesis continuation attempted tool use while continuation is tool-less \(1 request\(s\)\)/);
+    assert.equal(provider.calls.length, 2, 'exactly one continuation — rejected before any adoption');
+    assert.equal(result.failure_observation!.stop_reason, 'end_turn', 'failure_observation describes the continuation turn itself');
+    // Counterfactual: the IDENTICAL bytes with tool_uses=[] are the V4.1
+    // adopted-repair success — so the rejection is attributable to the tool
+    // request alone.
+    const clean = new SynthProvider([
+      { stop: 'max_tokens', text: SEG1 },
+      { text: SEG2 },
+    ]);
+    const root2 = mkdtempSync(join(tmpdir(), 'v4-'));
+    try {
+      const ok = await makeLoop(root2, clean, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
+      assert.ok(ok.success, 'identical bytes without the tool request pass (V4.1)');
+    } finally {
+      rmSync(root2, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('V4.10: workflow declares synthesisContinuation on the gated producer steps only', async () => {
   const { FULL_BUILD } = await import('../src/workflow/builtins/full-build.js');
   const byId = Object.fromEntries(FULL_BUILD.steps.map((s) => [s.id, s as unknown as Record<string, unknown>]));
-  for (const id of ['scoping.produce', 'design', 'plan', 'test']) {
+  for (const id of ['scoping.produce', 'design', 'plan', 'test', 'build']) {
     assert.equal(byId[id].synthesisContinuation, true, `${id} declares the continuation policy`);
-    assert.ok(byId[id].synthesisGate, `${id} is gate-bound (the boundary exists)`);
+    assert.ok(byId[id].synthesisGate, `${id} is gate-bound (the boundary exists; BUILD's gate is the E24-qualified pair)`);
   }
-  for (const id of ['scoping.gather', 'scoping.checkpoint', 'confirm', 'build', 'critique']) {
+  for (const id of ['scoping.gather', 'scoping.checkpoint', 'confirm', 'critique']) {
     assert.notEqual(byId[id].synthesisContinuation, true, `${id} must not declare the policy`);
   }
 });

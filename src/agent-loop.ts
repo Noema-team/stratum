@@ -689,14 +689,26 @@ export class AgentLoop {
         // max_tokens, non-terminal state, tool request, transport failure —
         // fails closed exactly as the legacy path does.
         const partialText = result.text ?? '';
-        const inSynthesisPhase = synthesisGate !== undefined && turns > synthesisGate.thresholdTurns;
+        // EXACTLY the first synthesis completion (turn threshold+1): a
+        // max_tokens arriving on a LATER synthesis turn — e.g. after an
+        // ordinary format repair — is the legacy failure and is never
+        // continued. The continuation invocation must also stay inside the
+        // frozen turn cap.
+        const isFirstSynthesisTurn =
+          synthesisGate !== undefined &&
+          turns === synthesisGate.thresholdTurns + 1 &&
+          turns < MAX_AGENT_TURNS;
         if (
           this.opts.synthesisContinuation === true &&
-          inSynthesisPhase &&
+          isFirstSynthesisTurn &&
           synthesisContinuationRecord === null &&
           partialText.trim().length > 0
         ) {
           turns++;
+          // P2 — the continuation is timed on its OWN clock: its transport
+          // failure duration must describe the continuation call, never
+          // include the original synthesis generation.
+          const continuationStartedAt = Date.now();
           const continuationParams = {
             model: this.opts.model,
             system,
@@ -720,7 +732,7 @@ export class AgentLoop {
           try {
             continuationResult = await this.provider.completeMultiTurn(continuationParams);
           } catch (err) {
-            const contFailure = describeTransportFailure(err, Date.now() - callStartedAt);
+            const contFailure = describeTransportFailure(err, Date.now() - continuationStartedAt);
             lastTransportFailure = contFailure;
             synthesisContinuationRecord = {
               segment1: partialText,
@@ -736,9 +748,28 @@ export class AgentLoop {
             segment2: continuationResult.text ?? '',
             continuation_stop_reason: continuationResult.stop_reason,
           };
+          // P2 — evidence invariant: failure_observation describes the MOST
+          // RECENT provider turn. After a continuation, that is the
+          // continuation itself, whatever its terminal state — the two
+          // evidence channels must not contradict each other.
+          lastObservation = {
+            ...lastObservation,
+            turns_taken: turns,
+            stop_reason: continuationResult.stop_reason,
+            text_length: Buffer.byteLength(continuationResult.text ?? '', 'utf8'),
+          };
+          // P1 — the continuation is tool-less by construction: its own
+          // invariant is enforced INDEPENDENTLY of the stop_reason (this
+          // seam is provider-agnostic and never trusts correlated fields).
+          // Both checks gate text adoption.
+          if ((continuationResult.tool_uses?.length ?? 0) > 0) {
+            return fail(
+              `synthesis continuation attempted tool use while continuation is tool-less (${continuationResult.tool_uses.length} request(s))`,
+            );
+          }
           if (continuationResult.stop_reason !== 'end_turn') {
-            // Second truncation (or tool_use, or any other non-terminal
-            // state) — fail closed; the segments are preserved as evidence.
+            // Second truncation (or any other non-terminal state) — fail
+            // closed; the segments are preserved as evidence.
             return fail(`synthesis continuation did not terminate normally: ${continuationResult.stop_reason}`);
           }
           // Deterministic candidate: the two segments concatenated in
@@ -749,12 +780,6 @@ export class AgentLoop {
             ...continuationResult,
             text: partialText + (continuationResult.text ?? ''),
             tool_uses: [],
-          };
-          lastObservation = {
-            ...lastObservation,
-            turns_taken: turns,
-            stop_reason: result.stop_reason,
-            text_length: Buffer.byteLength(result.text ?? '', 'utf8'),
           };
         } else {
           return fail('Agent exhausted max_tokens without producing a result block');

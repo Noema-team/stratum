@@ -185,6 +185,12 @@ export const FULL_BUILD: WorkflowDefinition = {
       // per run and enforced by the publication boundary. FULL_BUILD must
       // stay project-agnostic.
       synthesisGate: synthesisGate(),
+      // V4 — the same bounded synthesis continuation as the other gated
+      // producers: BUILD's gate is the E24-qualified E21+E23 pair, and its
+      // V3-3 failure (turn-19 max_tokens truncation) is exactly the class
+      // this policy addresses. Same mechanism, same existing boundary —
+      // not a second intervention.
+      synthesisContinuation: true,
     },
 
     // ── EXEC ──────────────────────────────────────────────────────────────
