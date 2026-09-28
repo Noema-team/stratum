@@ -16,6 +16,7 @@ import {
   resultRepairExhaustedDiagnostic,
 } from './transport/step-result.js';
 import { resolveResultTransport } from './transport/textual-sle-output.js';
+import type { WireObservation } from './sse-accumulator.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -191,6 +192,9 @@ export interface MultiTurnResult {
   text: string;
   tool_uses: ToolUseBlock[];
   tokens_used: number;
+  /** V4-D1 — bounded wire observation from streaming providers; optional so
+   *  providers without the observation (and tests) remain valid. */
+  wire_observation?: WireObservation;
 }
 
 export interface MultiTurnParams {
@@ -321,6 +325,8 @@ export interface AgentLoopResult {
     result_repairs: number;
     stop_reason: string;
     text_length: number;
+    /** V4-D1 — bounded wire observation of the observed turn (optional). */
+    wire_observation?: WireObservation;
     tool_calls: Array<{ tool: string; path: string; turn: number }>;
     tool_uses: Array<{ name: string; argument_bytes: number }>;
     error: string;
@@ -673,6 +679,7 @@ export class AgentLoop {
           name: tu.name,
           argument_bytes: Buffer.byteLength(JSON.stringify(tu.input ?? {}), 'utf8'),
         })),
+        ...(result.wire_observation ? { wire_observation: result.wire_observation } : {}),
         error: '',
       };
 
@@ -771,6 +778,11 @@ export class AgentLoop {
               name: tu.name,
               argument_bytes: Buffer.byteLength(JSON.stringify(tu.input ?? {}), 'utf8'),
             })),
+            // V4-D1 — the observation describes the MOST RECENT turn: the
+            // continuation's own wire, when the provider supplies one.
+            ...(continuationResult.wire_observation
+              ? { wire_observation: continuationResult.wire_observation }
+              : {}),
           };
           // P1 — the continuation is tool-less by construction: its own
           // invariant is enforced INDEPENDENTLY of the stop_reason (this
@@ -880,7 +892,7 @@ export class AgentLoop {
             // record too: define-work succeeds through THIS branch, so a
             // retried-then-accepted Definition would otherwise lose its
             // retry evidence.
-            await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction);
+            await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction, lastObservation?.wire_observation);
             return {
               success: true,
               proposal: { value: submission.value },
@@ -996,7 +1008,7 @@ export class AgentLoop {
       }
 
       // Write turn metadata to run artifacts
-      await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction);
+      await this.writeTurnMetadata(turns, toolCallLog, transportRetry, contextCompaction, lastObservation?.wire_observation);
 
       // D.34 C1 — kind-split return: a proposal replaces parsedOutput; the
       // runner decodes it against the workflow-declared contract.
@@ -1047,7 +1059,11 @@ export class AgentLoop {
     transportRetry?: AgentLoopResult['transport_retry'],
     // E23 — synthesis-boundary compaction evidence, persisted when the gate
     // carried a read-result budget and the transition ran.
-    contextCompaction?: SynthesisCompactionRecord | null
+    contextCompaction?: SynthesisCompactionRecord | null,
+    // V4-D1 — bounded wire observation of the last turn, persisted on the
+    // success path too (the failure path carries it inside
+    // failure_observation instead).
+    wireObservation?: WireObservation
   ): Promise<void> {
     try {
       const { workflowRunId, iteration, nodeId, runArtifacts } = this.opts;
@@ -1069,6 +1085,7 @@ export class AgentLoop {
             tool_calls,
             ...(transportRetry ? { transport_retry: transportRetry } : {}),
             ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
+            ...(wireObservation ? { wire_observation: wireObservation } : {}),
           },
           null,
           2,

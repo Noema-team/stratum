@@ -316,6 +316,10 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
       text: assembled.text,
       tool_uses: toolUses,
       tokens_used: assembled.totalTokens ?? 0,
+      // V4-D1 — bounded wire observation (reasoning presence/counts, usage
+      // breakdown, stream identity). Observation-only: never fed back to the
+      // model, never surfaced as artifact text.
+      wire_observation: assembled.wireObservation,
     };
   }
 }
