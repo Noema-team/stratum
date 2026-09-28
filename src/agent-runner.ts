@@ -889,6 +889,11 @@ export class AgentRunner {
                 tool_calls: loopResult.failure_observation.tool_calls,
                 stop_reason: loopResult.failure_observation.stop_reason,
                 text_length: loopResult.failure_observation.text_length,
+                // V4-D1 — bounded wire observation on the failure path: what
+                // the exhausted completion actually produced (counts only).
+                ...(loopResult.failure_observation.wire_observation
+                  ? { wire_observation: loopResult.failure_observation.wire_observation }
+                  : {}),
                 // E8/A2 preflight (Pilot A E7) — provider-call failure cause
                 // metadata and the bounded rejected-submission description.
                 ...(loopResult.failure_observation.transport_failure

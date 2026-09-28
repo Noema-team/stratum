@@ -37,9 +37,19 @@ export class SseParseError extends Error {
 }
 
 interface StreamedChatChunk {
+  id?: string | null;
+  model?: string | null;
+  provider?: string | null;
   choices?: Array<{
     delta?: {
       content?: string | null;
+      // OpenRouter reasoning channel (V4-D1 observation): `reasoning` is the
+      // OpenRouter field, `reasoning_content` the DeepSeek-style alias some
+      // routes emit, `reasoning_details` the structured reasoning response
+      // (streamed as deltas by OpenRouter providers). COUNTED, never retained.
+      reasoning?: string | null;
+      reasoning_content?: string | null;
+      reasoning_details?: unknown;
       tool_calls?: Array<{
         index?: number;
         id?: string;
@@ -48,8 +58,37 @@ interface StreamedChatChunk {
     };
     finish_reason?: string | null;
   }>;
-  usage?: { total_tokens?: number } | null;
+  usage?: {
+    total_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number } | null;
+  } | null;
 }
+
+/** Bounded, observation-only metadata about one completion's wire (V4-D1).
+ *  Answers: what did the completion budget actually produce? Reasoning TEXT
+ *  is never retained — presence, chunk counts and byte counts only. Nulls
+ *  mean "not supplied by the wire", never "zero". */
+export interface WireObservation {
+  reasoning_chunks: number;
+  reasoning_bytes: number;
+  /** Which delta fields carried reasoning on this wire, e.g. ["reasoning"] or ["reasoning_content"]. */
+  reasoning_fields: string[];
+  content_bytes: number;
+  tool_call_fragments: number;
+  finish_reason: string | null;
+  completion_tokens: number | null;
+  reasoning_tokens: number | null;
+  prompt_tokens: number | null;
+  total_tokens: number | null;
+  stream_id: string | null;
+  model: string | null;
+  provider: string | null;
+}
+
+const WIRE_IDENTITY_BOUND = 200;
+const boundIdentity = (v: string): string => (v.length > WIRE_IDENTITY_BOUND ? v.slice(0, WIRE_IDENTITY_BOUND) : v);
 
 export interface AssembledStream {
   text: string;
@@ -58,6 +97,8 @@ export interface AssembledStream {
   finishReason: string | null;
   totalTokens: number | null;
   sawDone: boolean;
+  /** Observation-only wire metadata (V4-D1) — never semantic, never fed back. */
+  wireObservation: WireObservation;
 }
 
 export class SseStreamAccumulator {
@@ -71,6 +112,17 @@ export class SseStreamAccumulator {
   private finishReason: string | null = null;
   private totalTokens: number | null = null;
   private sawDone = false;
+  // V4-D1 wire observation state (counts/identity only — no reasoning text).
+  private reasoningChunks = 0;
+  private reasoningBytes = 0;
+  private reasoningFields = new Set<string>();
+  private toolCallFragments = 0;
+  private completionTokens: number | null = null;
+  private reasoningTokens: number | null = null;
+  private promptTokens: number | null = null;
+  private streamId: string | null = null;
+  private wireModel: string | null = null;
+  private wireProvider: string | null = null;
 
   /** Feed one decoded network chunk (anywhere it may be split). */
   feed(decoded: string): void {
@@ -246,11 +298,48 @@ export class SseStreamAccumulator {
 
     const delta = choice?.delta;
     if (delta?.content) this.textParts.push(delta.content);
-    for (const tc of delta?.tool_calls ?? []) this.applyToolCallDelta(tc);
+    // V4-D1 — reasoning-channel observation, PRE-finish only (post-finish
+    // chunks are inert by the terminal-state invariant and stay uncounted;
+    // the post-finish contract above is unchanged — reasoning fields are
+    // neither rejected nor retained there, exactly as before this change).
+    if (this.finishReason === null) {
+      for (const field of ['reasoning', 'reasoning_content'] as const) {
+        const v = delta?.[field];
+        if (typeof v === 'string' && v.length > 0) {
+          this.reasoningChunks += 1;
+          this.reasoningBytes += Buffer.byteLength(v, 'utf8');
+          this.reasoningFields.add(field);
+        }
+      }
+      // Structured reasoning channel: presence on the wire counts; only the
+      // derived byte length is retained, never the payload itself.
+      const details = delta?.reasoning_details;
+      if (details !== undefined && details !== null) {
+        this.reasoningChunks += 1;
+        this.reasoningBytes += Buffer.byteLength(JSON.stringify(details), 'utf8');
+        this.reasoningFields.add('reasoning_details');
+      }
+    }
+    for (const tc of delta?.tool_calls ?? []) {
+      this.toolCallFragments += 1;
+      this.applyToolCallDelta(tc);
+    }
     if (choice?.finish_reason) this.finishReason = choice.finish_reason;
     if (chunk.usage && typeof chunk.usage.total_tokens === 'number') {
       this.totalTokens = chunk.usage.total_tokens;
     }
+    // V4-D1 — usage breakdown + stream identity: LAST supplied value wins
+    // (OpenRouter's usage carrier is the final chunk); identity: FIRST
+    // supplied value wins (stable across the stream). Strings are bounded.
+    if (chunk.usage) {
+      if (typeof chunk.usage.completion_tokens === 'number') this.completionTokens = chunk.usage.completion_tokens;
+      if (typeof chunk.usage.prompt_tokens === 'number') this.promptTokens = chunk.usage.prompt_tokens;
+      const rt = chunk.usage.completion_tokens_details?.reasoning_tokens;
+      if (typeof rt === 'number') this.reasoningTokens = rt;
+    }
+    if (this.streamId === null && typeof chunk.id === 'string' && chunk.id.length > 0) this.streamId = boundIdentity(chunk.id);
+    if (this.wireModel === null && typeof chunk.model === 'string' && chunk.model.length > 0) this.wireModel = boundIdentity(chunk.model);
+    if (this.wireProvider === null && typeof chunk.provider === 'string' && chunk.provider.length > 0) this.wireProvider = boundIdentity(chunk.provider);
   }
 
   private applyToolCallDelta(tc: {
@@ -321,12 +410,28 @@ export class SseStreamAccumulator {
       }
       return { id: tc.id, name: tc.name, arguments: tc.arguments };
     });
+    const text = this.textParts.join('');
     return {
-      text: this.textParts.join(''),
+      text,
       toolCalls,
       finishReason: this.finishReason,
       totalTokens: this.totalTokens,
       sawDone: this.sawDone,
+      wireObservation: {
+        reasoning_chunks: this.reasoningChunks,
+        reasoning_bytes: this.reasoningBytes,
+        reasoning_fields: [...this.reasoningFields].sort(),
+        content_bytes: Buffer.byteLength(text, 'utf8'),
+        tool_call_fragments: this.toolCallFragments,
+        finish_reason: this.finishReason,
+        completion_tokens: this.completionTokens,
+        reasoning_tokens: this.reasoningTokens,
+        prompt_tokens: this.promptTokens,
+        total_tokens: this.totalTokens,
+        stream_id: this.streamId,
+        model: this.wireModel,
+        provider: this.wireProvider,
+      },
     };
   }
 }
