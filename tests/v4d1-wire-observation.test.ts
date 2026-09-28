@@ -220,6 +220,36 @@ test('V4D1.7: framing independence — reasoning deltas split across arbitrary n
   assert.equal(w.finish_reason, 'length');
 });
 
+test('V4D1.11: adversarial — structured reasoning_details deltas are observed but their payload is never persisted', () => {
+  const acc = new SseStreamAccumulator();
+  feedAll(acc, [
+    { choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'DO_NOT_PERSIST_THIS' }] } }] },
+    { choices: [{ delta: { reasoning: 'plain channel still works' } }] },
+    { choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'DO_NOT_PERSIST_EITHER' }] } }] },
+    { choices: [{ delta: {}, finish_reason: 'length' }] },
+    // post-finish reasoning_details stays inert and uncounted, exactly like
+    // the textual reasoning channels
+    { choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'POST_FINISH_DETAILS' }] } }] },
+    '[DONE]',
+  ]);
+  acc.end();
+  const a = acc.assemble();
+  assert.equal(a.text, '');
+  assert.equal(a.finishReason, 'length');
+  const w = a.wireObservation;
+  assert.ok(w.reasoning_fields.includes('reasoning_details'), 'reasoning_details detected');
+  assert.deepEqual(w.reasoning_fields, ['reasoning', 'reasoning_details']);
+  assert.equal(w.reasoning_chunks, 3, '2 details deltas + 1 plain reasoning delta; post-finish uncounted');
+  assert.equal(w.reasoning_bytes,
+    Buffer.byteLength(JSON.stringify([{ type: 'reasoning.text', text: 'DO_NOT_PERSIST_THIS' }]), 'utf8') +
+    Buffer.byteLength('plain channel still works', 'utf8') +
+    Buffer.byteLength(JSON.stringify([{ type: 'reasoning.text', text: 'DO_NOT_PERSIST_EITHER' }]), 'utf8'));
+  const dumped = JSON.stringify(a);
+  assert.ok(!dumped.includes('DO_NOT_PERSIST_THIS'), 'reasoning_details payload leaked');
+  assert.ok(!dumped.includes('DO_NOT_PERSIST_EITHER'), 'reasoning_details payload leaked');
+  assert.ok(!dumped.includes('POST_FINISH_DETAILS'), 'post-finish reasoning_details leaked');
+});
+
 // ─── Provider-level integration (mocked fetch, real Response streams) ───────
 
 test('V4D1.8: provider surfaces the observation on MultiTurnResult without mutating the request', async () => {

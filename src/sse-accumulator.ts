@@ -45,9 +45,11 @@ interface StreamedChatChunk {
       content?: string | null;
       // OpenRouter reasoning channel (V4-D1 observation): `reasoning` is the
       // OpenRouter field, `reasoning_content` the DeepSeek-style alias some
-      // routes emit. COUNTED, never retained.
+      // routes emit, `reasoning_details` the structured reasoning response
+      // (streamed as deltas by OpenRouter providers). COUNTED, never retained.
       reasoning?: string | null;
       reasoning_content?: string | null;
+      reasoning_details?: unknown;
       tool_calls?: Array<{
         index?: number;
         id?: string;
@@ -308,6 +310,14 @@ export class SseStreamAccumulator {
           this.reasoningBytes += Buffer.byteLength(v, 'utf8');
           this.reasoningFields.add(field);
         }
+      }
+      // Structured reasoning channel: presence on the wire counts; only the
+      // derived byte length is retained, never the payload itself.
+      const details = delta?.reasoning_details;
+      if (details !== undefined && details !== null) {
+        this.reasoningChunks += 1;
+        this.reasoningBytes += Buffer.byteLength(JSON.stringify(details), 'utf8');
+        this.reasoningFields.add('reasoning_details');
       }
     }
     for (const tc of delta?.tool_calls ?? []) {
