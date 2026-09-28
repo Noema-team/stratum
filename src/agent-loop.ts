@@ -704,6 +704,16 @@ export class AgentLoop {
           synthesisContinuationRecord === null &&
           partialText.trim().length > 0
         ) {
+          // The TRUNCATED synthesis completion must itself be tool-less.
+          // The provider can represent max_tokens + non-empty text + tool
+          // requests (finish_reason=length maps before tool calls are
+          // considered) — that mixed state is not a synthesis to continue:
+          // it failed closed WITHOUT any continuation call.
+          if ((result.tool_uses?.length ?? 0) > 0) {
+            return fail(
+              `synthesis completion terminated with max_tokens while carrying ${result.tool_uses.length} tool request(s) — a truncated synthesis that attempted tool use is not continuable (fail closed)`,
+            );
+          }
           turns++;
           // P2 — the continuation is timed on its OWN clock: its transport
           // failure duration must describe the continuation call, never
@@ -757,6 +767,10 @@ export class AgentLoop {
             turns_taken: turns,
             stop_reason: continuationResult.stop_reason,
             text_length: Buffer.byteLength(continuationResult.text ?? '', 'utf8'),
+            tool_uses: (continuationResult.tool_uses ?? []).map((tu) => ({
+              name: tu.name,
+              argument_bytes: Buffer.byteLength(JSON.stringify(tu.input ?? {}), 'utf8'),
+            })),
           };
           // P1 — the continuation is tool-less by construction: its own
           // invariant is enforced INDEPENDENTLY of the stop_reason (this

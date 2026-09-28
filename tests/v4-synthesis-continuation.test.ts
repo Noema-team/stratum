@@ -378,6 +378,9 @@ test('V4.12: adversarial — a tool request beside a VALID continuation segment 
     assert.match(result.error!, /synthesis continuation attempted tool use while continuation is tool-less \(1 request\(s\)\)/);
     assert.equal(provider.calls.length, 2, 'exactly one continuation — rejected before any adoption');
     assert.equal(result.failure_observation!.stop_reason, 'end_turn', 'failure_observation describes the continuation turn itself');
+    assert.equal(result.failure_observation!.tool_uses.length, 1, 'the observation carries the CONTINUATION turn tool requests');
+    assert.equal(result.failure_observation!.tool_uses[0].name, 'read_file');
+    assert.ok(result.failure_observation!.tool_uses[0].argument_bytes > 0);
     // Counterfactual: the IDENTICAL bytes with tool_uses=[] are the V4.1
     // adopted-repair success — so the rejection is attributable to the tool
     // request alone.
@@ -392,6 +395,44 @@ test('V4.12: adversarial — a tool request beside a VALID continuation segment 
     } finally {
       rmSync(root2, { recursive: true, force: true });
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V4.13: adversarial — the truncated SEG-1 completion itself carrying tool requests is NOT continuable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v4-'));
+  // The provider can represent max_tokens + non-empty text + tool uses
+  // (finish_reason=length maps before tool calls are considered). That
+  // mixed state must fail closed with its own diagnostic — the
+  // continuation is never even attempted.
+  const provider = new SynthProvider([
+    { stop: 'max_tokens', text: SEG1 },
+    { text: 'NEVER REACHED' },
+  ]);
+  provider.injectToolUses = [[{ type: 'tool_use', id: 't0', name: 'read_file', input: { path: 'src/index.ts' } }], null];
+  try {
+    const result = await makeLoop(root, provider, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
+    assert.equal(result.success, false);
+    assert.match(result.error!, /terminated with max_tokens while carrying 1 tool request/);
+    assert.match(result.error!, /not continuable/);
+    assert.equal(provider.calls.length, 1, 'no continuation call for a tool-carrying segment 1');
+    assert.equal(result.synthesis_continuation, undefined, 'no continuation evidence — the continuation never fired');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V4.13-counterfactual: identical SEG-1 bytes with zero tool uses fire the continuation normally', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'v4-'));
+  const provider = new SynthProvider([
+    { stop: 'max_tokens', text: SEG1 },
+    { text: SEG2 },
+  ]);
+  try {
+    const result = await makeLoop(root, provider, { thresholdTurns: 0, synthesisContinuation: true }).run('system', 'produce');
+    assert.ok(result.success, 'the same bytes without the tool requests are continuable (V4.1)');
+    assert.equal(provider.calls.length, 2);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
