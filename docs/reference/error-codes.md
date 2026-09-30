@@ -1,9 +1,14 @@
 # Error Codes
 
-**Type:** reference · **Status:** draft · **Updated:** 2026-04-22
+**Type:** reference · **Status:** current · **Updated:** 2026-09-28
 
 Authoritative error code reference for the SLE system. Every failure mode has a
 code, a detection condition, a severity, and a defined recovery path.
+
+> Reconciled with the implemented surface on 2026-09-28 (V5 arc) — see
+> [Identifier namespaces](#identifier-namespaces--read-this-before-grepping)
+> and [Implementation coverage](#implementation-coverage-audited-2026-09-28-vs-src--v5-arc).
+
 
 System states: `idle | discovering` (DDR-031). Per-run states
 (`WorkflowRun.status`): `active | halted | complete`.
@@ -13,6 +18,49 @@ a step id), not a state (DDR-031, supersedes DDR-021/DDR-026).
 
 AgentRole set: Designer, Explorer, Planner, Tester, Builder, Debugger, Evaluator,
 Critic, Historian, Facilitator.
+
+---
+
+## Identifier namespaces — read this before grepping
+
+Two distinct `E`-prefixed namespaces exist in this repository. They collide
+visually; do not confuse them:
+
+| Namespace | Shape | Lives in | Example |
+|---|---|---|---|
+| **Error codes** (this document) | `E` + zero-padded 3 digits, range-assigned per subsystem | this document; emitted at runtime together with a slug | `E010` `rule_file_invalid`, `E106` `init_push_failure` |
+| **Change-series labels** | `E` + unpadded number, optionally with `/A<n>` aspect suffix | source comments in `src/**`, PR titles, experiment records | `E10/A3` (bounded transport retry), `E21` (synthesis gate), `E26` (producer contract) |
+
+Change-series labels (`E10`–`E27` as of the V5 arc) identify successive
+hardening experiments in the V-series. They are **not** error codes and carry
+no severity or recovery semantics. A grep hit for an unpadded `E<n>` in
+`src/` is a change-series reference, never an error code.
+
+**The slug is the canonical in-code identifier.** Runtime code identifies
+errors by slug (`rule_file_invalid`, `no_scoping_draft`), not by number; the
+numeric code is the external reference for documentation, API responses, and
+operator tooling. When adding an error site in code, use the slug and
+cross-reference the numeric code in a comment.
+
+---
+
+## Implementation coverage (audited 2026-09-28 vs `src/` @ V5 arc)
+
+Extraction sweep over `src/**` (distinct `E`-tokens, padded and unpadded):
+
+- Error codes referenced in code: `E106` (`init_push_failure`, init-service
+  warning path). Every other `E`-token found in `src/` is a change-series
+  label, not an error code.
+- Error identification in code is slug-based; slugs verified live include
+  `rule_file_invalid` (daemon startup) and `no_scoping_draft` (scoping
+  service).
+- Ranges for unimplemented subsystems (Beads integration, job dispatch /
+  Docker, discovery session, worker pool) remain design-stage: reserved,
+  not emitted.
+
+The taxonomy below remains the authoritative design reference. Per-code
+emission status is not yet annotated row by row; annotate as the daemon API
+wires failures to codes.
 
 ---
 

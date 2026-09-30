@@ -136,7 +136,7 @@
 | 23 | `specs/project-overview.md` | 🔶 VS6 | Overview page with 6 panels (Actions Required, Active Jobs, Tasks, Sharding Review, Activity, Documents) |
 | 24 | `specs/backlog-system.md` | 📝 | — |
 | 25 | `specs/user-flow.md` | 🔶 VS6 | Core navigation flows, init wizard, and facilitator conversation implemented |
-| 26 | `reference/error-codes.md` | 📝 | — |
+| 26 | `reference/error-codes.md` | 🔶 VS5 | Reconciled with the V5 surface (2026-09-28): identifier-namespace disambiguation (error codes vs change-series labels), slug established as the canonical in-code identifier, implementation-coverage audit. The full 129-code taxonomy remains design-stage; in-code emission is slug-based with `E106` the first referenced code |
 | 27 | `reference/agents-yaml-schema.md` | 📝 | — |
 | 28 | `reference/rule-file-defaults.md` | 📝 | — |
 | 29 | `reference/artifact-registry.md` | 📝 | — |
