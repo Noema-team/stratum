@@ -2,8 +2,13 @@
 
 **Type:** reference · **Status:** taxonomy design-stage; implementation coverage partial · **Updated:** 2026-09-28
 
-Authoritative error code reference for the SLE system. Every failure mode has a
-code, a detection condition, a severity, and a defined recovery path.
+Authoritative error code reference for the SLE system. This is the
+**normative/design taxonomy**: it defines the code, detection condition,
+severity, and recovery path for each failure mode in scope. It is not an
+emission contract — implementation coverage is audited separately
+([Implementation coverage](#implementation-coverage-audited-2026-09-28-vs-src--v5-arc));
+most ranges are currently reserved design reference, and runtime error
+identity is slug-based today.
 
 > Reconciled with the implemented surface on 2026-09-28 (V5 arc) — see
 > [Identifier namespaces](#identifier-namespaces--read-this-before-grepping)
