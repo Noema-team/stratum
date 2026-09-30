@@ -1,6 +1,6 @@
 # Error Codes
 
-**Type:** reference · **Status:** current · **Updated:** 2026-09-28
+**Type:** reference · **Status:** taxonomy design-stage; implementation coverage partial · **Updated:** 2026-09-28
 
 Authoritative error code reference for the SLE system. Every failure mode has a
 code, a detection condition, a severity, and a defined recovery path.
@@ -28,19 +28,26 @@ visually; do not confuse them:
 
 | Namespace | Shape | Lives in | Example |
 |---|---|---|---|
-| **Error codes** (this document) | `E` + zero-padded 3 digits, range-assigned per subsystem | this document; emitted at runtime together with a slug | `E010` `rule_file_invalid`, `E106` `init_push_failure` |
+| **Error codes** (this document) | `E` + zero-padded 3 digits, range-assigned per subsystem | this document only — **numeric codes are not emitted at runtime today** (documented taxonomy / design reference) | `E010` `rule_file_invalid`, `E106` `init_push_failure` |
 | **Change-series labels** | `E` + unpadded number, optionally with `/A<n>` aspect suffix | source comments in `src/**`, PR titles, experiment records | `E10/A3` (bounded transport retry), `E21` (synthesis gate), `E26` (producer contract) |
 
 Change-series labels (`E10`–`E27` as of the V5 arc) identify successive
 hardening experiments in the V-series. They are **not** error codes and carry
-no severity or recovery semantics. A grep hit for an unpadded `E<n>` in
-`src/` is a change-series reference, never an error code.
+no severity or recovery semantics. In the audited V5-arc revision, every
+unpadded `E<n>` hit in `src/` was a change-series reference — this was
+established by sweep, not mechanically guaranteed; re-verify on future
+audits before treating it as invariant.
 
-**The slug is the canonical in-code identifier.** Runtime code identifies
-errors by slug (`rule_file_invalid`, `no_scoping_draft`), not by number; the
-numeric code is the external reference for documentation, API responses, and
-operator tooling. When adding an error site in code, use the slug and
-cross-reference the numeric code in a comment.
+**Runtime error identity today is slug-based.** API error responses
+(`APIError.error.code`) carry slug-like code strings — verified live:
+`no_scoping_draft`, `session_conflict`, `validation_error`,
+`internal_error` (daemon API), `scoping_failed`,
+`charter_validation_failed` (scoping service). No numeric `E###` code is
+emitted anywhere in the implementation; the numeric taxonomy is the
+documentation/design namespace. When wiring a failure to this taxonomy,
+use the slug as the runtime identifier and cross-reference the numeric
+code in a comment — the E010/E106 rows below then describe the mapping,
+not yet the emission.
 
 ---
 
@@ -48,12 +55,19 @@ cross-reference the numeric code in a comment.
 
 Extraction sweep over `src/**` (distinct `E`-tokens, padded and unpadded):
 
-- Error codes referenced in code: `E106` (`init_push_failure`, init-service
-  warning path). Every other `E`-token found in `src/` is a change-series
-  label, not an error code.
-- Error identification in code is slug-based; slugs verified live include
-  `rule_file_invalid` (daemon startup) and `no_scoping_draft` (scoping
-  service).
+- Error codes referenced in code: `E106` (`init_push_failure`) — exactly
+  one occurrence, a comment at `src/init-service.ts:607` marking the
+  init warning path ("warning only, not an error"). Every other
+  `E`-token found in `src/` is a change-series label, not an error code.
+- Error identification is slug-based end to end: API error responses
+  carry slugs in `APIError.error.code` (`src/daemon.ts` `sendError`,
+  line 1573). Slugs verified live in `src/`: `no_scoping_draft`
+  (`src/daemon.ts:768`, `src/scoping-service.ts:99`),
+  `session_conflict`, `validation_error`, `internal_error`
+  (`src/daemon.ts`), `scoping_failed`, `charter_validation_failed`
+  (`src/scoping-service.ts`). **`rule_file_invalid` is NOT implemented**
+  — it appears only in this document (E010); the earlier claim that it
+  was verified in the daemon was wrong and is retracted.
 - Ranges for unimplemented subsystems (Beads integration, job dispatch /
   Docker, discovery session, worker pool) remain design-stage: reserved,
   not emitted.
