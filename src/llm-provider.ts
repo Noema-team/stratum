@@ -215,6 +215,14 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
         // E3b — sampling parity: forward the temperature the runner runs
         // everywhere else; absent leaves the provider default (legacy).
         ...(params.temperature !== undefined && { temperature: params.temperature }),
+        // V8 — per-step reasoning-token cap, in OpenRouter's documented
+        // `reasoning` request-object shape. OPTIONAL: absent means the
+        // `reasoning` key is NEVER sent — the request body is byte-for-byte
+        // legacy. Presence/absence is decided solely by the step's own
+        // override (no global fallback anywhere in the stack).
+        ...(params.reasoning_max_tokens !== undefined && {
+          reasoning: { max_tokens: params.reasoning_max_tokens },
+        }),
         // Transport regime 2 — SSE streaming (see regime boundary above).
         stream: true,
       }),

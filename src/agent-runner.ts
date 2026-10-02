@@ -230,6 +230,14 @@ export interface AgentRunnerConfig {
   // byte-for-byte. Deliberately NOT a budget-policy framework: one lookup,
   // no defaults beyond the existing global budget.
   workflowMaxTokens?: Record<string, number>;
+  // V8 — optional per-(workflow,step) reasoning-token cap, keyed exactly like
+  // workflowMaxTokens ("workflowId/stepId"). Declared project setting
+  // (settings.json `workflow_reasoning_max_tokens`, fail-closed whole-map
+  // validation, same reader contract) or explicit composition-root config.
+  // Absent for a step = the outbound request NEVER carries a reasoning key
+  // for that step — byte-for-byte legacy. There is deliberately NO global
+  // reasoning fallback: the only source is the step's own override.
+  workflowReasoningMaxTokens?: Record<string, number>;
   // D.3d.5 commit 1 — result transport override (tests, future structured
   // adapters). Defaults to the textual SLE-OUTPUT fallback transport; see
   // transport/step-result.ts for the seam contract.
@@ -276,7 +284,7 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens' | 'workflowReasoningMaxTokens'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -311,6 +319,32 @@ function resolveWorkflowBudgetOverridesFromSettings(
   }
 }
 
+// V8 — strict reader for the optional settings.json
+// `workflow_reasoning_max_tokens` map: per-(workflow,step) reasoning-token
+// caps, keyed exactly like `workflow_max_tokens`. Same fail-closed
+// whole-map contract: absent file, absent key, wrong shape, or ANY invalid
+// entry (bad key, non-integer, ≤ 0) discards the ENTIRE map → no reasoning
+// key is ever sent. Never an error, never a partial map.
+function resolveWorkflowReasoningOverridesFromSettings(
+  projectRoot: string,
+): Record<string, number> | undefined {
+  try {
+    const raw = nodeReadFileSync(path.join(projectRoot, '.sle', 'settings.json'), 'utf8');
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    const map = saved.workflow_reasoning_max_tokens;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return undefined;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+      if (!/^[^/\s]+\/[^/\s]+$/.test(key)) return undefined; // exactly "workflowId/stepId"
+      if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) return undefined;
+      out[key] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class AgentRunner {
   private fs: typeof import('fs').promises;
   // D.3d.5 commit 1 — the resolved result transport (serialization seam).
@@ -319,6 +353,10 @@ export class AgentRunner {
   // (explicit config wins; else the declarative project settings).
   // Undefined = the global budget everywhere, exactly as before.
   private workflowBudgets: Record<string, number> | undefined;
+  // V8 — resolved per-(workflow,step) reasoning-token caps (explicit config
+  // wins; else the declarative project settings). Undefined for a step =
+  // the outbound request never carries a reasoning key for it.
+  private workflowReasoningBudgets: Record<string, number> | undefined;
 
   constructor(
     private contextManager: ContextManager,
@@ -336,6 +374,9 @@ export class AgentRunner {
     this.resultTransport = resolveResultTransport(llmProvider, runnerConfig.resultTransport);
     this.workflowBudgets =
       runnerConfig.workflowMaxTokens ?? resolveWorkflowBudgetOverridesFromSettings(projectRoot);
+    this.workflowReasoningBudgets =
+      runnerConfig.workflowReasoningMaxTokens ??
+      resolveWorkflowReasoningOverridesFromSettings(projectRoot);
   }
 
   // E15/A6 — the completion budget for THIS step: the declared
@@ -343,6 +384,13 @@ export class AgentRunner {
   // budget. One lookup — no policy framework, no provider/model branching.
   private completionBudgetFor(ctx: StepRunContext): number | undefined {
     return this.workflowBudgets?.[`${ctx.workflowId}/${ctx.stepId}`] ?? this.runnerConfig.max_tokens;
+  }
+
+  // V8 — the reasoning-token cap for THIS step, if the step declares one.
+  // One lookup; NO fallback (a step without an override never sends a
+  // reasoning key — the legacy request shape, byte-for-byte).
+  private reasoningBudgetFor(ctx: StepRunContext): number | undefined {
+    return this.workflowReasoningBudgets?.[`${ctx.workflowId}/${ctx.stepId}`];
   }
 
   // V3 — the multi-turn loop construction, extracted verbatim from run()
@@ -362,6 +410,11 @@ export class AgentRunner {
       {
         model: this.runnerConfig.model,
         max_tokens: this.completionBudgetFor(ctx),
+        // V8 — the step's reasoning cap, present only when the step declares
+        // one (absent = the loop never sends a reasoning key).
+        ...(this.reasoningBudgetFor(ctx) !== undefined && {
+          reasoning_max_tokens: this.reasoningBudgetFor(ctx),
+        }),
         temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
         projectRoot: this.projectRoot,
         role,
@@ -508,6 +561,12 @@ export class AgentRunner {
       // max_tokens ?? 4096) — the repair completion gets the SAME ceiling
       // the step's completions get, nothing larger.
       max_tokens: this.completionBudgetFor(ctx) ?? 4096,
+      // V8 — the repair is part of the step's stage completion configuration
+      // (same per-stage precedent as the budget above), so it carries the
+      // same reasoning cap. Absent = never sent.
+      ...(this.reasoningBudgetFor(ctx) !== undefined && {
+        reasoning_max_tokens: this.reasoningBudgetFor(ctx),
+      }),
       temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
       tools: [],
     };

@@ -222,6 +222,12 @@ export interface MultiTurnParams {
   // absent, behavior is byte-for-byte unchanged. Providers that do not support
   // cancellation ignore it.
   signal?: AbortSignal;
+  // V8 — optional per-step reasoning-token cap, surfaced on the outbound
+  // OpenRouter request as `reasoning: { max_tokens }` (V8 preflight proves
+  // the exact body). OPTIONAL: absent means the key is NEVER sent — every
+  // request stays byte-for-byte legacy. No fallback to any global value:
+  // the only source is the step's own override.
+  reasoning_max_tokens?: number;
 }
 
 export interface IMultiTurnProvider {
@@ -234,6 +240,11 @@ export interface AgentLoopOptions {
   // E3b — forwarded to the provider on every multi-turn call (sampling
   // parity with the single-turn/structured wires).
   temperature?: number;
+  // V8 — optional per-step reasoning-token cap forwarded on EVERY provider
+  // call of this loop (turn requests, transport retries, and the V4 bounded
+  // synthesis continuation alike — one stage, one completion configuration).
+  // Absent = never sent.
+  reasoning_max_tokens?: number;
   projectRoot: string;
   role: AgentRole;
   workflowRunId: string;
@@ -609,6 +620,10 @@ export class AgentLoop {
         max_tokens: this.opts.max_tokens ?? 4096,
         // E3b — sampling parity across wires.
         ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+        // V8 — per-step reasoning cap (absent = never sent).
+        ...(this.opts.reasoning_max_tokens !== undefined && {
+          reasoning_max_tokens: this.opts.reasoning_max_tokens,
+        }),
         // E21 — the tool set is computed PER TURN under the synthesis gate:
         // investigation turns offer the full set, synthesis turns offer only
         // the result channel. Without the gate this is the exact legacy set
@@ -740,6 +755,12 @@ export class AgentLoop {
             ],
             max_tokens: this.opts.max_tokens ?? 4096,
             ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+            // V8 — the continuation is part of the SAME stage completion
+            // configuration (same max_tokens precedent), so it carries the
+            // same per-step reasoning cap. Absent = never sent.
+            ...(this.opts.reasoning_max_tokens !== undefined && {
+              reasoning_max_tokens: this.opts.reasoning_max_tokens,
+            }),
             // NO repository tools and NO result channel: the continuation
             // can only complete the interrupted TEXT. Nothing is offered
             // that could smuggle in new investigation.
