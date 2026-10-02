@@ -222,7 +222,22 @@ export interface MultiTurnParams {
   // absent, behavior is byte-for-byte unchanged. Providers that do not support
   // cancellation ignore it.
   signal?: AbortSignal;
+  // V8 — optional per-step reasoning-effort control, surfaced on the outbound
+  // OpenRouter request as `reasoning: { effort }` (V8 preflight proves the
+  // exact body). GLM-5.3-Flash advertises supported_efforts ["max","high",
+  // "low"] and does NOT advertise token-budget reasoning — a numeric
+  // reasoning.max_tokens would be converted to an effort label server-side,
+  // so the campaign sends the named effort directly. OPTIONAL: absent means
+  // the key is NEVER sent — every request stays byte-for-byte legacy. No
+  // fallback to any global value: the only source is the step's own override.
+  reasoning_effort?: ReasoningEffort;
 }
+
+// V8 — the reasoning-effort labels OpenRouter documents for its `reasoning`
+// request object. Validation is fail-closed at the settings boundary against
+// exactly this set (an unknown label discards the entire override map — the
+// never-a-partial-map contract).
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
 
 export interface IMultiTurnProvider {
   completeMultiTurn(params: MultiTurnParams): Promise<MultiTurnResult>;
@@ -234,6 +249,11 @@ export interface AgentLoopOptions {
   // E3b — forwarded to the provider on every multi-turn call (sampling
   // parity with the single-turn/structured wires).
   temperature?: number;
+  // V8 — optional per-step reasoning-effort control forwarded on EVERY
+  // provider call of this loop (turn requests, transport retries, and the
+  // V4 bounded synthesis continuation alike — one stage, one completion
+  // configuration). Absent = never sent.
+  reasoning_effort?: ReasoningEffort;
   projectRoot: string;
   role: AgentRole;
   workflowRunId: string;
@@ -609,6 +629,10 @@ export class AgentLoop {
         max_tokens: this.opts.max_tokens ?? 4096,
         // E3b — sampling parity across wires.
         ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+        // V8 — per-step reasoning cap (absent = never sent).
+        ...(this.opts.reasoning_effort !== undefined && {
+          reasoning_effort: this.opts.reasoning_effort,
+        }),
         // E21 — the tool set is computed PER TURN under the synthesis gate:
         // investigation turns offer the full set, synthesis turns offer only
         // the result channel. Without the gate this is the exact legacy set
@@ -740,6 +764,12 @@ export class AgentLoop {
             ],
             max_tokens: this.opts.max_tokens ?? 4096,
             ...(this.opts.temperature !== undefined && { temperature: this.opts.temperature }),
+            // V8 — the continuation is part of the SAME stage completion
+            // configuration (same max_tokens precedent), so it carries the
+            // same per-step reasoning effort. Absent = never sent.
+            ...(this.opts.reasoning_effort !== undefined && {
+              reasoning_effort: this.opts.reasoning_effort,
+            }),
             // NO repository tools and NO result channel: the continuation
             // can only complete the interrupted TEXT. Nothing is offered
             // that could smuggle in new investigation.

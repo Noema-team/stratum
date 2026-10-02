@@ -9,7 +9,7 @@ import type { RunArtifactManager } from './run-artifacts.js';
 import type { StepRunContext } from './workflow/types.js';
 import type { ArtifactRepository } from './storage/repositories.js';
 import { toSafeRelativePath } from './path-safety.js';
-import { AgentLoop, type MultiTurnParams, type MultiTurnResult } from './agent-loop.js';
+import { AgentLoop, type MultiTurnParams, type MultiTurnResult, type ReasoningEffort } from './agent-loop.js';
 import { applyUnifiedDiff, PatchApplyError } from './patch.js';
 import {
   type ResultTransport,
@@ -230,6 +230,17 @@ export interface AgentRunnerConfig {
   // byte-for-byte. Deliberately NOT a budget-policy framework: one lookup,
   // no defaults beyond the existing global budget.
   workflowMaxTokens?: Record<string, number>;
+  // V8 — optional per-(workflow,step) reasoning-effort control, keyed exactly
+  // like workflowMaxTokens ("workflowId/stepId"). Declared project setting
+  // (settings.json `workflow_reasoning_effort`, fail-closed whole-map
+  // validation against the documented OpenRouter effort enum, same reader
+  // contract) or explicit composition-root config. Absent for a step = the
+  // outbound request NEVER carries a reasoning key for that step —
+  // byte-for-byte legacy. There is deliberately NO global fallback: the only
+  // source is the step's own override. Multi-turn execution only — a step
+  // that executes on the single-turn/structured wire FAILS CLOSED when an
+  // effort is configured for it (never a silent no-op).
+  workflowReasoningEffort?: Record<string, ReasoningEffort>;
   // D.3d.5 commit 1 — result transport override (tests, future structured
   // adapters). Defaults to the textual SLE-OUTPUT fallback transport; see
   // transport/step-result.ts for the seam contract.
@@ -276,7 +287,7 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens' | 'workflowReasoningEffort'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -311,6 +322,45 @@ function resolveWorkflowBudgetOverridesFromSettings(
   }
 }
 
+// V8 — the documented OpenRouter reasoning-effort labels (fail-closed
+// validation set for the override maps below).
+const REASONING_EFFORTS: readonly ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'max', 'xhigh'];
+
+// V8 — whole-map validator shared by BOTH sources (explicit config and
+// settings.json): absent/empty → undefined; wrong shape, bad key, or ANY
+// value outside the effort enum discards the ENTIRE map (never a partial
+// map, never an error).
+function resolveWorkflowReasoningEffortMap(
+  map: unknown,
+): Record<string, ReasoningEffort> | undefined {
+  if (typeof map !== 'object' || map === null || Array.isArray(map)) return undefined;
+  const out: Record<string, ReasoningEffort> = {};
+  for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(key)) return undefined; // exactly "workflowId/stepId"
+    if (typeof value !== 'string' || !REASONING_EFFORTS.includes(value as ReasoningEffort)) return undefined;
+    out[key] = value as ReasoningEffort;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// V8 — strict reader for the optional settings.json
+// `workflow_reasoning_effort` map: per-(workflow,step) reasoning-effort
+// overrides, keyed exactly like `workflow_max_tokens`. Same fail-closed
+// whole-map contract: absent file, absent key, wrong shape, or ANY invalid
+// entry (bad key, unknown effort label) discards the ENTIRE map → no
+// reasoning key is ever sent. Never an error, never a partial map.
+function resolveWorkflowReasoningEffortOverridesFromSettings(
+  projectRoot: string,
+): Record<string, ReasoningEffort> | undefined {
+  try {
+    const raw = nodeReadFileSync(path.join(projectRoot, '.sle', 'settings.json'), 'utf8');
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    return resolveWorkflowReasoningEffortMap(saved.workflow_reasoning_effort);
+  } catch {
+    return undefined;
+  }
+}
+
 export class AgentRunner {
   private fs: typeof import('fs').promises;
   // D.3d.5 commit 1 — the resolved result transport (serialization seam).
@@ -319,6 +369,10 @@ export class AgentRunner {
   // (explicit config wins; else the declarative project settings).
   // Undefined = the global budget everywhere, exactly as before.
   private workflowBudgets: Record<string, number> | undefined;
+  // V8 — resolved per-(workflow,step) reasoning-effort overrides (explicit
+  // config wins; else the declarative project settings). Undefined for a
+  // step = the outbound request never carries a reasoning key for it.
+  private workflowReasoningEfforts: Record<string, ReasoningEffort> | undefined;
 
   constructor(
     private contextManager: ContextManager,
@@ -336,6 +390,10 @@ export class AgentRunner {
     this.resultTransport = resolveResultTransport(llmProvider, runnerConfig.resultTransport);
     this.workflowBudgets =
       runnerConfig.workflowMaxTokens ?? resolveWorkflowBudgetOverridesFromSettings(projectRoot);
+    this.workflowReasoningEfforts = resolveWorkflowReasoningEffortMap(
+      runnerConfig.workflowReasoningEffort ??
+        resolveWorkflowReasoningEffortOverridesFromSettings(projectRoot),
+    );
   }
 
   // E15/A6 — the completion budget for THIS step: the declared
@@ -343,6 +401,13 @@ export class AgentRunner {
   // budget. One lookup — no policy framework, no provider/model branching.
   private completionBudgetFor(ctx: StepRunContext): number | undefined {
     return this.workflowBudgets?.[`${ctx.workflowId}/${ctx.stepId}`] ?? this.runnerConfig.max_tokens;
+  }
+
+  // V8 — the reasoning-effort override for THIS step, if the step declares
+  // one. One lookup; NO fallback (a step without an override never sends a
+  // reasoning key — the legacy request shape, byte-for-byte).
+  private reasoningEffortFor(ctx: StepRunContext): ReasoningEffort | undefined {
+    return this.workflowReasoningEfforts?.[`${ctx.workflowId}/${ctx.stepId}`];
   }
 
   // V3 — the multi-turn loop construction, extracted verbatim from run()
@@ -362,6 +427,11 @@ export class AgentRunner {
       {
         model: this.runnerConfig.model,
         max_tokens: this.completionBudgetFor(ctx),
+        // V8 — the step's reasoning effort, present only when the step
+        // declares one (absent = the loop never sends a reasoning key).
+        ...(this.reasoningEffortFor(ctx) !== undefined && {
+          reasoning_effort: this.reasoningEffortFor(ctx),
+        }),
         temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
         projectRoot: this.projectRoot,
         role,
@@ -508,6 +578,12 @@ export class AgentRunner {
       // max_tokens ?? 4096) — the repair completion gets the SAME ceiling
       // the step's completions get, nothing larger.
       max_tokens: this.completionBudgetFor(ctx) ?? 4096,
+      // V8 — the repair is part of the step's stage completion configuration
+      // (same per-stage precedent as the budget above), so it carries the
+      // same reasoning effort. Absent = never sent.
+      ...(this.reasoningEffortFor(ctx) !== undefined && {
+        reasoning_effort: this.reasoningEffortFor(ctx),
+      }),
       temperature: this.runnerConfig.temperature ?? RUNNER_DEFAULTS.temperature,
       tools: [],
     };
@@ -994,6 +1070,23 @@ export class AgentRunner {
       }
 
     } else {
+      // V8 (P2 contract closure) — the reasoning-effort override is a
+      // multi-turn seam (loop turns, V4 continuation, V3 structural repair).
+      // A step that executes on the single-turn wire (reviews) can never
+      // honor it, so a configured effort FAILS CLOSED here with an explicit
+      // error rather than silently doing nothing — the setting must never
+      // look generic while being a no-op outside the producer stages.
+      const configuredEffort = this.reasoningEffortFor(ctx);
+      if (configuredEffort !== undefined) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: rawPath,
+          error: `workflow_reasoning_effort is configured for step '${ctx.stepId}' (effort '${configuredEffort}'), but this step executes on the single-turn wire, which does not support reasoning control — remove the override or run the step as a multi-turn producer step (fail-closed; a silent no-op is never acceptable for a campaign-configured treatment)`,
+        };
+      }
       // Single-turn fallback (original logic)
       // D.3d.5 commit 1 — ALL raw-result handling is transport-owned on this
       // path too: the transport teaches the wire shape (generated from this

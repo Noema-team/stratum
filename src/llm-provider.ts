@@ -215,6 +215,18 @@ export class OpenAICompatibleMultiTurnProvider extends OpenAICompatibleProvider 
         // E3b — sampling parity: forward the temperature the runner runs
         // everywhere else; absent leaves the provider default (legacy).
         ...(params.temperature !== undefined && { temperature: params.temperature }),
+        // V8 — per-step reasoning-effort control, in OpenRouter's documented
+        // `reasoning` request-object shape. GLM-5.3-Flash advertises
+        // supported_efforts and does NOT advertise token-budget reasoning,
+        // so the campaign sends the NAMED effort (`reasoning.effort`); a
+        // numeric reasoning.max_tokens would be converted server-side to an
+        // effort label by the gateway. OPTIONAL: absent means the `reasoning`
+        // key is NEVER sent — the request body is byte-for-byte legacy.
+        // Presence/absence is decided solely by the step's own override (no
+        // global fallback anywhere in the stack).
+        ...(params.reasoning_effort !== undefined && {
+          reasoning: { effort: params.reasoning_effort },
+        }),
         // Transport regime 2 — SSE streaming (see regime boundary above).
         stream: true,
       }),
