@@ -316,6 +316,19 @@ export interface AgentLoopOptions {
   // Absent = legacy path. Transports consume them verbatim.
   resultSchemaText?: string;
   resultSchemaJson?: Record<string, unknown>;
+  // BUILD protocol v1 (docs/specs/build-edit-protocol-v1.md) — when present,
+  // every successful read_source_slice result is augmented with an opaque
+  // source anchor minted by the callback (the runner's per-execution
+  // AnchorRegistry). Structural param shape; the loop never imports workflow
+  // modules. Absent on every legacy path — read results pass through
+  // byte-for-byte unchanged.
+  mintSourceAnchor?: (record: {
+    path: string;
+    base_sha256: string;
+    start_line: number;
+    end_line: number;
+    content_sha256: string;
+  }) => string;
   // E10/A3 — enable the bounded transport retry: ONE re-issue of the SAME
   // failed inference request when it dies with undici HeadersTimeoutError.
   // A capability flag, not a policy engine — the CALLER decides scope
@@ -331,6 +344,20 @@ export interface AgentLoopResult {
   // semantic proposal (kind 'proposal') that the result acceptor approved.
   // The runner decodes it against the workflow-declared contract.
   proposal?: { value: unknown };
+  // BUILD protocol v1 — anchors minted during this execution's
+  // read_source_slice calls (structurally: path/base_sha256/start_line/
+  // end_line/content_sha256/anchor_id/turn). Attached on the
+  // accepted-submission success path; the runner persists the manifest and
+  // uses the same records for stage-time re-verification.
+  anchors_issued?: ReadonlyArray<{
+    anchor_id: string;
+    path: string;
+    base_sha256: string;
+    start_line: number;
+    end_line: number;
+    content_sha256: string;
+    turn: number;
+  }>;
   turns_taken: number;
   tokens_used: number;
   // E3a — set on FAILURE only: a bounded observation of the last provider
@@ -520,6 +547,17 @@ export class AgentLoop {
     // and counter from format repairs; never a workflow iteration).
     let resultRepairs = 0;
     const toolCallLog: Array<{ tool: string; path: string; turn: number }> = [];
+    // BUILD protocol v1 — anchors minted from this execution's successful
+    // read_source_slice results (empty on every legacy path).
+    const anchorsIssued: Array<{
+      anchor_id: string;
+      path: string;
+      base_sha256: string;
+      start_line: number;
+      end_line: number;
+      content_sha256: string;
+      turn: number;
+    }> = [];
 
     // D.3b1 — the tracked-file set is computed once per run (not once per
     // tool call) and reused for every read_file/list_directory invocation
@@ -930,6 +968,7 @@ export class AgentLoop {
               tokens_used: totalTokens,
               format_repairs: formatRepairs,
               result_repairs: resultRepairs,
+              ...(anchorsIssued.length > 0 ? { anchors_issued: anchorsIssued } : {}),
               ...(transportRetry ? { transport_retry: transportRetry } : {}),
               ...(contextCompaction ? { context_compaction: contextCompaction } : {}),
               ...(synthesisContinuationRecord ? { synthesis_continuation: synthesisContinuationRecord } : {}),
@@ -957,10 +996,44 @@ export class AgentLoop {
             this.fs,
             trackedFiles,
           );
+          // BUILD protocol v1 — augment a successful read_source_slice result
+          // with a Stratum-minted anchor. Any shape mismatch passes the result
+          // through unchanged: minting must never break a read. The model
+          // receives an opaque anchor_id plus the SAME path/span/hash facts the
+          // raw result already carried — it is never asked to reproduce them.
+          let resultContent = toolResult.content;
+          if (tu.name === 'read_source_slice' && this.opts.mintSourceAnchor) {
+            try {
+              const parsedSlice = JSON.parse(toolResult.content) as Record<string, unknown>;
+              if (
+                typeof parsedSlice.path === 'string' &&
+                typeof parsedSlice.sha256 === 'string' &&
+                typeof parsedSlice.startLine === 'number' &&
+                typeof parsedSlice.endLine === 'number' &&
+                typeof parsedSlice.content === 'string'
+              ) {
+                const record = {
+                  path: parsedSlice.path,
+                  base_sha256: parsedSlice.sha256,
+                  start_line: parsedSlice.startLine,
+                  end_line: parsedSlice.endLine,
+                  content_sha256: createHash('sha256').update(parsedSlice.content, 'utf8').digest('hex'),
+                };
+                const anchorId = this.opts.mintSourceAnchor(record);
+                anchorsIssued.push({ ...record, anchor_id: anchorId, turn: turns });
+                resultContent = JSON.stringify({
+                  ...parsedSlice,
+                  anchor: { anchor_id: anchorId, ...record },
+                });
+              }
+            } catch {
+              // not JSON / unexpected shape — pass through unchanged
+            }
+          }
           resultBlocks.push({
             type: 'tool_result',
             tool_use_id: tu.id,
-            content: toolResult.content,
+            content: resultContent,
           });
           toolCallLog.push({
             tool: tu.name,

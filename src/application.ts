@@ -24,6 +24,10 @@ import { createReviewRouteDeriver } from './workflow/methodology/readiness-artif
 import { READINESS_OUTPUT_CONTRACT } from './workflow/methodology/readiness-contract.js';
 import { createDefinitionOutputContract } from './workflow/methodology/definition-contract.js';
 import {
+  BUILD_CHANGESET_ARTIFACT_TYPE,
+  createBuildChangesetActionContract,
+} from './workflow/methodology/build-changeset-contract.js';
+import {
   createDecisionRequestOutputContract,
   createDecisionApplicationOutputContract,
   createExplorationNeedOutputContract,
@@ -398,6 +402,15 @@ export function buildAgentRunner(
         'decision-request': createDecisionRequestOutputContract(),
         'decision-application': createDecisionApplicationOutputContract({ ...(decisionRepository ? { findDecision } : {}) }),
         'exploration-need': createExplorationNeedOutputContract(),
+      },
+      // BUILD Edit Protocol v1 (docs/specs/build-edit-protocol-v1.md) — the
+      // action-contract registry, resolved by WorkflowStep.actionArtifact.type
+      // exactly as outputContracts is resolved by outputArtifact.type. The
+      // full-build BUILD step declares 'build-changeset' (anchored semantic
+      // edits via submit_result); the runner stays generic, methodology owns
+      // the proposal schema and staging.
+      actionContracts: {
+        [BUILD_CHANGESET_ARTIFACT_TYPE]: createBuildChangesetActionContract(),
       },
     }, undefined, artifactRepository,
   );

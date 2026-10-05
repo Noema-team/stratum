@@ -41,6 +41,14 @@ export interface WorkflowStep {
   // the produced output to be exactly one section at this path (cardinality
   // + exact-match), still subject to the role's write-path ceiling.
   outputArtifact?: DeclaredOutputArtifact;
+  // BUILD Edit Protocol v1 (docs/specs/build-edit-protocol-v1.md) — declares
+  // that this step submits a structured ACTION proposal (e.g. an anchored-edit
+  // changeset) through the submit_result channel instead of authoring
+  // materialized bytes or textual patches. The type key resolves against
+  // AgentRunnerConfig.actionContracts at the composition root. Mutually
+  // exclusive with outputArtifact (declaring both fails closed before any LLM
+  // call).
+  actionArtifact?: { type: string };
   // E26 — producer-consumer contract for open-set produce steps: the exact
   // output paths (mandatory, all must be produced) and/or directory prefixes
   // (entries ending '/', at least one file required) this step is authorized
@@ -383,6 +391,8 @@ export interface StepRunContext {
   // same way `role` is already copied from step.agentRole. See DeclaredOutputArtifact.
   instruction?: string;
   outputArtifact?: DeclaredOutputArtifact;
+  // Copied from WorkflowStep.actionArtifact by WorkflowEngine.makeStepRunContext.
+  actionArtifact?: { type: string };
   // E26 — copied from WorkflowStep by WorkflowEngine.makeStepRunContext.
   authorizedOutputs?: string[];
   // E27r (merge review) — task-scoped edit authorization, resolved by the

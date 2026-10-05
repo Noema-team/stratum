@@ -184,6 +184,16 @@ export const FULL_BUILD: WorkflowDefinition = {
       // the dispatching WorkItem's workflowParameters.editPolicy — frozen
       // per run and enforced by the publication boundary. FULL_BUILD must
       // stay project-agnostic.
+      // BUILD Edit Protocol v1 (docs/specs/build-edit-protocol-v1.md) — the
+      // builder submits an anchored-edit changeset through submit_result
+      // (Stratum materializes exact spans from hash-pinned anchors). This
+      // replaces the legacy textual SLE-PATCH/SLE-ARTIFACT interface for
+      // BUILD: Pilot A V8–V11 proved the model computes the right semantic
+      // edit and fails byte-sensitive diff/marker serialization 6/6 under
+      // every budget/effort configuration. The sole experimental intervention
+      // of the preregistered P1 protocol experiment — model configuration
+      // stays exactly the V11 regime.
+      actionArtifact: { type: 'build-changeset' },
       synthesisGate: synthesisGate(),
       // V4 — the same bounded synthesis continuation as the other gated
       // producers: BUILD's gate is the E24-qualified E21+E23 pair, and its

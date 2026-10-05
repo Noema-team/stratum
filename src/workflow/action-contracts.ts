@@ -1,0 +1,197 @@
+// BUILD Edit Protocol v1 — the ActionContract seam (docs/specs/build-edit-protocol-v1.md §3).
+//
+// A sibling of OutputContract, deliberately NOT a variant of it: OutputContract
+// materializes ONE canonical artifact string, while an action proposal stages a
+// MULTI-FILE changeset against repository state. The seams share the DDR-034
+// vocabulary (modelSchema as the single structural authority, structured
+// ContractDefect validation, bounded in-loop repair) and the identity discipline
+// (no `id` field; identity is exclusively the trusted WorkflowStep declaration
+// — here `actionArtifact.type` → actionContracts[type] — resolved at the
+// composition root; the model, the transport, and the provider never name a
+// contract).
+//
+// Ownership / dependency direction mirrors contracts.ts: methodology owns
+// meaning (schemas, validators, staging); THIS module owns only the shape of
+// the seam. It imports no transport, no runner, no loop.
+
+import type { z } from 'zod';
+import type {
+  ContractDefect,
+  OutputContractContext,
+  ResultAcceptor,
+  SchemaAnnotations,
+} from './contracts.js';
+import { toJsonSchema } from './contracts.js';
+import type { EditPolicy } from './types.js';
+import type { SourceAnchor, SourceAnchorRecord } from './anchored-edits.js';
+
+// ─── Contexts ─────────────────────────────────────────────────────────────────
+
+/**
+ * Context for in-loop proposal validation. `resolveAnchor` is the runner-
+ * injected, run-scoped resolution view over the step execution's AnchorRegistry
+ * — an anchor minted in another execution resolves to undefined (fail closed,
+ * repairable). Contracts receive NO raw fs access.
+ */
+export interface ActionContractContext {
+  workItemId?: string;
+  resolveAnchor?(anchorId: string): SourceAnchor | undefined;
+  /** The step's task-scoped edit authorization when declared (E27r). */
+  editPolicy?: EditPolicy;
+}
+
+/** Minimal read-only disk view staging may use (runner-injected; fakes in tests). */
+export interface ActionStageIo {
+  readFile(relPath: string): Promise<string>;
+  fileExists(relPath: string): Promise<boolean>;
+}
+
+export interface ActionStageContext {
+  workItemId?: string;
+  io: ActionStageIo;
+  /**
+   * Run-scoped anchor resolution for stage-time re-verification (same
+   * registry view the in-loop validate used). Cross-execution anchors are
+   * unresolvable here too.
+   */
+  resolveStageAnchor?(anchorId: string): SourceAnchor | undefined;
+}
+
+// ─── Staged changeset ─────────────────────────────────────────────────────────
+
+export interface StagedEdit {
+  op: 'replace' | 'create';
+  path: string;
+  /** Present for replace — the anchor this edit was staged against. */
+  anchor_id?: string;
+  /** Full-file sha256 before the edit; null for creates. */
+  before_sha256: string | null;
+  after_sha256: string;
+  /** Final whole-file bytes Stratum decided. */
+  content: string;
+  /** Stratum-generated unified diff — audit evidence, never applied. */
+  diff: string;
+}
+
+export interface StagedChangeset {
+  edits: StagedEdit[];
+}
+
+export type StageOutcome =
+  | { ok: true; changeset: StagedChangeset }
+  | { ok: false; error: string };
+
+// ─── The contract ─────────────────────────────────────────────────────────────
+
+export interface ActionContract<T> {
+  /**
+   * THE single canonical semantic shape the model submits — the only authority
+   * for the submit_result tool projection. Strictness lives here: keys the
+   * schema does not declare (a model-supplied hunk count, a copied hash) are
+   * decode rejections with a bounded in-loop repair.
+   */
+  readonly modelSchema: z.ZodType<T>;
+
+  readonly schemaAnnotations?: SchemaAnnotations;
+
+  /** Static/contextual teaching appended to the schema projection. */
+  readonly contextTeaching?: (ctx: OutputContractContext) => string | undefined;
+
+  /**
+   * In-loop, REPAIRABLE validation (bounded result repair; exhaustion fails
+   * the step closed before anything is written): structural methodology over
+   * the decoded proposal — anchor resolution, duplicates, overlaps, path
+   * authorization. NEVER zod refinements (structured defect codes would
+   * degrade into anonymous schema errors).
+   */
+  validate?(value: T, ctx: ActionContractContext): readonly ContractDefect[];
+
+  /**
+   * AUTHORITATIVE staging (post-loop, NOT repairable — the loop has closed;
+   * failures here fail the step exactly like a stale SLE-PATCH base does
+   * today): resolve anchors again, read disk, verify the frozen base hash,
+   * splice exact spans, compute final bytes and the audit diff. Read-only
+   * against the repository; the runner owns writes and every publication gate.
+   */
+  stage(value: T, ctx: ActionStageContext): Promise<StageOutcome>;
+}
+
+/** Registry shape on AgentRunnerConfig (composition root populates it). */
+export type ActionContractRegistry = Record<string, ActionContract<unknown>>;
+
+// ─── Acceptor (in-loop gate) ──────────────────────────────────────────────────
+
+/**
+ * Compose the loop acceptor for an action contract — decode (zod) then
+ * validate (contract.validate). Same shape and repair discipline as
+ * createResultAcceptor; the wording names the action contract layer.
+ */
+export function createActionAcceptor<T>(
+  contract: ActionContract<T>,
+  ctx: ActionContractContext,
+  artifactType: string,
+): ResultAcceptor {
+  return (value: unknown) => {
+    const parsed = contract.modelSchema.safeParse(value);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; ');
+      return {
+        ok: false,
+        repairInstruction: renderActionRepairInstruction(
+          artifactType,
+          `the submitted proposal does not match the required semantic shape — ${issues}`,
+        ),
+      };
+    }
+    const defects = contract.validate?.(parsed.data, ctx) ?? [];
+    if (defects.length > 0) {
+      const rendered = defects
+        .map((d) => `${d.code}${d.ref ? ` (${d.ref})` : ''}: ${d.message}`)
+        .join('; ');
+      return {
+        ok: false,
+        repairInstruction: renderActionRepairInstruction(artifactType, rendered),
+      };
+    }
+    return { ok: true };
+  };
+}
+
+export function renderActionRepairInstruction(artifactType: string, reason: string): string {
+  return (
+    `Your submitted proposal was rejected by the action contract for '${artifactType}'. ` +
+    `Reason: ${reason}\n` +
+    'Re-submit the complete corrected proposal in the same required shape. Do not change ' +
+    'anything that was not rejected.'
+  );
+}
+
+// ─── Teaching ─────────────────────────────────────────────────────────────────
+
+/**
+ * Schema teaching for an action step: generated projection + structured
+ * annotations + optional contextual teaching. Consumed by the loop's
+ * TransportContext.resultSchemaText; transports never learn what a changeset is.
+ */
+export function renderActionSchemaTeaching(contract: ActionContract<unknown>): string {
+  const projection = toJsonSchema(contract.modelSchema);
+  const lines: string[] = [
+    'RESULT SHAPE (your final submit_result call must carry this semantic payload — the system materializes the edits itself):',
+    JSON.stringify(projection, null, 2),
+  ];
+  if (contract.schemaAnnotations?.root) {
+    lines.push('', contract.schemaAnnotations.root);
+  }
+  if (contract.schemaAnnotations?.fields) {
+    for (const [key, note] of Object.entries(contract.schemaAnnotations.fields)) {
+      lines.push(`- ${key}: ${note}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// ─── Anchor-mint callback shape (structural; the loop stays import-free) ──────
+
+export type MintSourceAnchor = (record: SourceAnchorRecord) => string;

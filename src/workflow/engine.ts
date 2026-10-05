@@ -935,6 +935,8 @@ export class WorkflowEngine {
       // exactly as `role` is already copied from step.agentRole above.
       instruction: step.instruction,
       outputArtifact: step.outputArtifact,
+      // BUILD protocol v1 — copied the same way as outputArtifact.
+      actionArtifact: step.actionArtifact,
       // E26 — copied the same way as instruction/outputArtifact.
       authorizedOutputs: step.authorizedOutputs,
       // E27r — task-scoped edit authorization from the frozen parameters,

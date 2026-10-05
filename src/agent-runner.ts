@@ -39,6 +39,15 @@ import {
   renderResultTeaching,
   toJsonSchema,
 } from './workflow/contracts.js';
+import {
+  type ActionContract,
+  type ActionContractRegistry,
+  type ActionContractContext,
+  type StagedChangeset,
+  createActionAcceptor,
+  renderActionSchemaTeaching,
+} from './workflow/action-contracts.js';
+import { AnchorRegistry, type SourceAnchorRecord } from './workflow/anchored-edits.js';
 
 // D.3d.5 commit 1 — the single-turn preamble parser (parseAgentOutput +
 // SLEOutputPreamble/ParsedSingleTurnOutput types) MOVED to the transport
@@ -89,6 +98,15 @@ export interface AgentRunResult {
   // E27 — bounded source edits: one entry per applied SLE-PATCH, with the
   // pinned base hash and the verified resulting hash.
   patches_applied?: Array<{ path: string; base_hash: string; result_hash: string; diff_bytes: number }>;
+  // BUILD protocol v1 — one entry per published anchored edit (replace or
+  // create), with the issuing anchor id and before/after hashes.
+  anchored_edits?: Array<{
+    op: 'replace' | 'create';
+    path: string;
+    anchor_id?: string;
+    base_hash: string | null;
+    result_hash: string;
+  }>;
   // E27 — protected paths republished with byte-identical content: not
   // rewritten, recorded here instead.
   artifacts_unchanged?: string[];
@@ -272,6 +290,13 @@ export interface AgentRunnerConfig {
   // path, byte-for-byte unchanged. (Typed as unknown rather than never:
   // the runner treats T opaquely through the acceptor/hooks.)
   outputContracts?: OutputContractRegistry;
+  // BUILD protocol v1 (docs/specs/build-edit-protocol-v1.md) — the
+  // action-contract registry, keyed by the workflow's OWN declaration
+  // (WorkflowStep.actionArtifact.type). Same identity/ownership discipline as
+  // outputContracts: the composition root wires methodology-owned
+  // implementations; the runner stays generic. A step declaring an
+  // actionArtifact type with no entry here fails closed before any LLM call.
+  actionContracts?: ActionContractRegistry;
 }
 
 /**
@@ -287,7 +312,7 @@ export type InputValidator = (
   context?: { workItemId?: string },
 ) => { ok: true } | { ok: false; failure: { defects: Array<{ code: string; factId?: string; message: string }> } };
 
-const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'workflowMaxTokens' | 'workflowReasoningEffort'>> = {
+const RUNNER_DEFAULTS: Required<Omit<AgentRunnerConfig, 'model' | 'resultTransport' | 'inputValidators' | 'deriveReviewRoute' | 'outputContracts' | 'actionContracts' | 'workflowMaxTokens' | 'workflowReasoningEffort'>> = {
   temperature: 0.7,
   max_tokens: 4096,
 };
@@ -421,6 +446,15 @@ export class AgentRunner {
     contract: OutputContract<unknown> | undefined,
     contractCtx: OutputContractContext | undefined,
     acceptor: ((value: unknown) => { ok: true } | { ok: false; repairInstruction: string }) | undefined,
+    // BUILD protocol v1 — the action-proposal bundle (schema → submit_result
+    // negotiation, acceptor, anchor minting). Absent on every legacy path.
+    action?: {
+      artifactType: string;
+      acceptor: ResultAcceptor;
+      schemaText: string;
+      schemaJson: Record<string, unknown>;
+      mintSourceAnchor: (record: SourceAnchorRecord) => string;
+    },
   ): AgentLoop {
     return new AgentLoop(
       this.llmProvider as any,
@@ -451,6 +485,18 @@ export class AgentRunner {
               acceptResult: acceptor,
               resultSchemaText: renderResultTeaching(contract, contractCtx),
               resultSchemaJson: toJsonSchema(contract.modelSchema),
+            }
+          : {}),
+        // BUILD protocol v1 — schema present ⇒ the existing negotiation rule
+        // selects the submit-result tool channel; no new transport, no new
+        // negotiation policy.
+        ...(action
+          ? {
+              acceptResult: action.acceptor,
+              resultSchemaText: action.schemaText,
+              resultSchemaJson: action.schemaJson,
+              declaredArtifactId: action.artifactType,
+              mintSourceAnchor: action.mintSourceAnchor,
             }
           : {}),
         ...(ctx.workflowId === 'define-work' ? { transportRetry: true } : {}),
@@ -809,6 +855,56 @@ export class AgentRunner {
       acceptor = createResultAcceptor(contract, contractCtx, artifactType!);
     }
 
+    // 0.6. BUILD protocol v1 (docs/specs/build-edit-protocol-v1.md) —
+    // action-contract resolution + fail-closed authoring checks, BEFORE any
+    // LLM call. Same identity/own-property discipline as §0.5. An
+    // actionArtifact declaration must resolve to a registered contract, must
+    // not coexist with an outputArtifact declaration, and must be a plain
+    // produce step (no review verdict, no fail routes).
+    const actionArtifactType = ctx.actionArtifact?.type;
+    const actionContract: ActionContract<unknown> | undefined =
+      actionArtifactType !== undefined &&
+      this.runnerConfig.actionContracts !== undefined &&
+      Object.hasOwn(this.runnerConfig.actionContracts, actionArtifactType)
+        ? this.runnerConfig.actionContracts[actionArtifactType]
+        : undefined;
+    const actionPath = actionArtifactType !== undefined;
+    if (actionPath) {
+      const authoringError = !actionContract
+        ? `Step declares actionArtifact type '${actionArtifactType}' with no registered action contract — authoring error (fail closed, no LLM call)`
+        : contractPath
+          ? `Step declares both outputArtifact and actionArtifact — the declarations are mutually exclusive (fail closed, no LLM call)`
+          : ctx.requiresReviewVerdict || ctx.on_fail_routes
+            ? `Step declares an actionArtifact but also review routing — action proposals are produce-only (fail closed, no LLM call)`
+            : undefined;
+      if (authoringError) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: '',
+          error: authoringError,
+        };
+      }
+    }
+    // Per-execution anchor registry + acceptor: the registry IS the run scope
+    // (an anchor minted in another execution resolves to undefined), the
+    // acceptor gates proposals inside the loop with the bounded result-repair
+    // budget, and the minting callback augments read_source_slice results.
+    let anchorRegistry: AnchorRegistry | undefined;
+    let actionCtx: ActionContractContext | undefined;
+    let actionAcceptor: ResultAcceptor | undefined;
+    if (actionContract) {
+      anchorRegistry = new AnchorRegistry();
+      actionCtx = {
+        workItemId: ctx.workItemId,
+        resolveAnchor: (anchorId) => anchorRegistry!.resolve(anchorId),
+        ...(ctx.editPolicy ? { editPolicy: ctx.editPolicy } : {}),
+      };
+      actionAcceptor = createActionAcceptor(actionContract, actionCtx, actionArtifactType!);
+    }
+
     // 1. Assemble context. DDR-041 review — a fixed-component context-budget
     // overflow (e.g. an authoritative Definition that cannot fit the
     // configured boundary) fails the step HERE, BEFORE any LLM call: the
@@ -859,6 +955,9 @@ export class AgentRunner {
     // D.34 C1 — the decoded contract value, kept for the deterministic
     // route-derivation hook (typed gaps in — no artifact parse-back).
     let contractValue: unknown;
+    // BUILD protocol v1 — the staged changeset, produced after loop success
+    // and integrated into the publication boundary below.
+    let anchoredChangeset: StagedChangeset | undefined;
 
     const nodeId = ctx.stepId ?? role.toUpperCase();
 
@@ -876,7 +975,18 @@ export class AgentRunner {
       typeof (this.llmProvider as any).completeMultiTurn === 'function';
 
     if (isMultiTurn) {
-      const loop = this.constructLoop(role, ctx, nodeId, contract, contractCtx, acceptor);
+      // BUILD protocol v1 — the action bundle is fully present or fully absent.
+      const actionBundle =
+        actionContract && actionAcceptor && anchorRegistry
+          ? {
+              artifactType: actionArtifactType!,
+              acceptor: actionAcceptor,
+              schemaText: renderActionSchemaTeaching(actionContract),
+              schemaJson: toJsonSchema(actionContract.modelSchema),
+              mintSourceAnchor: (record: SourceAnchorRecord) => anchorRegistry.mint(record).anchor_id,
+            }
+          : undefined;
+      const loop = this.constructLoop(role, ctx, nodeId, contract, contractCtx, acceptor, actionBundle);
 
       const systemPrompt = context.system_prompt || 'You are a helpful software engineering assistant.';
       const userMessage = buildUserMessage(context);
@@ -1030,6 +1140,81 @@ export class AgentRunner {
       rawPath = await this.writeRaw(ctx, nodeId, submittedRawText);
 
       if (loopResult.proposal) {
+        if (actionPath) {
+          // BUILD protocol v1 (docs/specs/build-edit-protocol-v1.md) — the
+          // acceptor gated the proposal inside the loop; decode again here
+          // (deterministic, cheap), then stage against the frozen repository
+          // state. Staging failures are AUTHORITATIVE (the loop has closed —
+          // no further repair), exactly like a stale SLE-PATCH base today.
+          let decoded: unknown;
+          try {
+            decoded = actionContract!.modelSchema.parse(loopResult.proposal.value);
+          } catch (err) {
+            return {
+              success: false,
+              artifacts_written: [],
+              tokens_used: tokensUsed,
+              duration_ms: Date.now() - start,
+              raw_output_path: rawPath,
+              ...(resultRepairs && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+              error: `Action proposal for '${actionArtifactType}' failed re-decode after loop acceptance — negotiation error (fail closed): ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+          const stageOutcome = await actionContract!.stage(decoded as never, {
+            workItemId: ctx.workItemId,
+            io: {
+              readFile: (rel) => this.fs.readFile(path.join(this.projectRoot, rel), 'utf-8'),
+              fileExists: async (rel) => {
+                try {
+                  await this.fs.access(path.join(this.projectRoot, rel));
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            },
+            resolveStageAnchor: (anchorId) => anchorRegistry!.resolve(anchorId),
+          });
+          if (!stageOutcome.ok) {
+            return {
+              success: false,
+              artifacts_written: [],
+              tokens_used: tokensUsed,
+              duration_ms: Date.now() - start,
+              raw_output_path: rawPath,
+              ...(resultRepairs && resultRepairs > 0 ? { result_repairs: resultRepairs } : {}),
+              error: stageOutcome.error,
+            };
+          }
+          anchoredChangeset = stageOutcome.changeset;
+          // Anchor manifest — authoritative per-execution evidence of what was
+          // minted (ids, spans, hashes, turns). Never-overwrite naming;
+          // best-effort persistence (the registry itself remains the staging
+          // authority — this file is the audit record).
+          if (loopResult.anchors_issued?.length) {
+            try {
+              const dir = path.join(this.projectRoot, '.sle', 'runs', ctx.workflowRunId, String(ctx.iteration), 'node-outputs');
+              let name = `${nodeId.toLowerCase()}-anchors.json`;
+              for (let n = 2; ; n++) {
+                try {
+                  await this.fs.access(path.join(dir, name));
+                  name = `${nodeId.toLowerCase()}-anchors-${n}.json`;
+                } catch {
+                  break;
+                }
+              }
+              await this.fs.mkdir(dir, { recursive: true });
+              await this.fs.writeFile(
+                path.join(dir, name),
+                JSON.stringify({ node_id: nodeId, workflow_run_id: ctx.workflowRunId, iteration: ctx.iteration, anchors: loopResult.anchors_issued }, null, 2),
+                'utf-8',
+              );
+            } catch {
+              // manifest persistence is evidence, not control — non-fatal
+            }
+          }
+          parsed = { sections: [], patches: [] };
+        } else {
         // D.34 C1 — contract path: the acceptor gated the proposal inside
         // the loop; decode again here (deterministic, cheap) for the typed
         // value, then materialize. The transport never declared a contract —
@@ -1049,6 +1234,7 @@ export class AgentRunner {
         parsed = { sections: processed.sections };
         reviewVerdictRaw = processed.verdict;
         contractValue = processed.typed;
+        }
       } else {
         if (contractPath) {
           // Rule 4 (DDR-034 §5.3): a step whose type has a registered
@@ -1077,6 +1263,19 @@ export class AgentRunner {
       // error rather than silently doing nothing — the setting must never
       // look generic while being a no-op outside the producer stages.
       const configuredEffort = this.reasoningEffortFor(ctx);
+      // BUILD protocol v1 — an action proposal step is multi-turn by
+      // construction (submit_result tool channel); reaching the single-turn
+      // wire is a negotiation error, never a degraded fallback.
+      if (actionPath) {
+        return {
+          success: false,
+          artifacts_written: [],
+          tokens_used: 0,
+          duration_ms: Date.now() - start,
+          raw_output_path: '',
+          error: `Action-proposal step '${actionArtifactType}' negotiated onto the single-turn wire — submit_result requires multi-turn execution (fail closed)`,
+        };
+      }
       if (configuredEffort !== undefined) {
         return {
           success: false,
@@ -1493,7 +1692,7 @@ export class AgentRunner {
     // prose file never counts as code: it was either a permitted section
     // (and would appear here) or a dropped one (and appears in warnings).
     const hasPatches = Array.isArray(parsed.patches) && parsed.patches.length > 0;
-    if (canonicalSections.length === 0 && !hasPatches) {
+    if (canonicalSections.length === 0 && !hasPatches && !anchoredChangeset) {
       const why = parsed.warnings?.length ? `; parse warnings: ${parsed.warnings.join('; ')}` : '';
       return fail(`Step produced no usable output sections${why}`);
     }
@@ -1631,17 +1830,96 @@ export class AgentRunner {
       stagedPatches.push({ path: canonical, baseHash: diskHash, resultContent: result, resultHash, diffBytes: Buffer.byteLength(patch.diff, 'utf-8') });
     }
 
+    // BUILD protocol v1 (docs/specs/build-edit-protocol-v1.md) — integrate the
+    // staged anchored changeset through the SAME publication gates, feeding
+    // the very same write/integrity/provenance machinery: replaces become
+    // stagedPatches entries (hash-pinned before/after, exactly like a verified
+    // patch result — no diff is parsed or applied, the bytes are already
+    // decided); creates become writableSections entries (whole-file). These
+    // gates are the AUTHORITATIVE layer (the in-loop contract validate is the
+    // repairable one); everything here fails closed.
+    const anchoredEditsSummary: NonNullable<AgentRunResult['anchored_edits']> = [];
+    if (anchoredChangeset) {
+      for (const edit of anchoredChangeset.edits) {
+        if (ctx.editPolicy && !ctx.editPolicy.allowedEditPaths.includes(edit.path)) {
+          return fail(
+            `Anchored ${edit.op} target '${edit.path}' is outside this task's authorized edit set ` +
+            `[${ctx.editPolicy.allowedEditPaths.join(', ')}] — publishing it would exceed the task's scope.`,
+          );
+        }
+        if (!validateOutputPath(edit.path, role) && !(ctx.authorizedOutputs?.some((e) => matchesAuthorizedOutput(edit.path, e)))) {
+          return fail(`Role '${role}' is not permitted to modify '${edit.path}'`);
+        }
+        const other = ownedByOther(edit.path);
+        if (other && edit.after_sha256 !== other.hash) {
+          return fail(
+            `Protected artifact conflict: '${edit.path}' was published by step '${other.stepId}' and is protected — ` +
+            `an anchored edit may only reproduce it byte-for-byte or must target a different path.`,
+          );
+        }
+        if (edit.op === 'replace') {
+          if (canonicalSections.some((s) => s.path === edit.path)) {
+            return fail(`Ambiguous changeset: '${edit.path}' appears both as a file section and as an anchored edit target`);
+          }
+          stagedPatches.push({
+            path: edit.path,
+            baseHash: edit.before_sha256!,
+            resultContent: edit.content,
+            resultHash: edit.after_sha256,
+            diffBytes: Buffer.byteLength(edit.diff, 'utf-8'),
+          });
+        } else {
+          if (stagedPatches.some((p) => p.path === edit.path)) {
+            return fail(`Ambiguous changeset: '${edit.path}' appears both as an anchored edit target and as a create`);
+          }
+          writableSections.push({ path: edit.path, content: edit.content });
+        }
+        anchoredEditsSummary.push({
+          op: edit.op,
+          path: edit.path,
+          ...(edit.anchor_id ? { anchor_id: edit.anchor_id } : {}),
+          base_hash: edit.before_sha256,
+          result_hash: edit.after_sha256,
+        });
+      }
+      // Stratum-generated audit diff — evidence derived from the DECIDED
+      // before/after bytes, never an instruction language and never applied.
+      // Best-effort persistence with never-overwrite naming.
+      try {
+        const dir = path.join(this.projectRoot, '.sle', 'runs', ctx.workflowRunId, String(ctx.iteration), 'node-outputs');
+        const diffText = anchoredChangeset.edits.map((e) => e.diff).filter(Boolean).join('\n');
+        if (diffText !== '') {
+          let name = `${nodeId.toLowerCase()}-anchored-diff.patch`;
+          for (let n = 2; ; n++) {
+            try {
+              await this.fs.access(path.join(dir, name));
+              name = `${nodeId.toLowerCase()}-anchored-diff-${n}.patch`;
+            } catch {
+              break;
+            }
+          }
+          await this.fs.mkdir(dir, { recursive: true });
+          await this.fs.writeFile(path.join(dir, name), diffText, 'utf-8');
+        }
+      } catch {
+        // audit-diff persistence is evidence, not control — non-fatal
+      }
+    }
+
     // E27r — editPolicy.requiredEditPaths: each named path must receive an
-    // applied SLE-PATCH in this step. A docs-only or empty changeset, or an
-    // adjacent new file, cannot substitute for the edit the task exists to
-    // make (the previous weak "any new non-docs file" formulation could).
+    // applied source edit in this step (SLE-PATCH on the legacy path, an
+    // anchored replace on the BUILD protocol v1 path). A docs-only or empty
+    // changeset, or an adjacent new file, cannot substitute for the edit the
+    // task exists to make (the previous weak "any new non-docs file"
+    // formulation could).
     if (ctx.editPolicy && ctx.editPolicy.requiredEditPaths.length > 0) {
       const patchedPaths = new Set(stagedPatches.map((s) => s.path));
       const missing = ctx.editPolicy.requiredEditPaths.filter((p) => !patchedPaths.has(p));
       if (missing.length > 0) {
+        const mechanism = anchoredChangeset ? 'anchored edit' : 'applied SLE-PATCH';
         return fail(
           `This task requires an authorized edit to [${missing.join(', ')}], but the changeset ` +
-          `contains no applied SLE-PATCH for ${missing.length === 1 ? 'it' : 'each of them'}. ` +
+          `contains no ${mechanism} for ${missing.length === 1 ? 'it' : 'each of them'}. ` +
           `New files, documentation, or unrelated edits cannot substitute.`,
         );
       }
@@ -1786,14 +2064,20 @@ export class AgentRunner {
     // The diff text itself persists in the step's raw node output.
     if (this.artifactRepository) {
       for (const staged of stagedPatches) {
-        const ref = `applied-patch:${ctx.stepId}:${staged.path}`;
+        // BUILD protocol v1 — anchored replaces record as `applied-edit:`
+        // (mechanism-truthful provenance); legacy SLE-PATCHes keep
+        // `applied-patch:` byte-for-byte.
+        const anchored = anchoredEditsSummary.some((a) => a.op === 'replace' && a.path === staged.path);
+        const ref = anchored
+          ? `applied-edit:${ctx.stepId}:${staged.path}`
+          : `applied-patch:${ctx.stepId}:${staged.path}`;
         const already = this.artifactRepository.findByWorkflowRunRefAndHash(ctx.workflowRunId, ref, staged.resultHash);
         if (!already) {
           this.artifactRepository.save({
             id: randomUUID(),
             workItemId: ctx.workItemId,
             workflowRunId: ctx.workflowRunId,
-            type: 'applied-patch',
+            type: anchored ? 'applied-edit' : 'applied-patch',
             ref,
             path: staged.path,
             hash: staged.resultHash,
@@ -1821,6 +2105,7 @@ export class AgentRunner {
             })),
           }
         : {}),
+      ...(anchoredEditsSummary.length > 0 ? { anchored_edits: anchoredEditsSummary } : {}),
       ...(unchanged.length > 0 ? { artifacts_unchanged: unchanged } : {}),
       ...(formatRepairs !== undefined ? { format_repairs: formatRepairs } : {}),
       // C1 review fix — result_repairs is externally visible only when an
