@@ -396,3 +396,26 @@ test('P1.16: stage — multi-edit one file applies deterministically and writes 
 test('P1.17: the registered artifact type key is stable', () => {
   assert.equal(BUILD_CHANGESET_ARTIFACT_TYPE, 'build-changeset');
 });
+
+test('P1.27: id equality never stands in for binding equality — identical bindings dedupe, a colliding different binding fails closed', () => {
+  const registry = new AnchorRegistry();
+  const binding = {
+    path: WORKER_PATH,
+    base_sha256: sha256(WORKER_ORIGINAL),
+    start_line: 1,
+    end_line: 1,
+    content_sha256: sha256('DEFAULT_FAILURE_STAGE = "consume"'),
+  };
+  const first = registry.mint(binding);
+  const again = registry.mint({ ...binding });
+  assert.equal(first, again, 'identical binding must dedupe to the same anchor object');
+
+  // Fault injection drives the same byId.get(id) branch a genuine ~2^-64
+  // sha256-prefix collision would drive: a foreign record already occupies
+  // the id the new binding derives to.
+  const colliding = { path: 'other.py', base_sha256: sha256('B'), start_line: 500, end_line: 502, content_sha256: sha256('z') };
+  const collidingId = mintAnchorId(colliding);
+  (registry as unknown as { byId: Map<string, unknown> }).byId.set(collidingId, { ...binding, anchor_id: collidingId });
+  assert.throws(() => registry.mint(colliding), /collision across different bindings/);
+  assert.equal(registry.resolve(collidingId)?.path, WORKER_PATH, 'the registered record is unchanged — no takeover');
+});

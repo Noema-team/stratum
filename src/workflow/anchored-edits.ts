@@ -93,9 +93,26 @@ export class AnchorRegistry {
   private readonly byId = new Map<string, SourceAnchor>();
 
   mint(record: SourceAnchorRecord): SourceAnchor {
-    const existing = this.byId.get(mintAnchorId(record));
-    if (existing) return existing;
-    const anchor: SourceAnchor = { ...record, anchor_id: mintAnchorId(record) };
+    const id = mintAnchorId(record);
+    const existing = this.byId.get(id);
+    if (existing) {
+      // The id is a truncated digest: equality of the id must never stand in
+      // for equality of the binding. Identical bindings dedupe (a region read
+      // twice in an unchanged file); any binding difference under the same id
+      // is a cryptographic collision — fail closed (the caller's read passes
+      // through unanchored, transferring no authority).
+      const identical =
+        existing.path === record.path &&
+        existing.base_sha256 === record.base_sha256 &&
+        existing.start_line === record.start_line &&
+        existing.end_line === record.end_line &&
+        existing.content_sha256 === record.content_sha256;
+      if (!identical) {
+        throw new Error(`anchor id collision across different bindings ('${id}') — fail closed`);
+      }
+      return existing;
+    }
+    const anchor: SourceAnchor = { ...record, anchor_id: id };
     this.byId.set(anchor.anchor_id, anchor);
     return anchor;
   }
