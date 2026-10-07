@@ -1,5 +1,6 @@
-import type { CapHitAction } from '../workflow/types.js';
+import type { CapHitAction, EditPolicy } from '../workflow/types.js';
 import type { PlanningDepth } from '../types.js';
+import { parseEditPolicyShape } from '../workflow/edit-policy.js';
 import { parseDefinitionSourceRef } from './definition-source.js';
 
 // ============================================================================
@@ -18,6 +19,13 @@ export interface FullBuildParameters {
   // by StratumAgentAdapter at dispatch (see definition-source.ts); frozen
   // into WorkflowRun.resolvedParameters with the other parameters.
   definitionSource?: { workItemId: string };
+  // E27r — task edit authorization. Strictly validated here (fail-closed,
+  // shared shape rules with the engine) and preserved into
+  // WorkflowRun.resolvedParameters so initial dispatch and resume use exactly
+  // the same frozen policy. The appliesToSteps → real-workflow-step check
+  // needs the workflow definition and stays in WorkflowEngine.run
+  // (validateEditPolicyTargets) — it fails the run before any step executes.
+  editPolicy?: EditPolicy;
 }
 
 // Strict validator: throws on explicit invalid values (not silently defaults).
@@ -62,6 +70,19 @@ export function validateFullBuildParams(raw?: Record<string, unknown>): FullBuil
     );
   }
 
+  // E27r / P1-R seam correction — the task editPolicy is part of the frozen
+  // parameter contract. It is validated with the SAME strict fail-closed
+  // shape rules the engine enforces (parseEditPolicyShape) and PRESERVED
+  // into the normalized parameters, so it reaches WorkflowRun.resolved-
+  // Parameters and StepRunContext.editPolicy. Before this correction the
+  // whitelist below silently dropped the policy: every campaign run (V8–P1)
+  // executed with no edit policy at all. Unknown keys are still NOT passed
+  // through — only explicitly contracted parameters flow to the engine.
+  const editPolicy = raw['editPolicy'];
+  if (editPolicy !== undefined) {
+    parseEditPolicyShape(editPolicy); // throws on any deviation — no silent "no policy" degradation
+  }
+
   return {
     planning_depth: (depth as PlanningDepth | undefined) ?? 'minimal',
     max_iterations: (maxIter as number | undefined) ?? DEFAULT_MAX_ITERATIONS,
@@ -69,6 +90,7 @@ export function validateFullBuildParams(raw?: Record<string, unknown>): FullBuil
     ...(definitionSource !== undefined
       ? { definitionSource: parseDefinitionSourceRef(definitionSource)! }
       : {}),
+    ...(editPolicy !== undefined ? { editPolicy: parseEditPolicyShape(editPolicy) } : {}),
   };
 }
 

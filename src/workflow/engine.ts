@@ -19,7 +19,7 @@ import type {
 import { getWorkflow } from './registry.js';
 import { updateArtifactEntries } from './artifact-utils.js';
 import { materializeStepRunContext } from './artifact-refs.js';
-import { toSafeRelativePath } from '../path-safety.js';
+import { parseEditPolicyShape } from './edit-policy.js';
 
 // E27r (merge review) — resolve the task's edit authorization from the run's
 // FROZEN resolvedParameters ('editPolicy' key). Every deviation from the
@@ -28,54 +28,21 @@ import { toSafeRelativePath } from '../path-safety.js';
 // means genuinely absent; `null` is malformed and fails. The policy applies
 // ONLY to the steps named in appliesToSteps — every other step receives no
 // policy at all (upstream artifact producers must stay unaffected).
+//
+// P1-R seam correction — the strict shape rules live in exactly one place
+// (parseEditPolicyShape, workflow/edit-policy.ts) shared with the full-build
+// invocation seam, so the shape the seam validates and the shape the engine
+// enforces cannot drift apart.
 function resolveEditPolicy(
   resolvedParameters: Record<string, unknown> | undefined,
   stepId: string,
 ): EditPolicy | undefined {
   const raw = resolvedParameters?.['editPolicy'];
   if (raw === undefined) return undefined;
-  const malformed = (why: string): never => {
-    throw new Error(`Invalid workflowParameters.editPolicy (${why}): expected { appliesToSteps: string[], allowedEditPaths: string[], requiredEditPaths: string[] } with exact repository-relative paths`);
-  };
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    return malformed('null or non-object');
-  }
-  const p = raw as Partial<EditPolicy>;
-  const isStringArray = (v: unknown): v is string[] =>
-    Array.isArray(v) && v.every((e) => typeof e === 'string');
-  if (!isStringArray(p.appliesToSteps) || p.appliesToSteps.length === 0) {
-    return malformed('appliesToSteps must be a non-empty string array');
-  }
-  if (!isStringArray(p.allowedEditPaths) || p.allowedEditPaths.length === 0) {
-    return malformed('allowedEditPaths must be a non-empty string array');
-  }
-  if (!isStringArray(p.requiredEditPaths)) {
-    return malformed('requiredEditPaths must be a string array');
-  }
-  const safePaths = (paths: string[], field: string): string[] => {
-    const seen = new Set<string>();
-    for (const path of paths) {
-      const canonical = toSafeRelativePath(path);
-      if (canonical === null || canonical === '') {
-        return malformed(`${field} contains an empty or unsafe path: '${path}'`);
-      }
-      if (seen.has(canonical)) return malformed(`${field} contains a duplicate path: '${canonical}'`);
-      seen.add(canonical);
-    }
-    return paths;
-  };
-  const allowed = safePaths(p.allowedEditPaths, 'allowedEditPaths');
-  const required = safePaths(p.requiredEditPaths, 'requiredEditPaths');
-  for (const path of required) {
-    if (!allowed.includes(path)) {
-      return malformed(`requiredEditPaths must be a subset of allowedEditPaths: '${path}' is not allowed`);
-    }
-  }
+  const policy = parseEditPolicyShape(raw);
   // Applicability: only the named steps are bound by (and even SEE) the
   // policy; everyone else runs exactly as if no policy existed.
-  return p.appliesToSteps.includes(stepId)
-    ? { appliesToSteps: p.appliesToSteps, allowedEditPaths: allowed, requiredEditPaths: required }
-    : undefined;
+  return policy.appliesToSteps.includes(stepId) ? policy : undefined;
 }
 
 // E27r (final merge review) — the one invariant that needs the DEFINITION:
@@ -84,7 +51,10 @@ function resolveEditPolicy(
 // steps unpolicied — the exact typo-induced silent weakening this contract
 // exists to eliminate. Empty and duplicate entries are rejected here too.
 // Runs ONCE in run(), before any step executes.
-function validateEditPolicyTargets(resolvedParameters: Record<string, unknown> | undefined, def: WorkflowDefinition): void {
+// Exported for the P1-R seam tests: the shape/target responsibility split
+// (seam validates shape, engine validates targets against the definition)
+// is itself part of the frozen contract and must not drift.
+export function validateEditPolicyTargets(resolvedParameters: Record<string, unknown> | undefined, def: WorkflowDefinition): void {
   const raw = resolvedParameters?.['editPolicy'];
   if (raw === undefined) return;
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return; // shape errors surface in resolveEditPolicy
