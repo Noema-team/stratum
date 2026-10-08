@@ -35,6 +35,14 @@ import type { SourceAnchor, SourceAnchorRecord } from './anchored-edits.js';
  */
 export interface ActionContractContext {
   workItemId?: string;
+  /**
+   * P2-B — trusted, runner-computed authority fact: are file-create
+   * operations legal under the frozen task authority at all? Computed
+   * mechanically (every editPolicy.allowedEditPaths entry already exists on
+   * disk ⇒ no legal create target ⇒ false). Absent/true ⇒ the full action
+   * surface, unchanged. NEVER derived from model output.
+   */
+  createsAuthorized?: boolean;
   resolveAnchor?(anchorId: string): SourceAnchor | undefined;
   /** The step's task-scoped edit authorization when declared (E27r). */
   editPolicy?: EditPolicy;
@@ -64,6 +72,12 @@ export interface StagedEdit {
   path: string;
   /** Present for replace — the anchor this edit was staged against. */
   anchor_id?: string;
+  /**
+   * P2-B — evidence that this replace was materialized by deterministic
+   * boundary composition (protocol v1.1): the source anchor ids that were
+   * composed, in ascending span order. Absent for plain single-anchor edits.
+   */
+  composed_from?: string[];
   /** Full-file sha256 before the edit; null for creates. */
   before_sha256: string | null;
   after_sha256: string;
@@ -90,7 +104,22 @@ export interface ActionContract<T> {
    * schema does not declare (a model-supplied hunk count, a copied hash) are
    * decode rejections with a bounded in-loop repair.
    */
-  readonly modelSchema: z.ZodType<T>;
+  // input side is `unknown`: schemas may canonicalize (e.g. P2-B makes a
+  // missing `creates` default to []), so input and output types differ.
+  readonly modelSchema: z.ZodType<T, z.ZodTypeDef, unknown>;
+
+  /**
+   * P2-B — optional policy-specialized MODEL-FACING projection. When present,
+   * the runner derives the submit_result wire schema, the loop teaching, and
+   * the in-loop decode from THIS schema instead of `modelSchema`, projecting
+   * the frozen action authority before the model ever submits (e.g. a task
+   * whose allowed edit paths all already exist offers no create operation at
+   * all). The projection may only NARROW: every value valid under it must be
+   * valid under `modelSchema`, and `validate`/`stage` always re-run their
+   * authoritative checks on the decoded value regardless of the projection.
+   * Absent ⇒ `modelSchema` is used verbatim (ordinary full support).
+   */
+  projectModelSchema?(ctx: ActionContractContext): z.ZodType<unknown, z.ZodTypeDef, unknown>;
 
   readonly schemaAnnotations?: SchemaAnnotations;
 
@@ -131,8 +160,9 @@ export function createActionAcceptor<T>(
   ctx: ActionContractContext,
   artifactType: string,
 ): ResultAcceptor {
+  const decodeSchema = contract.projectModelSchema?.(ctx) ?? contract.modelSchema;
   return (value: unknown) => {
-    const parsed = contract.modelSchema.safeParse(value);
+    const parsed = decodeSchema.safeParse(value);
     if (!parsed.success) {
       const issues = parsed.error.issues
         .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
@@ -145,7 +175,27 @@ export function createActionAcceptor<T>(
         ),
       };
     }
-    const defects = contract.validate?.(parsed.data, ctx) ?? [];
+    // P2-B — the projected surface may only NARROW, so its decoded output is
+    // always re-canonicalized through the contract's canonical schema before
+    // semantic validation (e.g. an omitted `creates` becomes the canonical
+    // empty list the rest of the pipeline expects). A narrowing projection's
+    // output re-decoding as canonical is a structural invariant; failure here
+    // is an authoring error and fails closed.
+    let decoded: unknown = parsed.data;
+    if (decodeSchema !== contract.modelSchema) {
+      const canonical = contract.modelSchema.safeParse(parsed.data);
+      if (!canonical.success) {
+        return {
+          ok: false,
+          repairInstruction: renderActionRepairInstruction(
+            artifactType,
+            'the projected decode is not canonicalizable — contract authoring error (fail closed)',
+          ),
+        };
+      }
+      decoded = canonical.data;
+    }
+    const defects = contract.validate?.(decoded as T, ctx) ?? [];
     if (defects.length > 0) {
       const rendered = defects
         .map((d) => `${d.code}${d.ref ? ` (${d.ref})` : ''}: ${d.message}`)
@@ -175,8 +225,8 @@ export function renderActionRepairInstruction(artifactType: string, reason: stri
  * annotations + optional contextual teaching. Consumed by the loop's
  * TransportContext.resultSchemaText; transports never learn what a changeset is.
  */
-export function renderActionSchemaTeaching(contract: ActionContract<unknown>): string {
-  const projection = toJsonSchema(contract.modelSchema);
+export function renderActionSchemaTeaching(contract: ActionContract<unknown>, schema?: z.ZodType<unknown>): string {
+  const projection = toJsonSchema(schema ?? contract.modelSchema);
   const lines: string[] = [
     'RESULT SHAPE (your final submit_result call must carry this semantic payload — the system materializes the edits itself):',
     JSON.stringify(projection, null, 2),

@@ -50,6 +50,12 @@ export const BuildEditProposalSchema = z
           .strict(),
       )
       .max(MAX_EDITS),
+    // P2-B (protocol v1.1 deterministic closure, part A): an omitted `creates`
+    // is semantically identical to an empty one — the model is never asked to
+    // serialize that distinction. The key remains STRICT when present (no
+    // unknown keys), and the authoritative post-submission create checks
+    // (safety, extension, task-scoped authorization, no-overwrite) are
+    // unchanged: a NON-EMPTY creates is still fully validated, never dropped.
     creates: z
       .array(
         z
@@ -59,7 +65,22 @@ export const BuildEditProposalSchema = z
           })
           .strict(),
       )
-      .max(MAX_CREATES),
+      .max(MAX_CREATES)
+      .default([]),
+  })
+  .strict();
+
+// P2-B (part B) — the policy-specialized action surface. When the frozen task
+// authority leaves zero legal create targets (see ActionContractContext
+// .createsAuthorized), the MODEL-FACING schema omits `creates` entirely: the
+// model can never spend tokens proposing an operation Stratum knows is
+// impossible. A submission that carries `creates` anyway is an unknown-key
+// decode rejection (repairable, never silently discarded). This projection can
+// only NARROW — every proposal valid under it is valid under the canonical
+// schema, and all authoritative checks still run on whatever is decoded.
+export const BuildEditProposalNoCreatesSchema = z
+  .object({
+    edits: BuildEditProposalSchema.shape.edits,
   })
   .strict();
 
@@ -122,7 +143,7 @@ function validateProposal(
 
   // Edits: anchor resolution, duplicates, authorization, per-file overlap.
   const seenAnchors = new Set<string>();
-  const resolvedByPath = new Map<string, Array<{ start_line: number; end_line: number; path: string }>>();
+  const resolvedByPath = new Map<string, Array<{ anchor_id: string; start_line: number; end_line: number; path: string; base_sha256: string; replacement: string }>>();
   for (const edit of value.edits) {
     if (seenAnchors.has(edit.anchor_id)) {
       defects.push({
@@ -139,7 +160,9 @@ function validateProposal(
         code: 'unknown-anchor',
         ref: edit.anchor_id,
         message:
-          `anchor '${edit.anchor_id}' was not issued in this step execution — re-read the target region with read_source_slice and reference the anchor returned in the tool result`,
+          `anchor '${edit.anchor_id}' was not issued in this step execution. Use an anchor_id previously issued by ` +
+          `read_source_slice in this execution. If no issued anchor represents the intended source region, the proposal ` +
+          `cannot be repaired in this synthesis phase and must fail closed.`,
       });
       continue;
     }
@@ -151,18 +174,73 @@ function validateProposal(
       });
     }
     const list = resolvedByPath.get(anchor.path) ?? [];
-    list.push(anchor);
+    list.push({ anchor_id: edit.anchor_id, start_line: anchor.start_line, end_line: anchor.end_line, path: anchor.path, base_sha256: anchor.base_sha256, replacement: edit.replacement });
     resolvedByPath.set(anchor.path, list);
   }
+
+  // P2-B (protocol v1.1 deterministic closure, part C) — boundary composition.
+  //
+  // Inclusive 1-based ranges make two NEIGHBORING reads share their boundary
+  // line, and the old rule rejected any shared line as 'overlapping-edits'
+  // while telling the model to "merge them into one anchored edit" — which is
+  // impossible once repository tools are withdrawn and no covering anchor was
+  // ever minted. When — and only when — a join is mechanically unambiguous,
+  // Stratum composes it itself:
+  //   same path, same base sha256, B.start === A.end (exactly ONE old source
+  //   line overlaps), and A's replacement final line === B's replacement
+  //   first line byte-for-byte. Chains compose transitively (every join
+  //   satisfies the same rule). The composed replacement is exactly
+  //   A + B[1:] — the model still owns every replacement byte; no new source
+  //   authority, no guessed bytes. ANY other overlap fails exactly as before.
+  const overlapsDefect = (path_: string, a: { start_line: number; end_line: number }, b: { start_line: number; end_line: number }): ContractDefect => ({
+    code: 'overlapping-edits',
+    ref: path_,
+    message: `two edits anchor overlapping spans of '${path_}' ([${a.start_line}, ${a.end_line}] and [${b.start_line}, ${b.end_line}]) — their spans cannot be composed: two different new contents are claimed for a shared source line, or the spans overlap by more than one line`,
+  });
+
   for (const [path_, spans] of resolvedByPath) {
-    for (let i = 0; i < spans.length; i++) {
-      for (let j = i + 1; j < spans.length; j++) {
-        if (spansOverlap(spans[i], spans[j])) {
-          defects.push({
-            code: 'overlapping-edits',
-            ref: path_,
-            message: `two edits anchor overlapping spans of '${path_}' ([${spans[i].start_line}, ${spans[i].end_line}] and [${spans[j].start_line}, ${spans[j].end_line}]) — merge them into one anchored edit`,
-          });
+    const sorted = [...spans].sort((a, b) => a.start_line - b.start_line || a.end_line - b.end_line);
+    interface VirtualSpan { start_line: number; end_line: number; replacement: string; composed_from: string[] | null }
+    const virtual: VirtualSpan[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      let cur = sorted[i];
+      let chainRepl = cur.replacement;
+      const chainIds = [cur.anchor_id];
+      let j = i + 1;
+      while (j < sorted.length) {
+        const next = sorted[j];
+        if (next.start_line > cur.end_line) break; // strictly disjoint: a separate edit
+        const oneLineTouch = next.start_line === cur.end_line;
+        const sameBase = next.base_sha256 === cur.base_sha256;
+        const curLines = chainRepl.split('\n');
+        const nextLines = next.replacement.split('\n');
+        const boundaryEqual = curLines[curLines.length - 1] === nextLines[0];
+        if (oneLineTouch && sameBase && boundaryEqual) {
+          chainRepl = chainRepl + '\n' + nextLines.slice(1).join('\n');
+          cur = { ...cur, end_line: next.end_line };
+          chainIds.push(next.anchor_id);
+          j++;
+          continue;
+        }
+        defects.push(overlapsDefect(path_, cur, next));
+        j++;
+      }
+      virtual.push({
+        start_line: cur.start_line,
+        end_line: cur.end_line,
+        replacement: chainRepl,
+        composed_from: chainIds.length > 1 ? chainIds : null,
+      });
+      i = j;
+    }
+    // Composed (or plain) spans must still not overlap EACH OTHER — a wide
+    // read plus its own boundary children compose into one chain; anything
+    // else is a genuine ambiguity the model must resolve.
+    for (let a = 0; a < virtual.length; a++) {
+      for (let b = a + 1; b < virtual.length; b++) {
+        if (spansOverlap(virtual[a], virtual[b])) {
+          defects.push(overlapsDefect(path_, virtual[a], virtual[b]));
         }
       }
     }
@@ -216,7 +294,56 @@ async function stageProposal(
 
   const sha256Hex = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
 
-  for (const [path_, spans] of byPath) {
+  // P2-B (part C) — apply the SAME deterministic boundary composition validate
+  // used, so the authoritative stage splices the composed spans (a boundary
+  // chain arrives as two overlapping anchors and would otherwise fail the
+  // overlap re-check below despite having been accepted in-loop). This stage
+  // recomputation is independent of the loop: even if the model-facing schema
+  // was narrowed or validate were bypassed, stage re-derives everything from
+  // the anchors + disk and re-checks every gate on the composed spans.
+  const composeChains = (
+    spans: Array<{ anchor_id: string; start_line: number; end_line: number; base_sha256: string; replacement: string }>,
+  ): Array<{ anchor_id: string; start_line: number; end_line: number; base_sha256: string; replacement: string; composed_from: string[] | null }> => {
+    const sorted = [...spans].sort((a, b) => a.start_line - b.start_line || a.end_line - b.end_line);
+    const out: Array<{ anchor_id: string; start_line: number; end_line: number; base_sha256: string; replacement: string; composed_from: string[] | null }> = [];
+    let i = 0;
+    while (i < sorted.length) {
+      let cur = sorted[i];
+      let chainRepl = cur.replacement;
+      const chainIds = [cur.anchor_id];
+      let j = i + 1;
+      while (j < sorted.length) {
+        const next = sorted[j];
+        if (next.start_line > cur.end_line) break;
+        const oneLineTouch = next.start_line === cur.end_line;
+        const sameBase = next.base_sha256 === cur.base_sha256;
+        const curLines = chainRepl.split('\n');
+        const nextLines = next.replacement.split('\n');
+        const boundaryEqual = curLines[curLines.length - 1] === nextLines[0];
+        if (oneLineTouch && sameBase && boundaryEqual) {
+          chainRepl = chainRepl + '\n' + nextLines.slice(1).join('\n');
+          cur = { ...cur, end_line: next.end_line };
+          chainIds.push(next.anchor_id);
+          j++;
+          continue;
+        }
+        break; // not composable: leave both spans as-is (the overlap re-check fails closed)
+      }
+      out.push({
+        anchor_id: chainIds.length > 1 ? `composed:${chainIds.join('+')}` : cur.anchor_id,
+        start_line: cur.start_line,
+        end_line: cur.end_line,
+        base_sha256: cur.base_sha256,
+        replacement: chainRepl,
+        composed_from: chainIds.length > 1 ? chainIds : null,
+      });
+      i = j;
+    }
+    return out;
+  };
+
+  for (const [path_, rawSpans] of byPath) {
+    const spans = composeChains(rawSpans);
     let before: string;
     try {
       before = await ctx.io.readFile(path_);
@@ -258,10 +385,12 @@ async function stageProposal(
     // Audit diff rendered FROM THE DECIDED SPANS (ascending, delta-corrected)
     // — truthful evidence, never re-inferred from whole texts.
     const ascending = [...spans].sort((a, b) => a.start_line - b.start_line);
+    const composedFrom = ascending.flatMap((s) => s.composed_from ?? []);
     edits.push({
       op: 'replace',
       path: path_,
       anchor_id: ascending.map((s) => s.anchor_id).join(','),
+      ...(composedFrom.length > 0 ? { composed_from: composedFrom } : {}),
       before_sha256: beforeSha,
       after_sha256: afterSha,
       content: after,
@@ -306,6 +435,15 @@ async function stageProposal(
 export function createBuildChangesetActionContract(): ActionContract<BuildEditProposal> {
   return {
     modelSchema: BuildEditProposalSchema,
+    // P2-B (part B) — policy-specialized action surface. When the runner
+    // determines from the FROZEN authority that zero legal create targets
+    // exist (every allowedEditPath already exists on disk), the model-facing
+    // schema omits `creates` entirely: the model can never propose an
+    // operation Stratum knows is impossible. The projection only ever
+    // NARROWS — a submitted `creates` under it is an unknown-key decode
+    // rejection (repairable, never silently discarded), and every
+    // authoritative post-submission check still runs.
+    projectModelSchema: (ctx) => (ctx.createsAuthorized === false ? BuildEditProposalNoCreatesSchema : BuildEditProposalSchema),
     schemaAnnotations: {
       root:
         'Submit your complete changeset exactly once by calling submit_result. Reference source regions by the anchor_id Stratum returned in read_source_slice results; supply only the NEW bytes. Never invent an anchor_id, a hash, a line number, or any diff/patch syntax.',

@@ -103,6 +103,8 @@ export interface AgentRunResult {
   anchored_edits?: Array<{
     op: 'replace' | 'create';
     path: string;
+    /** P2-B — present when this replace was materialized by deterministic boundary composition. */
+    composed_from?: string[];
     anchor_id?: string;
     base_hash: string | null;
     result_hash: string;
@@ -897,10 +899,31 @@ export class AgentRunner {
     let actionAcceptor: ResultAcceptor | undefined;
     if (actionContract) {
       anchorRegistry = new AnchorRegistry();
+      // P2-B (part B) — trusted authority fact, computed mechanically BEFORE
+      // any model call: when the frozen task policy names only paths that
+      // already exist on disk, there is no legal create target, so the
+      // model-facing action surface omits create operations entirely. Never
+      // derived from model output; the authoritative post-submission checks
+      // are unchanged.
+      let createsAuthorized: boolean | undefined;
+      if (ctx.editPolicy && ctx.editPolicy.allowedEditPaths.length > 0) {
+        const existence = await Promise.all(
+          ctx.editPolicy.allowedEditPaths.map(async (p) => {
+            try {
+              await this.fs.access(path.join(this.projectRoot, p));
+              return true;
+            } catch {
+              return false;
+            }
+          }),
+        );
+        if (existence.every((e) => e)) createsAuthorized = false;
+      }
       actionCtx = {
         workItemId: ctx.workItemId,
         resolveAnchor: (anchorId) => anchorRegistry!.resolve(anchorId),
         ...(ctx.editPolicy ? { editPolicy: ctx.editPolicy } : {}),
+        ...(createsAuthorized !== undefined ? { createsAuthorized } : {}),
       };
       actionAcceptor = createActionAcceptor(actionContract, actionCtx, actionArtifactType!);
     }
@@ -981,8 +1004,14 @@ export class AgentRunner {
           ? {
               artifactType: actionArtifactType!,
               acceptor: actionAcceptor,
-              schemaText: renderActionSchemaTeaching(actionContract),
-              schemaJson: toJsonSchema(actionContract.modelSchema),
+              // P2-B — the model-facing wire surface is the policy-projected
+              // schema (creates omitted when the frozen authority leaves no
+              // legal create target), never wider than the canonical schema.
+              schemaText: renderActionSchemaTeaching(
+                actionContract,
+                actionContract.projectModelSchema?.(actionCtx!) ?? actionContract.modelSchema,
+              ),
+              schemaJson: toJsonSchema(actionContract.projectModelSchema?.(actionCtx!) ?? actionContract.modelSchema),
               mintSourceAnchor: (record: SourceAnchorRecord) => anchorRegistry.mint(record).anchor_id,
             }
           : undefined;
@@ -1206,7 +1235,31 @@ export class AgentRunner {
               await this.fs.mkdir(dir, { recursive: true });
               await this.fs.writeFile(
                 path.join(dir, name),
-                JSON.stringify({ node_id: nodeId, workflow_run_id: ctx.workflowRunId, iteration: ctx.iteration, anchors: loopResult.anchors_issued }, null, 2),
+                JSON.stringify(
+                  {
+                    node_id: nodeId,
+                    workflow_run_id: ctx.workflowRunId,
+                    iteration: ctx.iteration,
+                    anchors: loopResult.anchors_issued,
+                    // P2-B — boundary-composition evidence: which minted
+                    // anchors were composed, the composed span, and the
+                    // composed replacement hash. The model still owns every
+                    // replacement byte; this records the mechanical joins.
+                    ...(anchoredChangeset
+                      ? {
+                          compositions: anchoredChangeset.edits
+                            .filter((e) => e.composed_from && e.composed_from.length > 0)
+                            .map((e) => ({
+                              source_anchor_ids: e.composed_from!,
+                              composed_span: e.op === 'replace' ? e.anchor_id : undefined,
+                              replacement_sha256: e.after_sha256,
+                            })),
+                        }
+                      : {}),
+                  },
+                  null,
+                  2,
+                ),
                 'utf-8',
               );
             } catch {
@@ -1878,6 +1931,7 @@ export class AgentRunner {
           op: edit.op,
           path: edit.path,
           ...(edit.anchor_id ? { anchor_id: edit.anchor_id } : {}),
+          ...(edit.composed_from ? { composed_from: edit.composed_from } : {}),
           base_hash: edit.before_sha256,
           result_hash: edit.after_sha256,
         });
