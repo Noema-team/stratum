@@ -33,7 +33,7 @@ import {
   BuildEditProposalNoCreatesSchema,
   type BuildEditProposal,
 } from '../src/workflow/methodology/build-changeset-contract.js';
-import { createActionAcceptor } from '../src/workflow/action-contracts.js';
+import { createActionAcceptor, renderActionSchemaTeaching } from '../src/workflow/action-contracts.js';
 import type { SourceAnchor } from '../src/workflow/anchored-edits.js';
 
 const contract = createBuildChangesetActionContract();
@@ -335,5 +335,116 @@ test('P2B.R2: a real on-disk staging of a composed chain writes exactly the comp
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── E. projected teaching + authoritative composition evidence ───────────────
+
+test('P2B.E1: the narrowed surface carries ZERO create-field teaching', () => {
+  const narrowed = contract.projectModelSchema!({ workItemId: 'wi', createsAuthorized: false });
+  const teaching = renderActionSchemaTeaching(contract, narrowed);
+  // the field annotation for creates is filtered out with the field itself
+  assert.equal(teaching.includes('/properties/creates'), false);
+  assert.match(teaching, /- \/properties\/edits:/);
+  // and the embedded JSON projection itself has no creates property
+  const jsonMatch = teaching.match(/RESULT SHAPE[^\n]*\n(\{[\s\S]*?\n\})\n/);
+  assert.ok(jsonMatch, 'teaching embeds the JSON projection');
+  const projection = JSON.parse(jsonMatch[1]) as { properties?: Record<string, unknown> };
+  assert.equal(projection.properties?.creates, undefined);
+  assert.notEqual(projection.properties?.edits, undefined);
+});
+
+test('P2B.E2: the canonical surface still teaches creates (filter is projection-driven, not global)', () => {
+  const teaching = renderActionSchemaTeaching(contract);
+  assert.match(teaching, /- \/properties\/creates: Each entry creates a NEW file/);
+  assert.match(teaching, /- \/properties\/edits:/);
+});
+
+test('P2B.E3: staging emits the authoritative two-anchor composition record with correct-byte hashes', async () => {
+  const replA = 'line = 5  # rewritten-A\nline = 10  # shared-boundary';
+  const replB = 'line = 10  # shared-boundary\nline = 15  # rewritten-B';
+  const proposal: BuildEditProposal = { edits: [edit(a5_10, replA), edit(a10_15, replB)], creates: [] };
+  const h = harness(a5_10, a10_15);
+  const outcome = await contract.stage(proposal, h.stageCtxFactory(BASE) as never);
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) {
+    const composedReplacement = replA + '\n' + replB.split('\n').slice(1).join('\n');
+    const expectedFile = BASE_LINES.slice(0, 4).concat(composedReplacement.split('\n')).join('\n') + '\n' + BASE_LINES.slice(15).join('\n') + '\n';
+    assert.deepEqual(outcome.changeset.compositions, [
+      {
+        path: PATH,
+        source_anchor_ids: [a5_10.anchor_id, a10_15.anchor_id],
+        start_line: 5,
+        end_line: 15,
+        replacement_sha256: sha256(composedReplacement), // the composed replacement BYTES
+        result_file_sha256: sha256(expectedFile), // the resulting file BYTES
+      },
+    ]);
+  }
+});
+
+test('P2B.E4: a three-anchor chain emits ONE record with three source anchor ids', async () => {
+  const r1 = 'line = 3  # r1\nline = 6  # j1';
+  const r2 = 'line = 6  # j1\nline = 9  # j2';
+  const r3 = 'line = 9  # j2\nline = 12  # r3';
+  const proposal: BuildEditProposal = { edits: [edit(a3_6, r1), edit(a6_9, r2), edit(a9_12, r3)], creates: [] };
+  const h = harness(a3_6, a6_9, a9_12);
+  const outcome = await contract.stage(proposal, h.stageCtxFactory(BASE) as never);
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) {
+    const composedReplacement = r1 + '\n' + r2.split('\n').slice(1).join('\n') + '\n' + r3.split('\n').slice(1).join('\n');
+    const expectedFile = BASE_LINES.slice(0, 2).concat(composedReplacement.split('\n')).join('\n') + '\n' + BASE_LINES.slice(12).join('\n') + '\n';
+    assert.equal(outcome.changeset.compositions!.length, 1);
+    assert.deepEqual(outcome.changeset.compositions![0], {
+      path: PATH,
+      source_anchor_ids: [a3_6.anchor_id, a6_9.anchor_id, a9_12.anchor_id],
+      start_line: 3,
+      end_line: 12,
+      replacement_sha256: sha256(composedReplacement),
+      result_file_sha256: sha256(expectedFile),
+    });
+  }
+});
+
+test('P2B.E5: two separate compositions in one file stay separate records; result hash is the final file', async () => {
+  const c1 = mintAnchor({ start: 1, end: 2 });
+  const c2 = mintAnchor({ start: 2, end: 3 });
+  const c5 = mintAnchor({ start: 5, end: 6 });
+  const c6 = mintAnchor({ start: 6, end: 7 });
+  // chain 1: [1,2]+[2,3]; chain 2: [5,6]+[6,7] — disjoint spans
+  const p1 = 'line = 1  # c1-A\nline = 2  # shared-1';
+  const p2 = 'line = 2  # shared-1\nline = 3  # c1-B';
+  const p5 = 'line = 5  # c2-A\nline = 6  # shared-2';
+  const p6 = 'line = 6  # shared-2\nline = 7  # c2-B';
+  const proposal: BuildEditProposal = { edits: [edit(c1, p1), edit(c2, p2), edit(c5, p5), edit(c6, p6)], creates: [] };
+  const h = harness(c1, c2, c5, c6);
+  const outcome = await contract.stage(proposal, h.stageCtxFactory(BASE) as never);
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) {
+    const comp1 = p1 + '\n' + p2.split('\n').slice(1).join('\n'); // span [1,3]
+    const comp2 = p5 + '\n' + p6.split('\n').slice(1).join('\n'); // span [5,7]
+    // final file: splice bottom-up (lines are 1-based; BASE has 24 lines + trailing newline)
+    const lines = BASE.split('\n');
+    const after = lines.slice(0, 0).concat(comp1.split('\n')).concat(lines.slice(3, 4)).concat(comp2.split('\n')).concat(lines.slice(7));
+    const expectedFile = after.join('\n');
+    assert.equal(outcome.changeset.compositions!.length, 2);
+    assert.deepEqual(outcome.changeset.compositions, [
+      {
+        path: PATH,
+        source_anchor_ids: [c1.anchor_id, c2.anchor_id],
+        start_line: 1,
+        end_line: 3,
+        replacement_sha256: sha256(comp1),
+        result_file_sha256: sha256(expectedFile),
+      },
+      {
+        path: PATH,
+        source_anchor_ids: [c5.anchor_id, c6.anchor_id],
+        start_line: 5,
+        end_line: 7,
+        replacement_sha256: sha256(comp2),
+        result_file_sha256: sha256(expectedFile), // same resulting file
+      },
+    ]);
   }
 });

@@ -897,6 +897,10 @@ export class AgentRunner {
     let anchorRegistry: AnchorRegistry | undefined;
     let actionCtx: ActionContractContext | undefined;
     let actionAcceptor: ResultAcceptor | undefined;
+    // P2-B (single projection) — the policy-projected model-facing schema is
+    // computed ONCE per execution and the SAME instance is supplied to the
+    // wire projection, the teaching renderer, and the in-loop acceptor.
+    let projectedModelSchema: import('zod').ZodType<unknown, import('zod').ZodTypeDef, unknown> | undefined;
     if (actionContract) {
       anchorRegistry = new AnchorRegistry();
       // P2-B (part B) — trusted authority fact, computed mechanically BEFORE
@@ -925,7 +929,8 @@ export class AgentRunner {
         ...(ctx.editPolicy ? { editPolicy: ctx.editPolicy } : {}),
         ...(createsAuthorized !== undefined ? { createsAuthorized } : {}),
       };
-      actionAcceptor = createActionAcceptor(actionContract, actionCtx, actionArtifactType!);
+      projectedModelSchema = actionContract.projectModelSchema?.(actionCtx) ?? actionContract.modelSchema;
+      actionAcceptor = createActionAcceptor(actionContract, actionCtx, actionArtifactType!, projectedModelSchema);
     }
 
     // 1. Assemble context. DDR-041 review — a fixed-component context-budget
@@ -1006,12 +1011,10 @@ export class AgentRunner {
               acceptor: actionAcceptor,
               // P2-B — the model-facing wire surface is the policy-projected
               // schema (creates omitted when the frozen authority leaves no
-              // legal create target), never wider than the canonical schema.
-              schemaText: renderActionSchemaTeaching(
-                actionContract,
-                actionContract.projectModelSchema?.(actionCtx!) ?? actionContract.modelSchema,
-              ),
-              schemaJson: toJsonSchema(actionContract.projectModelSchema?.(actionCtx!) ?? actionContract.modelSchema),
+              // legal create target), never wider than the canonical schema;
+              // the SAME projected instance drives teaching + wire + acceptor.
+              schemaText: renderActionSchemaTeaching(actionContract, projectedModelSchema),
+              schemaJson: toJsonSchema(projectedModelSchema!),
               mintSourceAnchor: (record: SourceAnchorRecord) => anchorRegistry.mint(record).anchor_id,
             }
           : undefined;
@@ -1241,20 +1244,14 @@ export class AgentRunner {
                     workflow_run_id: ctx.workflowRunId,
                     iteration: ctx.iteration,
                     anchors: loopResult.anchors_issued,
-                    // P2-B — boundary-composition evidence: which minted
-                    // anchors were composed, the composed span, and the
-                    // composed replacement hash. The model still owns every
+                    // P2-B — boundary-composition evidence: the AUTHORITATIVE
+                    // per-composition records staging emitted (source anchor
+                    // ids, composed span, composed-replacement hash, resulting
+                    // file hash), persisted VERBATIM — the runner never
+                    // reconstructs them. The model still owns every
                     // replacement byte; this records the mechanical joins.
-                    ...(anchoredChangeset
-                      ? {
-                          compositions: anchoredChangeset.edits
-                            .filter((e) => e.composed_from && e.composed_from.length > 0)
-                            .map((e) => ({
-                              source_anchor_ids: e.composed_from!,
-                              composed_span: e.op === 'replace' ? e.anchor_id : undefined,
-                              replacement_sha256: e.after_sha256,
-                            })),
-                        }
+                    ...(anchoredChangeset.compositions && anchoredChangeset.compositions.length > 0
+                      ? { compositions: anchoredChangeset.compositions }
                       : {}),
                   },
                   null,

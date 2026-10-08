@@ -22,6 +22,7 @@ import type {
   ActionContract,
   ActionContractContext,
   ActionStageContext,
+  CompositionEvidence,
   StagedEdit,
   StageOutcome,
 } from '../action-contracts.js';
@@ -268,6 +269,7 @@ async function stageProposal(
   ctx: ActionStageContext,
 ): Promise<StageOutcome> {
   const edits: StagedEdit[] = [];
+  const compositions: CompositionEvidence[] = [];
 
   // Group replace edits per file, resolving every anchor again through the
   // runner-injected run-scoped view (the same registry validate used — an
@@ -382,6 +384,23 @@ async function stageProposal(
     }
     const afterSha = sha256Hex(after);
     if (afterSha === beforeSha) continue; // no-op edit: nothing to publish
+    // P2-B — authoritative composition evidence, computed HERE from the
+    // correct bytes: one record per composed span, hashing (a) the composed
+    // replacement bytes that were spliced and (b) the final staged file
+    // bytes. The runner persists these records verbatim — it never
+    // reconstructs them.
+    for (const span of spans) {
+      if (span.composed_from && span.composed_from.length > 0) {
+        compositions.push({
+          path: path_,
+          source_anchor_ids: span.composed_from,
+          start_line: span.start_line,
+          end_line: span.end_line,
+          replacement_sha256: sha256Hex(span.replacement),
+          result_file_sha256: afterSha,
+        });
+      }
+    }
     // Audit diff rendered FROM THE DECIDED SPANS (ascending, delta-corrected)
     // — truthful evidence, never re-inferred from whole texts.
     const ascending = [...spans].sort((a, b) => a.start_line - b.start_line);
@@ -429,7 +448,7 @@ async function stageProposal(
     });
   }
 
-  return { ok: true, changeset: { edits } };
+  return { ok: true, changeset: { edits, compositions } };
 }
 
 export function createBuildChangesetActionContract(): ActionContract<BuildEditProposal> {

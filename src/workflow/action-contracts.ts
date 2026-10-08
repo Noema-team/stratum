@@ -87,8 +87,31 @@ export interface StagedEdit {
   diff: string;
 }
 
+/**
+ * P2-B — authoritative per-composition evidence, emitted by staging (NEVER
+ * reconstructed by the runner): one record per boundary-composed span.
+ * `replacement_sha256` hashes the composed replacement bytes (the exact
+ * `A + B[1:]` string that was spliced); `result_file_sha256` hashes the final
+ * staged file bytes after ALL spans for that file were applied. Both are
+ * computed here, from the correct bytes, at the moment of staging.
+ */
+export interface CompositionEvidence {
+  path: string;
+  /** The minted source anchor ids that were composed, in ascending span order. */
+  source_anchor_ids: string[];
+  /** The composed span in the base (source) file's line numbering. */
+  start_line: number;
+  end_line: number;
+  /** sha256 (utf-8) of the composed replacement bytes. */
+  replacement_sha256: string;
+  /** sha256 (utf-8) of the final staged file bytes for `path`. */
+  result_file_sha256: string;
+}
+
 export interface StagedChangeset {
   edits: StagedEdit[];
+  /** Present (possibly empty) when staging succeeded — authoritative composition records. */
+  compositions?: readonly CompositionEvidence[];
 }
 
 export type StageOutcome =
@@ -159,8 +182,13 @@ export function createActionAcceptor<T>(
   contract: ActionContract<T>,
   ctx: ActionContractContext,
   artifactType: string,
+  // P2-B (single projection) — the runner computes the projected schema ONCE
+  // per execution and supplies the SAME instance it used for the wire
+  // projection and the teaching renderer. When absent, the acceptor derives
+  // it (contract-level tests / legacy call shape).
+  projectedSchema?: z.ZodType<unknown, z.ZodTypeDef, unknown>,
 ): ResultAcceptor {
-  const decodeSchema = contract.projectModelSchema?.(ctx) ?? contract.modelSchema;
+  const decodeSchema = projectedSchema ?? contract.projectModelSchema?.(ctx) ?? contract.modelSchema;
   return (value: unknown) => {
     const parsed = decodeSchema.safeParse(value);
     if (!parsed.success) {
@@ -224,9 +252,17 @@ export function renderActionRepairInstruction(artifactType: string, reason: stri
  * Schema teaching for an action step: generated projection + structured
  * annotations + optional contextual teaching. Consumed by the loop's
  * TransportContext.resultSchemaText; transports never learn what a changeset is.
+ *
+ * P2-B (single projection) — the field annotations are FILTERED against the
+ * actual projected schema's top-level properties: a field the projection
+ * removed (e.g. `creates` under a no-create-target authority) contributes
+ * ZERO teaching text, so the taught surface never names an operation the
+ * wire schema does not offer.
  */
 export function renderActionSchemaTeaching(contract: ActionContract<unknown>, schema?: z.ZodType<unknown>): string {
-  const projection = toJsonSchema(schema ?? contract.modelSchema);
+  const projection = toJsonSchema(schema ?? contract.modelSchema) as {
+    properties?: Record<string, unknown>;
+  };
   const lines: string[] = [
     'RESULT SHAPE (your final submit_result call must carry this semantic payload — the system materializes the edits itself):',
     JSON.stringify(projection, null, 2),
@@ -235,7 +271,10 @@ export function renderActionSchemaTeaching(contract: ActionContract<unknown>, sc
     lines.push('', contract.schemaAnnotations.root);
   }
   if (contract.schemaAnnotations?.fields) {
+    const properties = projection.properties ?? {};
     for (const [key, note] of Object.entries(contract.schemaAnnotations.fields)) {
+      const fieldName = key.startsWith('/properties/') ? key.slice('/properties/'.length) : undefined;
+      if (fieldName !== undefined && properties[fieldName] === undefined) continue;
       lines.push(`- ${key}: ${note}`);
     }
   }
