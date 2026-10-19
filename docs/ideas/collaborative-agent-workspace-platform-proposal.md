@@ -21,13 +21,52 @@
 - A **WorkflowRun** records Stratum-controlled execution under its existing engine.
 - A future **OMP Run** belongs to OMP's independent authority; Stratum links and projects its state instead of recreating that state machine.
 
-**Not decided by this document:** exact schema, deployment platform, full UX, whether to retain Paseo SDK long-term or adopt Hub's outbound relationship, or whether to formalize a separate Task entity. These must be validated.
+**Not decided by this document:** exact schema, deployment platform, full UX, whether to retain Paseo SDK long-term or adopt Hub's outbound relationship, or whether these logical domains should ever become separate deployed services. These must be validated.
 
 ### Why propose a change?
 
 The experience of combining a PM application with Paseo and OMP revealed a practical mismatch: task organization exists, but interactive coding, persistent chat, runtime orchestration, evidence, and human decisions are spread across different interfaces. The user still does most engineering work *inside Paseo*, without an ordinary path that makes OMP beneficial in day-to-day use.
 
 The target is **one coherent working environment**, not another general-purpose agent framework plus an external task board.
+
+---
+
+### Discussion outcome (2026-10-19): separate domains and four identities
+
+**Confirmed direction for this proposal:** `Task`, `WorkItem`, `AgentSession`, and `WorkflowRun` should remain **distinct first-class concepts**. Project management/collaboration logic should be separated from the existing Stratum **engineering execution kernel**.
+
+This is an **agreed product/architecture direction within the draft discussion**, not an accepted DDR or permission to migrate existing code. Exact persistence schemas, APIs, roles, package layout and deployment remain open.
+
+The separation has three parts:
+
+1. **Collaboration/application domain (new):** organizations, human/service identities, membership and grants, projects/repo mapping, ordinary Tasks, planning, discussion, task assignment, UI, and explicit initiation of execution. A Task may never be executable. Its `ready` state must never automatically trigger the kernel.
+2. **Stratum engineering kernel (existing):** bounded WorkItems, Scheduler, workflow definitions, WorkflowRuns, execution adapters, Decisions, evidence, verification and deterministic lifecycle. The kernel is **headless and independently invocable**. It is a supervised workflow/execution core—not itself a language model or code generator. An external builder/provider actually generates code through an adapter.
+3. **Interactive agent runtime (initially Paseo):** host-local workspaces, provider/session handles, chat turns, timelines, tools, subagents and provider process lifecycle. The application links to these sessions but does not claim to own the provider's actual session or overwrite its timeline.
+
+```text
+                  Stratum application / collaboration
+       Project ── Task ── discussion / planning / assignments
+                          │                        │
+              explicit execution handoff       attach chat
+                          │                        │
+                          ▼                        ▼
+                 Stratum engineering           Paseo runtime
+                      kernel                   AgentSession
+                  WorkItem / Run               host/workspace
+                  decision / evidence          provider/timeline
+                          │
+                  ExecutionAdapter
+                          │
+                 builder / tests / reviewer
+
+          Optional later: OMP is a separate execution authority.
+```
+
+**Boundary rule:** Collaboration can propose and authorize a bounded execution request; the kernel then owns the execution state. The kernel returns status, evidence and authoritative allowed actions; the application projects them and does not reimplement the state machine. A chat turn, idle agent or PR state cannot implicitly complete a WorkItem. Interactive sessions can exist without Tasks or WorkItems.
+
+**Deployment rule:** Logical separation does **not** require microservices, network RPC, multiple databases or splitting this repository now. Prefer named domain modules and narrow typed interfaces in the existing TypeScript codebase. Extract services only if a demonstrated deployment, isolation, scale or independent-lifecycle need justifies it. In particular, do not remove the existing Stratum `Project`/`Objective`/`Workspace` contracts from the kernel without a separate compatibility and ownership design.
+
+**Initial vertical slice:** One Stratum Task links to one Paseo AgentSession and optionally creates one bounded Stratum WorkItem via an explicit handoff. Prove that all three lifecycles and their permissions remain independent, and that browser reconnect and kernel restart do not duplicate or infer completion.
 
 ---
 
@@ -146,13 +185,13 @@ Future external execution:
                                   (OMP authority)
 ```
 
-### Task versus existing WorkItem — recommendation, not settled
+### Task versus existing WorkItem — agreed conceptual separation
 
-**Recommendation:** introduce a separate lightweight **Task** domain rather than teaching the current `WorkItem` to represent every human planning item.
+**Agreed direction:** introduce a separate lightweight **Task** domain rather than teaching the current `WorkItem` to represent every human planning item.
 
 Current `WorkItem` includes `workflowId`, required evidence, acceptance criteria, repository IDs, workflow-specific parameters, and states whose `ready` transition feeds the Scheduler. Making a normal PM task `ready` must not accidentally authorize a build.
 
-The alternative is to evolve WorkItem with an explicit `task_only | executable` discriminator and stricter dispatch rules. This may reduce duplication but expands an already-tested execution contract. Treat that as a **decision to test before migration**, not an assumed foregone conclusion.
+The alternative—evolving WorkItem with a `task_only | executable` discriminator—was considered but is **not the current design direction**. It would expand a tested execution contract merely to support ordinary collaboration. Retain it only as historical context; exact Task schema and migration remain subject to a separate design/review.
 
 | Object | Primary truth | Typical lifecycle |
 | --- | --- | --- |
@@ -383,7 +422,7 @@ Do not pre-commit to a wholesale microservice split or a new distributed-worker 
 
 ### Phase 0 — accept/adjust the domain boundary (design only)
 
-Decide how `Task`, `WorkItem`, `AgentSession`, and `WorkflowRun` relate. Preserve current persistence and workflow invariants. Record a short decision before migrating schema.
+The four concepts are separate by agreed direction. Decide their exact references, operation ownership, authorization, and lifecycle handoff while preserving existing persistence and workflow invariants. Record an accepted DDR before migrating schema.
 
 ### Phase 1 — one trusted host, session-first vertical slice
 
@@ -430,7 +469,7 @@ Must pass: authoritative session restoration, permissions, truthful offline stat
 
 ## 11. Open discussion decisions (do not implement by assumption)
 
-1. **Domain:** Separate `Task` from `WorkItem`, or add an explicit non-executable planning mode to WorkItem?
+1. **Domain — direction agreed:** Separate `Task`, `WorkItem`, `AgentSession`, and `WorkflowRun`; define their exact relations, transaction boundaries and ownership without modifying existing kernel contracts prematurely.
 2. **UX entry point:** Task-first versus conversation-first default; both must ultimately work.
 3. **Membership model:** Organization/project roles and permissions; how to scope observation and host control safely.
 4. **Host model:** Are connected machines user-owned, team-owned, or both? What is the trust boundary?
@@ -445,7 +484,7 @@ Must pass: authoritative session restoration, permissions, truthful offline stat
 
 ### Proposed first decision
 
-**Agree or reject the four-object boundary** (`Task`, `WorkItem`, `AgentSession`, `WorkflowRun`), and define which owner has authority over each. This is the architectural hinge: it affects schema, APIs, UX and every later adapter.
+**With the four-object boundary agreed in principle, define the ownership and handoff contracts** between the collaboration domain, existing engineering kernel, and Paseo-owned AgentSession. This is the next architectural hinge: it affects schema, APIs, UX and every later adapter.
 
 ---
 
@@ -475,8 +514,8 @@ Must pass: authoritative session restoration, permissions, truthful offline stat
 This document is intentionally **DISCUSSION**. Reviewing/merging the Markdown file does not by itself authorize implementation or supersede an accepted DDR.
 
 The review should result in:
-1. Agreement or corrections to the product vision.
-2. A decision on the four-object boundary.
+1. Agreement or corrections to the product vision and the now-agreed logical domain separation.
+2. A reviewed ownership/handoff contract for Task ↔ WorkItem ↔ AgentSession ↔ WorkflowRun.
 3. A trusted-host, one-agent-session prototype scope and measurable acceptance criteria.
 4. An explicit decision about DDR-035 roadmap impact.
 5. Only then, one or more narrow DDRs/specs and implementation PRs.
