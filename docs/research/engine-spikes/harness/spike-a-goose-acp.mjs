@@ -144,12 +144,14 @@ async function probeSessionList(sessionId) {
 
 // ---------- phases ----------
 const state = existsSync(sessionState) ? JSON.parse(readFileSync(sessionState, "utf8")) : {};
-const fail = (msg) => { log(`\nPHASE ${phase}: FAIL — ${msg}`); process.exit(1); };
+const fail = (msg) => { log(`\nPHASE ${phase}: FAIL — ${msg}`); if (proc) { try { proc.stdin.end(); } catch {} proc.kill("SIGTERM"); } process.exit(1); };
 const ok = (gates) => {
   log(`\n=== PHASE ${phase}: PASS ===`);
   for (const [k, v] of Object.entries(gates)) log(`${k}: ${v}`);
   log("update-type inventory:", Object.fromEntries(updateTypeInventory));
   log("permission requests observed:", requestPermissionCount);
+  if (proc) { try { proc.stdin.end(); } catch {} proc.kill("SIGTERM"); }
+  process.exit(0); // the engine child keeps the loop alive; exit explicitly per phase
 };
 
 if (phase === "basic") {
@@ -190,6 +192,10 @@ if (phase === "basic") {
     ok({ "G5": "PASS" });
   } else if (phase === "cancel") {
     if (state.restartPass !== true) fail("restart phase did not record a PASS");
+    // Attach a fresh client to the persisted session first (each phase is a new process).
+    await startProcess();
+    await initialize();
+    await request("session/load", { sessionId: state.sessionId, cwd: work, mcpServers: [] });
     rmSync(countTxt, { force: true });
     const p = prompt(state.sessionId, TASK2);
     await sleep(5000); // let it get mid-count (non-destructive wait)
@@ -205,6 +211,9 @@ if (phase === "basic") {
     ok({ "G4": "PASS" });
   } else if (phase === "sigkill") {
     if (state.cancelPass !== true) fail("cancel phase did not record a PASS");
+    await startProcess();
+    await initialize();
+    await request("session/load", { sessionId: state.sessionId, cwd: work, mcpServers: [] });
     rmSync(countTxt, { force: true });
     const p = prompt(state.sessionId, TASK2);
     await sleep(5000);
