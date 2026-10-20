@@ -28,11 +28,13 @@ Assumptions: the engine's provider is pre-configured and authenticated by the us
 | Gate | Phase | Assertion | Kind |
 | --- | --- | --- | --- |
 | G1 handshake | basic | `initialize` (+`authenticate` if required) and `session/new` succeed; capabilities recorded | protocol |
-| G2 task | basic | `spike.txt` contains exactly `SPIKE_OK_2026_10_19` + `<ENGINE>_RESUME`; event stream recorded (update-type inventory) | runtime |
-| G3 permission | basic | `session/request_permission` round-trips and is mediated (`allow_once`), or N/A with engine authorization state recorded | runtime |
-| G4 cancel | cancel | mid-turn `session/cancel` resolves the pending prompt; `count.txt` has < 500 lines or is absent | runtime |
-| G5 cold restart + resume | restart | clean process exit → fresh process → `initialize` + `session/load` → conversation replayed; follow-up quotes both markers; file mtime unchanged; turn counts show **no duplication** | runtime |
-| G6 crash resilience | sigkill | `SIGKILL` mid-turn → fresh process → `session/load` → coherent partial state; no fabricated completion; findings recorded if inconsistent | runtime |
+| G2 task | basic | `spike.txt` contains exactly `SPIKE_OK_2026_10_19` + `<ENGINE>_RESUME`; codeword absent from workspace files; event stream recorded (update-type inventory) | runtime |
+| G3 permission | basic | `session/request_permission` round-trips under the restrictive profile and is granted **only** as `allow_once` (refuse via `reject_once` if unavailable — never fall back to another option); every selection recorded | runtime |
+| G4 cancel | cancel | cancel fires only after **observed activity** (any streamed output or tool call) **and** an existing side effect; requires terminal `cancelled` outcome and side effects **frozen at cancel-time value** in a post-cancel window (1..499 lines) | runtime |
+| G5 cold restart + resume | restart | clean process exit → fresh process → `initialize` + `session/load` → conversation replayed (events counted **before** any new prompt); conversation-only codeword recalled **and verified absent from the workspace by scan**; file mtime unchanged; no duplicated turns | runtime |
+| G6 crash resilience | sigkill | `SIGKILL` fires only with the session/prompt request **structurally pending** and an in-flight side effect; fresh process (new PID) → `session/load` → coherent partial state, side effects stable across the reload window, no fabricated completion (phrasing check informational); work-completed-before-kill is recorded as **INCONCLUSIVE**, not a pass | runtime |
+
+Provenance note: the conversation-only codeword lives in operator-side harness state and the protocol transcript (outside the test workspace); the asserted claim is its **absence from the test workspace**, verified by scan — never "absent from disk" in the absolute.
 
 **Primary gate: G5.** A failed or unsupported cold restart is a documented finding that re-opens the engine-binding direction — not something to engineer around.
 

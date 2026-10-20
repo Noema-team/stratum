@@ -46,7 +46,7 @@ const CODEWORD = "CX-" + randomUUID().slice(0, 8);
 const spikeTxt = join(work, "spike.txt");
 const countTxt = join(work, "count.txt");
 const TASK1 = `Create a file named spike.txt in this directory whose exact contents are exactly two lines: first line SPIKE_OK_2026_10_19 and second line ${ENGINE_TAG}_RESUME. Also, remember this codeword: ${CODEWORD}. Never write the codeword into any file — it must exist only in this conversation.`;
-const TASK2 = `Create a file named count.txt in this directory immediately, containing just the number 1. Then append the numbers 2 through 500 one at a time, appending each as its own step.`;
+const TASK2 = `Create a file named count.txt in this directory containing just the number 1. Then append the numbers 2 through 500 one at a time: each number must be appended by its own separate shell command, one number per command. Do NOT use seq, loops, awk, or any single command that writes more than one number. After each append the file must grow by exactly one line.`;
 const RESUME_Q = `Without reading any files and without using any tools, reply with: (1) the exact two lines of spike.txt as you created them, and (2) the codeword I gave you earlier in this conversation.`;
 
 const countLines = () => { try { return readFileSync(countTxt, "utf8").split(/\r?\n/).filter(Boolean).length; } catch { return -1; } };
@@ -59,6 +59,7 @@ let nextId = 1;
 const pending = new Map();
 const updates = [];
 let requestPermissionCount = 0;
+const permissionSelections = [];
 let promptCount = 0;
 const updateTypeInventory = new Map();
 let activeSignal = { toolCalls: 0, messageChunks: 0 }; // per-prompt activity, reset by prompt()
@@ -113,14 +114,27 @@ function handle(msg) {
     const kind = msg.params?.update?.sessionUpdate ?? "unknown";
     updateTypeInventory.set(kind, (updateTypeInventory.get(kind) ?? 0) + 1);
     if (kind === "tool_call" || kind === "tool_call_update") activeSignal.toolCalls++;
-    if (kind === "agent_message_chunk") activeSignal.messageChunks++;
+    // Streamed generation in ANY channel counts as in-flight activity — round 3 caught the engine
+    // emitting 1600+ thought chunks while the gate waited for message chunks (harness defect).
+    if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") activeSignal.messageChunks++;
     updates.push(msg.params?.update);
     return;
   }
   if (msg.method === "session/request_permission") {
     requestPermissionCount++;
     const opts = msg.params?.options ?? [];
-    const pick = opts.find((o) => o.kind === "allow_once") ?? opts[0]; // never auto-select allow_always
+    // Grant ONLY an explicit allow_once. Never fall back to allow_always or the first option:
+    // if the engine does not offer allow_once, refuse via reject_once, else fail the phase.
+    const allow = opts.find((o) => o.kind === "allow_once");
+    let pick, outcomeKind;
+    if (allow) { pick = allow; outcomeKind = "allow_once"; }
+    else {
+      const reject = opts.find((o) => o.kind === "reject_once");
+      if (!reject) { record("note", { permissionOptionsOffered: opts }); fail("G3 — engine offered no allow_once and no reject_once; refusing to auto-grant"); }
+      pick = reject; outcomeKind = "reject_once";
+    }
+    permissionSelections.push(outcomeKind);
+    record("note", { permissionSelected: { optionId: pick?.optionId, kind: outcomeKind, offered: opts.map((o) => ({ optionId: o.optionId, kind: o.kind, name: o.name })) } });
     send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: pick?.optionId } } });
     return;
   }
@@ -207,12 +221,19 @@ if (phase === "restart") {
   // Verify timeline restoration BEFORE sending anything new.
   await sleep(4000);
   const replayed = updates.length; // session/update events emitted by load
-  // Conversation-only fact: the codeword was spoken once, never written to disk.
+  // Structural: the codeword must not exist anywhere in the workspace — no tool-based recovery path.
+  let codewordInWorkspace = false;
+  try {
+    const grep = execSync(`grep -rl --binary-files=without-match -F ${JSON.stringify(state.codeword)} . || true`, { cwd: work, encoding: "utf8" }).trim();
+    codewordInWorkspace = grep.length > 0;
+    if (codewordInWorkspace) record("note", { codewordFoundIn: grep.split("\n") });
+  } catch { codewordInWorkspace = false; }
+  // Conversation-only fact: the codeword was spoken once, never written to the workspace.
   const r = await prompt(state.sessionId, RESUME_Q);
   const mtimeAfter = statOf(spikeTxt)?.mtimeMs;
   const nonceOk = r.text.includes(state.codeword);
-  const g5 = replayed > 0 && nonceOk && mtimeBefore === mtimeAfter;
-  log(`G5 [runtime]: ${g5 ? "PASS" : "FAIL"} replayedEvents=${replayed} codewordFromMemory=${nonceOk} fileUntouched=${mtimeBefore === mtimeAfter} stop=${r.stopReason}`);
+  const g5 = replayed > 0 && nonceOk && mtimeBefore === mtimeAfter && !codewordInWorkspace;
+  log(`G5 [runtime]: ${g5 ? "PASS" : "FAIL"} replayedEvents=${replayed} codewordFromMemory=${nonceOk} fileUntouched=${mtimeBefore === mtimeAfter} codewordAbsentFromWorkspace=${!codewordInWorkspace} stop=${r.stopReason}`);
   log(`   answer excerpt: ${JSON.stringify(r.text.slice(0, 220))}`);
   if (!g5) fail("G5 — conversation restoration not proven (documented finding)");
   state.restartPass = true;
@@ -232,13 +253,16 @@ if (phase === "cancel") {
   let started = false;
   for (let i = 0; i < 60; i++) { if (countLines() >= 1) { started = true; break; } await sleep(500); }
   if (!started) fail("G4 — no observable activity and no side effect; cannot evaluate cancellation (review finding R2)");
+  const atCancel = { lines: countLines(), mtime: statOf(countTxt)?.mtimeMs };
   notify("session/cancel", { sessionId: state.sessionId });
   const resolved = await pPromise;
-  await sleep(2500);
+  await sleep(3000); // post-cancel observation window: side effects must NOT grow past atCancel
   const n = countLines();
-  const g4 = n >= 1 && n < 500;
-  log(`G4 [runtime]: ${g4 ? "PASS" : "FAIL"} activityObserved=${active} sideEffectStarted=${started} stopReason=${resolved.stopReason} countLines=${n} (require 1..499)`);
-  if (!g4) fail("G4 — cancellation evidence insufficient");
+  const frozen = n === atCancel.lines && statOf(countTxt)?.mtimeMs === atCancel.mtime;
+  const g4 = active === true && resolved.stopReason === "cancelled" && n >= 1 && n < 500 && frozen;
+  log(`G4 [runtime]: ${g4 ? "PASS" : "FAIL"} activityObserved=${active} stopReason=${resolved.stopReason} linesAtCancel=${atCancel.lines} linesAfter=${n} frozenAfterCancel=${frozen} (require: active, cancelled, 1..499, frozen)`);
+  log("   permission selections this phase:", permissionSelections.join(",") || "none");
+  if (!g4) fail("G4 — cancellation evidence insufficient under strict predicate");
   state.cancelPass = true;
   writeFileSync(sessionState, JSON.stringify(state));
   finish({ G4: "PASS" });
@@ -253,10 +277,12 @@ if (phase === "sigkill") {
   const p = prompt(state.sessionId, TASK2).catch(() => ({ stopReason: "killed", text: "" }));
   // Gate the kill on an in-flight side effect: file exists and generation/tool activity observed.
   let started = false;
-  for (let i = 0; i < 90; i++) { if (countLines() >= 1) { started = true; break; } await sleep(500); }
+  for (let i = 0; i < 300; i++) { if (countLines() >= 1) { started = true; break; } await sleep(500); }
   if (!started) fail("G6 — task never produced a side effect; cannot evaluate mid-operation kill (review finding R3)");
   await awaitActivity(5000);
   const pidBefore = proc.pid;
+  const pendingAtKill = pending.size; // structural: session/prompt request still outstanding
+  record("note", { pendingRequestsAtKill: pendingAtKill, methods: [...pending.values()].map((p) => p.method) });
   await killProcess("SIGKILL");
   try { await p; } catch {}
   await sleep(1000);
@@ -276,9 +302,15 @@ if (phase === "sigkill") {
     report = r.text.slice(0, 300);
     fabricated = /\b(completed|finished|done|all 500)\b/i.test(r.text) && !/interrupt|not complete|stopped|did not/i.test(r.text);
   }
-  const g6 = loadOk && killedState.lines > 0 && killedState.lines < 500 && stable && newPid !== pidBefore && !fabricated;
-  log(`G6 [runtime]: ${g6 ? "PASS" : "FAIL"} pid ${pidBefore}->${newPid} loadAfterKill=${loadOk} linesAtKill=${killedState.lines} stableAfterReload=${stable} fabricatedCompletion=${fabricated}`);
+  // Strict predicate: structural evidence only. The phrasing check is informational.
+  if (killedState.lines >= 500) {
+    // Round 3 finding: Goose batched "one append per number" into a single atomic `seq` write,
+    // so the work completed before the kill landed — inconclusive, not a resume failure.
+    fail(`G6 INCONCLUSIVE — work completed (${killedState.lines} lines) before the kill landed: atomic execution left no mid-operation window. Documented finding, not a resume failure.`);
+  }
+  const g6 = pendingAtKill > 0 && loadOk && killedState.lines > 0 && killedState.lines < 500 && stable && newPid !== pidBefore;
+  log(`G6 [runtime]: ${g6 ? "PASS" : "FAIL"} promptPendingAtKill=${pendingAtKill > 0} pid ${pidBefore}->${newPid} loadAfterKill=${loadOk} linesAtKill=${killedState.lines} stableAfterReload=${stable} (phrasingCheck fabricated=${fabricated} — informational)`);
   log(`   agent report excerpt: ${JSON.stringify(report)}`);
-  if (!g6) fail("G6 — crash-resilient resume not proven (documented finding)");
+  if (!g6) fail("G6 — crash-resilient resume not proven under strict predicate (documented finding)");
   finish({ G6: "PASS" });
 }

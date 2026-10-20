@@ -76,7 +76,7 @@ Harness rewritten to address R1–R4: conversation-only nonce for G5 (codeword s
 | G2 | **PASS** (runtime) | exact file contents; **nonce confirmed absent from disk** |
 | G3 | **PASS** (runtime) | 1 `session/request_permission` round-trip emitted under `GOOSE_MODE=approve` and mediated via `allow_once` — **resolves R4/L1: permission interception over ACP works** |
 | G4 | **PASS** (runtime) | activity observed (3 tool calls) AND `count.txt` at 1 line before cancel; `stopReason=cancelled`; file froze at 1 (require 1..499) — **resolves R2: cancellation demonstrably stopped in-flight work** |
-| G5 | **PASS** (runtime) | 10 events replayed on `session/load`; codeword `CX-a011de48` recalled **from conversation memory** (never on disk); file untouched — **resolves R1: proves conversation restoration, not file rereading** |
+| G5 | **PASS** (runtime) | 11 events replayed on `session/load`; codeword recalled from conversation; file untouched — proves conversation restoration, not file rereading. *(Provenance correction from review: the codeword was present in operator-side harness state (`goose-session.json`) and the protocol transcript; the precise claim is **absent from the test workspace** — see Round 3, where this became an asserted scan.)* |
 | G6 | **PASS** (runtime) | PID 742690→743579; killed mid-write (1 line); reload OK; file stable across reload window (no zombie writes); agent reported the interruption honestly, no fabricated completion — **resolves R3** |
 
 Additional observations:
@@ -92,3 +92,18 @@ Harness rewritten to equivalent Round 2 conditions (nonce restoration, activity-
 ## Qualification status after Round 2
 
 Goose 1.54.0 over ACP has now passed a **runtime qualification experiment** for: protocol wiring, permission mediation, conversation restoration, effective cancellation, and crash-resilient resume — the load-bearing behaviors for §6.7's recovery rules. Still unproven and out of spike scope: multi-session concurrency, long-session transcript growth, multi-host transport, sandbox integration, and the Pi comparison (blocked on credentials).
+
+## Round 3 (2026-10-20) — final correctness pass (strict assertions)
+
+Third review pass tightened the harness predicates themselves; full sequence re-run fresh (`/tmp/stratum-spike-v3`). Assertion changes: G3 grants **only** `allow_once` (refuses via `reject_once`, else fails — no fallback to the first option), with every selection recorded; G4 requires `activityObserved`, terminal `stopReason=cancelled`, and side effects **frozen at their cancel-time value** across a post-cancel window; G5 adds a workspace-wide codeword scan (structural proof no tool-based recovery path exists); G6 requires the session/prompt request to be **structurally pending at kill** and distinguishes an invalid test (atomic execution) from a resume failure; the model-phrasing check is downgraded to informational.
+
+Round 3 run: G1 PASS · G2 PASS · G3 PASS (1 mediated selection, `allow_once` asserted) · G5 PASS (11 replayed events, codeword absent from workspace by scan, recalled from conversation) · G4 PASS (active, `cancelled`, frozen at 1 line).
+
+Two notable events during the pass — both harness/test-design lessons, not engine defects, but directly relevant to host-runtime design:
+
+1. **G4 gate initially refused (correct behavior):** the engine streamed 1,626 `agent_thought_chunk` events while the gate waited for tool calls or message chunks. Streaming thought output *is* in-flight activity; the activity predicate was too narrow and was fixed. Lesson for Stratum: "is a turn active?" must be derived from *any* streamed engine output, not a whitelist of event types.
+2. **G6 first run INCONCLUSIVE:** with the original task text, Goose batched "append 2..500 one at a time" into a **single atomic `seq` command** — `promptPendingAtKill=true` but `count.txt` already had 500 lines when killed. No mid-operation window existed; the run was recorded as inconclusive (invalid test, not a resume failure) and the task was redesigned with explicit per-append, no-shortcuts instructions. Lesson for Stratum: engines collapse naive "incremental" work into atomic operations, so crash-recovery design **cannot assume long partial states exist** — idempotency and outcome-unknown handling must not depend on partial-progress observation.
+
+G6 then passed under the full strict predicate: prompt structurally pending at SIGKILL, PID 1030728→1032165, `count.txt` frozen at 1 line across the reload window, honest non-completion report.
+
+**Provenance (all rounds):** the codeword exists in operator-side harness state and the protocol transcript on the operator's machine; the asserted and scanned claim is its **absence from the test workspace** — never "absent from disk" in the absolute. Per the review's recommendation, the experiment is now frozen: no further refinement unless a genuine runtime defect surfaces.
