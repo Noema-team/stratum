@@ -65,3 +65,30 @@ External review correctly identified that several pass conditions were weaker th
 - **R5 — budget/isolation honesty:** per-request timeouts are not a token budget; the git-init scratch dir is not a filesystem/process sandbox. Both are documentation-level mitigations only at spike maturity.
 
 Round 1 results stand as a **feasibility experiment** (protocol wiring, reattachment, honest crash behavior), not runtime qualification.
+
+## Round 2 (2026-10-20) — strengthened evidence
+
+Harness rewritten to address R1–R4: conversation-only nonce for G5 (codeword spoken once, never written to disk — asserted), activity + side-effect gating before G4 cancel and G6 SIGKILL, restrictive permission profile (`GOOSE_MODE=approve` in the spawn env) for G3, prompt-count budget (`SPIKE_MAX_PROMPTS`, default 12) on top of timeouts, PID-change assertion and post-reload file-stability + fabricated-completion checks for G6, and `allow_always` never auto-selected by the harness. Fresh session, fresh scratch repo (`/tmp/stratum-spike-v2`); round 1 transcript retained at `/tmp/stratum-spike-out`.
+
+| Gate | Round 2 result | Evidence |
+| --- | --- | --- |
+| G1 | **PASS** (protocol) | `sessionId=20261020_2` |
+| G2 | **PASS** (runtime) | exact file contents; **nonce confirmed absent from disk** |
+| G3 | **PASS** (runtime) | 1 `session/request_permission` round-trip emitted under `GOOSE_MODE=approve` and mediated via `allow_once` — **resolves R4/L1: permission interception over ACP works** |
+| G4 | **PASS** (runtime) | activity observed (3 tool calls) AND `count.txt` at 1 line before cancel; `stopReason=cancelled`; file froze at 1 (require 1..499) — **resolves R2: cancellation demonstrably stopped in-flight work** |
+| G5 | **PASS** (runtime) | 10 events replayed on `session/load`; codeword `CX-a011de48` recalled **from conversation memory** (never on disk); file untouched — **resolves R1: proves conversation restoration, not file rereading** |
+| G6 | **PASS** (runtime) | PID 742690→743579; killed mid-write (1 line); reload OK; file stable across reload window (no zombie writes); agent reported the interruption honestly, no fabricated completion — **resolves R3** |
+
+Additional observations:
+
+- The restrictive profile is settable by the *host* at process-spawn time via environment (`GOOSE_MODE=approve`). For Stratum this is the natural hook: the tool broker launches engines pre-restricted instead of trusting their defaults.
+- Cost telemetry: every turn emitted `usage_update`; combined with the prompt-count budget, spend is now observable post-hoc and bounded structurally. A true token-denominated budget would still require host-side enforcement (documented limitation, R5).
+- OS sandboxing remains out of scope for the spike (R5); the git-init scratch dir isolates *commits*, not filesystem/process access.
+
+## Spike B status (2026-10-20)
+
+Harness rewritten to equivalent Round 2 conditions (nonce restoration, activity-gated abort, 1..499 side-effect assertion, message-count check before any resume prompt, `allow_always` n/a by design). **Run blocked: Pi has no provider credentials on this machine** (no stored login; no API-key environment variables). Establishing credentials is a user action (`pi /login` or an env key); per the findings policy this is recorded rather than worked around. Round 2 conclusion for Goose therefore stands **without** the Pi comparison; engine-choice ratification should wait for it.
+
+## Qualification status after Round 2
+
+Goose 1.54.0 over ACP has now passed a **runtime qualification experiment** for: protocol wiring, permission mediation, conversation restoration, effective cancellation, and crash-resilient resume — the load-bearing behaviors for §6.7's recovery rules. Still unproven and out of spike scope: multi-session concurrency, long-session transcript growth, multi-host transport, sandbox integration, and the Pi comparison (blocked on credentials).

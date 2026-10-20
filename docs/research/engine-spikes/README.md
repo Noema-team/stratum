@@ -17,8 +17,8 @@ Evidence-gathering only — these harnesses authorize nothing and contain no Str
 
 | Component | Version | Status |
 | --- | --- | --- |
-| Goose CLI | 1.54.0 (`goose acp`, stdio) | exercised 2026-10-19 — see findings file |
-| Pi (`@earendil-works/pi-coding-agent`) | recorded at `stage1` run | **not yet run** |
+| Goose CLI | 1.54.0 (`goose acp`, stdio; round 2 spawned with `GOOSE_MODE=approve`) | round 1 + round 2 exercised 2026-10-20 — see findings file |
+| Pi (`@earendil-works/pi-coding-agent`) | global install exercised; SDK binding via `PI_PKG` env | **blocked: no provider credentials on machine** (`pi /login` needed) |
 | Node | v20.19.2 (Goose harness; zero deps) / v22.23.2 (Pi SDK, needs ≥ 22.19) | |
 
 Assumptions: the engine's provider is pre-configured and authenticated by the user (`goose` config under `~/.config/goose`); ACP mode is `goose acp` (override with `GOOSE_BIN` / `GOOSE_ACP_ARGS`); Pi sessions persist under a spike-owned sessions dir.
