@@ -1,0 +1,9 @@
+{
+  "name": "stratum-engine-spikes",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19" },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
