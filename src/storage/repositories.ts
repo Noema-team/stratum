@@ -32,6 +32,75 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+export type AppProcessLifecycle = 'active' | 'paused' | 'completed' | 'cancelled';
+export type AppProcessActivityKind = 'update' | 'proposal' | 'review' | 'decision';
+export interface AppProcess {
+  id: string; projectId: string; objectiveId?: string; title: string; intent: string;
+  desiredOutcomes: string[]; constraints: string[]; lifecycle: AppProcessLifecycle;
+  currentFocus: string; repositoryIds: string[]; createdAt: string; updatedAt: string;
+}
+export interface AppProcessActivity {
+  id: string; processId: string; kind: AppProcessActivityKind; title: string;
+  body: string; outcome?: string; createdAt: string;
+}
+
+export class AppProcessRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  save(process: AppProcess): void {
+    this.db.prepare(`INSERT INTO app_processes
+      (id,project_id,objective_id,title,intent,desired_outcomes_json,constraints_json,lifecycle,current_focus,created_at,updated_at)
+      VALUES (@id,@projectId,@objectiveId,@title,@intent,@outcomes,@constraints,@lifecycle,@focus,@createdAt,@updatedAt)`)
+      .run({ id: process.id, projectId: process.projectId, objectiveId: process.objectiveId ?? null,
+        title: process.title, intent: process.intent, outcomes: JSON.stringify(process.desiredOutcomes),
+        constraints: JSON.stringify(process.constraints), lifecycle: process.lifecycle,
+        focus: process.currentFocus, createdAt: process.createdAt, updatedAt: process.updatedAt });
+    const link = this.db.prepare('INSERT INTO app_process_repositories (process_id,repository_id) VALUES (?,?)');
+    for (const repositoryId of process.repositoryIds) link.run(process.id, repositoryId);
+  }
+
+  findById(id: string): AppProcess | undefined {
+    const row = this.db.prepare('SELECT * FROM app_processes WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.toProcess(row) : undefined;
+  }
+
+  listByProject(projectId: string): AppProcess[] {
+    return (this.db.prepare('SELECT * FROM app_processes WHERE project_id=? ORDER BY updated_at DESC').all(projectId) as Record<string, unknown>[])
+      .map(row => this.toProcess(row));
+  }
+
+  updateLifecycle(id: string, lifecycle: AppProcessLifecycle, updatedAt: string): void {
+    this.db.prepare('UPDATE app_processes SET lifecycle=?, updated_at=? WHERE id=?').run(lifecycle, updatedAt, id);
+  }
+
+  addActivity(activity: AppProcessActivity, currentFocus?: string): void {
+    this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,created_at)
+      VALUES (@id,@processId,@kind,@title,@body,@outcome,@createdAt)`).run({
+      ...activity, outcome: activity.outcome ?? null,
+    });
+    const focus = currentFocus ?? ({ update: 'In progress', proposal: 'Proposal review', review: 'Review recorded', decision: 'Decision recorded' } as Record<AppProcessActivityKind, string>)[activity.kind];
+    this.db.prepare('UPDATE app_processes SET updated_at=?, current_focus=? WHERE id=?').run(activity.createdAt, focus, activity.processId);
+  }
+
+  listActivity(processId: string): AppProcessActivity[] {
+    return (this.db.prepare('SELECT * FROM app_process_activity WHERE process_id=? ORDER BY created_at DESC, rowid DESC').all(processId) as Record<string, unknown>[])
+      .map(row => ({ id: row.id as string, processId: row.process_id as string, kind: row.kind as AppProcessActivityKind,
+        title: row.title as string, body: row.body as string, outcome: row.outcome as string | undefined ?? undefined,
+        createdAt: row.created_at as string }));
+  }
+
+  private toProcess(row: Record<string, unknown>): AppProcess {
+    const repositoryIds = (this.db.prepare('SELECT repository_id FROM app_process_repositories WHERE process_id=? ORDER BY repository_id')
+      .all(row.id) as { repository_id: string }[]).map(link => link.repository_id);
+    return { id: row.id as string, projectId: row.project_id as string,
+      objectiveId: row.objective_id as string | undefined ?? undefined, title: row.title as string, intent: row.intent as string,
+      desiredOutcomes: JSON.parse(row.desired_outcomes_json as string) as string[],
+      constraints: JSON.parse(row.constraints_json as string) as string[], lifecycle: row.lifecycle as AppProcessLifecycle,
+      currentFocus: row.current_focus as string, repositoryIds,
+      createdAt: row.created_at as string, updatedAt: row.updated_at as string };
+  }
+}
+
 // ============================================================================
 // WorkspaceRepository
 // ============================================================================
@@ -129,23 +198,27 @@ function rowToProject(r: Record<string, unknown>): Project {
 // ============================================================================
 
 export class RepositoryRepository {
+  private readonly db: Database.Database;
   private readonly insert: Database.Statement;
   private readonly byId: Database.Statement;
   private readonly byProject: Database.Statement;
   private readonly statusStmt: Database.Statement;
 
   constructor(db: Database.Database) {
+    this.db = db;
     this.insert = db.prepare(`
       INSERT INTO repositories (id, project_id, provider, remote, default_branch, local_workspace, status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     this.byId = db.prepare('SELECT * FROM repositories WHERE id = ?');
-    this.byProject = db.prepare('SELECT * FROM repositories WHERE project_id = ? ORDER BY remote');
+    this.byProject = db.prepare(`SELECT r.*, pr.project_id AS linked_project_id FROM repositories r
+      JOIN project_repositories pr ON pr.repository_id=r.id WHERE pr.project_id=? ORDER BY r.remote`);
     this.statusStmt = db.prepare('UPDATE repositories SET status = ? WHERE id = ?');
   }
 
   save(r: Repository): void {
     this.insert.run(r.id, r.projectId, r.provider, r.remote, r.defaultBranch, r.localWorkspace ?? null, r.status);
+    this.linkToProject(r.projectId, r.id);
   }
 
   findById(id: string): Repository | undefined {
@@ -154,7 +227,26 @@ export class RepositoryRepository {
   }
 
   listByProject(projectId: string): Repository[] {
-    return (this.byProject.all(projectId) as Record<string, unknown>[]).map(rowToRepository);
+    return (this.byProject.all(projectId) as Record<string, unknown>[]).map(row => ({ ...rowToRepository(row), projectId }));
+  }
+
+  findByRemote(provider: Repository['provider'], remote: string): Repository | undefined {
+    const row = this.db.prepare('SELECT * FROM repositories WHERE provider=? AND remote=? ORDER BY id LIMIT 1').get(provider, remote) as Record<string, unknown> | undefined;
+    return row ? rowToRepository(row) : undefined;
+  }
+
+  linkToProject(projectId: string, repositoryId: string): void {
+    this.db.prepare(`INSERT OR IGNORE INTO project_repositories (project_id,repository_id,linked_at) VALUES (?,?,?)`)
+      .run(projectId, repositoryId, new Date().toISOString());
+  }
+
+  isLinkedToProject(projectId: string, repositoryId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM project_repositories WHERE project_id=? AND repository_id=?').get(projectId, repositoryId));
+  }
+
+  isLinkedToWorkspace(workspaceId: string, repositoryId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM project_repositories pr JOIN projects p ON p.id=pr.project_id
+      WHERE p.workspace_id=? AND pr.repository_id=? LIMIT 1`).get(workspaceId, repositoryId));
   }
 
   updateStatus(id: string, status: Repository['status']): void {

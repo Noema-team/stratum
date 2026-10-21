@@ -1,6 +1,8 @@
 import { createServer as createHttpServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createHttpsServer } from 'https';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { Router } from './router.js';
 import { AttentionService } from './attention-service.js';
@@ -12,6 +14,7 @@ import {
   EventRepository,
   StepExecutionRepository,
   ArtifactRepository,
+  RepositoryRepository,
 } from '../storage/repositories.js';
 import { ObjectiveService } from '../services/objective-service.js';
 import { makeAttentionHandlers } from './handlers/attention.js';
@@ -23,6 +26,8 @@ import { makeEventHandlers } from './handlers/events.js';
 import { makeWorkflowHandlers } from './handlers/workflows.js';
 import { makeArtifactHandlers } from './handlers/artifacts.js';
 import { makeObjectiveHandlers } from './handlers/objectives.js';
+import { makeProcessHandlers } from './handlers/processes.js';
+import { ProcessService } from '../application/processes/service.js';
 import type { WorkService } from '../services/work-service.js';
 import type { EvidenceService } from '../services/evidence-service.js';
 import type { ResumeService } from '../services/resume-service.js';
@@ -70,19 +75,21 @@ export class ControlPlaneServer {
     const stepExecutions = new StepExecutionRepository(opts.db);
     const artifacts = new ArtifactRepository(opts.db);
     const objectiveService = new ObjectiveService(opts.db, opts.workspaceId);
+    const processService = new ProcessService(opts.db, opts.workspaceId);
 
     if (opts.requireAuth) {
       router.setAuth(raw => tokens.validate(raw));
     }
 
     makeAttentionHandlers(router, attention, projects, opts.workspaceId);
-    makeProjectHandlers(router, projects, opts.workspaceId);
+    makeProjectHandlers(router, projects, opts.workspaceId, new RepositoryRepository(opts.db));
     makeWorkHandlers(router, workItems, opts.workService, projects, opts.workspaceId);
     makeDecisionHandlers(router, decisions, opts.workService, opts.resumeService, projects, opts.workspaceId);
     makeEvidenceHandlers(router, evidence, opts.evidenceService, workItems, projects, opts.workspaceId);
     makeEventHandlers(router, events, opts.workspaceId, workItems, projects);
     makeArtifactHandlers(router, artifacts, workItems, projects, opts.workspaceId);
     makeObjectiveHandlers(router, objectiveService, workItems, projects, opts.workspaceId);
+    makeProcessHandlers(router, processService);
     makeWorkflowHandlers(router);
 
     // Token management
@@ -220,9 +227,27 @@ export class ControlPlaneServer {
     });
 
     const html = dashboardHtml();
+    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+    const appRoot = [path.resolve(moduleDir, '../public/app'), path.resolve(moduleDir, '../../public/app')]
+      .find(candidate => existsSync(path.join(candidate, 'index.html')));
 
     const handler = (req: IncomingMessage, res: ServerResponse) => {
       const pathname = (req.url ?? '/').split('?')[0];
+      if (pathname === '/app') {
+        res.writeHead(302, { Location: '/app/' }); res.end(); return;
+      }
+      if (pathname.startsWith('/app/')) {
+        const relative = pathname.slice('/app/'.length);
+        const candidate = appRoot && relative && !relative.includes('..') ? path.resolve(appRoot, relative) : undefined;
+        const target = candidate && candidate.startsWith(appRoot!) && existsSync(candidate) ? candidate : path.join(appRoot ?? '', 'index.html');
+        if (!appRoot || !existsSync(target)) {
+          res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Stratum application has not been built. Run npm run build.'); return;
+        }
+        const extension = path.extname(target);
+        const contentType = extension === '.js' ? 'text/javascript; charset=utf-8' : extension === '.css' ? 'text/css; charset=utf-8' : extension === '.svg' ? 'image/svg+xml' : 'text/html; charset=utf-8';
+        const content = readFileSync(target);
+        res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': content.byteLength }); res.end(content); return;
+      }
       if ((pathname === '/' || pathname === '/dashboard') && req.method === 'GET') {
         const buf = Buffer.from(html, 'utf8');
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': buf.byteLength });

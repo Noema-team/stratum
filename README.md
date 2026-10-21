@@ -75,7 +75,7 @@ npm test
 
 ### 3. Start Stratum
 ```bash
-# Starts the control-plane daemon and opens the web dashboard in your browser
+# Starts the control-plane daemon and opens the existing execution dashboard
 npx stratum
 
 # Or manually
@@ -83,6 +83,12 @@ node dist/cli.js start
 ```
 
 The dashboard is served at `http://localhost:7700` by default.
+
+The Process-centric application is available at `http://localhost:7700/app/`.
+It provides project selection, repository links, Process creation, and review
+history. Run `npm run build` after source changes; this builds the TypeScript
+application and its React UI. Process lifecycle changes do not mutate kernel
+WorkItems or WorkflowRuns.
 
 ---
 

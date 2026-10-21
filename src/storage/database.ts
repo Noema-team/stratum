@@ -365,6 +365,56 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE objectives SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE created_at IS NULL;
   UPDATE objectives SET updated_at = created_at WHERE updated_at IS NULL;
   `,
+
+  // Migration 11: application Processes. These records retain project intent
+  // and review history independently from executable kernel WorkItems.
+  `
+  CREATE TABLE app_processes (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    objective_id TEXT REFERENCES objectives(id),
+    title TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    desired_outcomes_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','paused','completed','cancelled')),
+    current_focus TEXT NOT NULL DEFAULT 'Planning',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_app_processes_project ON app_processes(project_id, lifecycle, updated_at);
+  CREATE TABLE app_process_repositories (
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    repository_id TEXT NOT NULL REFERENCES repositories(id),
+    PRIMARY KEY (process_id, repository_id)
+  );
+  CREATE TABLE app_process_activity (
+    id TEXT PRIMARY KEY,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('update','proposal','review','decision')),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    outcome TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_app_process_activity_process ON app_process_activity(process_id, created_at);
+  `,
+
+  // Migration 12: projects may explicitly share a repository identity.
+  // Keep repositories.project_id for compatibility with existing consumers;
+  // this association becomes the authoritative membership relation.
+  `
+  CREATE TABLE project_repositories (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    linked_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, repository_id)
+  );
+  INSERT INTO project_repositories (project_id, repository_id, linked_at)
+    SELECT project_id, id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM repositories;
+  CREATE INDEX idx_project_repositories_repository ON project_repositories(repository_id);
+  CREATE INDEX idx_project_repositories_project ON project_repositories(project_id);
+  `,
 ];
 
 // ============================================================================

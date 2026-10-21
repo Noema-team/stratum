@@ -9,11 +9,13 @@
     "stratum": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && cp -r public dist/public",
+    "build": "tsc && npm run build:web && cp -r public dist/public",
+    "build:web": "vite build --config web/vite.config.ts",
+    "type-check:web": "tsc --noEmit -p web/tsconfig.json",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:watch": "node --import tsx --watch --test tests/*.test.ts",
     "type-check": "tsc --noEmit",
-    "verify": "npm run type-check && npm run build && npm test",
+    "verify": "npm run type-check && npm run type-check:web && npm run build && npm test",
     "eval:define-work": "node --import tsx scripts/eval-define-work.ts",
     "clean": "rm -rf dist"
   },
@@ -21,6 +23,8 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "better-sqlite3": "^13.0.3",
     "js-yaml": "^4.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "ws": "^8.21.0",
     "zod": "^3.22.0",
     "zod-to-json-schema": "3.25.1"
@@ -29,9 +33,12 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/js-yaml": "^4.0.5",
     "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vite": "^6.4.5"
   },
   "keywords": [
     "sle",

@@ -210,7 +210,7 @@ export class WorkService {
       if (!repo) {
         throw new WorkServiceError(`Repository '${repoId}' not found`, 'REPO_NOT_FOUND');
       }
-      if (repo.projectId !== req.projectId) {
+      if (!this.repositories.isLinkedToProject(req.projectId, repoId)) {
         throw new WorkServiceError(
           `Repository '${repoId}' does not belong to project '${req.projectId}'`,
           'REPO_PROJECT_MISMATCH',
