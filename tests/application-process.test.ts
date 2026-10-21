@@ -37,13 +37,99 @@ test('application Processes keep their own review history and never create kerne
     assert.equal(detail.activity[0].outcome, 'accepted');
     assert.equal(detail.process.lifecycle, 'active');
     assert.throws(() => service.setLifecycle(process.id, 'completed'), ProcessServiceError);
-    service.setLifecycle(process.id, 'completed', 'Accepted because the new approach meets the desired outcome.');
+    service.setLifecycle(process.id, 'completed', 'Accepted because the new approach meets the desired outcome.', true);
     assert.equal(service.get(process.id).process.lifecycle, 'completed');
     assert.equal((db.prepare('SELECT COUNT(*) AS count FROM work_items').get() as { count: number }).count, 0);
     assert.throws(() => service.addActivity(process.id, 'update', 'Late update', 'Should not be accepted.'), ProcessServiceError);
   } finally {
     db.close(); rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('Process definition amendments are proposed, accepted or rejected, versioned, and durable across restart', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'stratum-process-amendments-'));
+  const dbPath = path.join(directory, 'test.db');
+  let db = openDatabase(dbPath);
+  const workspaceId = '50000000-0000-4000-8000-000000000001'; const projectId = '50000000-0000-4000-8000-000000000002';
+  const now = new Date().toISOString();
+  new WorkspaceRepository(db).save({ id: workspaceId, name: 'Workspace', createdAt: now });
+  new ProjectRepository(db).save({ id: projectId, workspaceId, name: 'Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
+  let processId = '';
+  try {
+    const service = new ProcessService(db, workspaceId);
+    const process = service.create(projectId, { title: 'Improve movement', intent: 'Make movement feel natural', desiredOutcomes: ['Responsive steering'], constraints: ['Preserve navigation'] });
+    processId = process.id;
+    assert.equal(service.get(process.id).definitionVersions[0].version, 1);
+    const rejected = service.proposeAmendment(process.id, { definition: { intent: 'Replace movement entirely' }, reason: 'Rejected scope expansion' });
+    assert.equal(service.get(process.id).process.intent, 'Make movement feel natural', 'proposal leaves accepted definition unchanged');
+    service.decideAmendment(process.id, rejected.id, 'reject');
+    assert.equal(service.get(process.id).process.intent, 'Make movement feel natural');
+    const accepted = service.proposeAmendment(process.id, { definition: { intent: 'Make movement predictable and responsive', desiredOutcomes: ['Predictable steering'] }, reason: 'Investigation clarified success criteria' });
+    service.decideAmendment(process.id, accepted.id, 'accept');
+    service.addActivity(process.id, 'update', 'Testing', 'Validated the new steering criteria.');
+    const detail = service.get(process.id);
+    assert.equal(detail.process.intent, 'Make movement predictable and responsive');
+    assert.deepEqual(detail.definitionVersions.map(version => version.version), [2, 1]);
+    assert.equal(detail.activity[0].definitionVersion, 2);
+    assert.equal(detail.activity.find(item => item.amendmentId === rejected.id)?.definitionVersion, 1);
+    assert.equal((db.prepare('SELECT COUNT(*) AS count FROM work_items').get() as { count: number }).count, 0);
+  } finally { db.close(); }
+  try {
+    db = openDatabase(dbPath);
+    const resumed = new ProcessService(db, workspaceId).get(processId);
+    assert.equal(resumed.process.intent, 'Make movement predictable and responsive');
+    assert.deepEqual(resumed.definitionVersions.map(version => version.version), [2, 1]);
+    assert.equal(resumed.amendments.find(amendment => amendment.reason === 'Rejected scope expansion')?.status, 'rejected');
+    assert.ok(resumed.activity.some(item => item.definitionVersion === 1));
+    assert.ok(resumed.activity.some(item => item.definitionVersion === 2));
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('deferred proposals remain visible, can be reopened, and completion requires explicit unresolved acknowledgment', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'stratum-process-unresolved-'));
+  const db = openDatabase(path.join(directory, 'test.db'));
+  try {
+    const now = new Date().toISOString(); const workspaceId = '60000000-0000-4000-8000-000000000001'; const projectId = '60000000-0000-4000-8000-000000000002';
+    new WorkspaceRepository(db).save({ id: workspaceId, name: 'Workspace', createdAt: now });
+    new ProjectRepository(db).save({ id: projectId, workspaceId, name: 'Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
+    const service = new ProcessService(db, workspaceId);
+    const deferredProcess = service.create(projectId, { title: 'Review approach', intent: 'Decide on the approach.' });
+    const proposal = service.addActivity(deferredProcess.id, 'proposal', 'Option A', 'Use the current architecture.');
+    service.addActivity(deferredProcess.id, 'review', 'Deferred', 'Revisit after the dependency audit.', 'deferred', proposal.proposalId);
+    assert.equal(service.list(projectId)[0].nextAction, 'Reconsider deferred proposal: Option A');
+    assert.equal(service.get(deferredProcess.id).deferredProposals.length, 1);
+    service.reopenDeferredProposal(deferredProcess.id, proposal.proposalId!);
+    assert.equal(service.list(projectId).find(item => item.id === deferredProcess.id)?.attention, 'Review required');
+    service.addActivity(deferredProcess.id, 'review', 'Accepted', 'The audit supports this approach.', 'accepted', proposal.proposalId);
+    service.setLifecycle(deferredProcess.id, 'completed', 'The approach was accepted after review.');
+
+    const unresolved = service.create(projectId, { title: 'Known follow-up', intent: 'Keep the follow-up visible.' });
+    service.addActivity(unresolved.id, 'proposal', 'Performance check', 'Run a follow-up check later.');
+    assert.throws(() => service.setLifecycle(unresolved.id, 'completed', 'The main effort is complete.'), /acknowledge unresolved/);
+    service.setLifecycle(unresolved.id, 'completed', 'The main effort is complete.', true);
+    assert.match(service.get(unresolved.id).activity[0].body, /Acknowledged unresolved items: Performance check/);
+    assert.equal((db.prepare('SELECT COUNT(*) AS count FROM work_items').get() as { count: number }).count, 0);
+    assert.equal((db.prepare('SELECT COUNT(*) AS count FROM workflow_runs').get() as { count: number }).count, 0);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Project activity feed is chronological and can include multiple events from one Process', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'stratum-process-feed-'));
+  const db = openDatabase(path.join(directory, 'test.db'));
+  try {
+    const now = new Date().toISOString(); const workspaceId = '70000000-0000-4000-8000-000000000001'; const projectId = '70000000-0000-4000-8000-000000000002';
+    new WorkspaceRepository(db).save({ id: workspaceId, name: 'Workspace', createdAt: now });
+    new ProjectRepository(db).save({ id: projectId, workspaceId, name: 'Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
+    const service = new ProcessService(db, workspaceId);
+    const first = service.create(projectId, { title: 'First process', intent: 'Track work.' });
+    const second = service.create(projectId, { title: 'Second process', intent: 'Track other work.' });
+    const repository = new AppProcessRepository(db);
+    const event = (processId: string, title: string, day: number) => repository.addActivity({ id: `70000000-0000-4000-8000-${String(day).padStart(12, '0')}`,
+      processId, kind: 'update', title, body: title, createdAt: `2099-01-0${day}T00:00:00.000Z` });
+    event(first.id, 'First update', 1); event(second.id, 'Second process update', 2); event(first.id, 'Latest update', 3);
+    assert.deepEqual(service.activityFeed(projectId, 2).map(item => item.title), ['Latest update', 'Second process update']);
+    assert.deepEqual(service.activityFeed(projectId, 3).map(item => item.title), ['Latest update', 'Second process update', 'First update']);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('Process reads and Objective links are scoped to the owning workspace and project', () => {

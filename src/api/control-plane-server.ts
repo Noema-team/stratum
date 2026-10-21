@@ -1,5 +1,6 @@
 import { createServer as createHttpServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createHttpsServer } from 'https';
+import { isIP } from 'node:net';
 import { existsSync, readFileSync, statSync } from 'fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,7 @@ export interface ControlPlaneServerOptions {
   // durable lifecycle (cursor advance + execution continuation).
   resumeService?: ResumeService;
   port?: number;
+  host?: string;
   requireAuth?: boolean;
   // TLS: provide both certPath and keyPath to serve HTTPS instead of HTTP.
   tls?: { certPath: string; keyPath: string };
@@ -56,10 +58,16 @@ export type ControlPlaneProtocol = 'http' | 'https';
 export class ControlPlaneServer {
   private readonly server: Server;
   readonly port: number;
+  readonly host: string;
   readonly protocol: ControlPlaneProtocol;
 
   constructor(opts: ControlPlaneServerOptions) {
     this.port = opts.port ?? 7373;
+    this.host = opts.host ?? '127.0.0.1';
+    const loopback = this.host === '::1' || (isIP(this.host) === 4 && this.host.startsWith('127.'));
+    if (!loopback && !opts.requireAuth) {
+      throw new Error('Binding the control plane outside loopback requires requireAuth');
+    }
     this.protocol = opts.tls ? 'https' : 'http';
 
     const router = new Router();
@@ -277,7 +285,7 @@ export class ControlPlaneServer {
   }
 
   listen(): Promise<void> {
-    return new Promise(resolve => this.server.listen(this.port, () => {
+    return new Promise(resolve => this.server.listen(this.port, this.host, () => {
       // When port 0 is requested the OS assigns one — update this.port so callers can read it.
       const addr = this.server.address();
       if (addr && typeof addr === 'object') (this as { port: number }).port = addr.port;

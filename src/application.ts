@@ -120,6 +120,7 @@ export interface StratumApplicationOptions {
   workspaceId: string;
   dbPath?: string;
   port?: number;
+  host?: string;
   schedulerIntervalMs?: number;
   requireAuth?: boolean;
 }
@@ -137,6 +138,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     workspaceId,
     dbPath = path.join(projectRoot, '.sle', 'stratum.db'),
     port,
+    host,
     schedulerIntervalMs,
     requireAuth,
   } = opts;
@@ -268,6 +270,7 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     evidenceService,
     resumeService,
     port,
+    host,
     requireAuth,
   });
 

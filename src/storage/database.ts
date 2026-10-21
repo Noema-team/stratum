@@ -456,6 +456,40 @@ export const MIGRATIONS: readonly string[] = [
     WHERE EXISTS (SELECT 1 FROM app_process_activity review WHERE review.kind='review' AND review.proposal_id=proposal.id
       AND review.outcome IN ('accepted','rejected','revise','deferred'));
   `,
+
+  // Migration 16: version Process definitions and retain amendment provenance.
+  `
+  ALTER TABLE app_process_activity ADD COLUMN definition_version INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE app_process_activity ADD COLUMN amendment_id TEXT;
+  CREATE TABLE app_process_definition_versions (
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    definition_json TEXT NOT NULL,
+    amendment_id TEXT,
+    change_reason TEXT NOT NULL,
+    authorized_by TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    PRIMARY KEY(process_id,version)
+  );
+  CREATE TABLE app_process_amendments (
+    id TEXT PRIMARY KEY,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    base_version INTEGER NOT NULL,
+    proposed_definition_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('proposed','accepted','rejected')),
+    proposed_by TEXT NOT NULL,
+    proposed_at TEXT NOT NULL,
+    decided_by TEXT,
+    decided_at TEXT
+  );
+  CREATE INDEX idx_app_process_amendments_status ON app_process_amendments(process_id,status,proposed_at);
+  INSERT INTO app_process_definition_versions (process_id,version,definition_json,change_reason,authorized_by,accepted_at)
+    SELECT id,1,json_object('title',title,'intent',intent,'desiredOutcomes',json(desired_outcomes_json),
+      'constraints',json(constraints_json),'objectiveId',objective_id,
+      'repositoryIds',json(COALESCE((SELECT json_group_array(repository_id) FROM app_process_repositories WHERE process_id=app_processes.id),'[]'))),
+      'Initial accepted Process definition', 'migration', created_at FROM app_processes;
+  `,
 ];
 
 // ============================================================================

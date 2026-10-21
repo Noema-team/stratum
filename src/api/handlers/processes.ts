@@ -8,7 +8,14 @@ const createSchema = z.object({ title: z.string(), intent: z.string(), objective
   repositoryIds: z.array(z.string().uuid()).max(50).optional() });
 const activitySchema = z.object({ kind: z.enum(['update','proposal','review','decision']), title: z.string().max(160),
   body: z.string().max(10000), outcome: z.enum(['accepted','rejected','revise','deferred']).optional(), proposalId: z.string().uuid().optional() });
-const lifecycleSchema = z.object({ lifecycle: z.enum(['active','paused','completed','cancelled']), outcome: z.string().max(10000).optional() });
+const lifecycleSchema = z.object({ lifecycle: z.enum(['active','paused','completed','cancelled']), outcome: z.string().max(10000).optional(), acknowledgeUnresolved: z.boolean().optional() });
+const amendmentSchema = z.object({
+  reason: z.string().max(4000),
+  definition: z.object({ title: z.string().max(160).optional(), intent: z.string().max(10000).optional(),
+    desiredOutcomes: z.array(z.string().max(1000)).max(20).optional(), constraints: z.array(z.string().max(1000)).max(20).optional(),
+    objectiveId: z.string().uuid().nullable().optional(), repositoryIds: z.array(z.string().uuid()).max(50).optional() }).partial(),
+});
+const amendmentDecisionSchema = z.object({ decision: z.enum(['accept','reject']) });
 
 function failure(error: unknown) {
   if (error instanceof ProcessServiceError) return err(error.code === 'NOT_FOUND' ? 'not_found' : error.code === 'CONFLICT' ? 'conflict' : 'bad_request', error.message);
@@ -18,6 +25,10 @@ function failure(error: unknown) {
 export function makeProcessHandlers(router: Router, service: ProcessService): void {
   router.add('GET', '/projects/:id/processes', req => {
     try { return ok(service.list(req.params.id)); } catch (error) { return failure(error); }
+  });
+  router.add('GET', '/projects/:id/activity', req => {
+    const parsedLimit = Number.parseInt(req.query.limit ?? '12', 10);
+    try { return ok(service.activityFeed(req.params.id, Number.isFinite(parsedLimit) ? parsedLimit : 12)); } catch (error) { return failure(error); }
   });
   router.add('POST', '/projects/:id/processes', req => {
     const parsed = createSchema.safeParse(req.body);
@@ -33,9 +44,22 @@ export function makeProcessHandlers(router: Router, service: ProcessService): vo
     try { return ok(service.addActivity(req.params.id, parsed.data.kind, parsed.data.title, parsed.data.body, parsed.data.outcome, parsed.data.proposalId)); }
     catch (error) { return failure(error); }
   });
+  router.add('POST', '/processes/:id/amendments', req => {
+    const parsed = amendmentSchema.safeParse(req.body);
+    if (!parsed.success) return err('bad_request', parsed.error.message);
+    try { return ok(service.proposeAmendment(req.params.id, parsed.data)); } catch (error) { return failure(error); }
+  });
+  router.add('POST', '/processes/:id/amendments/:amendmentId/decision', req => {
+    const parsed = amendmentDecisionSchema.safeParse(req.body);
+    if (!parsed.success) return err('bad_request', parsed.error.message);
+    try { return ok(service.decideAmendment(req.params.id, req.params.amendmentId, parsed.data.decision)); } catch (error) { return failure(error); }
+  });
+  router.add('POST', '/processes/:id/proposals/:proposalId/reopen', req => {
+    try { service.reopenDeferredProposal(req.params.id, req.params.proposalId); return ok(service.get(req.params.id)); } catch (error) { return failure(error); }
+  });
   router.add('PATCH', '/processes/:id/lifecycle', req => {
     const parsed = lifecycleSchema.safeParse(req.body);
     if (!parsed.success) return err('bad_request', parsed.error.message);
-    try { return ok(service.setLifecycle(req.params.id, parsed.data.lifecycle, parsed.data.outcome)); } catch (error) { return failure(error); }
+    try { return ok(service.setLifecycle(req.params.id, parsed.data.lifecycle, parsed.data.outcome, parsed.data.acknowledgeUnresolved)); } catch (error) { return failure(error); }
   });
 }

@@ -44,7 +44,7 @@ let _port = 19100;
 function nextPort() { return ++_port; }
 
 async function withServer(
-  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService; db: ReturnType<typeof openTestDb> }) => Promise<void>,
+  fn: (baseUrl: string, ctx: { workItem: WorkItem; project: Project; workspace: Workspace; workService: WorkService; db: ReturnType<typeof openTestDb>; server: ControlPlaneServer }) => Promise<void>,
 ): Promise<void> {
   const db = openTestDb();
   const wsRepo = new WorkspaceRepository(db);
@@ -66,7 +66,7 @@ async function withServer(
   await srv.listen();
   const base = `http://localhost:${srv.port}`;
   try {
-    await fn(base, { workItem: wi, project: proj, workspace: ws, workService, db });
+    await fn(base, { workItem: wi, project: proj, workspace: ws, workService, db, server: srv });
   } finally {
     await srv.close();
     db.close();
@@ -559,6 +559,61 @@ test('repository link lookup chooses a canonical match from the requesting works
     assert.equal(linked.status, 200);
     assert.equal((linked.body as { data: { id: string } }).data.id, localRepositoryId);
     assert.equal(repositories.isLinkedToProject(project.id, localRepositoryId), true);
+  });
+});
+
+test('ordinary API startup is loopback-bound and external binding requires authentication', async () => {
+  await withServer(async (_base, { server, db, workspace, workService }) => {
+    assert.equal(server.host, '127.0.0.1');
+    assert.throws(() => new ControlPlaneServer({ db, workspaceId: workspace.id, workService, evidenceService: new EvidenceService(db), host: '0.0.0.0' }), /requires requireAuth/);
+    assert.throws(() => new ControlPlaneServer({ db, workspaceId: workspace.id, workService, evidenceService: new EvidenceService(db), host: 'localhost' }), /requires requireAuth/);
+    const external = new ControlPlaneServer({ db, workspaceId: workspace.id, workService, evidenceService: new EvidenceService(db), host: '0.0.0.0', requireAuth: true, port: 0 });
+    assert.equal(external.host, '0.0.0.0');
+  });
+});
+
+test('Process API supports versioned amendment decisions, deferred reopening, and acknowledged completion', async () => {
+  await withServer(async (base, { project }) => {
+    const created = await post(`${base}/projects/${project.id}/processes`, { title: 'Iterative effort', intent: 'Improve the existing approach.' });
+    const processId = (created.body as { data: { id: string } }).data.id;
+    const proposalResponse = await post(`${base}/processes/${processId}/activity`, { kind: 'proposal', title: 'Alternative', body: 'Consider an alternative.' });
+    const proposalId = (proposalResponse.body as { data: { proposalId: string } }).data.proposalId;
+    assert.equal((await post(`${base}/processes/${processId}/activity`, { kind: 'review', title: 'Defer', body: 'Wait for evidence.', outcome: 'deferred', proposalId })).status, 200);
+    const deferred = await get(`${base}/processes/${processId}`);
+    assert.equal((deferred.body as { data: { deferredProposals: unknown[] } }).data.deferredProposals.length, 1);
+    assert.equal((await post(`${base}/processes/${processId}/proposals/${proposalId}/reopen`)).status, 200);
+    assert.equal((await post(`${base}/processes/${processId}/activity`, { kind: 'review', title: 'Accepted', body: 'Evidence supports it.', outcome: 'accepted', proposalId })).status, 200);
+
+    const amendment = await post(`${base}/processes/${processId}/amendments`, { reason: 'Investigation clarified the target.', definition: { intent: 'Make outcomes measurable.' } });
+    const amendmentId = (amendment.body as { data: { id: string } }).data.id;
+    const beforeDecision = await get(`${base}/processes/${processId}`);
+    assert.equal((beforeDecision.body as { data: { process: { intent: string } } }).data.process.intent, 'Improve the existing approach.');
+    assert.equal((await post(`${base}/processes/${processId}/amendments/${amendmentId}/decision`, { decision: 'accept' })).status, 200);
+    const afterDecision = await get(`${base}/processes/${processId}`);
+    assert.equal((afterDecision.body as { data: { process: { intent: string }; definitionVersions: { version: number }[] } }).data.process.intent, 'Make outcomes measurable.');
+    assert.deepEqual((afterDecision.body as { data: { definitionVersions: { version: number }[] } }).data.definitionVersions.map(version => version.version), [2, 1]);
+
+    const unresolved = await post(`${base}/processes/${processId}/activity`, { kind: 'proposal', title: 'Follow-up', body: 'Measure the revised outcome.' });
+    assert.equal(unresolved.status, 200);
+    const missingAcknowledgment = await fetch(`${base}/processes/${processId}/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lifecycle: 'completed', outcome: 'Main effort complete.' }) });
+    assert.equal(missingAcknowledgment.status, 409);
+    const acknowledged = await fetch(`${base}/processes/${processId}/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lifecycle: 'completed', outcome: 'Main effort complete.', acknowledgeUnresolved: true }) });
+    assert.equal(acknowledged.status, 200);
+  });
+});
+
+test('Project activity API includes chronological entries from the same Process', async () => {
+  await withServer(async (base, { project }) => {
+    const created = await post(`${base}/projects/${project.id}/processes`, { title: 'Activity stream', intent: 'Make the event feed observable.' });
+    const processId = (created.body as { data: { id: string } }).data.id;
+    for (const title of ['First finding', 'Second finding', 'Accepted result']) {
+      assert.equal((await post(`${base}/processes/${processId}/activity`, { kind: 'update', title, body: `${title} details.` })).status, 200);
+    }
+    const response = await get(`${base}/projects/${project.id}/activity?limit=10`);
+    const entries = (response.body as { data: { processId: string; title: string; createdAt: string }[] }).data;
+    const sameProcess = entries.filter(entry => entry.processId === processId);
+    assert.ok(sameProcess.length >= 4, 'several events from one Process are all eligible for the project feed');
+    assert.ok(entries.every((entry, index) => index === 0 || entries[index - 1].createdAt >= entry.createdAt), 'feed is newest first');
   });
 });
 

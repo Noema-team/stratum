@@ -153,14 +153,15 @@ async function handleStart(cmd: StartCommand): Promise<void> {
   const dbPath = path.join(projectRoot, '.sle', 'stratum.db');
   const { workspaceId } = bootstrapLocalControlPlane(projectRoot, dbPath);
 
-  const app = createStratumApplication({ projectRoot, workspaceId, port });
+  const host = '127.0.0.1';
+  const app = createStratumApplication({ projectRoot, workspaceId, host, port });
   await app.start();
   await writePidFile(pidPath, process.pid);
 
-  console.log(`Stratum started on port ${port}`);
+  console.log(`Stratum started at http://${host}:${port}`);
 
   if (cmd.foreground && !cmd.noOpen) {
-    openBrowser(`http://localhost:${port}`);
+    openBrowser(`http://${host}:${port}`);
   }
 
   let shutdownCalled = false;

@@ -39,9 +39,21 @@ export interface AppProcess {
   desiredOutcomes: string[]; constraints: string[]; lifecycle: AppProcessLifecycle;
   currentFocus: string; repositoryIds: string[]; createdAt: string; updatedAt: string;
 }
+export interface AppProcessDefinition {
+  title: string; intent: string; desiredOutcomes: string[]; constraints: string[];
+  objectiveId?: string | null; repositoryIds: string[];
+}
+export interface AppProcessDefinitionVersion extends AppProcessDefinition {
+  version: number; reason: string; authorizedBy: string; acceptedAt: string; amendmentId?: string;
+}
+export interface AppProcessAmendment {
+  id: string; processId: string; baseVersion: number; definition: AppProcessDefinition; reason: string;
+  status: 'proposed' | 'accepted' | 'rejected'; proposedBy: string; proposedAt: string;
+  decidedBy?: string; decidedAt?: string;
+}
 export interface AppProcessActivity {
   id: string; processId: string; kind: AppProcessActivityKind; title: string;
-  body: string; outcome?: string; proposalId?: string; createdAt: string;
+  body: string; outcome?: string; proposalId?: string; amendmentId?: string; definitionVersion?: number; createdAt: string;
 }
 export function canonicalRepositoryIdentity(provider: string, remote: string): string {
   const value = remote.trim().replace(/^git@github\.com:/i, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//i, 'https://github.com/').replace(/^http:\/\//i, 'https://');
@@ -64,6 +76,63 @@ export class AppProcessRepository {
     for (const repositoryId of process.repositoryIds) link.run(process.id, repositoryId);
   }
 
+  saveInitialDefinition(process: AppProcess): void {
+    this.insertDefinitionVersion(process.id, 1, {
+      title: process.title, intent: process.intent, desiredOutcomes: process.desiredOutcomes,
+      constraints: process.constraints, objectiveId: process.objectiveId, repositoryIds: process.repositoryIds,
+    }, undefined, 'Initial accepted Process definition', 'local-user', process.createdAt);
+  }
+
+  currentDefinitionVersion(processId: string): number {
+    const row = this.db.prepare('SELECT MAX(version) AS version FROM app_process_definition_versions WHERE process_id=?').get(processId) as { version: number | null };
+    return row.version ?? 1;
+  }
+
+  listDefinitionVersions(processId: string): AppProcessDefinitionVersion[] {
+    return (this.db.prepare('SELECT * FROM app_process_definition_versions WHERE process_id=? ORDER BY version DESC').all(processId) as Record<string, unknown>[])
+      .map(row => ({ ...(JSON.parse(row.definition_json as string) as AppProcessDefinition), version: row.version as number,
+        reason: row.change_reason as string, authorizedBy: row.authorized_by as string, acceptedAt: row.accepted_at as string,
+        amendmentId: row.amendment_id as string | undefined ?? undefined }));
+  }
+
+  listAmendments(processId: string): AppProcessAmendment[] {
+    return (this.db.prepare('SELECT * FROM app_process_amendments WHERE process_id=? ORDER BY proposed_at DESC').all(processId) as Record<string, unknown>[])
+      .map(row => this.toAmendment(row));
+  }
+
+  findAmendment(id: string): AppProcessAmendment | undefined {
+    const row = this.db.prepare('SELECT * FROM app_process_amendments WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.toAmendment(row) : undefined;
+  }
+
+  saveAmendment(amendment: AppProcessAmendment): void {
+    this.db.prepare(`INSERT INTO app_process_amendments
+      (id,process_id,base_version,proposed_definition_json,reason,status,proposed_by,proposed_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(amendment.id, amendment.processId, amendment.baseVersion,
+      JSON.stringify(amendment.definition), amendment.reason, amendment.status, amendment.proposedBy, amendment.proposedAt);
+  }
+
+  applyDefinition(processId: string, definition: AppProcessDefinition, updatedAt: string): void {
+    this.db.prepare(`UPDATE app_processes SET title=?,intent=?,desired_outcomes_json=?,constraints_json=?,objective_id=?,updated_at=? WHERE id=?`)
+      .run(definition.title, definition.intent, JSON.stringify(definition.desiredOutcomes), JSON.stringify(definition.constraints), definition.objectiveId ?? null, updatedAt, processId);
+    this.db.prepare('DELETE FROM app_process_repositories WHERE process_id=?').run(processId);
+    const link = this.db.prepare('INSERT INTO app_process_repositories (process_id,repository_id) VALUES (?,?)');
+    for (const repositoryId of definition.repositoryIds) link.run(processId, repositoryId);
+  }
+
+  decideAmendment(id: string, status: 'accepted' | 'rejected', actor: string, decidedAt: string): void {
+    const result = this.db.prepare(`UPDATE app_process_amendments SET status=?,decided_by=?,decided_at=? WHERE id=? AND status='proposed'`)
+      .run(status, actor, decidedAt, id);
+    if (result.changes !== 1) throw new Error('Amendment is no longer proposed');
+  }
+
+  insertDefinitionVersion(processId: string, version: number, definition: AppProcessDefinition, amendmentId: string | undefined,
+    reason: string, authorizedBy: string, acceptedAt: string): void {
+    this.db.prepare(`INSERT INTO app_process_definition_versions
+      (process_id,version,definition_json,amendment_id,change_reason,authorized_by,accepted_at) VALUES (?,?,?,?,?,?,?)`)
+      .run(processId, version, JSON.stringify(definition), amendmentId ?? null, reason, authorizedBy, acceptedAt);
+  }
+
   findById(id: string): AppProcess | undefined {
     const row = this.db.prepare('SELECT * FROM app_processes WHERE id=?').get(id) as Record<string, unknown> | undefined;
     return row ? this.toProcess(row) : undefined;
@@ -80,8 +149,12 @@ export class AppProcessRepository {
 
   addActivity(activity: AppProcessActivity, currentFocus?: string): void {
     const save = this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,proposal_id,created_at)
-        VALUES (@id,@processId,@kind,@title,@body,@outcome,@proposalId,@createdAt)`).run({ ...activity, outcome: activity.outcome ?? null, proposalId: activity.proposalId ?? null });
+      const definitionVersion = activity.definitionVersion ?? this.currentDefinitionVersion(activity.processId);
+      this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,proposal_id,amendment_id,definition_version,created_at)
+        VALUES (@id,@processId,@kind,@title,@body,@outcome,@proposalId,@amendmentId,@definitionVersion,@createdAt)`).run({
+        ...activity, outcome: activity.outcome ?? null, proposalId: activity.proposalId ?? null,
+        amendmentId: activity.amendmentId ?? null, definitionVersion,
+      });
       if (activity.kind === 'proposal') {
         this.db.prepare(`INSERT INTO app_process_proposals (id,process_id,activity_id,status,created_at)
           VALUES (?,?,?,'pending',?)`).run(activity.proposalId, activity.processId, activity.id, activity.createdAt);
@@ -100,7 +173,8 @@ export class AppProcessRepository {
     return (this.db.prepare('SELECT * FROM app_process_activity WHERE process_id=? ORDER BY created_at DESC, rowid DESC').all(processId) as Record<string, unknown>[])
       .map(row => ({ id: row.id as string, processId: row.process_id as string, kind: row.kind as AppProcessActivityKind,
         title: row.title as string, body: row.body as string, outcome: row.outcome as string | undefined ?? undefined,
-        proposalId: row.proposal_id as string | undefined ?? undefined,
+        proposalId: row.proposal_id as string | undefined ?? undefined, amendmentId: row.amendment_id as string | undefined ?? undefined,
+        definitionVersion: row.definition_version as number,
         createdAt: row.created_at as string }));
   }
 
@@ -108,6 +182,25 @@ export class AppProcessRepository {
     return this.db.prepare(`SELECT p.id,a.title,p.created_at AS createdAt FROM app_process_proposals p
       JOIN app_process_activity a ON a.id=p.activity_id WHERE p.process_id=? AND p.status='pending' ORDER BY p.created_at`)
       .all(processId) as { id: string; title: string; createdAt: string }[];
+  }
+
+  listProposals(processId: string, status?: 'pending' | 'deferred' | 'rejected' | 'accepted' | 'revise'): { id: string; title: string; body: string; status: string; createdAt: string }[] {
+    const query = `SELECT p.id,a.title,a.body,p.status,p.created_at AS createdAt FROM app_process_proposals p
+      JOIN app_process_activity a ON a.id=p.activity_id WHERE p.process_id=?${status ? ' AND p.status=?' : ''} ORDER BY p.created_at DESC,p.rowid DESC`;
+    return (status ? this.db.prepare(query).all(processId, status) : this.db.prepare(query).all(processId)) as { id: string; title: string; body: string; status: string; createdAt: string }[];
+  }
+
+  reopenDeferredProposal(processId: string, proposalId: string): boolean {
+    const result = this.db.prepare(`UPDATE app_process_proposals SET status='pending',resolved_at=NULL WHERE id=? AND process_id=? AND status='deferred'`)
+      .run(proposalId, processId);
+    return result.changes === 1;
+  }
+
+  private toAmendment(row: Record<string, unknown>): AppProcessAmendment {
+    return { id: row.id as string, processId: row.process_id as string, baseVersion: row.base_version as number,
+      definition: JSON.parse(row.proposed_definition_json as string) as AppProcessDefinition, reason: row.reason as string,
+      status: row.status as AppProcessAmendment['status'], proposedBy: row.proposed_by as string, proposedAt: row.proposed_at as string,
+      decidedBy: row.decided_by as string | undefined ?? undefined, decidedAt: row.decided_at as string | undefined ?? undefined };
   }
 
   private toProcess(row: Record<string, unknown>): AppProcess {
