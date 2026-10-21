@@ -30,6 +30,8 @@ The v0.1 UI uses the term Process. It does not introduce a parallel application 
 
 The first useful proof supports two Projects that link the same repository without sharing Process history, and multiple proposal/review rounds on one Process. Kernel WorkItems remain unchanged throughout.
 
+The bounded functional maturity increment extending this foundation is documented in [Process Application Functional Maturity](process-application-functional-maturity.md). It adds versioned definition amendments, explicit handling of deferred and unresolved proposals, stable hash navigation, a chronological project activity feed, record-derived next actions, and loopback-only default API binding. It does not change the execution kernel or add an agent runtime.
+
 ## Initial screen structure
 
 ### Project Overview
