@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'assert';
 import { randomUUID } from 'crypto';
 import { openDatabase } from '../src/storage/database.js';
-import { WorkItemRepository, WorkspaceRepository, ProjectRepository } from '../src/storage/repositories.js';
+import { WorkItemRepository, WorkspaceRepository, ProjectRepository, RepositoryRepository } from '../src/storage/repositories.js';
 import { WorkService } from '../src/services/work-service.js';
 import { ExecutorRegistry } from '../src/execution/registry.js';
 import { Scheduler } from '../src/scheduler/scheduler.js';
@@ -162,6 +162,21 @@ test('testLeaseBlocksConflictingWorkItem', () => {
 
   const second = mgr.tryAcquireWrite(wi2.id, 'shared-repo', 60_000);
   assert.equal(second, null, 'wi2 should be blocked by wi1 lease');
+});
+
+test('repository aliases with different legacy IDs share one canonical write lease', () => {
+  const db = openTestDb();
+  const workspace = makeWorkspace(); new WorkspaceRepository(db).save(workspace);
+  const project = makeProject(workspace.id); new ProjectRepository(db).save(project);
+  const items = new WorkItemRepository(db);
+  const wi1 = makeWorkItem(project.id); const wi2 = makeWorkItem(project.id); items.save(wi1); items.save(wi2);
+  const repositories = new RepositoryRepository(db);
+  repositories.save({ id: randomUUID(), projectId: project.id, provider: 'github', remote: 'https://github.com/Example/Game.git', defaultBranch: 'main', status: 'active' });
+  repositories.save({ id: randomUUID(), projectId: project.id, provider: 'github', remote: 'git@github.com:example/game', defaultBranch: 'main', status: 'active' });
+  const ids = db.prepare('SELECT id FROM repositories ORDER BY id').all() as { id: string }[];
+  const mgr = new LeaseManager(db);
+  assert.ok(mgr.tryAcquireWrite(wi1.id, ids[0].id, 60_000));
+  assert.equal(mgr.tryAcquireWrite(wi2.id, ids[1].id, 60_000), null);
 });
 
 test('testLeaseSameWorkItemSameRepo', () => {

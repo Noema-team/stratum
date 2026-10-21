@@ -504,6 +504,47 @@ test('testWorkflowsNotFound', async () => {
   });
 });
 
+test('application Process HTTP routes validate proposals and explicit linked reviews', async () => {
+  await withServer(async (base, { project }) => {
+    const created = await post(`${base}/projects/${project.id}/processes`, { title: 'Review flow', intent: 'Keep a proposal decision explicit.' });
+    assert.equal(created.status, 200);
+    const process = (created.body as { data: { id: string } }).data;
+    const badReview = await post(`${base}/processes/${process.id}/activity`, { kind: 'review', title: 'Unresolved', body: 'No decision.' });
+    assert.equal(badReview.status, 400);
+    const proposal = await post(`${base}/processes/${process.id}/activity`, { kind: 'proposal', title: 'Approach', body: 'Use the new approach.' });
+    const proposalId = (proposal.body as { data: { proposalId: string } }).data.proposalId;
+    const missingOutcome = await post(`${base}/processes/${process.id}/activity`, { kind: 'review', title: 'Review', body: 'I looked at it.', proposalId });
+    assert.equal(missingOutcome.status, 400);
+    const decision = await post(`${base}/processes/${process.id}/activity`, { kind: 'review', title: 'Review', body: 'Looks good.', proposalId, outcome: 'accepted' });
+    assert.equal(decision.status, 200);
+    const invalidLifecycle = await fetch(`${base}/processes/${process.id}/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lifecycle: 'unknown' }) });
+    assert.equal(invalidLifecycle.status, 400);
+  });
+});
+
+test('directory asset requests return 404 without terminating the HTTP server', async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/app/assets`);
+    assert.equal(response.status, 404);
+    const healthy = await get(`${base}/workflows`);
+    assert.equal(healthy.status, 200);
+  });
+});
+
+test('repository link HTTP endpoint validates and canonicalizes repository identities', async () => {
+  await withServer(async (base, { project }) => {
+    const invalid = await post(`${base}/projects/${project.id}/repositories`, { remote: 'file:///etc/passwd' });
+    assert.equal(invalid.status, 400);
+    const first = await post(`${base}/projects/${project.id}/repositories`, { remote: 'https://github.com/Example/Game.git' });
+    assert.equal(first.status, 200);
+    const second = await post(`${base}/projects/${project.id}/repositories`, { remote: 'git@github.com:example/game' });
+    assert.equal(second.status, 200);
+    assert.equal((second.body as { data: { id: string } }).data.id, (first.body as { data: { id: string } }).data.id);
+    const linked = await get(`${base}/projects/${project.id}/repositories`);
+    assert.equal((linked.body as { data: unknown[] }).data.length, 1);
+  });
+});
+
 // ============================================================================
 // Attention
 // ============================================================================

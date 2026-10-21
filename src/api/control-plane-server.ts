@@ -1,6 +1,6 @@
 import { createServer as createHttpServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { createServer as createHttpsServer } from 'https';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -239,14 +239,20 @@ export class ControlPlaneServer {
       if (pathname.startsWith('/app/')) {
         const relative = pathname.slice('/app/'.length);
         const candidate = appRoot && relative && !relative.includes('..') ? path.resolve(appRoot, relative) : undefined;
-        const target = candidate && candidate.startsWith(appRoot!) && existsSync(candidate) ? candidate : path.join(appRoot ?? '', 'index.html');
-        if (!appRoot || !existsSync(target)) {
+        try {
+          if (!appRoot) throw new Error('Application assets are unavailable');
+          let target: string;
+          if (candidate && candidate.startsWith(appRoot) && existsSync(candidate) && statSync(candidate).isFile()) target = candidate;
+          else if (!relative || relative === 'index.html') target = path.join(appRoot, 'index.html');
+          else { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Not found'); return; }
+          if (!existsSync(target) || !statSync(target).isFile()) throw new Error('Application assets are unavailable');
+          const extension = path.extname(target);
+          const contentType = extension === '.js' ? 'text/javascript; charset=utf-8' : extension === '.css' ? 'text/css; charset=utf-8' : extension === '.svg' ? 'image/svg+xml' : 'text/html; charset=utf-8';
+          const content = readFileSync(target);
+          res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': content.byteLength }); res.end(content); return;
+        } catch {
           res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Stratum application has not been built. Run npm run build.'); return;
         }
-        const extension = path.extname(target);
-        const contentType = extension === '.js' ? 'text/javascript; charset=utf-8' : extension === '.css' ? 'text/css; charset=utf-8' : extension === '.svg' ? 'image/svg+xml' : 'text/html; charset=utf-8';
-        const content = readFileSync(target);
-        res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': content.byteLength }); res.end(content); return;
       }
       if ((pathname === '/' || pathname === '/dashboard') && req.method === 'GET') {
         const buf = Buffer.from(html, 'utf8');

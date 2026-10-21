@@ -415,6 +415,29 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX idx_project_repositories_repository ON project_repositories(repository_id);
   CREATE INDEX idx_project_repositories_project ON project_repositories(project_id);
   `,
+
+  // Migration 13: retain repository IDs while coordinating leases by canonical remote.
+  `
+  ALTER TABLE repositories ADD COLUMN canonical_identity TEXT;
+  CREATE INDEX idx_repositories_canonical_identity ON repositories(canonical_identity);
+  `,
+
+  // Migration 14: proposals are durable review requirements with stable IDs.
+  `
+  ALTER TABLE app_process_activity ADD COLUMN proposal_id TEXT;
+  CREATE TABLE app_process_proposals (
+    id TEXT PRIMARY KEY,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    activity_id TEXT NOT NULL UNIQUE REFERENCES app_process_activity(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','revise','deferred')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  UPDATE app_process_activity SET proposal_id=id WHERE kind='proposal';
+  INSERT INTO app_process_proposals (id,process_id,activity_id,status,created_at)
+    SELECT id,process_id,id,'pending',created_at FROM app_process_activity WHERE kind='proposal';
+  CREATE INDEX idx_app_process_proposals_pending ON app_process_proposals(process_id,status,created_at);
+  `,
 ];
 
 // ============================================================================
@@ -426,6 +449,17 @@ export function openDatabase(path: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
+  const canonicalize = (remote: string) => {
+    const value = remote.trim().replace(/^git@github\.com:/i, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//i, 'https://github.com/').replace(/^http:\/\//i, 'https://');
+    const match = value.match(/^(?:https:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+    return match ? `github:${match[1].toLowerCase()}/${match[2].toLowerCase()}` : `github:${value.toLowerCase()}`;
+  };
+  const updateIdentity = db.prepare('UPDATE repositories SET canonical_identity=? WHERE id=?');
+  const repositories = db.prepare('SELECT id,remote FROM repositories').all() as { id: string; remote: string }[];
+  const backfillIdentity = db.transaction(() => { for (const repository of repositories) updateIdentity.run(canonicalize(repository.remote), repository.id); });
+  backfillIdentity();
+  db.prepare(`UPDATE scheduler_leases SET repository_id=(SELECT canonical_identity FROM repositories WHERE repositories.id=scheduler_leases.repository_id)
+    WHERE repository_id IS NOT NULL AND EXISTS (SELECT 1 FROM repositories WHERE repositories.id=scheduler_leases.repository_id)`).run();
   return db;
 }
 

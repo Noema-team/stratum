@@ -41,7 +41,12 @@ export interface AppProcess {
 }
 export interface AppProcessActivity {
   id: string; processId: string; kind: AppProcessActivityKind; title: string;
-  body: string; outcome?: string; createdAt: string;
+  body: string; outcome?: string; proposalId?: string; createdAt: string;
+}
+export function canonicalRepositoryIdentity(provider: string, remote: string): string {
+  const value = remote.trim().replace(/^git@github\.com:/i, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//i, 'https://github.com/').replace(/^http:\/\//i, 'https://');
+  const match = value.match(/^(?:https:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  return match ? `${provider}:${match[1].toLowerCase()}/${match[2].toLowerCase()}` : `${provider}:${value.toLowerCase()}`;
 }
 
 export class AppProcessRepository {
@@ -74,19 +79,35 @@ export class AppProcessRepository {
   }
 
   addActivity(activity: AppProcessActivity, currentFocus?: string): void {
-    this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,created_at)
-      VALUES (@id,@processId,@kind,@title,@body,@outcome,@createdAt)`).run({
-      ...activity, outcome: activity.outcome ?? null,
+    const save = this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,proposal_id,created_at)
+        VALUES (@id,@processId,@kind,@title,@body,@outcome,@proposalId,@createdAt)`).run({ ...activity, outcome: activity.outcome ?? null, proposalId: activity.proposalId ?? null });
+      if (activity.kind === 'proposal') {
+        this.db.prepare(`INSERT INTO app_process_proposals (id,process_id,activity_id,status,created_at)
+          VALUES (?,?,?,'pending',?)`).run(activity.proposalId, activity.processId, activity.id, activity.createdAt);
+      } else if (activity.kind === 'review' && activity.proposalId && activity.outcome) {
+        const resolved = this.db.prepare('UPDATE app_process_proposals SET status=?, resolved_at=? WHERE id=? AND process_id=? AND status=?')
+          .run(activity.outcome, activity.createdAt, activity.proposalId, activity.processId, 'pending');
+        if (resolved.changes !== 1) throw new Error('Proposal is no longer pending review');
+      }
+      const focus = currentFocus ?? ({ update: 'In progress', proposal: 'Proposal review', review: 'Review recorded', decision: 'Decision recorded' } as Record<AppProcessActivityKind, string>)[activity.kind];
+      this.db.prepare('UPDATE app_processes SET updated_at=?, current_focus=? WHERE id=?').run(activity.createdAt, focus, activity.processId);
     });
-    const focus = currentFocus ?? ({ update: 'In progress', proposal: 'Proposal review', review: 'Review recorded', decision: 'Decision recorded' } as Record<AppProcessActivityKind, string>)[activity.kind];
-    this.db.prepare('UPDATE app_processes SET updated_at=?, current_focus=? WHERE id=?').run(activity.createdAt, focus, activity.processId);
+    save();
   }
 
   listActivity(processId: string): AppProcessActivity[] {
     return (this.db.prepare('SELECT * FROM app_process_activity WHERE process_id=? ORDER BY created_at DESC, rowid DESC').all(processId) as Record<string, unknown>[])
       .map(row => ({ id: row.id as string, processId: row.process_id as string, kind: row.kind as AppProcessActivityKind,
         title: row.title as string, body: row.body as string, outcome: row.outcome as string | undefined ?? undefined,
+        proposalId: row.proposal_id as string | undefined ?? undefined,
         createdAt: row.created_at as string }));
+  }
+
+  listPendingProposals(processId: string): { id: string; title: string; createdAt: string }[] {
+    return this.db.prepare(`SELECT p.id,a.title,p.created_at AS createdAt FROM app_process_proposals p
+      JOIN app_process_activity a ON a.id=p.activity_id WHERE p.process_id=? AND p.status='pending' ORDER BY p.created_at`)
+      .all(processId) as { id: string; title: string; createdAt: string }[];
   }
 
   private toProcess(row: Record<string, unknown>): AppProcess {
@@ -218,6 +239,7 @@ export class RepositoryRepository {
 
   save(r: Repository): void {
     this.insert.run(r.id, r.projectId, r.provider, r.remote, r.defaultBranch, r.localWorkspace ?? null, r.status);
+    this.db.prepare('UPDATE repositories SET canonical_identity=? WHERE id=?').run(canonicalRepositoryIdentity(r.provider, r.remote), r.id);
     this.linkToProject(r.projectId, r.id);
   }
 
@@ -231,7 +253,7 @@ export class RepositoryRepository {
   }
 
   findByRemote(provider: Repository['provider'], remote: string): Repository | undefined {
-    const row = this.db.prepare('SELECT * FROM repositories WHERE provider=? AND remote=? ORDER BY id LIMIT 1').get(provider, remote) as Record<string, unknown> | undefined;
+    const row = this.db.prepare('SELECT * FROM repositories WHERE provider=? AND canonical_identity=? ORDER BY id LIMIT 1').get(provider, canonicalRepositoryIdentity(provider, remote)) as Record<string, unknown> | undefined;
     return row ? rowToRepository(row) : undefined;
   }
 

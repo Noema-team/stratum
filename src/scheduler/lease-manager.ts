@@ -12,6 +12,7 @@ export class LeaseManager {
   private readonly activeWritesByRepoStmt: Database.Statement;
   private readonly expireStmt: Database.Statement;
   private readonly activeByWorkItemStmt: Database.Statement;
+  private readonly identityByRepositoryStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     this.acquireStmt = db.prepare(`
@@ -26,22 +27,25 @@ export class LeaseManager {
     this.activeByWorkItemStmt = db.prepare(
       'SELECT * FROM scheduler_leases WHERE work_item_id = ? AND expires_at > ?'
     );
+    this.identityByRepositoryStmt = db.prepare('SELECT canonical_identity FROM repositories WHERE id=?');
   }
 
   // Attempts to acquire a write lease for (workItemId, repositoryId).
   // Returns null if another work item holds an active write lease on the same repository.
   tryAcquireWrite(workItemId: string, repositoryId: string | null, expiryMs: number): WorkLease | null {
     const now = new Date().toISOString();
+    const leaseRepositoryId = repositoryId === null ? null :
+      ((this.identityByRepositoryStmt.get(repositoryId) as { canonical_identity?: string } | undefined)?.canonical_identity || repositoryId);
 
-    if (repositoryId !== null) {
-      const existing = this.activeWritesByRepoStmt.all(repositoryId, now) as Record<string, unknown>[];
+    if (leaseRepositoryId !== null) {
+      const existing = this.activeWritesByRepoStmt.all(leaseRepositoryId, now) as Record<string, unknown>[];
       const conflict = existing.find(r => r.work_item_id !== workItemId);
       if (conflict) return null;
     }
 
     const id = randomUUID();
     const expiresAt = new Date(Date.now() + expiryMs).toISOString();
-    this.acquireStmt.run(id, workItemId, repositoryId, 'write', now, expiresAt, now);
+    this.acquireStmt.run(id, workItemId, leaseRepositoryId, 'write', now, expiresAt, now);
     return { id, workItemId, repositoryId, leaseType: 'write', acquiredAt: now, expiresAt, heartbeatAt: now };
   }
 

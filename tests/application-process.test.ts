@@ -20,12 +20,17 @@ test('application Processes keep their own review history and never create kerne
     projects.save({ id: projectId, workspaceId, name: 'Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
     const service = new ProcessService(db, workspaceId);
     const process = service.create(projectId, { title: 'Improve movement', intent: 'Make movement feel natural', desiredOutcomes: ['No navigation regressions'] });
-    service.addActivity(process.id, 'proposal', 'Navigation approach', 'Try a smoother path planner.');
+    db.exec(`CREATE TRIGGER reject_paused_history BEFORE INSERT ON app_process_activity WHEN NEW.title='Process paused' BEGIN SELECT RAISE(ABORT,'simulated history failure'); END`);
+    assert.throws(() => service.setLifecycle(process.id, 'paused'), /simulated history failure/);
+    assert.equal(service.get(process.id).process.lifecycle, 'active', 'a failed history write rolls back the lifecycle update');
+    db.exec('DROP TRIGGER reject_paused_history');
+    const firstProposal = service.addActivity(process.id, 'proposal', 'Navigation approach', 'Try a smoother path planner.');
     assert.equal(service.list(projectId)[0].attention, 'Review required');
-    service.addActivity(process.id, 'review', 'First review', 'The proposal needs another pass.', 'revise');
+    assert.throws(() => service.addActivity(process.id, 'review', 'Incomplete review', 'No decision yet.'), ProcessServiceError);
+    service.addActivity(process.id, 'review', 'First review', 'The proposal needs another pass.', 'revise', firstProposal.proposalId);
     assert.equal(service.list(projectId)[0].attention, 'Revision requested');
-    service.addActivity(process.id, 'proposal', 'Revised approach', 'Keep current pathing and tune acceleration.');
-    service.addActivity(process.id, 'review', 'Second review', 'The tradeoff is acceptable.', 'accepted');
+    const secondProposal = service.addActivity(process.id, 'proposal', 'Revised approach', 'Keep current pathing and tune acceleration.');
+    service.addActivity(process.id, 'review', 'Second review', 'The tradeoff is acceptable.', 'accepted', secondProposal.proposalId);
     assert.equal(service.list(projectId)[0].attention, undefined);
     const detail = service.get(process.id);
     assert.equal(detail.activity.length, 5);
@@ -111,6 +116,9 @@ test('repository membership migration preserves existing repository IDs and assi
     legacy.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, 'Legacy', now);
     legacy.prepare(`INSERT INTO projects (id,workspace_id,name,status,priority,created_at,updated_at) VALUES (?,?,?,'active',0,?,?)`).run(projectId, workspaceId, 'Legacy project', now, now);
     legacy.prepare(`INSERT INTO repositories (id,project_id,provider,remote,default_branch,status) VALUES (?,?,'github',?,'main','active')`).run(repositoryId, projectId, 'https://github.com/example/legacy.git');
+    const secondProject = '30000000-0000-4000-8000-000000000004'; const duplicateRepositoryId = '30000000-0000-4000-8000-000000000005';
+    legacy.prepare(`INSERT INTO projects (id,workspace_id,name,status,priority,created_at,updated_at) VALUES (?,?,?,'active',0,?,?)`).run(secondProject, workspaceId, 'Second legacy project', now, now);
+    legacy.prepare(`INSERT INTO repositories (id,project_id,provider,remote,default_branch,status) VALUES (?,?,'github',?,'main','active')`).run(duplicateRepositoryId, secondProject, 'git@github.com:Example/Legacy.git');
   } finally { legacy.close(); }
   try {
     const migrated = openDatabase(databasePath);
@@ -118,6 +126,9 @@ test('repository membership migration preserves existing repository IDs and assi
       const link = migrated.prepare('SELECT project_id,repository_id FROM project_repositories').get() as { project_id: string; repository_id: string };
       assert.deepEqual(link, { project_id: '30000000-0000-4000-8000-000000000002', repository_id: '30000000-0000-4000-8000-000000000003' });
       assert.equal((migrated.prepare('SELECT id FROM repositories WHERE id=?').get(link.repository_id) as { id: string }).id, link.repository_id);
+      const identities = migrated.prepare('SELECT DISTINCT canonical_identity FROM repositories').all() as { canonical_identity: string }[];
+      assert.deepEqual(identities, [{ canonical_identity: 'github:example/legacy' }]);
+      assert.equal((migrated.prepare('SELECT COUNT(*) AS count FROM repositories').get() as { count: number }).count, 2, 'legacy IDs remain intact');
     } finally { migrated.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

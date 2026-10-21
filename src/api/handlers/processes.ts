@@ -7,7 +7,7 @@ const createSchema = z.object({ title: z.string(), intent: z.string(), objective
   desiredOutcomes: z.array(z.string().max(1000)).max(20).optional(), constraints: z.array(z.string().max(1000)).max(20).optional(),
   repositoryIds: z.array(z.string().uuid()).max(50).optional() });
 const activitySchema = z.object({ kind: z.enum(['update','proposal','review','decision']), title: z.string().max(160),
-  body: z.string().max(10000), outcome: z.enum(['accepted','rejected','revise','deferred']).optional() });
+  body: z.string().max(10000), outcome: z.enum(['accepted','rejected','revise','deferred']).optional(), proposalId: z.string().uuid().optional() });
 const lifecycleSchema = z.object({ lifecycle: z.enum(['active','paused','completed','cancelled']), outcome: z.string().max(10000).optional() });
 
 function failure(error: unknown) {
@@ -30,7 +30,7 @@ export function makeProcessHandlers(router: Router, service: ProcessService): vo
   router.add('POST', '/processes/:id/activity', req => {
     const parsed = activitySchema.safeParse(req.body);
     if (!parsed.success) return err('bad_request', parsed.error.message);
-    try { return ok(service.addActivity(req.params.id, parsed.data.kind, parsed.data.title, parsed.data.body, parsed.data.outcome)); }
+    try { return ok(service.addActivity(req.params.id, parsed.data.kind, parsed.data.title, parsed.data.body, parsed.data.outcome, parsed.data.proposalId)); }
     catch (error) { return failure(error); }
   });
   router.add('PATCH', '/processes/:id/lifecycle', req => {
