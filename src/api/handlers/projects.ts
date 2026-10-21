@@ -47,7 +47,7 @@ export function makeProjectHandlers(
       const identity = normalizeGithubRemote(remote);
       if (!identity) return err('bad_request', 'remote must be a GitHub repository URL such as https://github.com/owner/repo');
       if (!defaultBranch || defaultBranch.length > 255) return err('bad_request', 'defaultBranch is invalid');
-      const existing = repositories.findByRemote('github', identity);
+      const existing = repositories.findByRemote('github', identity, workspaceId);
       if (existing && !repositories.isLinkedToWorkspace(workspaceId, existing.id)) return err('not_found', 'Repository identity is not available in this workspace');
       const repository = existing ?? { id: randomUUID(), projectId: project.id, provider: 'github' as const,
         remote: identity, defaultBranch, status: 'active' as const };

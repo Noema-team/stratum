@@ -252,8 +252,13 @@ export class RepositoryRepository {
     return (this.byProject.all(projectId) as Record<string, unknown>[]).map(row => ({ ...rowToRepository(row), projectId }));
   }
 
-  findByRemote(provider: Repository['provider'], remote: string): Repository | undefined {
-    const row = this.db.prepare('SELECT * FROM repositories WHERE provider=? AND canonical_identity=? ORDER BY id LIMIT 1').get(provider, canonicalRepositoryIdentity(provider, remote)) as Record<string, unknown> | undefined;
+  findByRemote(provider: Repository['provider'], remote: string, workspaceId?: string): Repository | undefined {
+    const row = workspaceId
+      ? this.db.prepare(`SELECT r.* FROM repositories r JOIN project_repositories pr ON pr.repository_id=r.id
+          JOIN projects p ON p.id=pr.project_id WHERE r.provider=? AND r.canonical_identity=? AND p.workspace_id=? ORDER BY r.id LIMIT 1`)
+        .get(provider, canonicalRepositoryIdentity(provider, remote), workspaceId) as Record<string, unknown> | undefined
+      : this.db.prepare('SELECT * FROM repositories WHERE provider=? AND canonical_identity=? ORDER BY id LIMIT 1')
+        .get(provider, canonicalRepositoryIdentity(provider, remote)) as Record<string, unknown> | undefined;
     return row ? rowToRepository(row) : undefined;
   }
 

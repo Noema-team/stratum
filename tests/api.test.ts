@@ -8,6 +8,7 @@ import {
   WorkItemRepository,
   ArtifactRepository,
   ObjectiveRepository,
+  RepositoryRepository,
 } from '../src/storage/repositories.js';
 import { WorkService } from '../src/services/work-service.js';
 import { EvidenceService } from '../src/services/evidence-service.js';
@@ -542,6 +543,22 @@ test('repository link HTTP endpoint validates and canonicalizes repository ident
     assert.equal((second.body as { data: { id: string } }).data.id, (first.body as { data: { id: string } }).data.id);
     const linked = await get(`${base}/projects/${project.id}/repositories`);
     assert.equal((linked.body as { data: unknown[] }).data.length, 1);
+  });
+});
+
+test('repository link lookup chooses a canonical match from the requesting workspace', async () => {
+  await withServer(async (base, { project, db }) => {
+    const foreignWorkspace = { id: randomUUID(), name: 'other', createdAt: new Date().toISOString() };
+    new WorkspaceRepository(db).save(foreignWorkspace);
+    const foreignProject = makeProject(foreignWorkspace.id); new ProjectRepository(db).save(foreignProject);
+    const repositories = new RepositoryRepository(db);
+    repositories.save({ id: '00000000-0000-4000-8000-000000000001', projectId: foreignProject.id, provider: 'github', remote: 'https://github.com/example/shared.git', defaultBranch: 'main', status: 'active' });
+    const localRepositoryId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    repositories.save({ id: localRepositoryId, projectId: project.id, provider: 'github', remote: 'git@github.com:Example/Shared', defaultBranch: 'main', status: 'active' });
+    const linked = await post(`${base}/projects/${project.id}/repositories`, { remote: 'https://github.com/EXAMPLE/shared.git' });
+    assert.equal(linked.status, 200);
+    assert.equal((linked.body as { data: { id: string } }).data.id, localRepositoryId);
+    assert.equal(repositories.isLinkedToProject(project.id, localRepositoryId), true);
   });
 });
 

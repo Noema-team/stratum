@@ -423,6 +423,9 @@ export const MIGRATIONS: readonly string[] = [
   `,
 
   // Migration 14: proposals are durable review requirements with stable IDs.
+  // Legacy reviews are linked to the nearest preceding proposal only when they
+  // carry an explicit supported decision. Ambiguous, outcome-free reviews leave
+  // their proposal pending so historical attention is never silently cleared.
   `
   ALTER TABLE app_process_activity ADD COLUMN proposal_id TEXT;
   CREATE TABLE app_process_proposals (
@@ -436,6 +439,19 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE app_process_activity SET proposal_id=id WHERE kind='proposal';
   INSERT INTO app_process_proposals (id,process_id,activity_id,status,created_at)
     SELECT id,process_id,id,'pending',created_at FROM app_process_activity WHERE kind='proposal';
+  UPDATE app_process_activity AS review SET proposal_id=(
+    SELECT proposal.proposal_id FROM app_process_activity proposal
+    WHERE proposal.process_id=review.process_id AND proposal.kind='proposal'
+      AND (proposal.created_at < review.created_at OR (proposal.created_at=review.created_at AND proposal.rowid<review.rowid))
+    ORDER BY proposal.created_at DESC,proposal.rowid DESC LIMIT 1
+  ) WHERE review.kind='review' AND review.outcome IN ('accepted','rejected','revise','deferred');
+  UPDATE app_process_proposals AS proposal SET
+    status=(SELECT review.outcome FROM app_process_activity review WHERE review.kind='review' AND review.proposal_id=proposal.id
+      AND review.outcome IN ('accepted','rejected','revise','deferred') ORDER BY review.created_at DESC,review.rowid DESC LIMIT 1),
+    resolved_at=(SELECT review.created_at FROM app_process_activity review WHERE review.kind='review' AND review.proposal_id=proposal.id
+      AND review.outcome IN ('accepted','rejected','revise','deferred') ORDER BY review.created_at DESC,review.rowid DESC LIMIT 1)
+    WHERE EXISTS (SELECT 1 FROM app_process_activity review WHERE review.kind='review' AND review.proposal_id=proposal.id
+      AND review.outcome IN ('accepted','rejected','revise','deferred'));
   CREATE INDEX idx_app_process_proposals_pending ON app_process_proposals(process_id,status,created_at);
   `,
 ];

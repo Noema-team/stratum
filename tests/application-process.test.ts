@@ -132,3 +132,44 @@ test('repository membership migration preserves existing repository IDs and assi
     } finally { migrated.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('proposal migration resolves explicitly reviewed history and preserves ambiguous proposals as pending', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'stratum-proposal-migration-'));
+  const databasePath = path.join(directory, 'test.db');
+  const legacy = new Database(databasePath);
+  const workspaceId = '40000000-0000-4000-8000-000000000001';
+  const projectId = '40000000-0000-4000-8000-000000000002';
+  const processId = '40000000-0000-4000-8000-000000000003';
+  const proposalOne = '40000000-0000-4000-8000-000000000004';
+  const reviewOne = '40000000-0000-4000-8000-000000000005';
+  const proposalTwo = '40000000-0000-4000-8000-000000000006';
+  const reviewTwo = '40000000-0000-4000-8000-000000000007';
+  try {
+    legacy.pragma('foreign_keys = ON');
+    legacy.exec('CREATE TABLE _migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    for (const [index, migration] of MIGRATIONS.slice(0, 13).entries()) {
+      legacy.exec(migration);
+      legacy.prepare('INSERT INTO _migrations (id,applied_at) VALUES (?,?)').run(index + 1, new Date().toISOString());
+    }
+    const timestamp = (second: number) => `2026-01-01T00:00:0${second}.000Z`;
+    legacy.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, 'Legacy', timestamp(0));
+    legacy.prepare(`INSERT INTO projects (id,workspace_id,name,status,priority,created_at,updated_at) VALUES (?,?,?,'active',0,?,?)`).run(projectId, workspaceId, 'Legacy project', timestamp(0), timestamp(0));
+    legacy.prepare(`INSERT INTO app_processes (id,project_id,title,intent,lifecycle,current_focus,created_at,updated_at) VALUES (?,?,? ,?,'active','Planning',?,?)`).run(processId, projectId, 'Legacy process', 'Keep decisions', timestamp(0), timestamp(0));
+    const insert = legacy.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,created_at) VALUES (?,?,?,?,?,?,?)`);
+    insert.run(proposalOne, processId, 'proposal', 'Resolved proposal', 'A proposal', null, timestamp(1));
+    insert.run(reviewOne, processId, 'review', 'Accepted review', 'Explicit decision', 'accepted', timestamp(2));
+    insert.run(proposalTwo, processId, 'proposal', 'Ambiguous proposal', 'Another proposal', null, timestamp(3));
+    insert.run(reviewTwo, processId, 'review', 'Outcome-free review', 'No explicit decision', null, timestamp(4));
+  } finally { legacy.close(); }
+  try {
+    const migrated = openDatabase(databasePath);
+    try {
+      const proposalRows = migrated.prepare('SELECT id,status FROM app_process_proposals ORDER BY id').all() as { id: string; status: string }[];
+      assert.deepEqual(proposalRows, [{ id: proposalOne, status: 'accepted' }, { id: proposalTwo, status: 'pending' }]);
+      const linkedReview = migrated.prepare('SELECT proposal_id FROM app_process_activity WHERE id=?').get(reviewOne) as { proposal_id: string };
+      assert.equal(linkedReview.proposal_id, proposalOne);
+      const pendingReview = migrated.prepare('SELECT proposal_id FROM app_process_activity WHERE id=?').get(reviewTwo) as { proposal_id?: string };
+      assert.equal(pendingReview.proposal_id, null);
+    } finally { migrated.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
