@@ -160,10 +160,13 @@ test('proposal migration resolves explicitly reviewed history and preserves ambi
     insert.run(reviewOne, processId, 'review', 'Accepted review', 'Explicit decision', 'accepted', timestamp(2));
     insert.run(proposalTwo, processId, 'proposal', 'Ambiguous proposal', 'Another proposal', null, timestamp(3));
     insert.run(reviewTwo, processId, 'review', 'Outcome-free review', 'No explicit decision', null, timestamp(4));
+    legacy.exec(MIGRATIONS[13]);
+    legacy.prepare('INSERT INTO _migrations (id,applied_at) VALUES (?,?)').run(14, new Date().toISOString());
   } finally { legacy.close(); }
   try {
     const migrated = openDatabase(databasePath);
     try {
+      assert.equal((migrated.prepare('SELECT COUNT(*) AS count FROM _migrations WHERE id=15').get() as { count: number }).count, 1, 'the upgrade applies the new reconciliation migration');
       const proposalRows = migrated.prepare('SELECT id,status FROM app_process_proposals ORDER BY id').all() as { id: string; status: string }[];
       assert.deepEqual(proposalRows, [{ id: proposalOne, status: 'accepted' }, { id: proposalTwo, status: 'pending' }]);
       const linkedReview = migrated.prepare('SELECT proposal_id FROM app_process_activity WHERE id=?').get(reviewOne) as { proposal_id: string };
