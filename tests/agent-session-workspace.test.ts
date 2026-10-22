@@ -48,8 +48,8 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
     const processService = new ProcessService(db, workspaceId);
     const process = processService.create(sharedProjectId, { title: 'Investigate', intent: 'Understand the repository', repositoryIds: [repositoryId] });
     class FakeRuntime implements AgentRuntime {
-      calls: string[] = []; handle = false; callbacks?: AgentRuntimeCallbacks;
-      async start(session: AgentSession, _workspace: RuntimeWorkspace, callbacks: AgentRuntimeCallbacks, _restore: boolean) { this.handle = true; this.callbacks = callbacks; return { engineSessionId: `goose-${session.id}`, handle: session.id }; }
+      calls: string[] = []; handle = false; failStart = false; callbacks?: AgentRuntimeCallbacks;
+      async start(session: AgentSession, _workspace: RuntimeWorkspace, callbacks: AgentRuntimeCallbacks, _restore: boolean) { if (this.failStart) throw new Error('simulated Goose runtime unavailable'); this.handle = true; this.callbacks = callbacks; return { engineSessionId: `goose-${session.id}`, handle: session.id }; }
       async prompt(_handle: string, _engine: string, promptText: string) { this.calls.push(promptText); return {}; }
       async cancel() {}
       async stop() { this.handle = false; }
@@ -69,6 +69,28 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
       { agentSessionId: session.id, eventSeq: findingEvent.seq });
     assert.equal(recorded.sourceAgentSessionId, session.id);
     assert.equal(recorded.sourceEventSeq, findingEvent.seq);
+    const proposal = processService.addActivity(process.id, 'proposal', 'Grounded proposal', 'Consider the documented approach.', undefined, undefined,
+      { agentSessionId: session.id, eventSeq: findingEvent.seq });
+    assert.ok(proposal.proposalId);
+    let decisionLoop = processService.get(process.id);
+    assert.equal(decisionLoop.proposals.find(item => item.id === proposal.proposalId)?.status, 'pending');
+    assert.equal(decisionLoop.activity.find(item => item.proposalId === proposal.proposalId)?.sourceEventSeq, findingEvent.seq);
+    processService.addActivity(process.id, 'review', 'Revision requested', 'Please clarify the constraint.', 'revise', proposal.proposalId);
+    decisionLoop = processService.get(process.id);
+    assert.equal(decisionLoop.proposals.find(item => item.id === proposal.proposalId)?.status, 'revise');
+    const followUp = processService.addActivity(process.id, 'proposal', 'Clarified proposal', 'The constraint is preserved.', undefined, undefined,
+      { agentSessionId: session.id, eventSeq: findingEvent.seq });
+    assert.notEqual(followUp.proposalId, proposal.proposalId, 'follow-up proposals have their own identity, not an implied revision number');
+    processService.addActivity(process.id, 'review', 'Direction accepted', 'The clarified direction fits this Process.', 'accepted', followUp.proposalId);
+    decisionLoop = processService.get(process.id);
+    assert.equal(decisionLoop.proposals.find(item => item.id === followUp.proposalId)?.status, 'accepted');
+    assert.equal(decisionLoop.process.intent, 'Understand the repository', 'proposal acceptance does not rewrite accepted Process intent');
+    assert.throws(() => processService.addActivity(process.id, 'review', 'Wrong proposal', 'Cross-target review.', 'accepted', proposal.proposalId), /not pending/);
+    const separateProject = { id: '71000000-0000-4000-8000-000000000005', workspaceId, name: 'Separate Project', status: 'active' as const, priority: 0, createdAt: now, updatedAt: now };
+    new ProjectRepository(db).save(separateProject);
+    const separateProcess = processService.create(separateProject.id, { title: 'Separate effort', intent: 'Keep decisions in this Process.' });
+    assert.equal(processService.get(separateProcess.id).proposals.length, 0, 'proposal records are not exposed through another Project Process');
+    assert.throws(() => processService.addActivity(separateProcess.id, 'review', 'Cross-Project target', 'Must not resolve another Process proposal.', 'accepted', followUp.proposalId), /not pending/);
     assert.throws(() => processService.addActivity(process.id, 'update', 'Bad source', 'Wrong Process.', undefined, undefined,
       { agentSessionId: session.id, eventSeq: findingEvent.seq + 100 }), /source must reference/);
     const key = '72000000-0000-4000-8000-000000000001';
@@ -89,5 +111,13 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
     assert.notEqual(replacement.id, session.id, 'a stopped session can be replaced using the same repository');
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(service.findForProcess(process.id)?.lifecycle, 'idle');
+    await service.stop(replacement.id);
+    runtime.failStart = true;
+    const unavailable = service.create(process.id, repositoryId);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(service.findForProcess(process.id)?.id, unavailable.id);
+    assert.equal(service.findForProcess(process.id)?.lifecycle, 'failed');
+    assert.match(service.findForProcess(process.id)?.errorMessage ?? '', /runtime unavailable/);
+    assert.equal(processService.get(process.id).proposals.find(item => item.id === followUp.proposalId)?.status, 'accepted', 'runtime failure leaves persisted Process decisions readable');
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });

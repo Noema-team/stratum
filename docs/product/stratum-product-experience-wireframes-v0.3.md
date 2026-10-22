@@ -1,12 +1,12 @@
 # Stratum Product Experience v0.3 — annotated wireframes
 
-**Status:** Proposed UX; not ratified and not implementation authorization.  
-**Date:** 2026-10-22  
+**Status:** Section 4 and the proposal-review interaction in section 6 define the approved P0 slice. Other sections describe future proposals only.
+**Date:** 2026-10-22
 **Companion:** [Product Experience v0.3](stratum-product-experience-v0.3.md)
 
-These wireframes describe information order and interaction intent, not a visual design system or pixel specification. Records shown below are fictional examples. They do not imply that the described data or capabilities exist in the current application.
+These wireframes describe information order and interaction intent, not a visual design system or pixel specification. P0 uses only existing Process and AgentSession records; illustrative future screens do not imply those capabilities exist.
 
-## 1. Navigation shell
+## 1. Future navigation shell (not P0)
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -24,7 +24,7 @@ These wireframes describe information order and interaction intent, not a visual
 - Search is proposed as a future convenience. It must respect Project visibility and distinguish source records from text matches.
 - User menu may contain profile/settings when identity exists. In the current local single-user application, do not suggest multi-user or team controls.
 
-## 2. Global Home — “What needs me?”
+## 2. Future global Home — “What needs me?” (not P0)
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -72,7 +72,7 @@ Your Projects are still here when you want to continue.
 
 Do not fill an empty state with invented suggestions or unsupported progress summaries.
 
-## 3. Project Overview — “Where are we?”
+## 3. Future Project Overview — “Where are we?” (not P0)
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -112,7 +112,7 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 - Project purpose and priorities are human-accepted context, distinct from agent-generated summaries.
 - The attention item comes from an explicit unresolved proposal. A paused Process with no pending decision is not promoted to an urgent item just because it is paused.
 - Each Process card shows one concise fact plus the source record. Do not claim “3/5 complete” unless a user-defined, evidence-backed measurement exists.
-- “Project knowledge” initially may be empty. It must distinguish accepted from needs-review and open questions; each item opens its provenance.
+- Project knowledge is a future proposal and is outside the approved implementation slice.
 - Start exploration and create Process are peer actions. The former asks for an initial question; it does not force the user to fill a complete Process definition.
 - Repositories and external resources are reachable from the Project context; adding an integration should not crowd the main summary.
 
@@ -120,26 +120,25 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│ Home / Evershift / Improve NPC crowd movement       ACTIVE · Definition v2   │
-│ [Amend intention] [Pause] [More ▾]                                           │
+│ Evershift / Improve NPC crowd movement            ACTIVE · Definition v1     │
+│ [Pause] [Complete process]                                                   │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ INTENTION                                                                     │
 │ Make NPC movement feel natural in crowds without doorway stalls or navigation │
 │ regressions. Success: no stalls in benchmark B; preserve corridor reachability.│
 │ Constraints: read-only investigation; no execution authorized. [History v1 →]  │
 ├───────────────────────────────────────┬───────────────────────────────────────┤
-│ CURRENT SITUATION                     │ NEEDS YOUR DECISION                    │
-│ Accomplished                          │ Proposal · revision 2                 │
-│ • Reproduced doorway stall at 60+     │ Local avoidance near doorway queues   │
-│   agents · benchmark B · source →     │                                         │
-│                                       │ Benefit: reduces head-on deadlock      │
-│ In progress                           │ Alternative: waypoint spacing           │
-│ • Agent investigation · last seen     │ Risk: narrow corridor regression       │
-│   10:42 · session status: idle        │ Evidence: benchmark B, commit 7ac91b2  │
-│                                       │ Missing: narrow-corridor test           │
-│ Unresolved                            │ [Inspect evidence] [Ask a question]     │
-│ • Corridor behavior not tested       │ [Request revision] [Defer] [Reject]     │
-│                                       │ [Accept direction]                      │
+│ CURRENT SITUATION · FROM PROCESS RECORDS                                     │
+│ Current focus: Proposal review                                               │
+│ Latest activity: “Goose proposed approach” · recorded 10:42 · source event → │
+│ No separate evidence attachment is recorded for this proposal.              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ PENDING PROPOSAL · exact proposal ID                                         │
+│ Local avoidance near doorway queues · Awaiting decision · created 10:42      │
+│ Agent claim: [proposal body from the persisted record]                       │
+│ Source: AgentSession ab12cd34 · completed event #17 →                        │
+│ Accepting records a human decision; it does not verify claims or authorize   │
+│ execution. [Accept direction] [Request revision] [Defer] [Reject]            │
 ├───────────────────────────────────────┴───────────────────────────────────────┤
 │ WORK ROOM · AgentSession last observed 10:42 · repository snapshot 7ac91b2     │
 │ Goose · 10:40                                                                  │
@@ -159,18 +158,18 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 │ This session can read its pinned repository snapshot. Writes and shell tools  │
 │ are unavailable. Permission requests appear here before a read proceeds.       │
 ├───────────────────────────────────────────────────────────────────────────────┤
-│ HISTORY · Definition v2 accepted · proposal revision 2 · benchmark B · …     │
+│ HISTORY · Definition v1 accepted · proposal and linked decision records       │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Annotations and behavior**
 
 1. The accepted intention remains at the top and shows its version. Amendments are separate proposed changes until accepted.
-2. The current situation has explicit groups and evidence links. “Agent investigation · idle” is runtime observation, not accepted progress. The last-observed time makes stale status visible.
-3. The decision card names proposal version 2, the risk, and missing evidence. “Accept direction” records a Process decision only. If a later implementation needs execution authority, the UI opens the separate authorized execution path and names its scope.
-4. The work room supports natural follow-up. Complete messages are the default; raw events are on demand. Each agent finding exposes source events and evidence. Inline drafting prepopulates a proposal but requires review before persistence.
-5. The composer preserves prompt identity through browser retry. A permission card, uncertain-operation warning, or disconnected state replaces or disables the composer as appropriate.
-6. History is a concise index. Opening a row shows the decision, its reason, supporting evidence, and source session/event. A full raw transcript is a secondary action.
+2. Situation text comes from persisted Process focus and latest activity. AgentSession event freshness is shown only when returned by the runtime; no inferred progress is displayed.
+3. Proposal review targets the exact proposal identity. Status and source event come from existing records. When no source or attachment exists, say so instead of inventing evidence.
+4. A completed message can open an editable update/proposal draft with source event provenance. Persistence occurs only after explicit submission.
+5. Runtime error, interrupted session, and uncertain operation remain visible as technical states; none is represented as Process progress.
+6. History shows recorded activity and review outcome. A later proposal is a separate record; this interface does not invent proposal revision numbers or parent links.
 
 ### Process Workspace — narrow screen
 
@@ -181,11 +180,11 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 │ ACTIVE · Definition v2       │
 ├──────────────────────────────┤
 │ NEEDS YOUR DECISION          │
-│ Proposal revision 2          │
+│ Proposal · exact record ID   │
 │ Local avoidance              │
-│ Risk: corridor behavior      │
-│ Evidence: benchmark B        │
-│ [Inspect evidence]           │
+│ Proposal body and status     │
+│ Source event, if linked      │
+│ No evidence attachment       │
 │ [Ask] [Revise] [Defer]       │
 │ [Accept direction] [Reject]  │
 ├──────────────────────────────┤
@@ -268,37 +267,33 @@ Promotion displays what will persist and what remains unaccepted. User acceptanc
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ PROPOSAL · Improve NPC crowd movement · revision 2                         │
+│ PROPOSAL · Improve NPC crowd movement · proposal ID                         │
 │ Status: Awaiting your decision · Proposed by Goose · source session →       │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ WHAT                                                                       │
 │ Try local avoidance in the doorway queue before changing global pathfinding.│
 │                                                                            │
-│ WHY / EXPECTED BENEFIT                    ALTERNATIVE                       │
-│ Reduces head-on deadlock in benchmark B.  Waypoint spacing is simpler but  │
-│                                           may not resolve queue stalls.     │
+│ RECORDED PROPOSAL BODY                                                     │
+│ [The exact body persisted for this proposal.]                              │
 │                                                                            │
-│ EVIDENCE                                                                   │
-│ benchmark-B.csv · commit 7ac91b2 · reproduced at 60+ agents · inspect →    │
-│                                                                            │
-│ UNCERTAINTY & RISK                                                         │
-│ Narrow-corridor behavior has not been tested. No code change has been made. │
+│ SOURCE                                                                     │
+│ AgentSession event #17 → · Agent text is a claim, not independent evidence.│
+│ No separately attached evidence record.                                    │
 │                                                                            │
 │ ACCEPTANCE EFFECT                                                         │
 │ Accepting records this Process direction. It does not authorize code edits, │
 │ a WorkItem, merge, or deployment.                                          │
 │                                                                            │
-│ [Ask a question] [Request revision] [Defer] [Reject] [Accept direction]    │
+│ [Request revision] [Defer] [Reject] [Accept direction]                     │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Review interactions**
 
-- **Ask a question** returns to the linked conversation with the proposal in view; it does not change proposal status.
-- **Request revision** requires a concise reason and preserves this version. A later version links back to it.
+- **Request revision** records a concise reason against this proposal and changes its status to `revise`. A later proposal is an independent record; no revision number or parent link is implied.
 - **Defer** records the proposal and why it is deferred; it remains reopenable.
 - **Reject** records the reason and leaves the Process intention unchanged unless the user separately proposes an amendment.
-- **Accept direction** records acceptance of exactly revision 2. If the proposal changes accepted intention, the user reviews a versioned amendment. If execution is proposed, a separate action states its scope and authority path.
+- **Accept direction** records acceptance of exactly this proposal ID. It does not change accepted Process intention or authorize execution. Definition changes use the separate amendment flow.
 
 ## 7. Permission, recovery, and unavailable states
 
@@ -366,11 +361,10 @@ Browser Back returns to the prior context and scroll/anchor position when possib
 - State must be conveyed by text and labels, not color alone. Live updates announce meaningful state transitions, not every streamed token.
 - Agent output is rendered as untrusted content; links and code are clearly identified. Preserve readable timestamps and distinguish human, agent, system observation, and external evidence sources.
 
-## 10. Review questions
+## 10. Decisions still open for future work
 
-1. Is the Work Room the default Process tab/section, with intention and decision context visible together as shown?
-2. Should a Project-owned exploratory conversation have repository-read access before Process promotion, or should pre-Process exploration be context-only?
-3. Is a one-way promotion to one Process adequate for the first model?
-4. Should accepted knowledge be Process-local first, or is cross-Process Project knowledge required in the first product slice?
-5. Are the decision labels—**Accept direction**, **Request revision**, **Defer**, **Reject**—clearer than generic accept/reject actions?
-6. Which source types should count as supporting evidence in the initial UX, and how should stale evidence be displayed?
+- Should a future Project-owned exploratory conversation have repository-read access before Process promotion, and what permission boundary should govern it?
+- Is one-way promotion to one Process still adequate after real usage?
+- How should reusable knowledge be scoped and accepted, given that human acceptance does not independently verify evidence?
+- Which source types should become explicit evidence records, and how should freshness be determined?
+- Should Home and a richer Project Overview follow the Process Workspace slice?

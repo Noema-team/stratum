@@ -1,9 +1,9 @@
 # Stratum Product Experience v0.3
 
-**Status:** Proposed UX and product specification; not ratified and not implementation authorization.  
-**Date:** 2026-10-22  
-**Decision context:** DDR-042 accepts the Process-centric product priority and initial application scope. It does not ratify this document or every feature in the earlier Process-Centric Product Model draft.  
-**Companion:** [Annotated wireframes and interaction states](stratum-product-experience-wireframes-v0.3.md)  
+**Status:** Product decisions below are approved as the v0.3 design baseline; implementation scope is limited to the P0 slice in §11. Other capabilities remain proposals.
+**Date:** 2026-10-22
+**Decision context:** DDR-042 accepts the Process-centric product priority and initial application scope. It does not ratify this document or every feature in the earlier Process-Centric Product Model draft.
+**Companion:** [Annotated wireframes and interaction states](stratum-product-experience-wireframes-v0.3.md)
 **Baseline inspected:** `feat/process-agent-sessions-v0.2` at `0875c35f6e3b4e24e4219a9ef69f6f14c982ae83`
 
 ## 1. Product recommendation
@@ -14,9 +14,21 @@ The product should feel like a connected project workspace, not a task database 
 
 > Understand the situation → investigate or continue → inspect evidence → decide what is accepted → choose the next bounded action.
 
-The Process Workspace is the core experience and should be designed first. Project Overview and global Home are progressively broader views over the same persisted facts and actions, not separate state machines. Conversation-first exploration is a proposed entry path that must attach to the same Project and later connect to a Process without changing what the conversation was authorized to access.
+The Process Workspace is the core experience. The approved first slice makes an existing Process usable as a decision workspace. Project Overview improvements, global Home, and conversation-first exploration remain future proposals.
 
-This document extends the direction of [DDR-042](../decisions/ddr-042-process-centric-application.md) and the accepted [Process Application v0.1](stratum-process-application-v0.1.md). It does not authorize implementation, change execution-kernel contracts, or qualify the current Goose integration. The full provider-backed runtime campaign remains separately blocked as recorded in the [v0.2 qualification preflight](stratum-v0.2-goose-qualification-report.md).
+This document records approved product decisions and defines a bounded implementation slice. It does not change execution-kernel contracts or qualify the current Goose integration. The full provider-backed runtime campaign remains separately blocked as recorded in the [v0.2 qualification preflight](stratum-v0.2-goose-qualification-report.md).
+
+### Approved decisions and first-slice boundary
+
+- **Process Work Room is primary.** Build around an existing Process and its accepted intent, recorded activity, proposals, reviews, amendments, and one associated AgentSession.
+- **Project-owned exploration is deferred.** A future exploration may have explicitly selected read-only repository access, but this slice creates no project-level session or promotion model.
+- **Promotion is one-way to one Process.** If future promotion finds repository-scope mismatch, retain the original session as history and start a correctly scoped session; never silently remount or widen access.
+- **Knowledge starts within a Process.** Project-wide knowledge storage, retrieval, and auto-context are deferred.
+- **Acceptance is human judgment, not evidence verification.** Show source, scope, assumptions, and uncertainty. Accepting a direction does not mean Stratum independently verified its claims.
+- **Decision labels are Accept direction, Request revision, Defer, and Reject.** Outcomes apply to the exact proposal and do not authorize execution or automatically change accepted intent.
+- **Proposals have identity and status, not revision chains.** A request for revision resolves the current proposal as `revise`; a later proposal is a separate record. Show IDs and chronology without inventing revision numbers or links.
+
+The P0 implementation is only the existing-Process decision loop: orient from accepted definition and recorded current situation; inspect an exact pending proposal and any completed AgentSession source event; draft and persist an update/proposal; record a decision on the exact proposal; preserve the proposal target on direct navigation and reload; clearly represent unavailable runtime. Use current services and records. No new session ownership, schema, API, Project knowledge database, Home, exploratory conversation/promotion, multi-agent support, writable runtime, or provider-backed Goose claim is in scope. A completed-message fixture or saved agent event is sufficient for this slice's provenance verification.
 
 ## 2. What is established, implemented, and proposed
 
@@ -26,7 +38,8 @@ This document extends the direction of [DDR-042](../decisions/ddr-042-process-ce
 | Implemented | Projects and Objectives; explicit project/repository membership; Process definitions and lifecycle; versioned accepted amendments; proposal/review history; activity; project activity feed; unresolved-item handling; bookmarkable navigation. | [v0.1](stratum-process-application-v0.1.md) and [functional maturity](process-application-functional-maturity.md). This is a local single-user application, not multi-user collaboration or RBAC. |
 | Implemented, awaiting real-runtime qualification | One persistent read-only Goose AgentSession per Process; pinned repository snapshot; one-time read permissions; durable prompt identities and events; browser refresh/reconnect; recovery controls; completed-message provenance. | [v0.2](stratum-agent-enabled-processes-v0.2.md). Simulated ACP and Docker checks are not provider-backed acceptance. |
 | Established boundary | Agent claims do not accept Process intent, complete a Process, grant a permission, or authorize a kernel WorkItem. Agents propose; deterministic Stratum services validate and materialize authorized state. Repository sharing does not share Process history. | DDR-042 plus [DDR-032](../decisions/ddr-032-control-plane-migration.md), [DDR-034](../decisions/ddr-034-models-propose-stratum-materializes.md), and [DDR-041](../decisions/ddr-041-definition-execution-handoff.md). |
-| Proposed UX | Process-first conversation surface; an explicitly project-owned exploratory conversation that can be promoted; a concise Project Overview and global Home; provenance-aware accepted knowledge; evidence-led proposal cards; integrated navigation and responsive states. | This v0.3 specification. Product-owner review is required before implementation. |
+| Approved P0 UX | Existing Process Work Room decision loop, grounded in current Process and AgentSession records; direct proposal navigation; editable drafts from completed messages; exact proposal outcomes. | Scope in “Approved decisions and first-slice boundary”; see implementation status after delivery. |
+| Proposed future UX | Project-owned exploratory conversation and promotion; richer Project Overview and global Home; reusable knowledge; evidence integrations and broader navigation. | Not part of the approved P0 slice. |
 
 The earlier [Process-Centric Product Model v0.1](process-centric-product-model-v0.1.md) remains a design draft. Its Explore, Manage, Coordinate journeys and Project Overview concepts inform this specification, but its wider multi-agent model and sketches are not automatically accepted. Existing technical concepts should appear in the UI only when they explain a real status, permission, evidence source, or recovery action.
 
@@ -80,7 +93,7 @@ Keep these dimensions separate rather than inventing one composite state:
 
 ## 5. Process Workspace — primary experience
 
-The Process Workspace answers four things immediately: **what did we agree to do, what is known now, what needs attention, and what can I do next?** It keeps the active conversation beside the durable history and makes a consequential decision specific to one proposal version.
+The Process Workspace answers four things immediately: **what did we agree to do, what is recorded now, what needs attention, and what can I do next?** Consequential decisions target one exact proposal record.
 
 ### 5.1 Page structure
 
@@ -104,7 +117,7 @@ Do not show progress percentages, “on track,” inferred ownership, or a confi
 
 ### 5.4 Conversation and collaboration
 
-Conversation is the working surface for investigation, questions, and follow-up. It is contextualized by the accepted Process definition and Project knowledge selected for the turn. Users can switch between the complete-message view and source/evidence details without leaving the Process. Prompts are durable operations; refreshing or reconnecting reads existing state and never resends a prompt.
+Conversation is the working surface for investigation, questions, and follow-up. In the first slice it is contextualized by the accepted Process definition; there is no Project knowledge store. Users can switch between the complete-message view and source details without leaving the Process. Prompts are durable operations; refreshing or reconnecting reads existing state and never resends a prompt. Runtime unavailable states remain explicit.
 
 The initial experience supports one AgentSession, consistent with v0.2. Design the page so a later session list can fit, but do not imply simultaneous agents or a coordinator. Human collaborators and multiple agents are later capabilities requiring their own identity, permission, and concurrency decisions.
 
@@ -112,16 +125,16 @@ The initial experience supports one AgentSession, consistent with v0.2. Design t
 
 A proposal card starts with a plain-language summary and includes:
 
-- The exact proposal and version being considered.
-- Why it is proposed, expected benefit, alternatives and tradeoffs.
-- Supporting evidence with source and freshness.
+- The exact proposal ID and status being considered.
+- The recorded proposal body and timestamp.
+- Any linked completed AgentSession event with its session/event provenance. This is an agent claim, not independent evidence verification.
 - Known uncertainty, missing evidence, and risks.
 - A clear statement of what acceptance records or authorizes.
 - Actions: **Accept proposal**, **Request revision**, **Defer**, **Reject**, or **Ask a question**.
 
-Actions are contextual. **Accept proposal** accepts the named direction or Process record only. If implementation is a separate step, show that it still needs a separately scoped execution authorization. The review card must not contain a generic “approve agent” control. Revision requests preserve the proposal and append the request; a revision is a new proposal version, not an overwrite. Deferred proposals remain discoverable and can be reopened.
+Actions are contextual. **Accept direction** records acceptance of the named proposal only. It does not mutate accepted Process intent; use the separately versioned definition amendment flow for that. It does not authorize execution. **Request revision** records the reason against that proposal and changes its status to `revise`; a subsequent proposal is an independent record, not a versioned child. Deferred proposals remain discoverable and can be reopened.
 
-When a complete agent finding is in the conversation, offer **Ask a follow-up**, **Record an update**, or **Draft a proposal from this finding** inline. Drafting should prefill a review card with provenance; it should not submit the proposal automatically or require manual copying. The user reviews and edits the claim, evidence, and scope before creating it.
+When a complete agent finding is in the conversation, offer **Record an update** or **Draft a proposal from this finding** inline. Drafting pre-fills an editable form with provenance; it does not submit automatically. The user reviews and edits the claim before creating it. There are no separate evidence or alternative records in this slice, so the UI must not imply they exist.
 
 ### 5.6 Evidence and continuity
 
@@ -211,8 +224,8 @@ Future agent briefings should include only relevant accepted knowledge and activ
 ### Scenario B — Manage an ongoing improvement
 
 - **Entry:** Home review item or Evershift → Process *Improve terrain performance*.
-- **Interaction:** Header presents accepted success conditions and constraints. Current situation says investigation is complete, Candidate B is proposed, and a visual regression test is missing. User opens candidate evidence, asks for the missing test, and reviews a versioned proposal.
-- **Decision loop:** User requests a revision. The original proposal and reason remain. Agent submits a revised proposal with evidence; user accepts the direction. Any execution requires a separate existing authorized path. Resulting test/PR evidence is attached to the exact candidate. User may reject the candidate and continue another iteration.
+- **Interaction:** Header presents accepted success conditions and constraints. Current situation says investigation is complete, Candidate B is proposed, and a visual regression test is missing. User inspects the exact proposal record and any linked source event.
+- **Decision loop:** User requests revision on the current proposal. The original record receives `revise`; a subsequent proposal is a separate identity. User reviews and accepts that exact record. Any execution requires a separate authorized path.
 - **Persistent records:** Definition version, proposals and linked reviews, conversation operations/events, evidence source/revision, accepted or rejected outcomes, and explicit Process outcome.
 - **Result:** Rejection does not erase the attempt; accepted Process intent remains stable; no proposal action silently dispatches or completes a kernel WorkItem.
 
@@ -247,7 +260,7 @@ Future agent briefings should include only relevant accepted knowledge and activ
 | See attention and meaningful changes | Project Process cards and chronological activity; explicit unresolved proposals | Existing attention and activity records | Cross-Project Home query; exact anchors to proposal/permission/evidence; freshness and “last observed” labels. |
 | Converse within a Process | One read-only Goose session per Process in a separate panel | Durable sessions, prompts, events, permission actions, reconnect controls | Integrate complete messages into the Process work room; show evidence references inline. Real provider behavior remains unqualified. |
 | Promote an exploration | Not implemented; v0.2 requires owning Process | Existing session IDs and Process definition/amendment workflow | Project-owned conversation state, optional Process link, user-confirmed promotion, repository-scope validation; data/API work requires separate design. |
-| Review proposals with evidence | Proposal/review records exist; completed message can be recorded as update/proposal with source provenance | Existing proposal form, review endpoint, source event reference | Inline draft from finding, evidence/alternative fields, exact authorization statement, revision comparison. No automatic acceptance. |
+| Review proposals with evidence | Proposal/review records exist; completed message can be recorded as update/proposal with source provenance | Existing proposal form, review endpoint, source event reference | Inline editable draft and exact proposal navigation. No evidence attachment model or proposal revision chain exists. |
 | Preserve accepted knowledge | Versioned Process definitions and activity; no explicit knowledge lifecycle | Process updates, accepted proposals, event provenance | Human-accepted scoped note, evidence links, assumptions and review/supersession signal. Start Process-local before Project-wide retrieval. |
 | Inspect GitHub and quality evidence | Repository identities and local checkout link; no integrated PR/CI evidence view in this app slice | Repository link and evidence provenance concepts | External provider integration and freshness-aware evidence; keep CI authority external and consume its records. |
 | Multiple people/agents | Local single-user actor, one nonterminal AgentSession per Process | Process/session identities and history | Identity/RBAC, concurrency, multiple session presentation and conflict handling; explicitly later. |
@@ -255,12 +268,13 @@ Future agent briefings should include only relevant accepted knowledge and activ
 
 ## 11. Prioritized roadmap and first vertical slice
 
-### P0 — Coherent core experience
+### P0 — Approved first implementation slice
 
-1. **Process Workspace orientation and decision loop.** Reorder existing fields around accepted intention, current situation, work/conversation, evidence, pending decisions, and history. Add source links and freshness to summaries; keep agent claims distinct. Turn completed findings into inline update/proposal drafts with provenance. Use existing Process and AgentSession records; do not add a new state machine.
-2. **Project Overview and Home attention path.** Reuse existing activity/attention records to show exact pending action → Process anchor → evidence → decision. Keep Home small and only include cross-Project items the local user's records establish.
-3. **Real Goose qualification.** Continue as a separate gated track. The v0.2 preflight report identifies missing provider configuration. Do not expose the current integration as qualified before the real campaign passes its gates.
-4. **Conversation-first ownership decision.** Validate the project-owned exploratory conversation recommendation. If approved, design the minimal persistence and permission transition separately before implementation.
+Implement only the existing-Process decision loop: accepted definition and record-derived situation; one exact pending proposal with status, body, timestamp, and linked source event when present; editable update/proposal draft from a completed AgentSession message; proposal-linked Accept direction / Request revision / Defer / Reject outcomes; direct URL targeting and reload restoration of a proposal; and explicit unavailable-runtime state. The UI must use current persisted records and services, preserve Process boundaries, and show agent text as an unverified claim. Do not add a new data model, migration, API, session ownership, Project knowledge storage, Home, exploratory conversation/promotion, multi-agent support, writable runtime, GitHub/CI evidence, or provider qualification claim. Project Overview's placeholder Agent session count is removed. A proposal review does not alter accepted intent; definition amendments remain a separate existing workflow.
+
+**Acceptance check:** From a saved completed-message event (or fixture), create a proposal with source session/event provenance; verify its exact generated proposal ID; reload/direct-navigate to it; record each supported review outcome against that ID and verify its status/history; verify another Process/Project cannot be targeted through that route; and verify unavailable runtime stays clearly unavailable. Run `npm run verify` on the final implementation.
+
+Real Goose qualification remains a separate gated track and must pass before presenting the provider-backed integration as qualified.
 
 ### P1 — Deeper continuity and evidence
 
@@ -279,24 +293,23 @@ Future agent briefings should include only relevant accepted knowledge and activ
 
 Deliver the **Process Workspace decision loop** on an existing Process: orient from accepted intent; inspect a record-grounded situation; continue or reconnect the single session; draft a proposal from a completed finding; inspect its provenance; request revision or accept/reject/defer; and return after reload to the same decision and history. This is the smallest complete experience that uses the strongest existing foundation without first changing AgentSession ownership. Gate release of any live Goose affordance on the separate provider-backed qualification.
 
-## 12. Product-owner decisions before implementation
+## 12. Decisions deferred beyond this slice
 
-1. Approve the Process Workspace-first priority and the Home/Project/Process hierarchy, or change the priority order.
-2. Decide whether exploration may read a selected repository before a Process exists. If yes, approve a Project-owned session with optional Process association; if no, approve context-only exploration or a draft Process model.
-3. Confirm whether promotion is one-way (conversation remains linked to one Process) or may associate one exploration with multiple Processes. This spec recommends one Process per promoted conversation initially.
-4. Define who may accept reusable knowledge in the current single-user product and what evidence is sufficient to label a finding “supported.”
-5. Approve that “accept proposal” accepts only the named Process direction and never implicitly grants execution permission.
-6. Confirm the P0 vertical slice and require real Goose qualification before enabling the agent collaboration surface outside a bounded local trial.
+- Whether a future Project-owned exploration should have repository read access before Process creation, and the minimal permission model for it.
+- How to present retained session history after one-way promotion when repository scope differs; the recommendation is to keep it historical and start a correctly scoped session.
+- Whether and how to persist reusable Process knowledge, who accepts it, and how evidence sufficiency is described. Human acceptance is a judgment, not independent verification.
+- Which external source types (commits, tests, PRs, CI) should become first-class evidence records and how freshness is established.
+- Whether Home and richer Project Overview should follow the Process slice.
 
 ## 13. Acceptance criteria for design review
 
-The proposed experience is ready for implementation planning when a reviewer can trace each scenario through the screens and answer:
+The approved P0 is complete when a reviewer can trace the existing Process loop through persisted records and answer:
 
 - What is accepted, what is only claimed, what evidence supports it, and who decided?
 - What exact action is requested, and what will that action authorize?
-- Where does the conversation belong before and after promotion, and which permissions remain in effect?
+- Which complete AgentSession message produced the human-recorded finding, if any?
 - How will the user recover after reload, unavailable runtime, or uncertain prompt outcome without duplicate work?
 - Which source record supports every attention, progress, and freshness label?
 - Can the user understand the Process without reading the full transcript?
 
-The companion [wireframes](stratum-product-experience-wireframes-v0.3.md) specifies representative screen contents, key interactions, and responsive/unavailable states.
+The companion [wireframes](stratum-product-experience-wireframes-v0.3.md) specifies the P0 screen and marks broader ideas as future proposals.
