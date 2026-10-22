@@ -46,8 +46,8 @@ Engine stream events are appended with monotonically increasing Stratum sequence
 
 ## Delivery slices and gates
 
-1. **Session foundation implemented:** append-only session/workspace/event/operation/permission persistence, workspace validation, Docker isolation configuration, ACP connector, and a pinned-commit snapshot regression. Additional connector/API ownership and idempotency integration tests remain necessary.
-2. **Process Workspace implemented:** session status, event cursor refresh, prompts, permission decisions, cancel/reconcile controls, and explicit user actions to record agent claims as Process updates or proposals. A refresh reads the existing session and does not submit a prompt.
+1. **Session foundation implemented:** append-only session/workspace/event/operation/permission persistence, workspace validation, Docker isolation configuration, and ACP connector. Tests cover pinned snapshots, shared repository membership, Process ownership, server prompt idempotency, and numeric/string ACP permission IDs with scoped read and chunk aggregation.
+2. **Process Workspace implemented:** session status, event cursor refresh, durable browser prompt retry keys, permission decisions, cancel/reconcile controls, and explicit user actions to record agent claims as Process updates or proposals. Completed findings retain their AgentSession/event provenance. A refresh reads the session and does not submit a prompt; a generation guard rejects stale Process responses.
 3. **Real Goose qualification not complete:** local checks covered the pinned image/version, ACP initialization, and Docker read-only container behavior. No provider-backed session or model turn ran because this environment has no Goose configuration or provider credentials. The accepted end-to-end Process scenario remains unqualified.
 
 Writable repository changes, automated shell execution, multiple repositories per session, tool-network allowlisting, multiple concurrent sessions per Process, remote/multi-user access, merge/deployment, WorkItem handoff, and multi-agent scheduling are out of scope.

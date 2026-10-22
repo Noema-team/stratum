@@ -27,7 +27,7 @@ export interface AgentRuntime {
 }
 
 interface RpcPending { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
-interface RuntimeProcess { process: ChildProcessWithoutNullStreams; pending: Map<string | number, RpcPending>; callbacks: AgentRuntimeCallbacks; handle: string; nextId: number; buffer: string; replaying: boolean; exited: boolean; approvedReads: Map<string, number>; }
+interface RuntimeProcess { process: ChildProcessWithoutNullStreams; pending: Map<string | number, RpcPending>; callbacks: AgentRuntimeCallbacks; handle: string; nextId: number; buffer: string; replaying: boolean; exited: boolean; approvedReads: Map<string, number>; assistantChunks: string[]; }
 
 const DEFAULT_GOOSE_IMAGE = 'ghcr.io/aaif-goose/goose:1.54.0@sha256:c8a6b66718fafc405055bb642ab1cccbb9a31ed76d1fbd1e4385d18c43cdb4d0';
 const ACP_TIMEOUT_MS = 120_000;
@@ -71,7 +71,7 @@ export class DockerGooseRuntime implements AgentRuntime {
     ];
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const handle = session.id;
-    const state: RuntimeProcess = { process: child, pending: new Map(), callbacks, handle, nextId: 0, buffer: '', replaying: false, exited: false, approvedReads: new Map() };
+    const state: RuntimeProcess = { process: child, pending: new Map(), callbacks, handle, nextId: 0, buffer: '', replaying: false, exited: false, approvedReads: new Map(), assistantChunks: [] };
     this.processes.set(handle, state);
     child.stdout.on('data', chunk => this.consumeStdout(state, chunk.toString('utf8')));
     child.stderr.on('data', chunk => callbacks.onEvent('engine_diagnostic', { text: redact(chunk.toString('utf8')).slice(0, 1000) }));
@@ -133,9 +133,13 @@ export class DockerGooseRuntime implements AgentRuntime {
   async prompt(handle: string, engineSessionId: string, text: string): Promise<{ stopReason?: string }> {
     const state = this.requireProcess(handle);
     state.approvedReads.clear();
+    state.assistantChunks = [];
     state.callbacks.onLifecycle('running');
     try {
       const result = await this.request(state, 'session/prompt', { sessionId: engineSessionId, prompt: [{ type: 'text', text }] }, 10 * 60_000);
+      if (state.assistantChunks.length) {
+        state.callbacks.onEvent('agent_message_complete', { text: redact(state.assistantChunks.join('')), chunkCount: state.assistantChunks.length });
+      }
       state.callbacks.onLifecycle('idle');
       const stopReason = (result as { stopReason?: string })?.stopReason;
       return { stopReason };
@@ -238,7 +242,7 @@ export class DockerGooseRuntime implements AgentRuntime {
     const id = message.id as string | number | undefined;
     try {
       if (method === 'session/update') {
-        if (!state.replaying) this.handleUpdate(state.callbacks, params);
+        if (!state.replaying) this.handleUpdate(state, params);
         return;
       }
       if (method === 'session/request_permission' && id !== undefined) {
@@ -246,22 +250,23 @@ export class DockerGooseRuntime implements AgentRuntime {
         const rawInput = (toolCall.rawInput ?? {}) as Record<string, unknown>;
         const toolMeta = (((toolCall.meta ?? {}) as Record<string, unknown>).goose ?? {}) as Record<string, unknown>;
         const gooseCall = (toolMeta.toolCall ?? {}) as Record<string, unknown>;
-        const operation = { kind: 'engine_tool', title: toolCall.title, toolName: gooseCall.toolName,
-          extensionName: gooseCall.extensionName, input: rawInput };
-        const options = Array.isArray(params.options) ? params.options as Array<Record<string, unknown>> : [];
         const requestedPath = typeof rawInput.path === 'string' ? normalizeGuestPath(rawInput.path) : undefined;
+        const operation = { kind: 'engine_tool', title: toolCall.title, toolName: gooseCall.toolName,
+          extensionName: gooseCall.extensionName, path: requestedPath, input: rawInput };
+        const options = Array.isArray(params.options) ? params.options as Array<Record<string, unknown>> : [];
         const safeRead = gooseCall.extensionName === 'developer' && gooseCall.toolName === 'read'
           && Boolean(requestedPath) && options.some(option => option.kind === 'allow_once')
           && options.some(option => option.kind === 'reject_once');
         if (!safeRead) {
           const reject = options.find(option => option.kind === 'reject_once');
-          if (reject?.optionId) this.write(state, { jsonrpc: '2.0', id, result: { outcome: { outcome: 'selected', optionId: reject.optionId } } });
+          if (typeof reject?.optionId === 'string') this.write(state, permissionSelectionResponse(id, reject.optionId));
+          else this.write(state, { jsonrpc: '2.0', id, error: { code: -32602, message: 'Unsupported permission request; no safe refusal option was offered' } });
           state.callbacks.onEvent('tool_blocked', { operation });
           return;
         }
         const result = await state.callbacks.requestToolPermission(String(id), operation, options);
         if (result.decision === 'allow_once' && requestedPath) state.approvedReads.set(requestedPath, (state.approvedReads.get(requestedPath) ?? 0) + 1);
-        this.write(state, { jsonrpc: '2.0', id, result: { outcome: { outcome: 'selected', optionId: result.optionId } } });
+        this.write(state, permissionSelectionResponse(id, result.optionId));
         return;
       }
       if (method === 'fs/read_text_file' && id !== undefined) {
@@ -287,7 +292,8 @@ export class DockerGooseRuntime implements AgentRuntime {
     }
   }
 
-  private handleUpdate(callbacks: AgentRuntimeCallbacks, params: Record<string, unknown>): void {
+  private handleUpdate(state: RuntimeProcess, params: Record<string, unknown>): void {
+    const callbacks = state.callbacks;
     const update = (params.update && typeof params.update === 'object' ? params.update : {}) as Record<string, unknown>;
     const kind = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : 'unknown';
     if (kind === 'agent_thought_chunk') {
@@ -296,7 +302,8 @@ export class DockerGooseRuntime implements AgentRuntime {
     }
     if (kind === 'agent_message_chunk') {
       const delta = (update.delta && typeof update.delta === 'object' ? update.delta : {}) as Record<string, unknown>;
-      callbacks.onEvent('agent_message', { text: typeof delta.text === 'string' ? redact(delta.text) : '' });
+      const text = typeof delta.text === 'string' ? redact(delta.text) : '';
+      if (text) { state.assistantChunks.push(text); callbacks.onEvent('agent_message_chunk', { text }); }
       return;
     }
     if (kind === 'tool_call' || kind === 'tool_call_update') {
@@ -329,4 +336,8 @@ function normalizeGuestPath(requested: string): string | undefined {
   const relative = path.posix.relative('/workspace', candidate);
   if (!relative || relative === '.' || relative === '..' || relative.startsWith('../') || path.posix.isAbsolute(relative)) return undefined;
   return candidate;
+}
+
+export function permissionSelectionResponse(id: string | number, optionId: string): Record<string, unknown> {
+  return { jsonrpc: '2.0', id, result: { outcome: { outcome: 'selected', optionId } } };
 }

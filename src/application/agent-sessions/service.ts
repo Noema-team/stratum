@@ -80,7 +80,7 @@ export class AgentSessionService {
     const process = details.process;
     if (process.lifecycle !== 'active') throw new AgentSessionServiceError('Start an agent only on an active Process');
     const repository = this.repositories.findById(repositoryId);
-    if (!repository || repository.projectId !== process.projectId || !this.repositories.isLinkedToProject(process.projectId, repositoryId)) {
+    if (!repository || !this.repositories.isLinkedToProject(process.projectId, repositoryId)) {
       throw new AgentSessionServiceError('Repository is not linked to this Process Project', 'NOT_FOUND');
     }
     let checkout;

@@ -54,6 +54,7 @@ export class ProcessService {
     const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit) || 12));
     return this.db.prepare(`SELECT a.id,a.process_id AS processId,a.kind,a.title,a.body,a.outcome,
       a.proposal_id AS proposalId,a.amendment_id AS amendmentId,a.definition_version AS definitionVersion,
+      a.source_agent_session_id AS sourceAgentSessionId,a.source_event_seq AS sourceEventSeq,
       a.created_at AS createdAt,p.title AS processTitle FROM app_process_activity a
       JOIN app_processes p ON p.id=a.process_id WHERE p.project_id=?
       ORDER BY a.created_at DESC,a.rowid DESC LIMIT ?`).all(projectId, boundedLimit) as (AppProcessActivity & { processTitle: string })[];
@@ -152,7 +153,8 @@ export class ProcessService {
     reopen();
   }
 
-  addActivity(id: string, kind: AppProcessActivityKind, title: string, body: string, outcome?: string, proposalId?: string): AppProcessActivity {
+  addActivity(id: string, kind: AppProcessActivityKind, title: string, body: string, outcome?: string, proposalId?: string,
+    source?: { agentSessionId: string; eventSeq: number }): AppProcessActivity {
     const { process } = this.get(id);
     if (process.lifecycle !== 'active') throw new ProcessServiceError('only active Processes can receive updates', 'CONFLICT');
     if (!title.trim() || !body.trim()) throw new ProcessServiceError('title and body are required', 'INVALID');
@@ -160,7 +162,13 @@ export class ProcessService {
     if (kind === 'proposal') proposalId = randomUUID();
     if (kind === 'review' && (!proposalId || !outcome)) throw new ProcessServiceError('reviews require a proposal and an explicit outcome', 'INVALID');
     if (kind === 'review' && !this.processes.listPendingProposals(id).some(proposal => proposal.id === proposalId)) throw new ProcessServiceError('proposal is not pending review for this Process', 'CONFLICT');
-    const activity: AppProcessActivity = { id: randomUUID(), processId: id, kind, title: title.trim(), body: body.trim(), outcome, proposalId, createdAt: new Date().toISOString() };
+    if (source) {
+      const row = this.db.prepare(`SELECT s.process_id AS processId,e.event_type AS eventType FROM app_agent_sessions s
+        JOIN app_agent_session_events e ON e.session_id=s.id WHERE s.id=? AND e.seq=?`).get(source.agentSessionId, source.eventSeq) as { processId: string; eventType: string } | undefined;
+      if (!row || row.processId !== id || row.eventType !== 'agent_message_complete') throw new ProcessServiceError('source must reference a completed agent message from this Process', 'INVALID');
+    }
+    const activity: AppProcessActivity = { id: randomUUID(), processId: id, kind, title: title.trim(), body: body.trim(), outcome, proposalId,
+      sourceAgentSessionId: source?.agentSessionId, sourceEventSeq: source?.eventSeq, createdAt: new Date().toISOString() };
     this.processes.addActivity(activity);
     return activity;
   }

@@ -53,7 +53,8 @@ export interface AppProcessAmendment {
 }
 export interface AppProcessActivity {
   id: string; processId: string; kind: AppProcessActivityKind; title: string;
-  body: string; outcome?: string; proposalId?: string; amendmentId?: string; definitionVersion?: number; createdAt: string;
+  body: string; outcome?: string; proposalId?: string; amendmentId?: string; definitionVersion?: number;
+  sourceAgentSessionId?: string; sourceEventSeq?: number; createdAt: string;
 }
 export function canonicalRepositoryIdentity(provider: string, remote: string): string {
   const value = remote.trim().replace(/^git@github\.com:/i, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//i, 'https://github.com/').replace(/^http:\/\//i, 'https://');
@@ -150,10 +151,11 @@ export class AppProcessRepository {
   addActivity(activity: AppProcessActivity, currentFocus?: string): void {
     const save = this.db.transaction(() => {
       const definitionVersion = activity.definitionVersion ?? this.currentDefinitionVersion(activity.processId);
-      this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,proposal_id,amendment_id,definition_version,created_at)
-        VALUES (@id,@processId,@kind,@title,@body,@outcome,@proposalId,@amendmentId,@definitionVersion,@createdAt)`).run({
+      this.db.prepare(`INSERT INTO app_process_activity (id,process_id,kind,title,body,outcome,proposal_id,amendment_id,definition_version,source_agent_session_id,source_event_seq,created_at)
+        VALUES (@id,@processId,@kind,@title,@body,@outcome,@proposalId,@amendmentId,@definitionVersion,@sourceAgentSessionId,@sourceEventSeq,@createdAt)`).run({
         ...activity, outcome: activity.outcome ?? null, proposalId: activity.proposalId ?? null,
         amendmentId: activity.amendmentId ?? null, definitionVersion,
+        sourceAgentSessionId: activity.sourceAgentSessionId ?? null, sourceEventSeq: activity.sourceEventSeq ?? null,
       });
       if (activity.kind === 'proposal') {
         this.db.prepare(`INSERT INTO app_process_proposals (id,process_id,activity_id,status,created_at)
@@ -174,6 +176,8 @@ export class AppProcessRepository {
       .map(row => ({ id: row.id as string, processId: row.process_id as string, kind: row.kind as AppProcessActivityKind,
         title: row.title as string, body: row.body as string, outcome: row.outcome as string | undefined ?? undefined,
         proposalId: row.proposal_id as string | undefined ?? undefined, amendmentId: row.amendment_id as string | undefined ?? undefined,
+        sourceAgentSessionId: row.source_agent_session_id as string | undefined ?? undefined,
+        sourceEventSeq: row.source_event_seq as number | undefined ?? undefined,
         definitionVersion: row.definition_version as number,
         createdAt: row.created_at as string }));
   }

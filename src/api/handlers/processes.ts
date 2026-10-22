@@ -7,7 +7,9 @@ const createSchema = z.object({ title: z.string(), intent: z.string(), objective
   desiredOutcomes: z.array(z.string().max(1000)).max(20).optional(), constraints: z.array(z.string().max(1000)).max(20).optional(),
   repositoryIds: z.array(z.string().uuid()).max(50).optional() });
 const activitySchema = z.object({ kind: z.enum(['update','proposal','review','decision']), title: z.string().max(160),
-  body: z.string().max(10000), outcome: z.enum(['accepted','rejected','revise','deferred']).optional(), proposalId: z.string().uuid().optional() });
+  body: z.string().max(10000), outcome: z.enum(['accepted','rejected','revise','deferred']).optional(), proposalId: z.string().uuid().optional(),
+  sourceAgentSessionId: z.string().uuid().optional(), sourceEventSeq: z.number().int().positive().optional() })
+  .refine(value => Boolean(value.sourceAgentSessionId) === Boolean(value.sourceEventSeq), 'agent provenance requires both a session ID and event sequence');
 const lifecycleSchema = z.object({ lifecycle: z.enum(['active','paused','completed','cancelled']), outcome: z.string().max(10000).optional(), acknowledgeUnresolved: z.boolean().optional() });
 const amendmentSchema = z.object({
   reason: z.string().max(4000),
@@ -41,7 +43,8 @@ export function makeProcessHandlers(router: Router, service: ProcessService): vo
   router.add('POST', '/processes/:id/activity', req => {
     const parsed = activitySchema.safeParse(req.body);
     if (!parsed.success) return err('bad_request', parsed.error.message);
-    try { return ok(service.addActivity(req.params.id, parsed.data.kind, parsed.data.title, parsed.data.body, parsed.data.outcome, parsed.data.proposalId)); }
+    try { return ok(service.addActivity(req.params.id, parsed.data.kind, parsed.data.title, parsed.data.body, parsed.data.outcome, parsed.data.proposalId,
+      parsed.data.sourceAgentSessionId && parsed.data.sourceEventSeq ? { agentSessionId: parsed.data.sourceAgentSessionId, eventSeq: parsed.data.sourceEventSeq } : undefined)); }
     catch (error) { return failure(error); }
   });
   router.add('POST', '/processes/:id/amendments', req => {

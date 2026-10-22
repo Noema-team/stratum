@@ -42,11 +42,14 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
     new ProjectRepository(db).save({ id: projectId, workspaceId, name: 'Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
     const repositoryStore = new RepositoryRepository(db);
     repositoryStore.save({ id: repositoryId, projectId, provider: 'github', remote: 'https://github.com/example/repo.git', defaultBranch: 'main', localWorkspace: repo, status: 'active' });
+    const sharedProjectId = '71000000-0000-4000-8000-000000000004';
+    new ProjectRepository(db).save({ id: sharedProjectId, workspaceId, name: 'Shared Project', status: 'active', priority: 0, createdAt: now, updatedAt: now });
+    repositoryStore.linkToProject(sharedProjectId, repositoryId);
     const processService = new ProcessService(db, workspaceId);
-    const process = processService.create(projectId, { title: 'Investigate', intent: 'Understand the repository', repositoryIds: [repositoryId] });
+    const process = processService.create(sharedProjectId, { title: 'Investigate', intent: 'Understand the repository', repositoryIds: [repositoryId] });
     class FakeRuntime implements AgentRuntime {
-      calls: string[] = []; handle = false;
-      async start(session: AgentSession, _workspace: RuntimeWorkspace, _callbacks: AgentRuntimeCallbacks, _restore: boolean) { this.handle = true; return { engineSessionId: `goose-${session.id}`, handle: session.id }; }
+      calls: string[] = []; handle = false; callbacks?: AgentRuntimeCallbacks;
+      async start(session: AgentSession, _workspace: RuntimeWorkspace, callbacks: AgentRuntimeCallbacks, _restore: boolean) { this.handle = true; this.callbacks = callbacks; return { engineSessionId: `goose-${session.id}`, handle: session.id }; }
       async prompt(_handle: string, _engine: string, promptText: string) { this.calls.push(promptText); return {}; }
       async cancel() {}
       async stop() { this.handle = false; }
@@ -60,6 +63,14 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
     assert.equal(runtime.calls.length, 1, 'the accepted-definition briefing is dispatched once');
     assert.equal(service.findForProcess(process.id)?.id, session.id);
     assert.ok(service.listEvents(session.id).some(event => event.eventType === 'session_start_requested'));
+    runtime.callbacks!.onEvent('agent_message_complete', { text: 'A grounded finding.' });
+    const findingEvent = service.listEvents(session.id).find(event => event.eventType === 'agent_message_complete')!;
+    const recorded = processService.addActivity(process.id, 'update', 'Goose finding', 'Agent claim from Goose.', undefined, undefined,
+      { agentSessionId: session.id, eventSeq: findingEvent.seq });
+    assert.equal(recorded.sourceAgentSessionId, session.id);
+    assert.equal(recorded.sourceEventSeq, findingEvent.seq);
+    assert.throws(() => processService.addActivity(process.id, 'update', 'Bad source', 'Wrong Process.', undefined, undefined,
+      { agentSessionId: session.id, eventSeq: findingEvent.seq + 100 }), /source must reference/);
     const key = '72000000-0000-4000-8000-000000000001';
     const first = service.submitPrompt(session.id, key, 'Inspect the readme');
     const retry = service.submitPrompt(session.id, key, 'Inspect the readme');

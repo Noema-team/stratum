@@ -557,6 +557,13 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX idx_app_agent_session_permissions_status ON app_agent_session_permissions(session_id,status,created_at);
   `,
+
+  // Migration 18: preserve direct provenance for human-recorded agent findings.
+  `
+  ALTER TABLE app_process_activity ADD COLUMN source_agent_session_id TEXT;
+  ALTER TABLE app_process_activity ADD COLUMN source_event_seq INTEGER;
+  CREATE INDEX idx_app_process_activity_agent_source ON app_process_activity(source_agent_session_id,source_event_seq);
+  `,
 ];
 
 // ============================================================================
