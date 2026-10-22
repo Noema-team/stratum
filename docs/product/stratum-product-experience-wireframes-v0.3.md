@@ -144,7 +144,7 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 │ Goose · 10:40                                                                  │
 │ I found the stall in the doorway queue. Local avoidance looks promising, but   │
 │ I have not tested narrow corridors. The current evidence is benchmark B.        │
-│ [View source events] [Open cited evidence] [Draft a proposal]                   │
+│ [Draft proposal from this message]                                               │
 │                                                                               │
 │ Alex · 10:41                                                                  │
 │ Please compare this with waypoint spacing and call out what is still unknown.  │
@@ -152,7 +152,7 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 │ Goose · 10:42                                                                  │
 │ Local avoidance addresses head-on deadlock. Waypoint spacing is simpler but   │
 │ may leave the queue stall. Neither is verified in narrow corridors.            │
-│ [Ask follow-up] [Record update] [Draft proposal]                               │
+│ [Record update] [Draft proposal from this message]                             │
 │                                                                               │
 │ [Message Goose…                                                   ] [Send]    │
 │ This session can read its pinned repository snapshot. Writes and shell tools  │
@@ -170,6 +170,7 @@ Do not fill an empty state with invented suggestions or unsupported progress sum
 4. A completed message can open an editable update/proposal draft with source event provenance. Persistence occurs only after explicit submission.
 5. Runtime error, interrupted session, and uncertain operation remain visible as technical states; none is represented as Process progress.
 6. History shows recorded activity and review outcome. A later proposal is a separate record; this interface does not invent proposal revision numbers or parent links.
+7. If a source event belongs to an earlier AgentSession and is not loaded in the current transcript, show an explicit unavailable-source notice. Never resolve by event number alone.
 
 ### Process Workspace — narrow screen
 
@@ -269,6 +270,7 @@ Promotion displays what will persist and what remains unaccepted. User acceptanc
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ PROPOSAL · Improve NPC crowd movement · proposal ID                         │
 │ Status: Awaiting your decision · Proposed by Goose · source session →       │
+│ [Back to Process]                                                           │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ WHAT                                                                       │
 │ Try local avoidance in the doorway queue before changing global pathfinding.│
