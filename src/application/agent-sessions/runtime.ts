@@ -13,6 +13,7 @@ export interface AgentRuntimeCallbacks {
   onEvent(eventType: string, payload: Record<string, unknown>): void;
   onLifecycle(lifecycle: 'running' | 'idle' | 'awaiting_permission' | 'interrupted' | 'outcome_unknown' | 'failed', message?: string): void;
   requestToolPermission(engineRequestId: string, operation: Record<string, unknown>, options: Array<Record<string, unknown>>): Promise<RuntimePermissionResult>;
+  validateWorkspaceFile(requestedPath: string): Promise<void>;
   readWorkspaceFile(engineRequestId: string, requestedPath: string): Promise<string>;
 }
 
@@ -254,8 +255,12 @@ export class DockerGooseRuntime implements AgentRuntime {
         const operation = { kind: 'engine_tool', title: toolCall.title, toolName: gooseCall.toolName,
           extensionName: gooseCall.extensionName, path: requestedPath, input: rawInput };
         const options = Array.isArray(params.options) ? params.options as Array<Record<string, unknown>> : [];
+        let containedRead = false;
+        if (requestedPath) {
+          try { await state.callbacks.validateWorkspaceFile(requestedPath); containedRead = true; } catch { /* fail closed before prompting */ }
+        }
         const safeRead = gooseCall.extensionName === 'developer' && gooseCall.toolName === 'read'
-          && Boolean(requestedPath) && options.some(option => option.kind === 'allow_once')
+          && containedRead && options.some(option => option.kind === 'allow_once')
           && options.some(option => option.kind === 'reject_once');
         if (!safeRead) {
           const reject = options.find(option => option.kind === 'reject_once');
@@ -330,7 +335,7 @@ function redact(value: string): string {
     .replace(/(api[_-]?key\s*[:=]\s*)[^\s,"']+/gi, '$1[REDACTED]');
 }
 
-function normalizeGuestPath(requested: string): string | undefined {
+export function normalizeGuestPath(requested: string): string | undefined {
   if (!requested || requested.includes('\0')) return undefined;
   const candidate = path.posix.resolve('/workspace', requested);
   const relative = path.posix.relative('/workspace', candidate);

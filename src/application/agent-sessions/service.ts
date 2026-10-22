@@ -276,6 +276,10 @@ export class AgentSessionService {
         if (lifecycle === 'interrupted' || lifecycle === 'failed') this.rejectPendingPermissions(sessionId);
       },
       requestToolPermission: (requestId, operation, options) => this.waitForPermission(sessionId, requestId, operation, options),
+      validateWorkspaceFile: async requestedPath => {
+        const relativePath = requestedPath.startsWith('/workspace/') ? requestedPath.slice('/workspace/'.length) : requestedPath;
+        resolveWorkspaceReadPath(workspace.hostPath, relativePath);
+      },
       readWorkspaceFile: async (_requestId, requestedPath) => {
         const relativePath = requestedPath.startsWith('/workspace/') ? requestedPath.slice('/workspace/'.length) : requestedPath;
         const hostPath = resolveWorkspaceReadPath(workspace.hostPath, relativePath);

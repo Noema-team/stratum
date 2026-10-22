@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DockerGooseRuntime } from '../src/application/agent-sessions/runtime.js';
+import { DockerGooseRuntime, normalizeGuestPath } from '../src/application/agent-sessions/runtime.js';
 import type { AgentRuntimeCallbacks } from '../src/application/agent-sessions/runtime.js';
 import type { AgentSession, RuntimeWorkspace } from '../src/application/agent-sessions/types.js';
 
@@ -61,6 +61,7 @@ for (const idType of ['number','string'] as const) {
       const callbacks: AgentRuntimeCallbacks = {
         onEvent: (type,payload) => events.push({type,payload}), onLifecycle: () => {},
         requestToolPermission: async () => ({decision:'allow_once',optionId:'allow'}),
+        validateWorkspaceFile: async () => {},
         readWorkspaceFile: async () => 'pinned source',
       };
       const started = await runtime.start(session, workspace, callbacks, false);
@@ -79,3 +80,11 @@ for (const idType of ['number','string'] as const) {
     }
   });
 }
+
+test('Goose permission paths reject absolute host paths, traversal, and configuration locations', () => {
+  for (const candidate of ['/etc/passwd', '/var/lib/stratum-goose/config/provider.yaml', '/workspace/../../etc/passwd', '../../etc/passwd']) {
+    assert.equal(normalizeGuestPath(candidate), undefined, candidate);
+  }
+  assert.equal(normalizeGuestPath('/workspace/src/index.ts'), '/workspace/src/index.ts');
+  assert.equal(normalizeGuestPath('src/index.ts'), '/workspace/src/index.ts');
+});
