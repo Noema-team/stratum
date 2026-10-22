@@ -490,6 +490,73 @@ export const MIGRATIONS: readonly string[] = [
       'repositoryIds',json(COALESCE((SELECT json_group_array(repository_id) FROM app_process_repositories WHERE process_id=app_processes.id),'[]'))),
       'Initial accepted Process definition', 'migration', created_at FROM app_processes;
   `,
+
+  // Migration 17: durable Process-owned agent sessions and read-only runtime workspaces.
+  `
+  CREATE TABLE app_runtime_workspaces (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    repository_id TEXT NOT NULL REFERENCES repositories(id),
+    host_path TEXT NOT NULL,
+    repository_commit TEXT NOT NULL,
+    access_mode TEXT NOT NULL CHECK(access_mode='read_only'),
+    engine_state_path TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ready','closed','failed')),
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+  );
+  CREATE INDEX idx_app_runtime_workspaces_process_repo ON app_runtime_workspaces(process_id,repository_id,created_at);
+  CREATE TABLE app_agent_sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES app_runtime_workspaces(id),
+    engine TEXT NOT NULL CHECK(engine='goose-acp'),
+    engine_session_id TEXT,
+    lifecycle TEXT NOT NULL CHECK(lifecycle IN ('starting','idle','running','awaiting_permission','interrupted','outcome_unknown','stopped','failed')),
+    error_message TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_event_seq INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE UNIQUE INDEX idx_app_agent_sessions_engine_id ON app_agent_sessions(engine,engine_session_id) WHERE engine_session_id IS NOT NULL;
+  CREATE UNIQUE INDEX idx_app_agent_sessions_one_active_process ON app_agent_sessions(process_id)
+    WHERE lifecycle IN ('starting','idle','running','awaiting_permission','interrupted','outcome_unknown');
+  CREATE INDEX idx_app_agent_sessions_process ON app_agent_sessions(process_id,created_at DESC);
+  CREATE TABLE app_agent_session_events (
+    session_id TEXT NOT NULL REFERENCES app_agent_sessions(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(session_id,seq)
+  );
+  CREATE TABLE app_agent_session_operations (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES app_agent_sessions(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('briefing','prompt')),
+    prompt_text TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('intent','dispatching','completed','cancelled','failed','outcome_unknown','reconciled')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(session_id,idempotency_key)
+  );
+  CREATE INDEX idx_app_agent_session_operations_status ON app_agent_session_operations(session_id,status,created_at);
+  CREATE TABLE app_agent_session_permissions (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES app_agent_sessions(id) ON DELETE CASCADE,
+    engine_request_id TEXT NOT NULL,
+    operation_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','allow_once','reject_once','interrupted')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT
+  );
+  CREATE INDEX idx_app_agent_session_permissions_status ON app_agent_session_permissions(session_id,status,created_at);
+  `,
 ];
 
 // ============================================================================

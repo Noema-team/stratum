@@ -34,6 +34,7 @@ import type { FullBuildCallbacks } from './execution/full-build-step-runner.js';
 import { Scheduler } from './scheduler/scheduler.js';
 
 import { ControlPlaneServer } from './api/control-plane-server.js';
+import type { AgentRuntime } from './application/agent-sessions/runtime.js';
 
 import { AgentRunner } from './agent-runner.js';
 import { ContextManager } from './context-manager.js';
@@ -123,6 +124,8 @@ export interface StratumApplicationOptions {
   host?: string;
   schedulerIntervalMs?: number;
   requireAuth?: boolean;
+  agentRuntime?: AgentRuntime;
+  gooseConfigDir?: string;
 }
 
 export interface StratumApplication {
@@ -141,6 +144,8 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     host,
     schedulerIntervalMs,
     requireAuth,
+    agentRuntime,
+    gooseConfigDir,
   } = opts;
 
   // ── Ensure runtime directory exists ───────────────────────────────────────
@@ -272,6 +277,9 @@ export function createStratumApplication(opts: StratumApplicationOptions): Strat
     port,
     host,
     requireAuth,
+    agentRuntime,
+    agentRuntimeBasePath: path.join(projectRoot, '.sle', 'agent-runtime'),
+    gooseConfigDir,
   });
 
   // ── Application shell ──────────────────────────────────────────────────────

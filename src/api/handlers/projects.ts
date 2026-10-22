@@ -2,6 +2,7 @@ import type { Router } from '../router.js';
 import type { ProjectRepository } from '../../storage/repositories.js';
 import { ok, err } from '../types.js';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { RepositoryRepository } from '../../storage/repositories.js';
 
 export function makeProjectHandlers(
@@ -44,15 +45,20 @@ export function makeProjectHandlers(
       const body = req.body as Record<string, unknown> | null;
       const remote = typeof body?.remote === 'string' ? body.remote.trim() : '';
       const defaultBranch = typeof body?.defaultBranch === 'string' ? body.defaultBranch.trim() : 'main';
+      const localWorkspace = typeof body?.localWorkspace === 'string' ? body.localWorkspace.trim() : undefined;
+      if (body?.localWorkspace !== undefined && (typeof body.localWorkspace !== 'string' || !localWorkspace || !path.isAbsolute(localWorkspace) || localWorkspace.length > 4096 || localWorkspace.includes('\0'))) {
+        return err('bad_request', 'localWorkspace must be an absolute local checkout path');
+      }
       const identity = normalizeGithubRemote(remote);
       if (!identity) return err('bad_request', 'remote must be a GitHub repository URL such as https://github.com/owner/repo');
       if (!defaultBranch || defaultBranch.length > 255) return err('bad_request', 'defaultBranch is invalid');
       const existing = repositories.findByRemote('github', identity, workspaceId);
       if (existing && !repositories.isLinkedToWorkspace(workspaceId, existing.id)) return err('not_found', 'Repository identity is not available in this workspace');
       const repository = existing ?? { id: randomUUID(), projectId: project.id, provider: 'github' as const,
-        remote: identity, defaultBranch, status: 'active' as const };
+        remote: identity, defaultBranch, localWorkspace, status: 'active' as const };
       try {
         if (!existing) repositories.save(repository);
+        else if (localWorkspace) repositories.updateLocalWorkspace(existing.id, localWorkspace);
         repositories.linkToProject(project.id, repository.id);
         return ok({ ...repository, projectId: project.id });
       } catch (error) {

@@ -29,6 +29,10 @@ import { makeArtifactHandlers } from './handlers/artifacts.js';
 import { makeObjectiveHandlers } from './handlers/objectives.js';
 import { makeProcessHandlers } from './handlers/processes.js';
 import { ProcessService } from '../application/processes/service.js';
+import { makeAgentSessionHandlers } from './handlers/agent-sessions.js';
+import { AgentSessionService } from '../application/agent-sessions/service.js';
+import { DockerGooseRuntime } from '../application/agent-sessions/runtime.js';
+import type { AgentRuntime } from '../application/agent-sessions/runtime.js';
 import type { WorkService } from '../services/work-service.js';
 import type { EvidenceService } from '../services/evidence-service.js';
 import type { ResumeService } from '../services/resume-service.js';
@@ -48,6 +52,9 @@ export interface ControlPlaneServerOptions {
   resumeService?: ResumeService;
   port?: number;
   host?: string;
+  agentRuntime?: AgentRuntime;
+  agentRuntimeBasePath?: string;
+  gooseConfigDir?: string;
   requireAuth?: boolean;
   // TLS: provide both certPath and keyPath to serve HTTPS instead of HTTP.
   tls?: { certPath: string; keyPath: string };
@@ -60,6 +67,8 @@ export class ControlPlaneServer {
   readonly port: number;
   readonly host: string;
   readonly protocol: ControlPlaneProtocol;
+  private readonly agentSessions: AgentSessionService;
+  private startupReconciled = false;
 
   constructor(opts: ControlPlaneServerOptions) {
     this.port = opts.port ?? 7373;
@@ -82,15 +91,18 @@ export class ControlPlaneServer {
     const events = new EventRepository(opts.db);
     const stepExecutions = new StepExecutionRepository(opts.db);
     const artifacts = new ArtifactRepository(opts.db);
+    const repositories = new RepositoryRepository(opts.db);
     const objectiveService = new ObjectiveService(opts.db, opts.workspaceId);
     const processService = new ProcessService(opts.db, opts.workspaceId);
+    this.agentSessions = new AgentSessionService(opts.db, opts.workspaceId, processService, repositories,
+      opts.agentRuntime ?? new DockerGooseRuntime(opts.gooseConfigDir), opts.agentRuntimeBasePath ?? path.join(process.cwd(), '.sle', 'agent-runtime'));
 
     if (opts.requireAuth) {
       router.setAuth(raw => tokens.validate(raw));
     }
 
     makeAttentionHandlers(router, attention, projects, opts.workspaceId);
-    makeProjectHandlers(router, projects, opts.workspaceId, new RepositoryRepository(opts.db));
+    makeProjectHandlers(router, projects, opts.workspaceId, repositories);
     makeWorkHandlers(router, workItems, opts.workService, projects, opts.workspaceId);
     makeDecisionHandlers(router, decisions, opts.workService, opts.resumeService, projects, opts.workspaceId);
     makeEvidenceHandlers(router, evidence, opts.evidenceService, workItems, projects, opts.workspaceId);
@@ -98,6 +110,7 @@ export class ControlPlaneServer {
     makeArtifactHandlers(router, artifacts, workItems, projects, opts.workspaceId);
     makeObjectiveHandlers(router, objectiveService, workItems, projects, opts.workspaceId);
     makeProcessHandlers(router, processService);
+    makeAgentSessionHandlers(router, this.agentSessions);
     makeWorkflowHandlers(router);
 
     // Token management
@@ -285,6 +298,10 @@ export class ControlPlaneServer {
   }
 
   listen(): Promise<void> {
+    if (!this.startupReconciled) {
+      this.agentSessions.reconcileHostRestart();
+      this.startupReconciled = true;
+    }
     return new Promise(resolve => this.server.listen(this.port, this.host, () => {
       // When port 0 is requested the OS assigns one — update this.port so callers can read it.
       const addr = this.server.address();

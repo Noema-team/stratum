@@ -1,6 +1,6 @@
 # Stratum v0.2 — Agent-Enabled Processes
 
-**Status:** implementation specification for the bounded first slice
+**Status:** bounded read-only implementation; provider-backed acceptance remains blocked on local Goose configuration and credentials
 **Date:** 2026-10-22
 **Base:** `feat/process-functional-maturity` at `99f473a40f5afb2f7b39f477ad7ce9af1e9e4a22`
 **Related:** [DDR-042](../decisions/ddr-042-process-centric-application.md), [Process Application v0.1](stratum-process-application-v0.1.md), [Functional Maturity](process-application-functional-maturity.md), and the [collaborative workspace proposal](../ideas/collaborative-agent-workspace-platform-proposal.md) (DISCUSSION reference, not an authority).
@@ -26,6 +26,8 @@ The current runtime environment has Docker 28.4.0 and can enforce a read-only co
 
 The first connector is Goose 1.54.0 over ACP stdio, behind a Stratum-owned connector interface. It runs in a container with no Docker socket, dropped capabilities, `no-new-privileges`, PID and memory bounds, a read-only root filesystem, a per-session writable engine-state directory, and one explicitly authorized repository bind mounted read-only at `/workspace`. The workspace manager resolves the configured local checkout, rejects symlink/non-directory paths, verifies its Git root and canonical remote against the linked repository, and captures the starting commit before mounting it.
 
+The pinned container reference is `ghcr.io/aaif-goose/goose:1.54.0@sha256:c8a6b66718fafc405055bb642ab1cccbb9a31ed76d1fbd1e4385d18c43cdb4d0`. A local container smoke check confirmed the image reports Goose 1.54.0 and answers ACP `initialize`. This does not qualify provider authentication, a real model turn, restore behavior through the Stratum connector, or the full acceptance scenario.
+
 Only one repository is visible in this first slice. File requests are normalized and checked to remain under `/workspace`; file writes, directory creation, terminal execution, push, merge, deployment, and any host path outside the mounted repository are refused. Permission requests are durable and tied to one exact ACP tool operation. Only `allow_once` and `reject_once` are valid outcomes; `allow_always` is never selected. Read-only container and bind-mount restrictions remain in force even when a permission is granted.
 
 Docker is a required runtime boundary. If Docker is absent or the isolation options cannot be applied, session creation fails closed. The ordinary local Process UI stays usable. The application does not silently fall back to running Goose on the host.
@@ -44,8 +46,8 @@ Engine stream events are appended with monotonically increasing Stratum sequence
 
 ## Delivery slices and gates
 
-1. **Session foundation:** append-only session/workspace/event/operation/permission persistence, workspace validation, Docker isolation checks, ACP connector, and API ownership/idempotency tests. Gate: cannot cross Process/Project boundaries; read-only and no-socket container constraints are verified.
-2. **Process Workspace:** session status, multi-turn prompt, event history/cursor refresh, permission decisions, cancel/reconcile, and explicit user promotion of agent findings to Process records. Gate: refresh never duplicates instructions; agent text never silently becomes a decision.
-3. **Real Goose qualification:** run the accepted Goose ACP harness behavior through the Stratum connector in the bounded workspace, then exercise a real Process investigation and human review iteration. Gate: recorded transcript recovery, one-time permission mediation, cancellation, no duplicate prompt, and no out-of-bound filesystem access. Until credentials and Goose are configured, this gate is not satisfied.
+1. **Session foundation implemented:** append-only session/workspace/event/operation/permission persistence, workspace validation, Docker isolation configuration, ACP connector, and a pinned-commit snapshot regression. Additional connector/API ownership and idempotency integration tests remain necessary.
+2. **Process Workspace implemented:** session status, event cursor refresh, prompts, permission decisions, cancel/reconcile controls, and explicit user actions to record agent claims as Process updates or proposals. A refresh reads the existing session and does not submit a prompt.
+3. **Real Goose qualification not complete:** local checks covered the pinned image/version, ACP initialization, and Docker read-only container behavior. No provider-backed session or model turn ran because this environment has no Goose configuration or provider credentials. The accepted end-to-end Process scenario remains unqualified.
 
 Writable repository changes, automated shell execution, multiple repositories per session, tool-network allowlisting, multiple concurrent sessions per Process, remote/multi-user access, merge/deployment, WorkItem handoff, and multi-agent scheduling are out of scope.

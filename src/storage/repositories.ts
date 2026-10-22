@@ -372,6 +372,10 @@ export class RepositoryRepository {
   updateStatus(id: string, status: Repository['status']): void {
     this.statusStmt.run(status, id);
   }
+
+  updateLocalWorkspace(id: string, localWorkspace: string | undefined): void {
+    this.db.prepare('UPDATE repositories SET local_workspace=? WHERE id=?').run(localWorkspace ?? null, id);
+  }
 }
 
 function rowToRepository(r: Record<string, unknown>): Repository {
