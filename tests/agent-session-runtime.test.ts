@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DockerGooseRuntime, normalizeGuestPath } from '../src/application/agent-sessions/runtime.js';
 import type { AgentRuntimeCallbacks } from '../src/application/agent-sessions/runtime.js';
 import type { AgentSession, RuntimeWorkspace } from '../src/application/agent-sessions/types.js';
+import { resolveWorkspaceReadPath } from '../src/application/agent-sessions/workspace.js';
 
 const fakeDocker = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -25,11 +26,14 @@ rl.on('line', line => {
   if (message.method === 'session/prompt') {
     promptId = message.id;
     permissionId = process.env.FAKE_PERMISSION_ID_TYPE === 'number' ? 37 : 'permission-37';
-    send({ jsonrpc:'2.0', method:'session/request_permission', id:permissionId, params:{ toolCall:{ title:'Read file', rawInput:{path:'/workspace/README.md'}, meta:{goose:{toolCall:{extensionName:'developer',toolName:'read'}}}}, options:[{optionId:'allow',kind:'allow_once'},{optionId:'reject',kind:'reject_once'}] } });
+    send({ jsonrpc:'2.0', method:'session/request_permission', id:permissionId, params:{ toolCall:{ title:'Read file', rawInput:{path:process.env.FAKE_REQUEST_PATH || '/workspace/README.md'}, meta:{goose:{toolCall:{extensionName:'developer',toolName:'read'}}}}, options:[{optionId:'allow',kind:'allow_once'},{optionId:'reject',kind:'reject_once'}] } });
     return;
   }
   if (message.id === permissionId) {
     log({ stage:'permission-response', id:message.id, result:message.result });
+    if (message.result?.outcome?.optionId === 'reject' || message.error) {
+      send({ jsonrpc:'2.0', id:promptId, result:{stopReason:'end_turn'} }); return;
+    }
     readId = 'read-1'; send({ jsonrpc:'2.0', method:'fs/read_text_file', id:readId, params:{path:'/workspace/README.md'} }); return;
   }
   if (message.id === readId) {
@@ -80,6 +84,44 @@ for (const idType of ['number','string'] as const) {
     }
   });
 }
+
+test('Goose ACP refuses a symlink escape without asking for human approval', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-path-deny-'));
+  const previousPath = process.env.PATH; const previousRequest = process.env.FAKE_REQUEST_PATH; const previousLog = process.env.FAKE_ACP_LOG;
+  try {
+    const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const repo = path.join(root, 'workspace'); const state = path.join(root, 'state');
+    mkdirSync(bin); mkdirSync(config); mkdirSync(repo); mkdirSync(state);
+    writeFileSync(path.join(repo, 'README.md'), 'pinned source');
+    symlinkSync('/etc/passwd', path.join(repo, 'escape.txt'));
+    const dockerPath = path.join(bin, 'docker'); writeFileSync(dockerPath, fakeDocker); chmodSync(dockerPath, 0o755);
+    const logPath = path.join(root, 'acp.jsonl');
+    process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`; process.env.FAKE_REQUEST_PATH = '/workspace/escape.txt'; process.env.FAKE_ACP_LOG = logPath;
+    const runtime = new DockerGooseRuntime(config, 'local/goose:test');
+    const session: AgentSession = { id:'session-deny', projectId:'project-1', processId:'process-1', workspaceId:'workspace-1', repositoryId:'repo-1', repositoryRemote:'https://github.com/example/repo.git', repositoryCommit:'a'.repeat(40), engine:'goose-acp', lifecycle:'starting', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), lastEventSeq:0 };
+    const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
+    let approvals = 0;
+    const events: string[] = [];
+    const callbacks: AgentRuntimeCallbacks = {
+      onEvent: type => events.push(type), onLifecycle: () => {},
+      requestToolPermission: async () => { approvals++; return {decision:'allow_once',optionId:'allow'}; },
+      validateWorkspaceFile: async requestedPath => {
+        const relativePath = requestedPath.slice('/workspace/'.length);
+        resolveWorkspaceReadPath(repo, relativePath);
+      },
+      readWorkspaceFile: async () => { throw new Error('must never read'); },
+    };
+    const started = await runtime.start(session, workspace, callbacks, false);
+    await runtime.prompt(started.handle, started.engineSessionId, 'Read the requested file');
+    await runtime.stop(started.handle);
+    const messages = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string,unknown>);
+    assert.equal(approvals, 0);
+    assert.ok(events.includes('tool_blocked'));
+    assert.equal(messages.some(item => item.stage === 'read-response'), false);
+  } finally {
+    process.env.PATH = previousPath; process.env.FAKE_REQUEST_PATH = previousRequest; process.env.FAKE_ACP_LOG = previousLog;
+    rmSync(root, { recursive:true, force:true });
+  }
+});
 
 test('Goose permission paths reject absolute host paths, traversal, and configuration locations', () => {
   for (const candidate of ['/etc/passwd', '/var/lib/stratum-goose/config/provider.yaml', '/workspace/../../etc/passwd', '../../etc/passwd']) {
