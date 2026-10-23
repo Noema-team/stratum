@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,7 +10,7 @@ import { ProcessService } from '../src/application/processes/service.js';
 import { AgentSessionService, AgentSessionServiceError } from '../src/application/agent-sessions/service.js';
 import type { AgentRuntime, AgentRuntimeCallbacks, RuntimePermissionResult } from '../src/application/agent-sessions/runtime.js';
 import type { AgentSession, RuntimeWorkspace } from '../src/application/agent-sessions/types.js';
-import { createReadOnlySnapshot, resolveWorkspaceReadPath } from '../src/application/agent-sessions/workspace.js';
+import { assertEmptyReadOnlyWorkspace, createEmptyReadOnlyWorkspace, createReadOnlySnapshot, resolveWorkspaceReadPath } from '../src/application/agent-sessions/workspace.js';
 
 test('AgentSession snapshot is pinned to one commit and rejects traversal and symlink escape', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-agent-snapshot-'));
@@ -27,6 +27,28 @@ test('AgentSession snapshot is pinned to one commit and rejects traversal and sy
     assert.throws(() => resolveWorkspaceReadPath(snapshot, '/etc/passwd'));
     assert.throws(() => resolveWorkspaceReadPath(snapshot, 'missing.txt'));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('repository-free workspace is a private empty read-only directory and exposes no files', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-agent-empty-'));
+  try {
+    const engineState = path.join(root, 'session');
+    const emptyWorkspace = createEmptyReadOnlyWorkspace(engineState);
+    assert.equal(emptyWorkspace, path.join(engineState, 'workspace'));
+    assert.equal(readdirSync(emptyWorkspace).length, 0);
+    assert.equal(statSync(emptyWorkspace).mode & 0o222, 0);
+    assert.throws(() => resolveWorkspaceReadPath(emptyWorkspace, 'README.md'));
+    assertEmptyReadOnlyWorkspace(emptyWorkspace, engineState);
+
+    assert.throws(() => writeFileSync(path.join(emptyWorkspace, 'unexpected.txt'), 'host write'));
+    chmodSync(emptyWorkspace, 0o700);
+    writeFileSync(path.join(emptyWorkspace, 'unexpected.txt'), 'unexpected host write');
+    chmodSync(emptyWorkspace, 0o500);
+    assert.throws(() => assertEmptyReadOnlyWorkspace(emptyWorkspace, engineState), /must remain empty/);
+  } finally {
+    try { chmodSync(path.join(root, 'session', 'workspace'), 0o700); } catch { /* workspace may not have been created */ }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('AgentSession is Process-scoped and duplicate prompt keys never dispatch twice', async () => {

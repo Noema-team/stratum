@@ -564,6 +564,72 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE app_process_activity ADD COLUMN source_event_seq INTEGER;
   CREATE INDEX idx_app_process_activity_agent_source ON app_process_activity(source_agent_session_id,source_event_seq);
   `,
+
+  // Migration 19: allow Project-owned exploration sessions and private empty workspaces.
+  // Rebuild only the two parent tables. Child event/operation/permission tables keep
+  // their references to the stable table names and their rows are never copied or dropped.
+  `
+  CREATE TABLE app_runtime_workspaces_v19 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    process_id TEXT REFERENCES app_processes(id) ON DELETE CASCADE,
+    repository_id TEXT REFERENCES repositories(id),
+    workspace_mode TEXT NOT NULL CHECK(workspace_mode IN ('repository_snapshot','empty')),
+    host_path TEXT NOT NULL,
+    repository_commit TEXT,
+    access_mode TEXT NOT NULL CHECK(access_mode='read_only'),
+    engine_state_path TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ready','closed','failed')),
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    CHECK (
+      (workspace_mode='repository_snapshot' AND repository_id IS NOT NULL AND repository_commit IS NOT NULL)
+      OR (workspace_mode='empty' AND repository_id IS NULL AND repository_commit IS NULL)
+    )
+  );
+  INSERT INTO app_runtime_workspaces_v19 (
+    id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
+    access_mode,engine_state_path,status,created_at,closed_at
+  ) SELECT id,project_id,process_id,repository_id,'repository_snapshot',host_path,repository_commit,
+      access_mode,engine_state_path,status,created_at,closed_at
+    FROM app_runtime_workspaces;
+  DROP TABLE app_runtime_workspaces;
+  ALTER TABLE app_runtime_workspaces_v19 RENAME TO app_runtime_workspaces;
+  CREATE INDEX idx_app_runtime_workspaces_process_repo
+    ON app_runtime_workspaces(process_id,repository_id,created_at);
+
+  CREATE TABLE app_agent_sessions_v19 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    process_id TEXT REFERENCES app_processes(id) ON DELETE CASCADE,
+    associated_process_id TEXT REFERENCES app_processes(id) ON DELETE SET NULL,
+    workspace_id TEXT NOT NULL REFERENCES app_runtime_workspaces(id),
+    engine TEXT NOT NULL CHECK(engine='goose-acp'),
+    engine_session_id TEXT,
+    lifecycle TEXT NOT NULL CHECK(lifecycle IN ('starting','idle','running','awaiting_permission','interrupted','outcome_unknown','stopped','failed')),
+    error_message TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_event_seq INTEGER NOT NULL DEFAULT 0,
+    CHECK(process_id IS NULL OR process_id=associated_process_id)
+  );
+  INSERT INTO app_agent_sessions_v19 (
+    id,project_id,process_id,associated_process_id,workspace_id,engine,engine_session_id,lifecycle,
+    error_message,created_by,created_at,updated_at,last_event_seq
+  ) SELECT id,project_id,process_id,process_id,workspace_id,engine,engine_session_id,lifecycle,
+      error_message,created_by,created_at,updated_at,last_event_seq
+    FROM app_agent_sessions;
+  DROP TABLE app_agent_sessions;
+  ALTER TABLE app_agent_sessions_v19 RENAME TO app_agent_sessions;
+  CREATE UNIQUE INDEX idx_app_agent_sessions_engine_id
+    ON app_agent_sessions(engine,engine_session_id) WHERE engine_session_id IS NOT NULL;
+  CREATE UNIQUE INDEX idx_app_agent_sessions_one_active_process ON app_agent_sessions(process_id)
+    WHERE process_id IS NOT NULL AND lifecycle IN ('starting','idle','running','awaiting_permission','interrupted','outcome_unknown');
+  CREATE INDEX idx_app_agent_sessions_process ON app_agent_sessions(process_id,created_at DESC);
+  CREATE INDEX idx_app_agent_sessions_associated_process ON app_agent_sessions(associated_process_id,created_at DESC);
+  CREATE INDEX idx_app_runtime_workspaces_project ON app_runtime_workspaces(project_id,created_at DESC);
+  `,
 ];
 
 // ============================================================================
@@ -589,7 +655,10 @@ export function openDatabase(path: string): Database.Database {
   return db;
 }
 
-function runMigrations(db: Database.Database): void {
+export function runMigrations(db: Database.Database, throughMigration = MIGRATIONS.length): void {
+  if (!Number.isInteger(throughMigration) || throughMigration < 0 || throughMigration > MIGRATIONS.length) {
+    throw new Error(`throughMigration must be between 0 and ${MIGRATIONS.length}`);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
       id         INTEGER PRIMARY KEY,
@@ -602,7 +671,7 @@ function runMigrations(db: Database.Database): void {
   );
   const record = db.prepare('INSERT INTO _migrations (id, applied_at) VALUES (?, ?)');
 
-  for (let i = 0; i < MIGRATIONS.length; i++) {
+  for (let i = 0; i < throughMigration; i++) {
     const migrationId = i + 1;
     if ((check.get(migrationId) as { count: number }).count === 0) {
       // PRAGMA foreign_keys cannot be changed inside a transaction, so disable it

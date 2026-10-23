@@ -3,10 +3,11 @@ export type AgentSessionLifecycle = 'starting' | 'idle' | 'running' | 'awaiting_
 export interface RuntimeWorkspace {
   id: string;
   projectId: string;
-  processId: string;
-  repositoryId: string;
+  processId?: string;
+  repositoryId?: string;
+  workspaceMode: 'repository_snapshot' | 'empty';
   hostPath: string;
-  repositoryCommit: string;
+  repositoryCommit?: string;
   accessMode: 'read_only';
   engineStatePath: string;
 }
@@ -14,11 +15,12 @@ export interface RuntimeWorkspace {
 export interface AgentSession {
   id: string;
   projectId: string;
-  processId: string;
+  processId?: string;
+  associatedProcessId?: string;
   workspaceId: string;
-  repositoryId: string;
-  repositoryRemote: string;
-  repositoryCommit: string;
+  repositoryId?: string;
+  repositoryRemote?: string;
+  repositoryCommit?: string;
   engine: 'goose-acp';
   engineSessionId?: string;
   lifecycle: AgentSessionLifecycle;

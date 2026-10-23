@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readlinkSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readlinkSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import type { AppProcess } from '../../storage/repositories.js';
 import { canonicalRepositoryIdentity } from '../../storage/repositories.js';
@@ -28,6 +28,32 @@ export function createReadOnlySnapshot(checkoutPath: string, commit: string, sta
   } finally {
     try { unlinkSync(archivePath); } catch { /* archive may not have been created */ }
   }
+}
+
+/** Create a private, empty workspace for repository-free sessions. */
+export function createEmptyReadOnlyWorkspace(engineStatePath: string): string {
+  mkdirSync(engineStatePath, { recursive: true, mode: 0o700 });
+  const statePath = realpathSync(engineStatePath);
+  if (lstatSync(engineStatePath).isSymbolicLink()) throw new Error('AgentSession engine state path may not be a symlink');
+  chmodSync(statePath, 0o700);
+  const workspacePath = path.join(statePath, 'workspace');
+  mkdirSync(workspacePath, { recursive: false, mode: 0o700 });
+  chmodSync(workspacePath, 0o500);
+  assertEmptyReadOnlyWorkspace(workspacePath, statePath);
+  return realpathSync(workspacePath);
+}
+
+/** Verify that an empty-mode bind mount is private, empty, read-only and session-local. */
+export function assertEmptyReadOnlyWorkspace(workspacePath: string, engineStatePath: string): void {
+  const statePath = realpathSync(engineStatePath);
+  const expected = path.join(statePath, 'workspace');
+  const info = lstatSync(workspacePath);
+  const resolved = realpathSync(workspacePath);
+  if (info.isSymbolicLink() || !info.isDirectory() || resolved !== expected) {
+    throw new Error('empty AgentSession workspace must be a real session-private directory');
+  }
+  if ((info.mode & 0o222) !== 0) throw new Error('empty AgentSession workspace must not be host-writable');
+  if (readdirSync(resolved).length !== 0) throw new Error('repository-free AgentSession workspace must remain empty');
 }
 
 /** Resolve and verify the exact linked checkout before it can be mounted into an agent container. */

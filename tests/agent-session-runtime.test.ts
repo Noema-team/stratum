@@ -6,7 +6,7 @@ import test from 'node:test';
 import { DockerGooseRuntime, normalizeGuestPath } from '../src/application/agent-sessions/runtime.js';
 import type { AgentRuntimeCallbacks } from '../src/application/agent-sessions/runtime.js';
 import type { AgentSession, RuntimeWorkspace } from '../src/application/agent-sessions/types.js';
-import { resolveWorkspaceReadPath } from '../src/application/agent-sessions/workspace.js';
+import { createEmptyReadOnlyWorkspace, resolveWorkspaceReadPath } from '../src/application/agent-sessions/workspace.js';
 
 const fakeDocker = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -14,6 +14,7 @@ const { appendFileSync } = require('node:fs');
 if (process.argv.includes('info')) { process.stdout.write('28.4.0\\n'); process.exit(0); }
 if (process.argv.includes('inspect')) process.exit(1);
 const log = item => appendFileSync(process.env.FAKE_ACP_LOG, JSON.stringify(item) + '\\n');
+log({ stage:'docker-args', args:process.argv.slice(2) });
 const rl = readline.createInterface({ input: process.stdin });
 let promptId; let permissionId; let readId;
 function send(value) { process.stdout.write(JSON.stringify(value) + '\\n'); }
@@ -60,7 +61,7 @@ for (const idType of ['number','string'] as const) {
       process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`; process.env.FAKE_PERMISSION_ID_TYPE = idType; process.env.FAKE_ACP_LOG = logPath;
       const runtime = new DockerGooseRuntime(config, 'local/goose:test');
       const session: AgentSession = { id:'session-1', projectId:'project-1', processId:'process-1', workspaceId:'workspace-1', repositoryId:'repo-1', repositoryRemote:'https://github.com/example/repo.git', repositoryCommit:'a'.repeat(40), engine:'goose-acp', lifecycle:'starting', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), lastEventSeq:0 };
-      const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
+      const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', workspaceMode:'repository_snapshot', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
       const events: Array<{type:string;payload:Record<string,unknown>}> = [];
       const callbacks: AgentRuntimeCallbacks = {
         onEvent: (type,payload) => events.push({type,payload}), onLifecycle: () => {},
@@ -98,7 +99,7 @@ test('Goose ACP refuses a symlink escape without asking for human approval', asy
     process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`; process.env.FAKE_REQUEST_PATH = '/workspace/escape.txt'; process.env.FAKE_ACP_LOG = logPath;
     const runtime = new DockerGooseRuntime(config, 'local/goose:test');
     const session: AgentSession = { id:'session-deny', projectId:'project-1', processId:'process-1', workspaceId:'workspace-1', repositoryId:'repo-1', repositoryRemote:'https://github.com/example/repo.git', repositoryCommit:'a'.repeat(40), engine:'goose-acp', lifecycle:'starting', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), lastEventSeq:0 };
-    const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
+    const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', workspaceMode:'repository_snapshot', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
     let approvals = 0;
     const events: string[] = [];
     const callbacks: AgentRuntimeCallbacks = {
@@ -119,6 +120,42 @@ test('Goose ACP refuses a symlink escape without asking for human approval', asy
     assert.equal(messages.some(item => item.stage === 'read-response'), false);
   } finally {
     process.env.PATH = previousPath; process.env.FAKE_REQUEST_PATH = previousRequest; process.env.FAKE_ACP_LOG = previousLog;
+    rmSync(root, { recursive:true, force:true });
+  }
+});
+
+test('Goose mounts repository-free sessions from only their private empty workspace', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-empty-workspace-'));
+  const previousPath = process.env.PATH; const previousLog = process.env.FAKE_ACP_LOG;
+  try {
+    const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const state = path.join(root, 'state');
+    mkdirSync(bin); mkdirSync(config); mkdirSync(state);
+    const dockerPath = path.join(bin, 'docker'); writeFileSync(dockerPath, fakeDocker); chmodSync(dockerPath, 0o755);
+    const logPath = path.join(root, 'acp.jsonl');
+    process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`; process.env.FAKE_ACP_LOG = logPath;
+    const sessionId = 'session-empty-1';
+    const runtime = new DockerGooseRuntime(config, 'local/goose:test');
+    const hostPath = createEmptyReadOnlyWorkspace(state);
+    const session: AgentSession = { id:sessionId, projectId:'project-1', workspaceId:'workspace-1', engine:'goose-acp', lifecycle:'starting', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), lastEventSeq:0 };
+    const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', workspaceMode:'empty', hostPath, accessMode:'read_only', engineStatePath:state };
+    const callbacks: AgentRuntimeCallbacks = {
+      onEvent: () => {}, onLifecycle: () => {}, requestToolPermission: async () => ({decision:'reject_once',optionId:'reject'}),
+      validateWorkspaceFile: async requested => { resolveWorkspaceReadPath(hostPath, requested.replace(/^\/workspace\//, '')); },
+      readWorkspaceFile: async (_requestId, requested) => readFileSync(resolveWorkspaceReadPath(hostPath, requested.replace(/^\/workspace\//, '')), 'utf8'),
+    };
+    const started = await runtime.start(session, workspace, callbacks, false);
+    await runtime.stop(started.handle);
+    const records = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {stage:string;args?:string[]});
+    const args = records.find(record => record.stage === 'docker-args')?.args ?? [];
+    const mounts = args.filter(arg => arg.startsWith('type=bind,source=')).sort();
+    assert.deepEqual(mounts, [
+      `type=bind,source=${config},target=/var/lib/stratum-goose/config,readonly`,
+      `type=bind,source=${hostPath},target=/workspace,readonly`,
+      `type=bind,source=${state},target=/var/lib/stratum-goose`,
+    ].sort());
+    assert.throws(() => resolveWorkspaceReadPath(hostPath, 'README.md'));
+  } finally {
+    process.env.PATH = previousPath; process.env.FAKE_ACP_LOG = previousLog;
     rmSync(root, { recursive:true, force:true });
   }
 });

@@ -4,7 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { RepositoryRepository } from '../../storage/repositories.js';
 import { ProcessService, ProcessServiceError } from '../processes/service.js';
-import { createReadOnlySnapshot, resolveAuthorizedCheckout, resolveWorkspaceReadPath } from './workspace.js';
+import { assertEmptyReadOnlyWorkspace, createReadOnlySnapshot, resolveAuthorizedCheckout, resolveWorkspaceReadPath } from './workspace.js';
 import type { AgentOperation, AgentEvent, AgentSession, PermissionRequest, RuntimeWorkspace } from './types.js';
 import type { AgentRuntime, AgentRuntimeCallbacks, RuntimePermissionResult } from './runtime.js';
 
@@ -97,15 +97,16 @@ export class AgentSessionService {
     mkdirSync(engineStatePath, { recursive: true, mode: 0o700 });
     const snapshotPath = createReadOnlySnapshot(checkout.path, checkout.commit, engineStatePath);
     const workspace: RuntimeWorkspace = { id: randomUUID(), projectId: process.projectId, processId, repositoryId,
-      hostPath: snapshotPath, repositoryCommit: checkout.commit, accessMode: 'read_only', engineStatePath };
+      workspaceMode: 'repository_snapshot', hostPath: snapshotPath, repositoryCommit: checkout.commit,
+      accessMode: 'read_only', engineStatePath };
     const briefing = this.makeBriefing(processId, details.definitionVersions[0]?.version ?? 1, repository.remote, checkout.commit);
     this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,host_path,repository_commit,
-        access_mode,engine_state_path,status,created_at) VALUES (?,?,?,?,?,?,'read_only',?,'ready',?)`)
-        .run(workspace.id, workspace.projectId, workspace.processId, workspace.repositoryId, workspace.hostPath,
-          workspace.repositoryCommit, workspace.engineStatePath, now);
-      this.db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
-        VALUES (?,?,?,?,'goose-acp','starting','local-user',?,?)`).run(id, process.projectId, processId, workspace.id, now, now);
+      this.db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
+        access_mode,engine_state_path,status,created_at) VALUES (?,?,?,?,?,?,?, 'read_only',?,'ready',?)`)
+        .run(workspace.id, workspace.projectId, processId, repositoryId, workspace.workspaceMode, workspace.hostPath,
+          checkout.commit, workspace.engineStatePath, now);
+      this.db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+        VALUES (?,?,?,?,?,'goose-acp','starting','local-user',?,?)`).run(id, process.projectId, processId, processId, workspace.id, now, now);
       this.db.prepare(`INSERT INTO app_agent_session_operations (id,session_id,idempotency_key,kind,prompt_text,status,created_at,updated_at)
         VALUES (?,?,'stratum-initial-briefing-v1','briefing',?,'intent',?,?)`).run(randomUUID(), id, briefing, now, now);
       this.appendEvent(id, 'session_start_requested', { engine: 'Goose 1.54.0 via ACP', repository: repository.remote,
@@ -353,9 +354,16 @@ export class AgentSessionService {
     if (lstatSync(row.host_path as string).isSymbolicLink() || storedPath !== path.join(statePath, 'workspace')) {
       throw new AgentSessionServiceError('RuntimeWorkspace path no longer matches its managed read-only snapshot', 'CONFLICT');
     }
-    return { id: row.id as string, projectId: row.project_id as string, processId: row.process_id as string,
-      repositoryId: row.repository_id as string, hostPath: storedPath,
-      repositoryCommit: row.repository_commit as string, accessMode: 'read_only', engineStatePath: statePath };
+    const workspaceMode = row.workspace_mode as RuntimeWorkspace['workspaceMode'];
+    if (workspaceMode === 'empty') {
+      try { assertEmptyReadOnlyWorkspace(storedPath, statePath); }
+      catch { throw new AgentSessionServiceError('Repository-free workspace is no longer empty or available', 'CONFLICT'); }
+    }
+    return { id: row.id as string, projectId: row.project_id as string,
+      processId: (row.process_id as string | null) ?? undefined,
+      repositoryId: (row.repository_id as string | null) ?? undefined, workspaceMode, hostPath: storedPath,
+      repositoryCommit: (row.repository_commit as string | null) ?? undefined,
+      accessMode: 'read_only', engineStatePath: statePath };
   }
 
   private findOperation(sessionId: string, key: string): AgentOperation | undefined {
@@ -379,9 +387,13 @@ export class AgentSessionService {
   }
 
   private toSession(row: Record<string, unknown>): AgentSession {
-    return { id: row.id as string, projectId: row.project_id as string, processId: row.process_id as string,
-      workspaceId: row.workspace_id as string, repositoryId: row.repository_id as string, repositoryRemote: row.repository_remote as string,
-      repositoryCommit: row.repository_commit as string, engine: row.engine as 'goose-acp', engineSessionId: row.engine_session_id as string | undefined,
+    return { id: row.id as string, projectId: row.project_id as string,
+      processId: (row.process_id as string | null) ?? undefined,
+      associatedProcessId: (row.associated_process_id as string | null) ?? undefined,
+      workspaceId: row.workspace_id as string,
+      repositoryId: (row.repository_id as string | null) ?? undefined,
+      repositoryRemote: (row.repository_remote as string | null) ?? undefined,
+      repositoryCommit: (row.repository_commit as string | null) ?? undefined, engine: row.engine as 'goose-acp', engineSessionId: row.engine_session_id as string | undefined,
       lifecycle: row.lifecycle as AgentSession['lifecycle'], errorMessage: row.error_message as string | undefined,
       createdAt: row.created_at as string, updatedAt: row.updated_at as string, lastEventSeq: row.last_event_seq as number };
   }

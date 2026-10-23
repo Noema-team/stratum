@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { AgentSession, RuntimeWorkspace } from './types.js';
+import { assertEmptyReadOnlyWorkspace } from './workspace.js';
 
 export interface RuntimePermissionResult {
   decision: 'allow_once' | 'reject_once';
@@ -52,6 +53,12 @@ export class DockerGooseRuntime implements AgentRuntime {
     this.assertMountSafe(configDir);
     this.assertMountSafe(workspace.hostPath);
     this.assertMountSafe(workspace.engineStatePath);
+    if (workspace.workspaceMode === 'empty') {
+      if (workspace.repositoryId || workspace.repositoryCommit) throw new Error('empty AgentSession workspace must not have repository metadata');
+      assertEmptyReadOnlyWorkspace(workspace.hostPath, workspace.engineStatePath);
+    } else if (!workspace.repositoryId || !workspace.repositoryCommit) {
+      throw new Error('repository snapshot workspace is missing its repository identity or pinned commit');
+    }
     mkdirSync(workspace.engineStatePath, { recursive: true, mode: 0o700 });
     this.stopStaleContainer(session.id);
 
