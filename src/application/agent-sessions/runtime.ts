@@ -72,6 +72,10 @@ export class DockerGooseRuntime implements AgentRuntime {
       '--mount', `type=bind,source=${workspace.hostPath},target=/workspace,readonly`,
       '--mount', `type=bind,source=${workspace.engineStatePath},target=/var/lib/stratum-goose`,
       '--mount', `type=bind,source=${configDir},target=/var/lib/stratum-goose/config,readonly`,
+      // RuntimeWorkspace.hostPath is intentionally stored under engineStatePath for recovery.
+      // Re-mount that child read-only after the writable parent bind so Goose cannot mutate it
+      // through /var/lib/stratum-goose/workspace.
+      '--mount', `type=bind,source=${workspace.hostPath},target=/var/lib/stratum-goose/workspace,readonly`,
       '--env', 'GOOSE_PATH_ROOT=/var/lib/stratum-goose',
       '--env', 'GOOSE_MODE=approve',
       '--env', 'HOME=/home/goose',

@@ -53,8 +53,8 @@ for (const idType of ['number','string'] as const) {
     const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-contract-'));
     const previousPath = process.env.PATH; const previousType = process.env.FAKE_PERMISSION_ID_TYPE; const previousLog = process.env.FAKE_ACP_LOG;
     try {
-      const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const repo = path.join(root, 'workspace'); const state = path.join(root, 'state');
-      mkdirSync(bin); mkdirSync(config); mkdirSync(repo); mkdirSync(state);
+      const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const state = path.join(root, 'state'); const repo = path.join(state, 'workspace');
+      mkdirSync(bin); mkdirSync(config); mkdirSync(state); mkdirSync(repo);
       writeFileSync(path.join(repo, 'README.md'), 'pinned source');
       const dockerPath = path.join(bin, 'docker'); writeFileSync(dockerPath, fakeDocker); chmodSync(dockerPath, 0o755);
       const logPath = path.join(root, 'acp.jsonl');
@@ -74,6 +74,17 @@ for (const idType of ['number','string'] as const) {
       assert.equal(result.stopReason, 'end_turn');
       await runtime.stop(started.handle);
       const messages = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string,unknown>);
+      const args = messages.find(item => item.stage === 'docker-args')?.args as string[];
+      const mounts = args.filter(arg => arg.startsWith('type=bind,source=')).sort();
+      const stateMountIndex = args.indexOf(`type=bind,source=${state},target=/var/lib/stratum-goose`);
+      const workspaceAliasMountIndex = args.indexOf(`type=bind,source=${repo},target=/var/lib/stratum-goose/workspace,readonly`);
+      assert.ok(workspaceAliasMountIndex > stateMountIndex, 'read-only workspace alias mount must cover the writable parent state mount');
+      assert.deepEqual(mounts, [
+        `type=bind,source=${config},target=/var/lib/stratum-goose/config,readonly`,
+        `type=bind,source=${repo},target=/workspace,readonly`,
+        `type=bind,source=${repo},target=/var/lib/stratum-goose/workspace,readonly`,
+        `type=bind,source=${state},target=/var/lib/stratum-goose`,
+      ].sort());
       const permissionResponse = messages.find(item => item.stage === 'permission-response')!;
       assert.equal(typeof permissionResponse.id, idType);
       assert.equal((messages.find(item => item.stage === 'read-response')?.result as {content:string}).content, 'pinned source');
@@ -90,8 +101,8 @@ test('Goose ACP refuses a symlink escape without asking for human approval', asy
   const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-path-deny-'));
   const previousPath = process.env.PATH; const previousRequest = process.env.FAKE_REQUEST_PATH; const previousLog = process.env.FAKE_ACP_LOG;
   try {
-    const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const repo = path.join(root, 'workspace'); const state = path.join(root, 'state');
-    mkdirSync(bin); mkdirSync(config); mkdirSync(repo); mkdirSync(state);
+    const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const state = path.join(root, 'state'); const repo = path.join(state, 'workspace');
+    mkdirSync(bin); mkdirSync(config); mkdirSync(state); mkdirSync(repo);
     writeFileSync(path.join(repo, 'README.md'), 'pinned source');
     symlinkSync('/etc/passwd', path.join(repo, 'escape.txt'));
     const dockerPath = path.join(bin, 'docker'); writeFileSync(dockerPath, fakeDocker); chmodSync(dockerPath, 0o755);
@@ -124,7 +135,7 @@ test('Goose ACP refuses a symlink escape without asking for human approval', asy
   }
 });
 
-test('Goose mounts repository-free sessions from only their private empty workspace', async () => {
+test('Goose mounts repository-free sessions read-only through /workspace and the state-path alias', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-empty-workspace-'));
   const previousPath = process.env.PATH; const previousLog = process.env.FAKE_ACP_LOG;
   try {
@@ -148,9 +159,13 @@ test('Goose mounts repository-free sessions from only their private empty worksp
     const records = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {stage:string;args?:string[]});
     const args = records.find(record => record.stage === 'docker-args')?.args ?? [];
     const mounts = args.filter(arg => arg.startsWith('type=bind,source=')).sort();
+    const stateMountIndex = args.indexOf(`type=bind,source=${state},target=/var/lib/stratum-goose`);
+    const workspaceAliasMountIndex = args.indexOf(`type=bind,source=${hostPath},target=/var/lib/stratum-goose/workspace,readonly`);
+    assert.ok(workspaceAliasMountIndex > stateMountIndex, 'read-only workspace alias mount must cover the writable parent state mount');
     assert.deepEqual(mounts, [
       `type=bind,source=${config},target=/var/lib/stratum-goose/config,readonly`,
       `type=bind,source=${hostPath},target=/workspace,readonly`,
+      `type=bind,source=${hostPath},target=/var/lib/stratum-goose/workspace,readonly`,
       `type=bind,source=${state},target=/var/lib/stratum-goose`,
     ].sort());
     assert.throws(() => resolveWorkspaceReadPath(hostPath, 'README.md'));
