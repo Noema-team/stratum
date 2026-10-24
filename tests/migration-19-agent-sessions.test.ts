@@ -76,7 +76,8 @@ test('Migration 19 preserves Process-owned AgentSession records and active-sessi
     runMigrations(db);
 
     assert.deepEqual(preservedRows(db), before);
-    assert.equal((db.prepare('SELECT associated_process_id FROM app_agent_sessions WHERE id=?').get(sessionId) as { associated_process_id: string }).associated_process_id, processId);
+    assert.deepEqual(db.prepare('SELECT process_id,associated_process_id FROM app_agent_sessions WHERE id=?').get(sessionId),
+      { process_id: processId, associated_process_id: processId });
     assert.equal((db.prepare('SELECT workspace_mode FROM app_runtime_workspaces WHERE id=?').get(runtimeWorkspaceId) as { workspace_mode: string }).workspace_mode, 'repository_snapshot');
     assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
     assert.deepEqual(db.pragma('foreign_key_check'), []);
@@ -92,14 +93,37 @@ test('Migration 19 preserves Process-owned AgentSession records and active-sessi
       .run(secondSessionId, projectId, processId, secondWorkspaceId, now, now);
     assert.equal((db.prepare('SELECT count(*) AS count FROM app_agent_sessions WHERE associated_process_id=? AND process_id IS NULL').get(processId) as { count: number }).count, 1);
 
-    const duplicateWorkspaceId = '91000000-0000-4000-8000-00000000000b';
+    const projectOnlyWorkspaceId = '91000000-0000-4000-8000-00000000000b';
+    const projectOnlySessionId = '91000000-0000-4000-8000-00000000000c';
+    db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
+      access_mode,engine_state_path,status,created_at) VALUES (?,?,NULL,NULL,'empty',?,NULL,'read_only',?,'ready',?)`)
+      .run(projectOnlyWorkspaceId, projectId, '/private/project-only/workspace', '/private/project-only', now);
+    db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+      VALUES (?,?,NULL,NULL,?,'goose-acp','idle','local-user',?,?)`)
+      .run(projectOnlySessionId, projectId, projectOnlyWorkspaceId, now, now);
+    assert.deepEqual(db.prepare('SELECT process_id,associated_process_id FROM app_agent_sessions WHERE id=?').get(projectOnlySessionId),
+      { process_id: null, associated_process_id: null });
+
+    const secondProcessId = '91000000-0000-4000-8000-00000000000d';
+    db.prepare(`INSERT INTO app_processes (id,project_id,title,intent,desired_outcomes_json,constraints_json,lifecycle,current_focus,created_at,updated_at)
+      VALUES (?,?, 'Second Process','Another effort','[]','[]','active','Planning',?,?)`).run(secondProcessId, projectId, now, now);
+    const duplicateWorkspaceId = '91000000-0000-4000-8000-00000000000e';
     db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
       access_mode,engine_state_path,status,created_at) VALUES (?,?,?,?, 'repository_snapshot',?,?,'read_only',?,'ready',?)`)
       .run(duplicateWorkspaceId, projectId, processId, repositoryId, '/other/workspace', 'b'.repeat(40), '/other/state', now);
     assert.throws(() => db.prepare(`INSERT INTO app_agent_sessions
       (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
       VALUES (?,?, ?, ?, ?, 'goose-acp','running','local-user',?,?)`)
-      .run('91000000-0000-4000-8000-00000000000c', projectId, processId, processId, duplicateWorkspaceId, now, now), /UNIQUE constraint failed/);
+      .run('91000000-0000-4000-8000-00000000000f', projectId, processId, processId, duplicateWorkspaceId, now, now), /UNIQUE constraint failed/);
+
+    assert.throws(() => db.prepare(`INSERT INTO app_agent_sessions
+      (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+      VALUES (?,?, ?, NULL, ?, 'goose-acp','failed','local-user',?,?)`)
+      .run('91000000-0000-4000-8000-000000000010', projectId, processId, duplicateWorkspaceId, now, now), /CHECK constraint failed/);
+    assert.throws(() => db.prepare(`INSERT INTO app_agent_sessions
+      (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+      VALUES (?,?, ?, ?, ?, 'goose-acp','failed','local-user',?,?)`)
+      .run('91000000-0000-4000-8000-000000000011', projectId, processId, secondProcessId, duplicateWorkspaceId, now, now), /CHECK constraint failed/);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

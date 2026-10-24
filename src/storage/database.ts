@@ -612,7 +612,7 @@ export const MIGRATIONS: readonly string[] = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_event_seq INTEGER NOT NULL DEFAULT 0,
-    CHECK(process_id IS NULL OR process_id=associated_process_id)
+    CHECK(process_id IS NULL OR (associated_process_id IS NOT NULL AND process_id=associated_process_id))
   );
   INSERT INTO app_agent_sessions_v19 (
     id,project_id,process_id,associated_process_id,workspace_id,engine,engine_session_id,lifecycle,
