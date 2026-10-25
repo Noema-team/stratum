@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import type { RepositoryRepository } from '../../storage/repositories.js';
+import { canonicalRepositoryIdentity, type RepositoryRepository } from '../../storage/repositories.js';
 import { ProcessService, ProcessServiceError } from '../processes/service.js';
-import { assertEmptyReadOnlyWorkspace, createReadOnlySnapshot, resolveAuthorizedCheckout, resolveWorkspaceReadPath } from './workspace.js';
+import { assertEmptyReadOnlyWorkspace, createEmptyReadOnlyWorkspace, createReadOnlySnapshot, resolveAuthorizedCheckout, resolveProjectAuthorizedCheckout, resolveWorkspaceReadPath } from './workspace.js';
 import type { AgentOperation, AgentEvent, AgentSession, PermissionRequest, RuntimeWorkspace } from './types.js';
 import type { AgentRuntime, AgentRuntimeCallbacks, RuntimePermissionResult } from './runtime.js';
 
@@ -48,9 +48,41 @@ export class AgentSessionService {
   findForProcess(processId: string): AgentSession | undefined {
     const process = this.getProcess(processId);
     const row = this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
-      FROM app_agent_sessions s JOIN app_runtime_workspaces w ON w.id=s.workspace_id
-      JOIN repositories r ON r.id=w.repository_id WHERE s.process_id=? ORDER BY s.created_at DESC LIMIT 1`).get(process.id) as Record<string, unknown> | undefined;
+      FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
+      LEFT JOIN repositories r ON r.id=w.repository_id WHERE s.process_id=? ORDER BY s.created_at DESC LIMIT 1`).get(process.id) as Record<string, unknown> | undefined;
     return row ? this.toSession(row) : undefined;
+  }
+
+  listExplorations(projectId: string): AgentSession[] {
+    this.requireProject(projectId);
+    return (this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
+      FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
+      LEFT JOIN repositories r ON r.id=w.repository_id
+      WHERE s.project_id=? AND s.process_id IS NULL ORDER BY s.updated_at DESC,s.created_at DESC`).all(projectId) as Array<Record<string, unknown>>)
+      .map(row => this.toSession(row));
+  }
+
+  findExploration(projectId: string, sessionId: string): AgentSession | undefined {
+    this.requireProject(projectId);
+    const row = this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
+      FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
+      LEFT JOIN repositories r ON r.id=w.repository_id
+      WHERE s.id=? AND s.project_id=? AND s.process_id IS NULL`).get(sessionId, projectId) as Record<string, unknown> | undefined;
+    return row ? this.toSession(row) : undefined;
+  }
+
+  assertProjectExploration(projectId: string, sessionId: string): AgentSession {
+    const session = this.findExploration(projectId, sessionId);
+    if (!session) throw new AgentSessionServiceError('Project exploration not found', 'NOT_FOUND');
+    return session;
+  }
+
+  assertProcessSession(sessionId: string): AgentSession {
+    const session = this.requireSession(sessionId);
+    if (!session.processId) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
+    const process = this.getProcess(session.processId);
+    if (process.projectId !== session.projectId) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
+    return session;
   }
 
   listEvents(sessionId: string, after = 0, limit = 200): AgentEvent[] {
@@ -117,6 +149,48 @@ export class AgentSessionService {
     return created;
   }
 
+  createExploration(projectId: string, repositoryId?: string): AgentSession {
+    const project = this.requireProject(projectId);
+    if (project.status !== 'active') throw new AgentSessionServiceError('Start an exploration only in an active Project', 'CONFLICT');
+    let repository: ReturnType<RepositoryRepository['findById']>;
+    let checkout: ReturnType<typeof resolveProjectAuthorizedCheckout> | undefined;
+    if (repositoryId) {
+      repository = this.repositories.findById(repositoryId);
+      if (!repository || !this.repositories.isLinkedToProject(projectId, repositoryId)) {
+        throw new AgentSessionServiceError('Repository is not linked to this Project', 'NOT_FOUND');
+      }
+      try { checkout = resolveProjectAuthorizedCheckout(repository); }
+      catch (error) { throw new AgentSessionServiceError(error instanceof Error ? error.message : 'Repository checkout is not authorized'); }
+    }
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const engineStatePath = path.join(this.runtimeBasePath, 'sessions', id);
+    mkdirSync(engineStatePath, { recursive: true, mode: 0o700 });
+    const hostPath = checkout && repository
+      ? createReadOnlySnapshot(checkout.path, checkout.commit, engineStatePath)
+      : createEmptyReadOnlyWorkspace(engineStatePath);
+    const workspace: RuntimeWorkspace = { id: randomUUID(), projectId, repositoryId: repository?.id,
+      workspaceMode: checkout ? 'repository_snapshot' : 'empty', hostPath, repositoryCommit: checkout?.commit,
+      accessMode: 'read_only', engineStatePath };
+    const briefing = this.makeExplorationBriefing(project.name, repository?.remote, checkout?.commit);
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
+        access_mode,engine_state_path,status,created_at) VALUES (?,?,NULL,?,?,?,?, 'read_only',?,'ready',?)`)
+        .run(workspace.id, projectId, workspace.repositoryId ?? null, workspace.workspaceMode, workspace.hostPath,
+          workspace.repositoryCommit ?? null, workspace.engineStatePath, now);
+      this.db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+        VALUES (?,?,NULL,NULL,?,'goose-acp','starting','local-user',?,?)`).run(id, projectId, workspace.id, now, now);
+      this.db.prepare(`INSERT INTO app_agent_session_operations (id,session_id,idempotency_key,kind,prompt_text,status,created_at,updated_at)
+        VALUES (?,?,'stratum-initial-briefing-v1','briefing',?,'intent',?,?)`).run(randomUUID(), id, briefing, now, now);
+      this.appendEvent(id, 'exploration_start_requested', { projectId, repository: repository?.remote ?? null,
+        repositoryCommit: checkout?.commit ?? null, workspaceMode: workspace.workspaceMode, accessMode: 'read_only' }, now);
+    })();
+    const created = this.findExploration(projectId, id)!;
+    void this.startNew(created, workspace, briefing);
+    return created;
+  }
+
   submitPrompt(sessionId: string, idempotencyKey: string, text: string): AgentOperation {
     const session = this.requireSession(sessionId);
     if (!/^[0-9a-f-]{36}$/i.test(idempotencyKey)) throw new AgentSessionServiceError('prompt idempotencyKey must be a UUID');
@@ -128,6 +202,7 @@ export class AgentSessionService {
       if (existing.promptText !== prompt) throw new AgentSessionServiceError('idempotencyKey was already used for different prompt text', 'CONFLICT');
       return existing;
     }
+    this.assertWorkspaceScope(session, this.getWorkspace(session.workspaceId));
     if (session.lifecycle !== 'idle' || !session.engineSessionId || !this.runtime.hasHandle(sessionId)) {
       throw new AgentSessionServiceError('AgentSession must be connected and idle before sending a new prompt', 'CONFLICT');
     }
@@ -165,6 +240,7 @@ export class AgentSessionService {
       throw new AgentSessionServiceError('Only an interrupted or uncertain AgentSession can be reconciled', 'CONFLICT');
     }
     const workspace = this.getWorkspace(session.workspaceId);
+    this.assertWorkspaceScope(session, workspace);
     const callbacks = this.callbacks(sessionId, workspace);
     const restored = await this.runtime.start(session, workspace, callbacks, true);
     const now = new Date().toISOString();
@@ -205,7 +281,8 @@ export class AgentSessionService {
   }
 
   decidePermission(sessionId: string, permissionId: string, decision: 'allow_once' | 'reject_once'): PermissionRequest {
-    this.requireSession(sessionId);
+    const session = this.requireSession(sessionId);
+    if (decision === 'allow_once') this.assertWorkspaceScope(session, this.getWorkspace(session.workspaceId));
     const row = this.db.prepare(`SELECT * FROM app_agent_session_permissions WHERE id=? AND session_id=?`).get(permissionId, sessionId) as Record<string, unknown> | undefined;
     if (!row || row.status !== 'pending') throw new AgentSessionServiceError('Permission request is no longer pending', 'CONFLICT');
     const operation = JSON.parse(row.operation_json as string) as Record<string, unknown>;
@@ -225,6 +302,7 @@ export class AgentSessionService {
 
   private async startNew(session: AgentSession, workspace: RuntimeWorkspace, briefing: string): Promise<void> {
     try {
+      this.assertWorkspaceScope(this.requireSession(session.id), workspace);
       const result = await this.runtime.start(session, workspace, this.callbacks(session.id, workspace), false);
       this.db.prepare(`UPDATE app_agent_sessions SET engine_session_id=?,lifecycle='running',updated_at=? WHERE id=?`)
         .run(result.engineSessionId, new Date().toISOString(), session.id);
@@ -278,10 +356,12 @@ export class AgentSessionService {
       },
       requestToolPermission: (requestId, operation, options) => this.waitForPermission(sessionId, requestId, operation, options),
       validateWorkspaceFile: async requestedPath => {
+        this.assertWorkspaceScope(this.requireSession(sessionId), workspace);
         const relativePath = requestedPath.startsWith('/workspace/') ? requestedPath.slice('/workspace/'.length) : requestedPath;
         resolveWorkspaceReadPath(workspace.hostPath, relativePath);
       },
       readWorkspaceFile: async (_requestId, requestedPath) => {
+        this.assertWorkspaceScope(this.requireSession(sessionId), workspace);
         const relativePath = requestedPath.startsWith('/workspace/') ? requestedPath.slice('/workspace/'.length) : requestedPath;
         const hostPath = resolveWorkspaceReadPath(workspace.hostPath, relativePath);
         return readFileSync(hostPath, 'utf8');
@@ -330,6 +410,16 @@ export class AgentSessionService {
     ].join('\n\n');
   }
 
+  private makeExplorationBriefing(projectName: string, repository?: string, commit?: string): string {
+    return [
+      'You are investigating a question in a Stratum Project. This conversation is exploratory context, not accepted Project knowledge or Process intent.',
+      `Project: ${projectName}`,
+      repository && commit ? `Explicit repository context: ${repository}\nPinned snapshot commit: ${commit}` : 'No repository was selected. The workspace is a private empty directory; no Project or repository files are available.',
+      'Only read files explicitly available in the mounted read-only /workspace. Do not write files, use a terminal, access other paths, push, merge, deploy, or claim that a test passed unless the host provides evidence.',
+      'Clearly distinguish observed repository facts from agent claims and unverified conclusions. Ask the user before any permitted file read. Do not invent accepted Process intent or treat this exploration as authorization for execution.',
+    ].join('\n\n');
+  }
+
   private getProcess(processId: string) {
     try { return this.processes.get(processId).process; }
     catch (error) { if (error instanceof ProcessServiceError) throw new AgentSessionServiceError(error.message, 'NOT_FOUND'); throw error; }
@@ -337,8 +427,8 @@ export class AgentSessionService {
 
   private requireSession(sessionId: string): AgentSession {
     const row = this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
-      FROM app_agent_sessions s JOIN app_runtime_workspaces w ON w.id=s.workspace_id
-      JOIN repositories r ON r.id=w.repository_id WHERE s.id=? AND s.project_id IN
+      FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
+      LEFT JOIN repositories r ON r.id=w.repository_id WHERE s.id=? AND s.project_id IN
       (SELECT id FROM projects WHERE workspace_id=?)`).get(sessionId, this.workspaceId) as Record<string, unknown> | undefined;
     if (!row) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
     return this.toSession(row);
@@ -355,15 +445,51 @@ export class AgentSessionService {
       throw new AgentSessionServiceError('RuntimeWorkspace path no longer matches its managed read-only snapshot', 'CONFLICT');
     }
     const workspaceMode = row.workspace_mode as RuntimeWorkspace['workspaceMode'];
-    if (workspaceMode === 'empty') {
-      try { assertEmptyReadOnlyWorkspace(storedPath, statePath); }
-      catch { throw new AgentSessionServiceError('Repository-free workspace is no longer empty or available', 'CONFLICT'); }
-    }
-    return { id: row.id as string, projectId: row.project_id as string,
+    const workspace: RuntimeWorkspace = { id: row.id as string, projectId: row.project_id as string,
       processId: (row.process_id as string | null) ?? undefined,
       repositoryId: (row.repository_id as string | null) ?? undefined, workspaceMode, hostPath: storedPath,
       repositoryCommit: (row.repository_commit as string | null) ?? undefined,
       accessMode: 'read_only', engineStatePath: statePath };
+    if (workspaceMode === 'empty') {
+      try { assertEmptyReadOnlyWorkspace(storedPath, statePath); }
+      catch { throw new AgentSessionServiceError('Repository-free workspace is no longer empty or available', 'CONFLICT'); }
+      if (workspace.repositoryId || workspace.repositoryCommit) throw new AgentSessionServiceError('Repository-free workspace contains repository metadata', 'CONFLICT');
+    } else if (!workspace.repositoryId || !workspace.repositoryCommit) {
+      throw new AgentSessionServiceError('Repository snapshot workspace is missing its repository identity or pinned commit', 'CONFLICT');
+    }
+    return workspace;
+  }
+
+  private requireProject(projectId: string): { id: string; name: string; status: string } {
+    const row = this.db.prepare('SELECT id,name,status FROM projects WHERE id=? AND workspace_id=?').get(projectId, this.workspaceId) as { id: string; name: string; status: string } | undefined;
+    if (!row) throw new AgentSessionServiceError('Project not found', 'NOT_FOUND');
+    return row;
+  }
+
+  private assertWorkspaceScope(session: AgentSession, workspace: RuntimeWorkspace): void {
+    if (session.workspaceId !== workspace.id || session.projectId !== workspace.projectId || session.processId !== workspace.processId) {
+      throw new AgentSessionServiceError('AgentSession and RuntimeWorkspace ownership do not match', 'CONFLICT');
+    }
+    if (workspace.workspaceMode === 'empty') {
+      if (workspace.repositoryId || workspace.repositoryCommit) throw new AgentSessionServiceError('Empty workspace may not include repository identity', 'CONFLICT');
+      try { assertEmptyReadOnlyWorkspace(workspace.hostPath, workspace.engineStatePath); }
+      catch { throw new AgentSessionServiceError('Repository-free workspace is no longer empty or available', 'CONFLICT'); }
+      return;
+    }
+    if (!workspace.repositoryId || !workspace.repositoryCommit) throw new AgentSessionServiceError('Repository snapshot metadata is incomplete', 'CONFLICT');
+    const repository = this.repositories.findById(workspace.repositoryId);
+    if (!repository || repository.status !== 'active' || !this.repositories.isLinkedToProject(session.projectId, repository.id)) {
+      throw new AgentSessionServiceError('Repository is no longer active and linked to this Project', 'CONFLICT');
+    }
+    if (session.repositoryRemote && canonicalRepositoryIdentity(repository.provider, repository.remote) !== canonicalRepositoryIdentity(repository.provider, session.repositoryRemote)) {
+      throw new AgentSessionServiceError('Repository identity changed since this snapshot was created', 'CONFLICT');
+    }
+    if (session.processId) {
+      const process = this.getProcess(session.processId);
+      if (process.projectId !== session.projectId || !process.repositoryIds.includes(repository.id)) {
+        throw new AgentSessionServiceError('Repository is outside the current Process scope', 'CONFLICT');
+      }
+    }
   }
 
   private findOperation(sessionId: string, key: string): AgentOperation | undefined {

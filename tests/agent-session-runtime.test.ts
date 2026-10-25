@@ -26,6 +26,11 @@ rl.on('line', line => {
   if (message.method === 'session/new') { send({ jsonrpc:'2.0', id:message.id, result:{ sessionId:'fake-goose-session' } }); return; }
   if (message.method === 'session/prompt') {
     promptId = message.id;
+    if (process.env.FAKE_UNSUPPORTED_METHOD) {
+      send({ jsonrpc:'2.0', method:process.env.FAKE_UNSUPPORTED_METHOD, id:'blocked-operation', params:{path:'/workspace/README.md'} });
+      send({ jsonrpc:'2.0', id:promptId, result:{stopReason:'end_turn'} });
+      return;
+    }
     permissionId = process.env.FAKE_PERMISSION_ID_TYPE === 'number' ? 37 : 'permission-37';
     send({ jsonrpc:'2.0', method:'session/request_permission', id:permissionId, params:{ toolCall:{ title:'Read file', rawInput:{path:process.env.FAKE_REQUEST_PATH || '/workspace/README.md'}, meta:{goose:{toolCall:{extensionName:'developer',toolName:'read'}}}}, options:[{optionId:'allow',kind:'allow_once'},{optionId:'reject',kind:'reject_once'}] } });
     return;
@@ -132,6 +137,37 @@ test('Goose ACP refuses a symlink escape without asking for human approval', asy
   } finally {
     process.env.PATH = previousPath; process.env.FAKE_REQUEST_PATH = previousRequest; process.env.FAKE_ACP_LOG = previousLog;
     rmSync(root, { recursive:true, force:true });
+  }
+});
+
+test('Goose ACP blocks writes and terminal requests before human permission', async () => {
+  for (const method of ['fs/write_text_file','terminal/create']) {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-acp-readonly-block-'));
+    const previousPath = process.env.PATH; const previousMethod = process.env.FAKE_UNSUPPORTED_METHOD; const previousLog = process.env.FAKE_ACP_LOG;
+    try {
+      const bin = path.join(root, 'bin'); const config = path.join(root, 'config'); const state = path.join(root, 'state'); const repo = path.join(state, 'workspace');
+      mkdirSync(bin); mkdirSync(config); mkdirSync(state); mkdirSync(repo); writeFileSync(path.join(repo, 'README.md'), 'pinned source');
+      const dockerPath = path.join(bin, 'docker'); writeFileSync(dockerPath, fakeDocker); chmodSync(dockerPath, 0o755);
+      const logPath = path.join(root, 'acp.jsonl');
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`; process.env.FAKE_UNSUPPORTED_METHOD = method; process.env.FAKE_ACP_LOG = logPath;
+      const runtime = new DockerGooseRuntime(config, 'local/goose:test');
+      const session: AgentSession = { id:`session-block-${method.replaceAll('/','-')}`, projectId:'project-1', processId:'process-1', workspaceId:'workspace-1', repositoryId:'repo-1', repositoryRemote:'https://github.com/example/repo.git', repositoryCommit:'a'.repeat(40), engine:'goose-acp', lifecycle:'starting', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), lastEventSeq:0 };
+      const workspace: RuntimeWorkspace = { id:'workspace-1', projectId:'project-1', processId:'process-1', repositoryId:'repo-1', workspaceMode:'repository_snapshot', hostPath:repo, repositoryCommit:session.repositoryCommit, accessMode:'read_only', engineStatePath:state };
+      let approvals = 0; const events: Array<{ type:string; payload:Record<string,unknown> }> = [];
+      const started = await runtime.start(session, workspace, {
+        onEvent: (type,payload) => events.push({type,payload}), onLifecycle: () => {},
+        requestToolPermission: async () => { approvals++; return {decision:'allow_once',optionId:'allow'}; },
+        validateWorkspaceFile: async () => {}, readWorkspaceFile: async () => 'pinned source',
+      }, false);
+      const result = await runtime.prompt(started.handle, started.engineSessionId, 'attempt an unsupported operation');
+      assert.equal(result.stopReason, 'end_turn');
+      await runtime.stop(started.handle);
+      assert.equal(approvals, 0, `${method} must be denied before approval`);
+      assert.ok(events.some(event => event.type === 'tool_blocked' && event.payload.method === method));
+    } finally {
+      process.env.PATH = previousPath; process.env.FAKE_UNSUPPORTED_METHOD = previousMethod; process.env.FAKE_ACP_LOG = previousLog;
+      rmSync(root, { recursive:true, force:true });
+    }
   }
 });
 

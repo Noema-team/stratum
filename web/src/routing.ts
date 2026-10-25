@@ -2,6 +2,7 @@ export interface AppRoute {
   projectId: string;
   processId?: string;
   proposalId?: string;
+  explorationId?: string;
 }
 
 export function parseAppRoute(hash: string): AppRoute {
@@ -13,6 +14,9 @@ export function parseAppRoute(hash: string): AppRoute {
     if (segments[2] === 'processes' && segments[3] && segments.length === 4) {
       return { projectId, processId: decodeURIComponent(segments[3]) };
     }
+    if (segments[2] === 'explorations' && segments[3] && segments.length === 4) {
+      return { projectId, explorationId: decodeURIComponent(segments[3]) };
+    }
     if (segments[2] === 'processes' && segments[3] && segments[4] === 'proposals' && segments[5] && segments.length === 6) {
       return { projectId, processId: decodeURIComponent(segments[3]), proposalId: decodeURIComponent(segments[5]) };
     }
@@ -23,7 +27,7 @@ export function parseAppRoute(hash: string): AppRoute {
 export function formatAppRoute(route: AppRoute): string {
   if (!route.projectId) return '/app/';
   const project = encodeURIComponent(route.projectId);
-  return route.processId
-    ? `/app/#/projects/${project}/processes/${encodeURIComponent(route.processId)}${route.proposalId ? `/proposals/${encodeURIComponent(route.proposalId)}` : ''}`
-    : `/app/#/projects/${project}`;
+  if (route.processId) return `/app/#/projects/${project}/processes/${encodeURIComponent(route.processId)}${route.proposalId ? `/proposals/${encodeURIComponent(route.proposalId)}` : ''}`;
+  if (route.explorationId) return `/app/#/projects/${project}/explorations/${encodeURIComponent(route.explorationId)}`;
+  return `/app/#/projects/${project}`;
 }

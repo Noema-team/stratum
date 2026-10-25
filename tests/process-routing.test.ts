@@ -19,6 +19,14 @@ test('proposal review targets preserve the exact proposal across direct navigati
   assert.deepEqual(parseAppRoute('#/projects/one/processes/two/proposals/%E0%A4%A'), { projectId: '' });
 });
 
+test('Project exploration links preserve the Project and AgentSession identity across reload URLs', () => {
+  const route = { projectId: 'project:one', explorationId: 'session/one' };
+  const url = formatAppRoute(route);
+  assert.equal(url, '/app/#/projects/project%3Aone/explorations/session%2Fone');
+  assert.deepEqual(parseAppRoute(url.slice(url.indexOf('#'))), route);
+  assert.deepEqual(parseAppRoute('#/projects/one/explorations'), { projectId: '' });
+});
+
 test('malformed or inaccessible application routes resolve to the safe project root', () => {
   assert.deepEqual(parseAppRoute('#/projects/one/processes'), { projectId: '' });
   assert.deepEqual(parseAppRoute('#/arbitrary/path'), { projectId: '' });

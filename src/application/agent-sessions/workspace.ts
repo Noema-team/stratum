@@ -59,6 +59,15 @@ export function assertEmptyReadOnlyWorkspace(workspacePath: string, engineStateP
 /** Resolve and verify the exact linked checkout before it can be mounted into an agent container. */
 export function resolveAuthorizedCheckout(process: AppProcess, repository: Repository): AuthorizedCheckout {
   if (!process.repositoryIds.includes(repository.id)) throw new ProcessServiceError('repository is outside this Process definition', 'INVALID');
+  return resolveLinkedRepositoryCheckout(repository);
+}
+
+/** Resolve a repository explicitly linked to a Project, without inventing Process authority. */
+export function resolveProjectAuthorizedCheckout(repository: Repository): AuthorizedCheckout {
+  return resolveLinkedRepositoryCheckout(repository);
+}
+
+function resolveLinkedRepositoryCheckout(repository: Repository): AuthorizedCheckout {
   if (repository.status !== 'active') throw new ProcessServiceError('repository is disabled', 'CONFLICT');
   if (!repository.localWorkspace || !path.isAbsolute(repository.localWorkspace)) {
     throw new ProcessServiceError('repository needs an explicit absolute local checkout path before an agent can use it', 'INVALID');
