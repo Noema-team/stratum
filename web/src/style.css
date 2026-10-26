@@ -12,3 +12,4 @@
 .proposal-header-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}.source-notice{padding:12px;border:1px solid #655637;border-radius:7px;background:#211e17;color:#d3c397;font-size:10px;line-height:1.6}
 /* Project-owned exploration entry points and cards. */
 .heading-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.exploration-list{margin-bottom:22px}.exploration-card{border-color:#3b4535}.exploration-empty{margin-top:10px}
+.exploration-nav-copy{display:flex;min-width:0;flex-direction:column;gap:3px}.exploration-nav-copy small{font-size:9px;color:#818a7d;font-weight:500;line-height:1.3}

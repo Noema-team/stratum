@@ -130,6 +130,26 @@ test('Project-owned explorations support empty/repository scopes, Project author
     await waitFor(() => runtime.prompts.filter(prompt => prompt.sessionId === emptySession.id && prompt.text === promptBody.text).length === 1);
     const conflictingRetry = await envelope(promptUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...promptBody, text: 'different question' }) });
     assert.equal(conflictingRetry.status, 409);
+    const secondEmptyCreated = await envelope<{ session: AgentSession }>(`${base}/projects/${firstProject.id}/explorations`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    assert.equal(secondEmptyCreated.status, 200);
+    const secondEmptySession = secondEmptyCreated.body.data!.session;
+    await waitFor(() => runtime.starts.some(start => start.session.id === secondEmptySession.id));
+    const beforeQuestions = await envelope<{ sessions: AgentSession[] }>(`${base}/projects/${firstProject.id}/explorations`);
+    const emptyLabels = beforeQuestions.body.data!.sessions.filter(item => [emptySession.id, secondEmptySession.id].includes(item.id)).map(item => item.explorationLabel ?? `New exploration · ${item.id.slice(0, 8)}`);
+    assert.equal(new Set(emptyLabels).size, 2, 'repository-free explorations have distinct stable fallback labels before a question');
+    const secondPromptText = 'How could a lightweight prototype validate this?';
+    const secondPrompt = await envelope<{ id: string }>(`${base}/projects/${firstProject.id}/explorations/${secondEmptySession.id}/prompts`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idempotencyKey: randomUUID(), text: secondPromptText }),
+    });
+    assert.equal(secondPrompt.status, 200);
+    const labeled = await envelope<{ sessions: AgentSession[] }>(`${base}/projects/${firstProject.id}/explorations`);
+    const firstLabeled = labeled.body.data!.sessions.find(item => item.id === emptySession.id)!;
+    const secondLabeled = labeled.body.data!.sessions.find(item => item.id === secondEmptySession.id)!;
+    assert.ok(firstLabeled.explorationLabel?.startsWith(promptBody.text));
+    assert.ok(secondLabeled.explorationLabel?.startsWith(secondPromptText));
+    assert.notEqual(firstLabeled.explorationLabel, secondLabeled.explorationLabel);
     runtime.callbacks.get(emptySession.id)!.onEvent('agent_message_complete', { text: 'An unverified agent claim.' });
     const firstHistory = await envelope<AgentEvent[]>(`${base}/projects/${firstProject.id}/explorations/${emptySession.id}/events`);
     const finding = firstHistory.body.data!.find(event => event.eventType === 'agent_message_complete')!;
@@ -170,7 +190,7 @@ test('Project-owned explorations support empty/repository scopes, Project author
     assert.notEqual(sharedRepositoryExploration.body.data?.session.id, repoSession.id, 'shared repository membership does not share conversation identity');
 
     const sessionsBeforeRestart = await envelope<{ sessions: AgentSession[] }>(`${base}/projects/${firstProject.id}/explorations`);
-    assert.equal(sessionsBeforeRestart.body.data?.sessions.length, 2);
+    assert.equal(sessionsBeforeRestart.body.data?.sessions.length, 3);
     const stableSessionId = emptySession.id;
     const stableSeq = firstHistory.body.data!.at(-1)!.seq;
     await firstServer.close(); firstServer = undefined;
@@ -204,7 +224,7 @@ test('Project-owned explorations support empty/repository scopes, Project author
       'Project exploration does not create a Process');
     assert.equal((db.prepare('SELECT count(*) AS count FROM work_items').get() as { count: number }).count, beforeWorkItems);
     assert.equal(new WorkflowRunRepository(db).listActive().length, beforeRuns);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM app_agent_sessions WHERE project_id=? AND process_id IS NULL').get(firstProject.id) as { count: number }).count, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM app_agent_sessions WHERE project_id=? AND process_id IS NULL').get(firstProject.id) as { count: number }).count, 3);
     assert.equal(new AppProcessRepository(db).listByProject(firstProject.id).length, 1, 'only the explicitly created compatibility Process remains');
   } finally {
     if (restartedServer) await restartedServer.close();

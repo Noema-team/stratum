@@ -21,6 +21,7 @@ export interface AgentSession {
   repositoryId?: string;
   repositoryRemote?: string;
   repositoryCommit?: string;
+  explorationLabel?: string;
   engine: 'goose-acp';
   engineSessionId?: string;
   lifecycle: AgentSessionLifecycle;

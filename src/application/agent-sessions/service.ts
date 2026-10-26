@@ -55,7 +55,9 @@ export class AgentSessionService {
 
   listExplorations(projectId: string): AgentSession[] {
     this.requireProject(projectId);
-    return (this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
+    return (this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote,
+      (SELECT o.prompt_text FROM app_agent_session_events e JOIN app_agent_session_operations o ON o.id=json_extract(e.payload_json,'$.operationId')
+       WHERE e.session_id=s.id AND e.event_type='user_prompt' ORDER BY e.seq LIMIT 1) AS exploration_label
       FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
       LEFT JOIN repositories r ON r.id=w.repository_id
       WHERE s.project_id=? AND s.process_id IS NULL ORDER BY s.updated_at DESC,s.created_at DESC`).all(projectId) as Array<Record<string, unknown>>)
@@ -64,7 +66,9 @@ export class AgentSessionService {
 
   findExploration(projectId: string, sessionId: string): AgentSession | undefined {
     this.requireProject(projectId);
-    const row = this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote
+    const row = this.db.prepare(`SELECT s.*,w.repository_id,w.repository_commit,r.remote AS repository_remote,
+      (SELECT o.prompt_text FROM app_agent_session_events e JOIN app_agent_session_operations o ON o.id=json_extract(e.payload_json,'$.operationId')
+       WHERE e.session_id=s.id AND e.event_type='user_prompt' ORDER BY e.seq LIMIT 1) AS exploration_label
       FROM app_agent_sessions s LEFT JOIN app_runtime_workspaces w ON w.id=s.workspace_id
       LEFT JOIN repositories r ON r.id=w.repository_id
       WHERE s.id=? AND s.project_id=? AND s.process_id IS NULL`).get(sessionId, projectId) as Record<string, unknown> | undefined;
@@ -520,6 +524,7 @@ export class AgentSessionService {
       repositoryId: (row.repository_id as string | null) ?? undefined,
       repositoryRemote: (row.repository_remote as string | null) ?? undefined,
       repositoryCommit: (row.repository_commit as string | null) ?? undefined, engine: row.engine as 'goose-acp', engineSessionId: row.engine_session_id as string | undefined,
+      explorationLabel: (row.exploration_label as string | null) ?? undefined,
       lifecycle: row.lifecycle as AgentSession['lifecycle'], errorMessage: row.error_message as string | undefined,
       createdAt: row.created_at as string, updatedAt: row.updated_at as string, lastEventSeq: row.last_event_seq as number };
   }
