@@ -31,6 +31,16 @@ export interface AgentSession {
   lastEventSeq: number;
 }
 
+export interface AgentSessionAssociation {
+  id: string;
+  sessionId: string;
+  projectId: string;
+  processId: string;
+  associationType: 'historical' | 'active';
+  idempotencyKey: string;
+  createdAt: string;
+}
+
 export interface AgentEvent {
   sessionId: string;
   seq: number;

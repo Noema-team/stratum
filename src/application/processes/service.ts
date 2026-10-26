@@ -163,9 +163,15 @@ export class ProcessService {
     if (kind === 'review' && (!proposalId || !outcome)) throw new ProcessServiceError('reviews require a proposal and an explicit outcome', 'INVALID');
     if (kind === 'review' && !this.processes.listPendingProposals(id).some(proposal => proposal.id === proposalId)) throw new ProcessServiceError('proposal is not pending review for this Process', 'CONFLICT');
     if (source) {
-      const row = this.db.prepare(`SELECT s.process_id AS processId,e.event_type AS eventType FROM app_agent_sessions s
-        JOIN app_agent_session_events e ON e.session_id=s.id WHERE s.id=? AND e.seq=?`).get(source.agentSessionId, source.eventSeq) as { processId: string; eventType: string } | undefined;
-      if (!row || row.processId !== id || row.eventType !== 'agent_message_complete') throw new ProcessServiceError('source must reference a completed agent message from this Process', 'INVALID');
+      const row = this.db.prepare(`SELECT e.event_type AS eventType FROM app_agent_sessions s
+        JOIN app_agent_session_events e ON e.session_id=s.id
+        JOIN app_agent_session_associations a ON a.session_id=s.id AND a.process_id=?
+        JOIN app_processes p ON p.id=a.process_id
+        WHERE s.id=? AND e.seq=? AND p.project_id=s.project_id AND (
+          (a.association_type='active' AND s.process_id=p.id AND s.associated_process_id=p.id)
+          OR (a.association_type='historical' AND s.process_id IS NULL AND s.associated_process_id=p.id)
+        )`).get(id, source.agentSessionId, source.eventSeq) as { eventType: string } | undefined;
+      if (!row || row.eventType !== 'agent_message_complete') throw new ProcessServiceError('source must reference a completed message from this Process or its authorized historical association', 'INVALID');
     }
     const activity: AppProcessActivity = { id: randomUUID(), processId: id, kind, title: title.trim(), body: body.trim(), outcome, proposalId,
       sourceAgentSessionId: source?.agentSessionId, sourceEventSeq: source?.eventSeq, createdAt: new Date().toISOString() };

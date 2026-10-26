@@ -18,7 +18,7 @@ function atVersion18(db: Database.Database): void {
   db.pragma('foreign_keys = ON');
   runMigrations(db, 18);
   assert.equal((db.prepare('SELECT MAX(id) AS id FROM _migrations').get() as { id: number }).id, 18);
-  assert.equal(MIGRATIONS.length, 19);
+  assert.equal(MIGRATIONS.length, 20);
 }
 
 function seedV18AgentRecords(db: Database.Database, withDanglingEvent = false): void {
@@ -60,7 +60,8 @@ function preservedRows(db: Database.Database) {
     workspace: db.prepare(`SELECT id,project_id,process_id,repository_id,host_path,repository_commit,access_mode,
       engine_state_path,status,created_at,closed_at FROM app_runtime_workspaces WHERE id=?`).get(runtimeWorkspaceId),
     events: db.prepare('SELECT * FROM app_agent_session_events WHERE session_id=? ORDER BY seq').all(sessionId),
-    operations: db.prepare('SELECT * FROM app_agent_session_operations WHERE session_id=? ORDER BY id').all(sessionId),
+    operations: db.prepare(`SELECT id,session_id,idempotency_key,kind,prompt_text,status,created_at,updated_at
+      FROM app_agent_session_operations WHERE session_id=? ORDER BY id`).all(sessionId),
     permissions: db.prepare('SELECT * FROM app_agent_session_permissions WHERE session_id=? ORDER BY id').all(sessionId),
   };
 }
@@ -160,5 +161,39 @@ test('Migration 19 failure after table rebuild rolls back schema, data and ledge
     assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
     assert.deepEqual(db.pragma('foreign_key_check'), []);
     assert.deepEqual(preservedRows(db), before);
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Migration 20 backfills immutable active and historical associations and preserves operations', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'stratum-migration-20-'));
+  const db = new Database(path.join(root, 'upgrade.db'));
+  try {
+    atVersion18(db);
+    seedV18AgentRecords(db);
+    runMigrations(db, 19);
+    const originalOperation = db.prepare('SELECT * FROM app_agent_session_operations WHERE session_id=?').get(sessionId);
+    const historicalWorkspaceId = '91000000-0000-4000-8000-000000000020';
+    const historicalSessionId = '91000000-0000-4000-8000-000000000021';
+    db.prepare(`INSERT INTO app_runtime_workspaces (id,project_id,process_id,repository_id,workspace_mode,host_path,repository_commit,
+      access_mode,engine_state_path,status,created_at) VALUES (?,?,NULL,NULL,'empty',?,NULL,'read_only',?,'ready',?)`)
+      .run(historicalWorkspaceId, projectId, '/historical/workspace', '/historical/state', now);
+    db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
+      VALUES (?,?,NULL,?,?, 'goose-acp','idle','local-user',?,?)`).run(historicalSessionId, projectId, processId, historicalWorkspaceId, now, now);
+
+    runMigrations(db);
+    assert.equal((db.prepare('SELECT MAX(id) AS id FROM _migrations').get() as { id: number }).id, 20);
+    assert.deepEqual(db.prepare('SELECT * FROM app_agent_session_operations WHERE session_id=?').get(sessionId),
+      { ...(originalOperation as Record<string, unknown>), dispatched_prompt: null });
+    const associations = db.prepare(`SELECT session_id,project_id,process_id,association_type,idempotency_key,request_hash
+      FROM app_agent_session_associations ORDER BY session_id`).all();
+    assert.equal(associations.length, 2);
+    const associationRows = associations as Array<{ session_id: string; association_type: string }>;
+    assert.equal(associationRows.find(row => row.session_id === sessionId)?.association_type, 'active');
+    assert.equal(associationRows.find(row => row.session_id === historicalSessionId)?.association_type, 'historical');
+    assert.throws(() => db.prepare(`UPDATE app_agent_session_associations SET process_id=? WHERE session_id=?`).run('different-process', sessionId), /association identity is immutable/);
+    assert.throws(() => db.prepare(`UPDATE app_agent_sessions SET associated_process_id=NULL WHERE id=?`).run(sessionId), /Process association is immutable/);
+    assert.throws(() => db.prepare(`UPDATE app_runtime_workspaces SET process_id=NULL WHERE id=?`).run(runtimeWorkspaceId), /Process ownership is immutable/);
+    assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+    assert.deepEqual(db.pragma('foreign_key_check'), []);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });

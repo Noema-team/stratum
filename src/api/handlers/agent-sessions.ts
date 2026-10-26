@@ -7,6 +7,11 @@ const createSchema = z.object({ repositoryId: z.string().uuid() });
 const explorationCreateSchema = z.object({ repositoryId: z.string().uuid().optional() }).strict();
 const promptSchema = z.object({ idempotencyKey: z.string().uuid(), text: z.string().min(1).max(10000) });
 const permissionSchema = z.object({ decision: z.enum(['allow_once','reject_once']) });
+const associationSchema = z.object({ processId: z.string().uuid(), associationType: z.enum(['historical','active']), idempotencyKey: z.string().uuid() }).strict();
+const processPromotionSchema = z.object({ associationType: z.enum(['historical','active']), idempotencyKey: z.string().uuid(),
+  definition: z.object({ title: z.string().min(1).max(160), intent: z.string().min(1).max(10000), objectiveId: z.string().uuid().optional(),
+    desiredOutcomes: z.array(z.string().max(1000)).max(20).optional(), constraints: z.array(z.string().max(1000)).max(20).optional(),
+    repositoryIds: z.array(z.string().uuid()).max(50).optional() }).strict() }).strict();
 
 function failure(error: unknown) {
   if (error instanceof AgentSessionServiceError) {
@@ -23,6 +28,24 @@ export function makeAgentSessionHandlers(router: Router, service: AgentSessionSe
     const parsed = explorationCreateSchema.safeParse(req.body);
     if (!parsed.success) return err('bad_request', parsed.error.message);
     try { return ok({ session: service.createExploration(req.params.projectId, parsed.data.repositoryId) }); } catch (error) { return failure(error); }
+  });
+  router.add('POST', '/projects/:projectId/explorations/:sessionId/association', req => {
+    const parsed = associationSchema.safeParse(req.body);
+    if (!parsed.success) return err('bad_request', parsed.error.message);
+    try {
+      service.assertProjectSession(req.params.projectId, req.params.sessionId);
+      return ok(service.associateExploration(req.params.projectId, req.params.sessionId, parsed.data.processId,
+        parsed.data.associationType, parsed.data.idempotencyKey));
+    } catch (error) { return failure(error); }
+  });
+  router.add('POST', '/projects/:projectId/explorations/:sessionId/process-promotion', req => {
+    const parsed = processPromotionSchema.safeParse(req.body);
+    if (!parsed.success) return err('bad_request', parsed.error.message);
+    try {
+      service.assertProjectSession(req.params.projectId, req.params.sessionId);
+      return ok(service.createProcessFromExploration(req.params.projectId, req.params.sessionId,
+        parsed.data.associationType, parsed.data.idempotencyKey, parsed.data.definition));
+    } catch (error) { return failure(error); }
   });
   router.add('GET', '/projects/:projectId/explorations/:sessionId', req => {
     try { return ok({ session: service.assertProjectExploration(req.params.projectId, req.params.sessionId) }); } catch (error) { return failure(error); }
@@ -44,7 +67,7 @@ export function makeAgentSessionHandlers(router: Router, service: AgentSessionSe
   router.add('POST', '/projects/:projectId/explorations/:sessionId/prompts', req => {
     const parsed = promptSchema.safeParse(req.body);
     if (!parsed.success) return err('bad_request', parsed.error.message);
-    try { service.assertProjectExploration(req.params.projectId, req.params.sessionId); return ok(service.submitPrompt(req.params.sessionId, parsed.data.idempotencyKey, parsed.data.text)); } catch (error) { return failure(error); }
+    try { service.assertProjectSession(req.params.projectId, req.params.sessionId); return ok(service.submitPrompt(req.params.sessionId, parsed.data.idempotencyKey, parsed.data.text)); } catch (error) { return failure(error); }
   });
   router.add('POST', '/projects/:projectId/explorations/:sessionId/cancel', async req => {
     try { service.assertProjectExploration(req.params.projectId, req.params.sessionId); await service.cancel(req.params.sessionId); return ok({ cancelled: true }); } catch (error) { return failure(error); }

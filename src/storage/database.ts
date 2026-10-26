@@ -630,6 +630,43 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX idx_app_agent_sessions_associated_process ON app_agent_sessions(associated_process_id,created_at DESC);
   CREATE INDEX idx_app_runtime_workspaces_project ON app_runtime_workspaces(project_id,created_at DESC);
   `,
+
+  // Migration 20: durable immutable Process associations and exact dispatched prompts.
+  `
+  ALTER TABLE app_agent_session_operations ADD COLUMN dispatched_prompt TEXT;
+
+  CREATE TABLE app_agent_session_associations (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL UNIQUE REFERENCES app_agent_sessions(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    process_id TEXT NOT NULL REFERENCES app_processes(id) ON DELETE CASCADE,
+    association_type TEXT NOT NULL CHECK(association_type IN ('historical','active')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_app_agent_session_associations_process ON app_agent_session_associations(process_id,created_at DESC);
+  CREATE TRIGGER app_agent_session_associations_immutable
+    BEFORE UPDATE ON app_agent_session_associations
+    BEGIN SELECT RAISE(ABORT,'AgentSession association identity is immutable'); END;
+  CREATE TRIGGER app_agent_sessions_association_immutable
+    BEFORE UPDATE OF process_id,associated_process_id ON app_agent_sessions
+    WHEN OLD.associated_process_id IS NOT NULL AND (
+      NEW.process_id IS NOT OLD.process_id OR NEW.associated_process_id IS NOT OLD.associated_process_id
+    )
+    BEGIN SELECT RAISE(ABORT,'AgentSession Process association is immutable'); END;
+  CREATE TRIGGER app_runtime_workspaces_process_ownership_immutable
+    BEFORE UPDATE OF process_id ON app_runtime_workspaces
+    WHEN OLD.process_id IS NOT NULL AND NEW.process_id IS NOT OLD.process_id
+    BEGIN SELECT RAISE(ABORT,'RuntimeWorkspace Process ownership is immutable'); END;
+
+  INSERT INTO app_agent_session_associations
+    (id,session_id,project_id,process_id,association_type,idempotency_key,request_hash,created_at)
+    SELECT 'legacy-' || s.id,s.id,s.project_id,s.associated_process_id,
+      CASE WHEN s.process_id IS NULL THEN 'historical' ELSE 'active' END,
+      'legacy:' || s.id,'legacy',s.created_at
+    FROM app_agent_sessions s WHERE s.associated_process_id IS NOT NULL;
+  `,
 ];
 
 // ============================================================================

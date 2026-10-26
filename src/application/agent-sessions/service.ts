@@ -1,15 +1,21 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { canonicalRepositoryIdentity, type RepositoryRepository } from '../../storage/repositories.js';
-import { ProcessService, ProcessServiceError } from '../processes/service.js';
+import { ProcessService, ProcessServiceError, type CreateProcessInput } from '../processes/service.js';
 import { assertEmptyReadOnlyWorkspace, createEmptyReadOnlyWorkspace, createReadOnlySnapshot, resolveAuthorizedCheckout, resolveProjectAuthorizedCheckout, resolveWorkspaceReadPath } from './workspace.js';
-import type { AgentOperation, AgentEvent, AgentSession, PermissionRequest, RuntimeWorkspace } from './types.js';
+import type { AgentOperation, AgentEvent, AgentSession, AgentSessionAssociation, PermissionRequest, RuntimeWorkspace } from './types.js';
+import type { AppProcess } from '../../storage/repositories.js';
 import type { AgentRuntime, AgentRuntimeCallbacks, RuntimePermissionResult } from './runtime.js';
 
 export class AgentSessionServiceError extends Error {
   constructor(message: string, readonly code: 'INVALID' | 'NOT_FOUND' | 'CONFLICT' | 'UNAVAILABLE' = 'INVALID') { super(message); }
+}
+
+export interface AgentSessionPromotionResult {
+  association: AgentSessionAssociation;
+  process: AppProcess;
 }
 
 export class AgentSessionService {
@@ -81,12 +87,52 @@ export class AgentSessionService {
     return session;
   }
 
+  assertProjectSession(projectId: string, sessionId: string): AgentSession {
+    this.requireProject(projectId);
+    const session = this.requireSession(sessionId);
+    if (session.projectId !== projectId) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
+    return session;
+  }
+
   assertProcessSession(sessionId: string): AgentSession {
     const session = this.requireSession(sessionId);
     if (!session.processId) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
     const process = this.getProcess(session.processId);
     if (process.projectId !== session.projectId) throw new AgentSessionServiceError('AgentSession not found', 'NOT_FOUND');
     return session;
+  }
+
+  associateExploration(projectId: string, sessionId: string, processId: string, associationType: 'historical' | 'active', idempotencyKey: string): AgentSessionPromotionResult {
+    this.requireProject(projectId);
+    this.requirePromotionKey(idempotencyKey);
+    const requestHash = hashPromotionRequest({ projectId, sessionId, processId, associationType });
+    return this.db.transaction(() => {
+      const retry = this.findPromotionRetry(projectId, sessionId, idempotencyKey, requestHash);
+      if (retry) return retry;
+      const session = this.requireUnassociatedExploration(projectId, sessionId);
+      const process = this.getProcess(processId);
+      return this.persistAssociation(session, process, associationType, idempotencyKey, requestHash);
+    }).immediate();
+  }
+
+  createProcessFromExploration(projectId: string, sessionId: string, associationType: 'historical' | 'active', idempotencyKey: string,
+    definition: CreateProcessInput): AgentSessionPromotionResult {
+    this.requireProject(projectId);
+    this.requirePromotionKey(idempotencyKey);
+    const normalizedDefinition: CreateProcessInput = { title: definition.title, intent: definition.intent,
+      objectiveId: definition.objectiveId, desiredOutcomes: definition.desiredOutcomes ?? [],
+      constraints: definition.constraints ?? [], repositoryIds: [...new Set(definition.repositoryIds ?? [])].sort() };
+    const requestHash = hashPromotionRequest({ projectId, sessionId, associationType, definition: normalizedDefinition });
+    return this.db.transaction(() => {
+      const retry = this.findPromotionRetry(projectId, sessionId, idempotencyKey, requestHash);
+      if (retry) return retry;
+      const session = this.requireUnassociatedExploration(projectId, sessionId);
+      // ProcessService validates the user's accepted definition and creates version 1. Its
+      // nested transaction is a savepoint inside this immediate transaction, so neither
+      // Process rows nor association state can commit alone.
+      const process = this.processes.create(projectId, normalizedDefinition);
+      return this.persistAssociation(session, process, associationType, idempotencyKey, requestHash);
+    }).immediate();
   }
 
   listEvents(sessionId: string, after = 0, limit = 200): AgentEvent[] {
@@ -143,6 +189,9 @@ export class AgentSessionService {
           checkout.commit, workspace.engineStatePath, now);
       this.db.prepare(`INSERT INTO app_agent_sessions (id,project_id,process_id,associated_process_id,workspace_id,engine,lifecycle,created_by,created_at,updated_at)
         VALUES (?,?,?,?,?,'goose-acp','starting','local-user',?,?)`).run(id, process.projectId, processId, processId, workspace.id, now, now);
+      this.db.prepare(`INSERT INTO app_agent_session_associations
+        (id,session_id,project_id,process_id,association_type,idempotency_key,request_hash,created_at)
+        VALUES (?,?,?,?,'active',?,?,?)`).run(randomUUID(), id, process.projectId, processId, `session:${id}`, 'process-session-start', now);
       this.db.prepare(`INSERT INTO app_agent_session_operations (id,session_id,idempotency_key,kind,prompt_text,status,created_at,updated_at)
         VALUES (?,?,'stratum-initial-briefing-v1','briefing',?,'intent',?,?)`).run(randomUUID(), id, briefing, now, now);
       this.appendEvent(id, 'session_start_requested', { engine: 'Goose 1.54.0 via ACP', repository: repository.remote,
@@ -196,31 +245,37 @@ export class AgentSessionService {
   }
 
   submitPrompt(sessionId: string, idempotencyKey: string, text: string): AgentOperation {
-    const session = this.requireSession(sessionId);
     if (!/^[0-9a-f-]{36}$/i.test(idempotencyKey)) throw new AgentSessionServiceError('prompt idempotencyKey must be a UUID');
     const prompt = text.trim();
     if (!prompt || prompt.length > 10000) throw new AgentSessionServiceError('prompt must be between 1 and 10000 characters');
     if (containsSecretLikeValue(prompt)) throw new AgentSessionServiceError('Do not send credentials in an AgentSession prompt');
-    const existing = this.findOperation(sessionId, idempotencyKey);
-    if (existing) {
-      if (existing.promptText !== prompt) throw new AgentSessionServiceError('idempotencyKey was already used for different prompt text', 'CONFLICT');
-      return existing;
-    }
-    this.assertWorkspaceScope(session, this.getWorkspace(session.workspaceId));
-    if (session.lifecycle !== 'idle' || !session.engineSessionId || !this.runtime.hasHandle(sessionId)) {
-      throw new AgentSessionServiceError('AgentSession must be connected and idle before sending a new prompt', 'CONFLICT');
-    }
-    const now = new Date().toISOString();
-    const operation: AgentOperation = { id: randomUUID(), sessionId, idempotencyKey, kind: 'prompt', promptText: prompt,
-      status: 'dispatching', createdAt: now, updatedAt: now };
-    this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO app_agent_session_operations (id,session_id,idempotency_key,kind,prompt_text,status,created_at,updated_at)
-        VALUES (?,?,?,'prompt',?,'dispatching',?,?)`).run(operation.id, sessionId, idempotencyKey, prompt, now, now);
+    const admitted = this.db.transaction(() => {
+      const session = this.requireSession(sessionId);
+      const existing = this.findOperation(sessionId, idempotencyKey);
+      if (existing) {
+        if (existing.promptText !== prompt) throw new AgentSessionServiceError('idempotencyKey was already used for different prompt text', 'CONFLICT');
+        return { operation: existing, dispatchedPrompt: undefined as string | undefined, shouldDispatch: false };
+      }
+      if (session.associatedProcessId && !session.processId) {
+        throw new AgentSessionServiceError('This exploration is linked as historical context and cannot continue as Process work; start a new Process-owned AgentSession', 'CONFLICT');
+      }
+      this.assertWorkspaceScope(session, this.getWorkspace(session.workspaceId));
+      if (session.lifecycle !== 'idle' || !session.engineSessionId || !this.runtime.hasHandle(sessionId)) {
+        throw new AgentSessionServiceError('AgentSession must be connected and idle before sending a new prompt', 'CONFLICT');
+      }
+      const dispatchedPrompt = session.processId ? this.makeProcessContextEnvelope(session, prompt) : prompt;
+      const now = new Date().toISOString();
+      const operation: AgentOperation = { id: randomUUID(), sessionId, idempotencyKey, kind: 'prompt', promptText: prompt,
+        status: 'dispatching', createdAt: now, updatedAt: now };
+      this.db.prepare(`INSERT INTO app_agent_session_operations
+        (id,session_id,idempotency_key,kind,prompt_text,dispatched_prompt,status,created_at,updated_at)
+        VALUES (?,?,?,'prompt',?,?,'dispatching',?,?)`).run(operation.id, sessionId, idempotencyKey, prompt, dispatchedPrompt, now, now);
       this.db.prepare('UPDATE app_agent_sessions SET lifecycle=?,updated_at=? WHERE id=?').run('running', now, sessionId);
       this.appendEvent(sessionId, 'user_prompt', { operationId: operation.id, text: redact(prompt) }, now);
-    })();
-    void this.runOperation(session, operation, prompt);
-    return operation;
+      return { operation, dispatchedPrompt, shouldDispatch: true };
+    }).immediate();
+    if (admitted.shouldDispatch) void this.runOperation(this.requireSession(sessionId), admitted.operation, admitted.dispatchedPrompt!);
+    return admitted.operation;
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -496,6 +551,131 @@ export class AgentSessionService {
     }
   }
 
+  private makeProcessContextEnvelope(session: AgentSession, userPrompt: string): string {
+    if (!session.processId) throw new AgentSessionServiceError('Process context requires active Process ownership', 'CONFLICT');
+    const details = this.processes.get(session.processId);
+    const process = details.process;
+    const definition = details.definitionVersions[0];
+    if (process.projectId !== session.projectId || process.lifecycle !== 'active' || !definition) {
+      throw new AgentSessionServiceError('Current accepted Process context is unavailable; prompt was not dispatched', 'CONFLICT');
+    }
+    const workspace = this.getWorkspace(session.workspaceId);
+    this.assertWorkspaceScope(session, workspace);
+    if (workspace.workspaceMode === 'empty' && definition.repositoryIds.length) {
+      throw new AgentSessionServiceError('Current Process repository scope exceeds this empty workspace; prompt was not dispatched', 'CONFLICT');
+    }
+    const repository = workspace.repositoryId ? this.repositories.findById(workspace.repositoryId) : undefined;
+    if (workspace.workspaceMode === 'repository_snapshot' && !repository) {
+      throw new AgentSessionServiceError('Pinned repository identity is unavailable; prompt was not dispatched', 'CONFLICT');
+    }
+    const envelope = {
+      format: 'stratum-process-context-v1',
+      projectId: session.projectId,
+      processId: process.id,
+      acceptedDefinitionVersion: definition.version,
+      acceptedDefinition: { title: definition.title, intent: definition.intent, desiredOutcomes: definition.desiredOutcomes,
+        constraints: definition.constraints, objectiveId: definition.objectiveId ?? null, repositoryIds: definition.repositoryIds },
+      repositoryScope: definition.repositoryIds.map(repositoryId => {
+        const scoped = this.repositories.findById(repositoryId);
+        if (!scoped || !this.repositories.isLinkedToProject(session.projectId, repositoryId)) {
+          throw new AgentSessionServiceError('Current Process repository scope is no longer authorized; prompt was not dispatched', 'CONFLICT');
+        }
+        return { repositoryId, provider: scoped.provider, remote: scoped.remote,
+          canonicalIdentity: canonicalRepositoryIdentity(scoped.provider, scoped.remote) };
+      }),
+      pinnedWorkspace: workspace.workspaceMode === 'empty' ? { mode: 'empty', accessMode: 'read_only' }
+        : { mode: 'repository_snapshot', repositoryId: repository!.id, provider: repository!.provider, remote: repository!.remote,
+          canonicalIdentity: canonicalRepositoryIdentity(repository!.provider, repository!.remote), commit: workspace.repositoryCommit, accessMode: 'read_only' },
+      userPrompt,
+    };
+    return `STRATUM_PROCESS_CONTEXT_V1\n${JSON.stringify(envelope)}\n\nUSER_PROMPT\n${userPrompt}`;
+  }
+
+  private requirePromotionKey(idempotencyKey: string): void {
+    if (!/^[0-9a-f-]{36}$/i.test(idempotencyKey)) throw new AgentSessionServiceError('promotion idempotencyKey must be a UUID');
+  }
+
+  private requireUnassociatedExploration(projectId: string, sessionId: string): AgentSession {
+    const session = this.findExploration(projectId, sessionId);
+    if (!session) throw new AgentSessionServiceError('Project exploration not found', 'NOT_FOUND');
+    if (session.processId || session.associatedProcessId || this.db.prepare('SELECT 1 FROM app_agent_session_associations WHERE session_id=?').get(sessionId)) {
+      throw new AgentSessionServiceError('This AgentSession already has an immutable Process association', 'CONFLICT');
+    }
+    return session;
+  }
+
+  private findPromotionRetry(projectId: string, sessionId: string, idempotencyKey: string, requestHash: string): AgentSessionPromotionResult | undefined {
+    const row = this.db.prepare(`SELECT id,session_id AS sessionId,project_id AS projectId,process_id AS processId,
+      association_type AS associationType,idempotency_key AS idempotencyKey,created_at AS createdAt,request_hash AS requestHash
+      FROM app_agent_session_associations WHERE idempotency_key=?`).get(idempotencyKey) as (AgentSessionAssociation & { requestHash: string }) | undefined;
+    if (!row) return undefined;
+    if (row.projectId !== projectId || row.sessionId !== sessionId || row.requestHash !== requestHash) {
+      throw new AgentSessionServiceError('promotion idempotencyKey was already used for a different request', 'CONFLICT');
+    }
+    const process = this.getProcess(row.processId);
+    return { association: { id: row.id, sessionId: row.sessionId, projectId: row.projectId, processId: row.processId,
+      associationType: row.associationType, idempotencyKey: row.idempotencyKey, createdAt: row.createdAt }, process };
+  }
+
+  private persistAssociation(session: AgentSession, process: AppProcess, associationType: 'historical' | 'active',
+    idempotencyKey: string, requestHash: string): AgentSessionPromotionResult {
+    if (session.projectId !== process.projectId) throw new AgentSessionServiceError('Process must belong to the exploration Project', 'NOT_FOUND');
+    if (session.processId || session.associatedProcessId) throw new AgentSessionServiceError('This AgentSession already has a Process association', 'CONFLICT');
+    const existing = this.db.prepare('SELECT 1 FROM app_agent_session_associations WHERE session_id=?').get(session.id);
+    if (existing) throw new AgentSessionServiceError('This AgentSession already has an immutable Process association', 'CONFLICT');
+    const workspace = this.getWorkspace(session.workspaceId);
+    this.assertWorkspaceScope(session, workspace);
+    if (associationType === 'active') this.assertActiveHandoffEligible(session, process, workspace);
+
+    const association: AgentSessionAssociation = { id: randomUUID(), sessionId: session.id, projectId: session.projectId,
+      processId: process.id, associationType, idempotencyKey, createdAt: new Date().toISOString() };
+    this.db.prepare(`INSERT INTO app_agent_session_associations
+      (id,session_id,project_id,process_id,association_type,idempotency_key,request_hash,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(association.id, session.id, session.projectId, process.id, associationType, idempotencyKey, requestHash, association.createdAt);
+    if (associationType === 'active') {
+      const workspaceUpdate = this.db.prepare('UPDATE app_runtime_workspaces SET process_id=? WHERE id=? AND process_id IS NULL').run(process.id, workspace.id);
+      if (workspaceUpdate.changes !== 1) throw new AgentSessionServiceError('RuntimeWorkspace ownership changed during handoff', 'CONFLICT');
+      const sessionUpdate = this.db.prepare(`UPDATE app_agent_sessions SET process_id=?,associated_process_id=?,updated_at=?
+        WHERE id=? AND process_id IS NULL AND associated_process_id IS NULL AND lifecycle='idle'`).run(process.id, process.id, association.createdAt, session.id);
+      if (sessionUpdate.changes !== 1) throw new AgentSessionServiceError('AgentSession ownership or lifecycle changed during handoff', 'CONFLICT');
+    } else {
+      const sessionUpdate = this.db.prepare(`UPDATE app_agent_sessions SET associated_process_id=?,updated_at=?
+        WHERE id=? AND process_id IS NULL AND associated_process_id IS NULL`).run(process.id, association.createdAt, session.id);
+      if (sessionUpdate.changes !== 1) throw new AgentSessionServiceError('AgentSession association changed during linking', 'CONFLICT');
+    }
+    this.appendEvent(session.id, 'process_association_created', { associationId: association.id, processId: process.id, associationType }, association.createdAt);
+    return { association, process };
+  }
+
+  private assertActiveHandoffEligible(session: AgentSession, process: AppProcess, workspace: RuntimeWorkspace): void {
+    if (process.lifecycle !== 'active') throw new AgentSessionServiceError('Active handoff requires an active Process', 'CONFLICT');
+    if (session.lifecycle !== 'idle' || !session.engineSessionId || !this.runtime.hasHandle(session.id)) {
+      throw new AgentSessionServiceError('Active handoff requires a connected idle AgentSession', 'CONFLICT');
+    }
+    if (this.db.prepare(`SELECT 1 FROM app_agent_session_operations WHERE session_id=? AND status IN ('intent','dispatching','outcome_unknown') LIMIT 1`).get(session.id)) {
+      throw new AgentSessionServiceError('Active handoff requires all operations to be resolved', 'CONFLICT');
+    }
+    if (this.db.prepare(`SELECT 1 FROM app_agent_session_permissions WHERE session_id=? AND status='pending' LIMIT 1`).get(session.id)) {
+      throw new AgentSessionServiceError('Active handoff requires all permission requests to be resolved', 'CONFLICT');
+    }
+    if (this.db.prepare(`SELECT 1 FROM app_agent_sessions WHERE process_id=? AND id<>? AND lifecycle IN
+      ('starting','idle','running','awaiting_permission','interrupted','outcome_unknown') LIMIT 1`).get(process.id, session.id)) {
+      throw new AgentSessionServiceError('Process already has a competing active AgentSession', 'CONFLICT');
+    }
+    if (workspace.workspaceMode === 'empty') {
+      if (process.repositoryIds.length) throw new AgentSessionServiceError('An empty workspace can hand off only to a Process with no repository scope', 'CONFLICT');
+      return;
+    }
+    if (!workspace.repositoryId || !process.repositoryIds.includes(workspace.repositoryId)) {
+      throw new AgentSessionServiceError('Repository scope differs; this exploration can only be linked as historical context', 'CONFLICT');
+    }
+    const repository = this.repositories.findById(workspace.repositoryId);
+    if (!repository || !this.repositories.isLinkedToProject(process.projectId, repository.id)
+      || canonicalRepositoryIdentity(repository.provider, repository.remote) !== canonicalRepositoryIdentity(repository.provider, session.repositoryRemote ?? '')) {
+      throw new AgentSessionServiceError('Pinned repository identity is no longer authorized for this Process', 'CONFLICT');
+    }
+  }
+
   private findOperation(sessionId: string, key: string): AgentOperation | undefined {
     const row = this.db.prepare(`SELECT id,session_id AS sessionId,idempotency_key AS idempotencyKey,kind,prompt_text AS promptText,status,
       created_at AS createdAt,updated_at AS updatedAt FROM app_agent_session_operations WHERE session_id=? AND idempotency_key=?`).get(sessionId, key) as AgentOperation | undefined;
@@ -528,6 +708,13 @@ export class AgentSessionService {
       lifecycle: row.lifecycle as AgentSession['lifecycle'], errorMessage: row.error_message as string | undefined,
       createdAt: row.created_at as string, updatedAt: row.updated_at as string, lastEventSeq: row.last_event_seq as number };
   }
+}
+
+function hashPromotionRequest(value: unknown): string {
+  const canonical = (item: unknown): unknown => Array.isArray(item) ? item.map(canonical)
+    : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, nested]) => [key, canonical(nested)]))
+      : item;
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 
 function sanitizeValue(value: unknown): unknown {

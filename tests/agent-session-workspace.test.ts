@@ -121,7 +121,12 @@ test('AgentSession is Process-scoped and duplicate prompt keys never dispatch tw
     assert.equal(retry.id, first.id);
     assert.throws(() => service.submitPrompt(session.id, key, 'Different prompt'), AgentSessionServiceError);
     await new Promise(resolve => setTimeout(resolve, 10));
-    assert.equal(runtime.calls.filter(call => call === 'Inspect the readme').length, 1);
+    assert.equal(runtime.calls.filter(call => call.includes('Inspect the readme')).length, 1);
+    const dispatched = (db.prepare('SELECT prompt_text,dispatched_prompt FROM app_agent_session_operations WHERE id=?').get(first.id) as { prompt_text: string; dispatched_prompt: string });
+    assert.equal(dispatched.prompt_text, 'Inspect the readme', 'original user text remains separately persisted');
+    assert.equal(dispatched.dispatched_prompt, runtime.calls.find(call => call.includes('Inspect the readme')),
+      'the exact Process context envelope persisted before dispatch is what ACP receives');
+    assert.match(dispatched.dispatched_prompt, /acceptedDefinitionVersion":1/);
     assert.equal(service.listOperations(session.id).find(operation => operation.id === first.id)?.status, 'completed');
     const otherWorkspace = '73000000-0000-4000-8000-000000000001';
     const isolated = new AgentSessionService(db, otherWorkspace, processService, repositoryStore, runtime, path.join(root, 'other-runtime'));
